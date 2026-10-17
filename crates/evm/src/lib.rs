@@ -1,4 +1,5 @@
 mod chain;
 mod rpc;
+mod tx;
 
-pub use chain::EvmChain;
+pub use chain::{EvmChain, EvmPlan};

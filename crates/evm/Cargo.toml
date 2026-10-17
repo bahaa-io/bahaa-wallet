@@ -8,6 +8,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
 bahaa-chain.workspace = true
 bahaa-config.workspace = true
 bahaa-crypto.workspace = true
@@ -20,7 +23,7 @@ sha3.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "time"] }
 
 [lints]
 workspace = true

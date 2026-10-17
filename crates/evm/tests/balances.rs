@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use bahaa_chain::ChainError;
+use bahaa_chain::{Chain, ChainError};
 use bahaa_config::{Endpoint, Feature, Network, Protocol, Registry};
 use bahaa_evm::EvmChain;
 use bahaa_types::{Address, AssetId, ChainFamily};
