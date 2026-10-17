@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 
 use crate::MarketError;
 
+const SUBSCRIPTION: &str = "wallet";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Quote {
     pub price: Price,
@@ -28,12 +30,55 @@ pub(crate) struct Envelope {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Item {
+    #[serde(default)]
     category: String,
+    #[serde(default)]
     symbol: String,
     #[serde(default)]
     prices: BTreeMap<String, Box<RawValue>>,
     #[serde(default)]
     updated_at_unix: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Frame {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub result: Vec<Item>,
+}
+
+impl Frame {
+    pub fn ours(&self) -> bool {
+        self.id.as_deref() == Some(SUBSCRIPTION)
+    }
+}
+
+impl Item {
+    pub fn id(&self) -> Option<PriceId> {
+        format!("{}/{}", self.category, self.symbol).parse().ok()
+    }
+}
+
+pub(crate) fn subscribe(wanted: &BTreeSet<PriceId>, base: &str) -> String {
+    json!({
+        "type": "subscribe",
+        "id": SUBSCRIPTION,
+        "condition": condition(wanted),
+        "bases": [base],
+        "snapshot": true,
+    })
+    .to_string()
+}
+
+pub(crate) fn unsubscribe() -> String {
+    json!({"type": "unsubscribe", "id": SUBSCRIPTION}).to_string()
+}
+
+pub(crate) fn pong() -> String {
+    json!({"type": "pong"}).to_string()
 }
 
 pub fn is_base(base: &str) -> bool {
@@ -89,7 +134,7 @@ pub(crate) fn quotes(items: Vec<Item>, base: &str, wanted: &BTreeSet<PriceId>) -
     items
         .into_iter()
         .filter_map(|item| {
-            let id: PriceId = format!("{}/{}", item.category, item.symbol).parse().ok()?;
+            let id = item.id()?;
             if !wanted.contains(&id) {
                 return None;
             }

@@ -882,11 +882,15 @@ name = "bahaa-market"
 version = "0.0.0"
 dependencies = [
  "bahaa-types",
+ "futures-util",
  "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "url",
 ]
 
