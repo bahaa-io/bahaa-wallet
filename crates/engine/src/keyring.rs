@@ -195,6 +195,11 @@ impl Keyring {
         Ok(&session.seeds[session.index(id)?])
     }
 
+    pub fn check_password(&self, password: &[u8]) -> Result<(), KeyringError> {
+        self.session()?;
+        self.verify(password)
+    }
+
     pub fn reveal(&self, id: WalletId, password: &[u8]) -> Result<SecretString, KeyringError> {
         let session = self.session()?;
         let index = session.index(id)?;

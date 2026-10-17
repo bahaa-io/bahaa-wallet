@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use bahaa_chain::{ChainError, Failure, Pool};
 use bahaa_config::{Endpoint, Feature};
+use bahaa_types::to_plain_text;
 use reqwest::StatusCode;
 use reqwest::header::RETRY_AFTER;
 use ruint::aliases::U256;
@@ -131,12 +132,7 @@ impl Rpc {
             serde_json::from_slice(&body).map_err(|_| network("reply is not JSON".to_owned()))?;
         if let Some(error) = reply.get("error") {
             let code = error["code"].as_i64().unwrap_or(0);
-            let message: String = error["message"]
-                .as_str()
-                .unwrap_or("unknown error")
-                .chars()
-                .take(MAX_MESSAGE)
-                .collect();
+            let message = error["message"].as_str().unwrap_or("unknown error");
             return Err(classify(code, message));
         }
         reply
@@ -146,7 +142,8 @@ impl Rpc {
     }
 }
 
-pub(crate) fn classify(code: i64, message: String) -> Failure<ChainError> {
+pub(crate) fn classify(code: i64, message: &str) -> Failure<ChainError> {
+    let message = to_plain_text(message, MAX_MESSAGE);
     let lower = message.to_ascii_lowercase();
     let limited = code == -32005
         || [
@@ -215,12 +212,19 @@ mod tests {
             (3, "execution reverted", "fatal"),
         ];
         for (code, message, expected) in cases {
-            assert_eq!(
-                kind(&classify(code, message.to_owned())),
-                expected,
-                "{message}"
-            );
+            assert_eq!(kind(&classify(code, message)), expected, "{message}");
         }
+    }
+
+    #[test]
+    fn node_messages_arrive_as_plain_text() {
+        let hostile = format!("nonce\u{202E} too\nlow\u{7}{}", "x".repeat(500));
+        let Failure::Fatal(ChainError::Rejected(message)) = classify(-32000, &hostile) else {
+            panic!("expected a rejection");
+        };
+        assert!(message.starts_with("nonce too low"));
+        assert_eq!(message.chars().count(), MAX_MESSAGE);
+        assert!(bahaa_types::is_plain_text(&message, MAX_MESSAGE));
     }
 
     #[test]

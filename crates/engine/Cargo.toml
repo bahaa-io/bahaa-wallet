@@ -23,9 +23,11 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 zeroize.workspace = true
 
 [dev-dependencies]
+bahaa-chain.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 serde_json.workspace = true
+sha3.workspace = true
 tokio-tungstenite.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "io-util"] }
 url.workspace = true

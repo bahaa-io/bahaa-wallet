@@ -4,8 +4,8 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use bahaa_config::{Coin, Fiat, Settings};
-use bahaa_store::{Contact, CustomToken, Store, StoreError};
-use bahaa_types::{Address, ChainFamily};
+use bahaa_store::{Contact, CustomToken, SentStatus, SentTx, Store, StoreError};
+use bahaa_types::{Address, Amount, ChainFamily};
 use redb::{Database, TableDefinition};
 
 struct Scratch(PathBuf);
@@ -158,6 +158,80 @@ fn custom_tokens_are_validated() {
     store.save_token(&token()).unwrap();
     assert!(store.remove_token(&token().asset).unwrap());
     assert_eq!(store.tokens().unwrap(), []);
+}
+
+fn sent(id: &str, status: SentStatus) -> SentTx {
+    let raw = status.is_open().then(|| "02f8".to_owned());
+    SentTx {
+        id: id.to_owned(),
+        network: "bsc".parse().unwrap(),
+        from: evm("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+        to: evm("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+        asset: "bsc".parse().unwrap(),
+        amount: Amount::parse("0.25", 18).unwrap(),
+        sequence: Some(7),
+        fee_max: Amount::parse("0.0001", 18).unwrap(),
+        fee_paid: None,
+        block: None,
+        created_at: 1_760_000_000,
+        status,
+        raw,
+    }
+}
+
+#[test]
+fn sent_transactions_are_kept_and_updated_in_place() {
+    let scratch = Scratch::new();
+    let first = sent(&format!("0x{}", "ab".repeat(32)), SentStatus::Sending);
+    let second = sent(&format!("0x{}", "cd".repeat(32)), SentStatus::Pending);
+    {
+        let store = Store::open(&scratch.file()).unwrap();
+        store.save_sent(&first).unwrap();
+        store.save_sent(&second).unwrap();
+        let mut done = first.clone();
+        done.status = SentStatus::Confirmed;
+        done.raw = None;
+        done.block = Some(42);
+        done.fee_paid = Some(Amount::parse("0.00002", 18).unwrap());
+        store.save_sent(&done).unwrap();
+    }
+    let store = Store::open(&scratch.file()).unwrap();
+    let all = store.sent().unwrap();
+    assert_eq!(all.len(), 2);
+    let done = all.iter().find(|tx| tx.id == first.id).unwrap();
+    assert_eq!(done.status, SentStatus::Confirmed);
+    assert_eq!(done.fee_paid.unwrap().to_string(), "0.00002");
+    assert_eq!(all.iter().find(|tx| tx.id == second.id).unwrap(), &second);
+}
+
+#[test]
+fn sent_transactions_are_validated() {
+    let scratch = Scratch::new();
+    let store = Store::open(&scratch.file()).unwrap();
+    let id = format!("0x{}", "ab".repeat(32));
+    let mut keeps_bytes = sent(&id, SentStatus::Confirmed);
+    keeps_bytes.raw = Some("02f8".to_owned());
+    let mut lost_bytes = sent(&id, SentStatus::Pending);
+    lost_bytes.raw = None;
+    let bad = [
+        sent("", SentStatus::Pending),
+        sent("0xab\u{202E}", SentStatus::Pending),
+        sent(&id, SentStatus::Failed("bad\nreason".to_owned())),
+        sent(&id, SentStatus::Failed("x".repeat(201))),
+        keeps_bytes,
+        lost_bytes,
+    ];
+    for tx in bad {
+        assert!(
+            matches!(store.save_sent(&tx), Err(StoreError::Invalid(_))),
+            "{tx:?}"
+        );
+    }
+    store
+        .save_sent(&sent(&id, SentStatus::Failed("nonce too low".to_owned())))
+        .unwrap();
+    store.save_sent(&sent(&id, SentStatus::Dropped)).unwrap();
+    assert_eq!(store.sent().unwrap()[0].status, SentStatus::Dropped);
 }
 
 #[test]

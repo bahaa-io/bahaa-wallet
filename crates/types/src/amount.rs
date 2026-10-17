@@ -2,14 +2,40 @@ use std::cmp::Ordering;
 use std::fmt;
 
 use ruint::aliases::U256;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const MAX_DECIMALS: u8 = 77;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(into = "Stored", try_from = "Stored")]
 pub struct Amount {
     units: U256,
     decimals: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Stored {
+    value: String,
+    decimals: u8,
+}
+
+impl From<Amount> for Stored {
+    fn from(amount: Amount) -> Self {
+        Self {
+            value: amount.to_string(),
+            decimals: amount.decimals,
+        }
+    }
+}
+
+impl TryFrom<Stored> for Amount {
+    type Error = AmountError;
+
+    fn try_from(stored: Stored) -> Result<Self, Self::Error> {
+        Self::parse(&stored.value, stored.decimals)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
@@ -175,6 +201,34 @@ mod tests {
 
     fn amount(text: &str, decimals: u8) -> Amount {
         Amount::parse(text, decimals).unwrap()
+    }
+
+    #[test]
+    fn stores_as_exact_readable_json() {
+        for (text, decimals) in [
+            ("1.5", 18),
+            ("0", 6),
+            ("123", 0),
+            (U256_MAX, 0),
+            ("0.000000000000000001", 18),
+        ] {
+            let original = amount(text, decimals);
+            let json = serde_json::to_string(&original).unwrap();
+            assert_eq!(
+                json,
+                format!("{{\"value\":\"{text}\",\"decimals\":{decimals}}}")
+            );
+            assert_eq!(serde_json::from_str::<Amount>(&json).unwrap(), original);
+        }
+        for bad in [
+            r#"{"value":"1.5","decimals":0}"#,
+            r#"{"value":"-1","decimals":18}"#,
+            r#"{"value":"1","decimals":78}"#,
+            r#"{"value":"1","decimals":18,"extra":1}"#,
+            r#""1.5""#,
+        ] {
+            assert!(serde_json::from_str::<Amount>(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

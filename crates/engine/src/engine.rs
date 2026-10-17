@@ -1,4 +1,6 @@
-use std::collections::BTreeSet;
+mod send;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +9,7 @@ use bahaa_chain::ChainError;
 use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString, WordCount};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
-use bahaa_store::{CustomToken, Store, StoreError};
+use bahaa_store::{CustomToken, SentTx, Store, StoreError};
 use bahaa_types::ChainFamily;
 use bahaa_vault::KdfParams;
 use thiserror::Error;
@@ -18,6 +20,9 @@ use tokio::time::{Instant, sleep_until};
 use crate::chains::{self, AnyChain, Fetched};
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
 use crate::{Keyring, KeyringError, WalletId, WalletInfo};
+
+use send::{Delivered, Prepared, Quoted};
+pub use send::{Draft, DraftId, SendRequest};
 
 const VAULT_FILE: &str = "vault.bin";
 const STORE_FILE: &str = "wallet.redb";
@@ -31,6 +36,8 @@ pub struct EngineConfig {
     pub registry: Option<Registry>,
     pub auto_lock_unit: Duration,
     pub refresh_every: Duration,
+    pub draft_ttl: Duration,
+    pub track_every: Duration,
 }
 
 impl EngineConfig {
@@ -42,6 +49,8 @@ impl EngineConfig {
             registry: None,
             auto_lock_unit: Duration::from_secs(60),
             refresh_every: Duration::from_secs(60),
+            draft_ttl: Duration::from_secs(120),
+            track_every: Duration::from_secs(4),
         }
     }
 }
@@ -58,6 +67,14 @@ pub enum EngineError {
     Market(#[from] MarketError),
     #[error(transparent)]
     Chain(#[from] ChainError),
+    #[error("there is no such send waiting for confirmation, prepare it again")]
+    UnknownDraft,
+    #[error("this fee quote has expired, prepare the send again")]
+    DraftExpired,
+    #[error(
+        "the previous transaction from this account is still on its way, try again in a moment"
+    )]
+    StillSending,
     #[error("the wallet engine has stopped")]
     Stopped,
 }
@@ -75,6 +92,7 @@ pub enum Event {
     WalletsChanged(Vec<WalletInfo>),
     AccountsChanged(Vec<Account>),
     SettingsChanged(Settings),
+    TxUpdated(Box<SentTx>),
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
@@ -94,14 +112,28 @@ enum Command {
     ChangePassword(SecretString, SecretString, Reply<()>),
     Settings(Reply<Settings>),
     SetSettings(Settings, Reply<()>),
+    PrepareSend(SendRequest, Reply<Draft>),
+    ConfirmSend(DraftId, SecretString, Reply<SentTx>),
+    History(Reply<Vec<SentTx>>),
     Shutdown(Reply<()>),
+}
+
+enum Notice {
+    Fetched(Fetched),
+    Quoted(Box<Quoted>),
+    Delivered(Box<Delivered>),
+    Tracked(Vec<SentTx>),
 }
 
 impl Command {
     fn is_activity(&self) -> bool {
         !matches!(
             self,
-            Self::Wallets(_) | Self::Accounts(_) | Self::Settings(_) | Self::Shutdown(_)
+            Self::Wallets(_)
+                | Self::Accounts(_)
+                | Self::Settings(_)
+                | Self::History(_)
+                | Self::Shutdown(_)
         )
     }
 }
@@ -124,11 +156,15 @@ impl Engine {
             registry,
             auto_lock_unit,
             refresh_every,
+            draft_ttl,
+            track_every,
         } = config;
         crate::keyring::private_dir(&data_dir)?;
         let store = Store::open(&data_dir.join(STORE_FILE))?;
         let settings = store.settings()?;
         let custom = Arc::new(store.tokens()?);
+        let mut history = store.sent()?;
+        history.sort_by_key(|tx| std::cmp::Reverse(tx.created_at));
         let registry = match registry {
             Some(registry) => registry,
             None => Registry::builtin()?,
@@ -151,7 +187,7 @@ impl Engine {
             fiat: settings.fiat,
             ..Portfolio::default()
         });
-        let (results_tx, results) = mpsc::channel(4);
+        let (notices_tx, notices) = mpsc::channel(QUEUE);
         let worker = Worker {
             keyring: Some(keyring),
             store,
@@ -165,8 +201,8 @@ impl Engine {
             events: events.clone(),
             state: publish_state,
             portfolio: publish_portfolio,
-            results_tx,
-            results,
+            notices_tx,
+            notices,
             accounts: Vec::new(),
             held: Vec::new(),
             health: Vec::new(),
@@ -176,6 +212,15 @@ impl Engine {
             next_refresh: None,
             unit: auto_lock_unit,
             refresh_every,
+            session: 0,
+            drafts: BTreeMap::new(),
+            next_draft: 0,
+            history,
+            broadcasting: BTreeSet::new(),
+            tracking: None,
+            next_track: None,
+            draft_ttl,
+            track_every,
         };
         tokio::spawn(worker.run());
         Ok(Self {
@@ -283,6 +328,23 @@ impl Engine {
             .await
     }
 
+    pub async fn prepare_send(&self, request: SendRequest) -> Result<Draft, EngineError> {
+        self.ask(|reply| Command::PrepareSend(request, reply)).await
+    }
+
+    pub async fn confirm_send(
+        &self,
+        draft: DraftId,
+        password: SecretString,
+    ) -> Result<SentTx, EngineError> {
+        self.ask(|reply| Command::ConfirmSend(draft, password, reply))
+            .await
+    }
+
+    pub async fn history(&self) -> Result<Vec<SentTx>, EngineError> {
+        self.ask(Command::History).await
+    }
+
     pub async fn shutdown(&self) -> Result<(), EngineError> {
         self.ask(Command::Shutdown).await
     }
@@ -316,8 +378,8 @@ struct Worker {
     events: broadcast::Sender<Event>,
     state: watch::Sender<State>,
     portfolio: watch::Sender<Portfolio>,
-    results_tx: mpsc::Sender<Fetched>,
-    results: mpsc::Receiver<Fetched>,
+    notices_tx: mpsc::Sender<Notice>,
+    notices: mpsc::Receiver<Notice>,
     accounts: Vec<Account>,
     held: Vec<Held>,
     health: Vec<NetworkHealth>,
@@ -327,6 +389,15 @@ struct Worker {
     next_refresh: Option<Instant>,
     unit: Duration,
     refresh_every: Duration,
+    session: u64,
+    drafts: BTreeMap<DraftId, Prepared>,
+    next_draft: u64,
+    history: Vec<SentTx>,
+    broadcasting: BTreeSet<String>,
+    tracking: Option<JoinHandle<()>>,
+    next_track: Option<Instant>,
+    draft_ttl: Duration,
+    track_every: Duration,
 }
 
 async fn at(moment: Option<Instant>) {
@@ -341,6 +412,7 @@ impl Worker {
         let shutdown = loop {
             let deadline = self.deadline;
             let next_refresh = self.next_refresh;
+            let next_track = self.next_track;
             let has_market = self.market.is_some();
             tokio::select! {
                 command = self.inbox.recv() => match command {
@@ -355,7 +427,8 @@ impl Worker {
                 },
                 () = at(deadline) => self.lock(),
                 () = at(next_refresh) => self.start_refresh(),
-                Some(fetched) = self.results.recv() => self.apply(fetched),
+                () = at(next_track) => self.start_tracking(),
+                Some(notice) = self.notices.recv() => self.notice(notice),
                 Ok(()) = self.prices.changed(), if has_market => self.publish_portfolio(),
             }
         };
@@ -371,25 +444,26 @@ impl Worker {
                 let result = self
                     .keyring(move |keyring| keyring.create(password.expose_secret().as_bytes()))
                     .await;
-                if result.is_ok() {
-                    self.after_unlock().await;
-                }
-                let _ = reply.send(result);
+                self.opened(result, reply).await;
             }
             Command::Unlock(password, reply) => {
                 let result = self
                     .keyring(move |keyring| keyring.unlock(password.expose_secret().as_bytes()))
                     .await;
-                if result.is_ok() {
-                    self.after_unlock().await;
-                }
-                let _ = reply.send(result);
+                self.opened(result, reply).await;
             }
             Command::Lock(reply) => {
                 self.lock();
                 let _ = reply.send(Ok(()));
             }
             Command::Refresh => self.start_refresh(),
+            Command::PrepareSend(request, reply) => self.prepare_send(&request, reply),
+            Command::ConfirmSend(id, password, reply) => {
+                self.confirm_send(id, password, reply).await;
+            }
+            Command::History(reply) => {
+                let _ = reply.send(self.history());
+            }
             Command::Touch | Command::Shutdown(_) => {}
             Command::Wallets(reply) => {
                 let result = self.keyring(|keyring| keyring.wallets()).await;
@@ -465,6 +539,15 @@ impl Worker {
         }
     }
 
+    fn notice(&mut self, notice: Notice) {
+        match notice {
+            Notice::Fetched(fetched) => self.apply(fetched),
+            Notice::Quoted(quoted) => self.quoted(*quoted),
+            Notice::Delivered(delivered) => self.delivered(*delivered),
+            Notice::Tracked(updates) => self.tracked(updates),
+        }
+    }
+
     async fn keyring<T: Send + 'static, E: Into<EngineError> + Send + 'static>(
         &mut self,
         work: impl FnOnce(&mut Keyring) -> Result<T, E> + Send + 'static,
@@ -484,10 +567,18 @@ impl Worker {
         self.keyring.as_ref().is_some_and(Keyring::is_unlocked)
     }
 
+    async fn opened(&mut self, result: Result<(), EngineError>, reply: Reply<()>) {
+        if result.is_ok() {
+            self.after_unlock().await;
+        }
+        let _ = reply.send(result);
+    }
+
     async fn after_unlock(&mut self) {
         self.set_state(State::Unlocked);
         self.activity();
         self.derive_accounts().await;
+        self.start_tracking();
     }
 
     async fn after_change(&mut self, ok: bool) {
@@ -539,10 +630,10 @@ impl Worker {
         let custom = Arc::clone(&self.custom);
         let testnets = self.settings.show_testnets;
         let generation = self.generation;
-        let results = self.results_tx.clone();
+        let notices = self.notices_tx.clone();
         self.refreshing = Some(tokio::spawn(async move {
             let fetched = chains::fetch(&chains, &accounts, &custom, testnets, generation).await;
-            let _ = results.send(fetched).await;
+            let _ = notices.send(Notice::Fetched(fetched)).await;
         }));
     }
 
@@ -577,6 +668,9 @@ impl Worker {
         }
         self.deadline = None;
         self.stop_refresh();
+        self.stop_tracking();
+        self.drafts.clear();
+        self.session = self.session.wrapping_add(1);
         self.accounts.clear();
         self.held.clear();
         self.health.clear();

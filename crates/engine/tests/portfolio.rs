@@ -1,158 +1,56 @@
 #![allow(clippy::unwrap_used)]
 
-use std::fmt::Write;
-use std::path::PathBuf;
+mod common;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bahaa_config::{Endpoint, Feature, Fiat, Network, Protocol, Registry, Settings};
+use bahaa_config::{Fiat, Registry, Settings};
 use bahaa_crypto::{SecretString, WordCount};
-use bahaa_engine::{Engine, EngineConfig, EngineError, KeyringError, NetworkHealth, Portfolio};
+use bahaa_engine::{Engine, EngineError, KeyringError, NetworkHealth, Portfolio};
 use bahaa_market::{MarketConfig, Status};
-use bahaa_vault::KdfParams;
+use common::{HARDHAT, Scratch, USDT, config, until};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::watch;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
-const HARDHAT: &str = "test test test test test test test test test test test junk";
-const USDT: &str = "0x55d398326f99059ff775485246999027b3197955";
-
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new() -> Self {
-        let mut random = [0u8; 8];
-        getrandom::fill(&mut random).unwrap();
-        let name = random.iter().fold(String::new(), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        });
-        Self(std::env::temp_dir().join(format!("bahaa-portfolio-{name}")))
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 async fn node(calls: Arc<Mutex<usize>>, delay: Duration) -> Url {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-    tokio::spawn(async move {
-        loop {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let calls = Arc::clone(&calls);
-            tokio::spawn(async move {
-                let mut request = Vec::new();
-                let mut buffer = [0u8; 8192];
-                let body = loop {
-                    let read = socket.read(&mut buffer).await.unwrap_or(0);
-                    if read == 0 {
-                        return;
-                    }
-                    request.extend_from_slice(&buffer[..read]);
-                    let text = String::from_utf8_lossy(&request).to_string();
-                    let Some(end) = text.find("\r\n\r\n") else {
-                        continue;
-                    };
-                    let length = text
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length: ")
-                                .map(str::to_owned)
-                        })
-                        .map_or(0, |value| value.trim().parse::<usize>().unwrap());
-                    if request.len() >= end + 4 + length {
-                        break request[end + 4..end + 4 + length].to_vec();
-                    }
-                };
-                let call: Value = serde_json::from_slice(&body).unwrap();
-                *calls.lock().unwrap() += 1;
-                if call["method"] != "eth_chainId" {
-                    tokio::time::sleep(delay).await;
-                }
-                let result = match call["method"].as_str().unwrap() {
-                    "eth_chainId" => json!("0x38"),
-                    "eth_getBalance" => json!("0x14d1120d7b160000"),
-                    "eth_call"
-                        if call["params"][0]["to"]
-                            .as_str()
-                            .unwrap()
-                            .to_ascii_lowercase()
-                            == USDT =>
-                    {
-                        json!(format!("0x{:064x}", 5_000_000_000_000_000_000u128))
-                    }
-                    "eth_call" => json!(format!("0x{:064x}", 0)),
-                    _ => Value::Null,
-                };
-                let text = json!({"jsonrpc": "2.0", "id": 1, "result": result}).to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-                    text.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
-            });
-        }
-    });
-    url
-}
-
-fn endpoint(url: Url) -> Endpoint {
-    Endpoint {
-        protocol: Protocol::JsonRpc,
-        url,
-        features: vec![Feature::Logs],
-        min_gap_ms: 0,
-    }
+    common::node(move |call| {
+        *calls.lock().unwrap() += 1;
+        let method = call["method"].as_str().unwrap();
+        let reply = match method {
+            "eth_chainId" => json!("0x38"),
+            "eth_getBalance" => json!("0x14d1120d7b160000"),
+            "eth_call"
+                if call["params"][0]["to"]
+                    .as_str()
+                    .unwrap()
+                    .to_ascii_lowercase()
+                    == USDT =>
+            {
+                json!(format!("0x{:064x}", 5_000_000_000_000_000_000u128))
+            }
+            "eth_call" => json!(format!("0x{:064x}", 0)),
+            _ => Value::Null,
+        };
+        let wait = if method == "eth_chainId" {
+            Duration::ZERO
+        } else {
+            delay
+        };
+        (common::result(reply), wait)
+    })
+    .await
 }
 
 fn registry(bsc: Url) -> Registry {
-    let builtin = Registry::builtin().unwrap();
-    let pick = |id: &str| -> Network { builtin.get(&id.parse().unwrap()).unwrap().clone() };
-    let mut bsc_network = pick("bsc");
-    bsc_network.endpoints = vec![endpoint(bsc)];
-    let mut ethereum = pick("ethereum");
-    ethereum.endpoints = vec![endpoint(Url::parse("http://127.0.0.1:9/").unwrap())];
-    Registry::with_networks(vec![bsc_network, ethereum]).unwrap()
-}
-
-fn config(scratch: &Scratch, registry: Registry, market: Option<MarketConfig>) -> EngineConfig {
-    EngineConfig {
-        data_dir: scratch.0.join("data"),
-        kdf: KdfParams {
-            memory_kib: 64,
-            iterations: 1,
-            lanes: 1,
-        },
-        market,
-        registry: Some(registry),
-        auto_lock_unit: Duration::from_secs(60),
-        refresh_every: Duration::from_secs(60),
-    }
-}
-
-async fn until<T: Clone>(watcher: &mut watch::Receiver<T>, done: impl Fn(&T) -> bool) -> T {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            {
-                let current = watcher.borrow_and_update();
-                if done(&current) {
-                    return current.clone();
-                }
-            }
-            watcher.changed().await.unwrap();
-        }
-    })
-    .await
+    let dead = Url::parse("http://127.0.0.1:9/").unwrap();
+    Registry::with_networks(vec![
+        common::network("bsc", bsc),
+        common::network("ethereum", dead),
+    ])
     .unwrap()
 }
 

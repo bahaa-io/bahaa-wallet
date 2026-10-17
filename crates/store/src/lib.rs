@@ -2,7 +2,7 @@ use std::fs::OpenOptions;
 use std::path::Path;
 
 use bahaa_config::{Coin, Settings};
-use bahaa_types::{Address, AssetId, NetworkId, is_plain_text};
+use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -12,11 +12,14 @@ const SCHEMA: u64 = 1;
 const SCHEMA_KEY: &str = "schema";
 const SETTINGS_KEY: &str = "settings";
 const MAX_CONTACT_NAME: usize = 40;
+const MAX_TX_ID: usize = 128;
+const MAX_REASON: usize = 200;
 
 const META: TableDefinition<'static, &str, u64> = TableDefinition::new("meta");
 const SETTINGS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("settings");
 const CONTACTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("contacts");
 const TOKENS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("tokens");
+const SENT: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("sent");
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum StoreError {
@@ -47,6 +50,40 @@ pub struct Contact {
 pub struct CustomToken {
     pub asset: AssetId,
     pub coin: Coin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SentTx {
+    pub id: String,
+    pub network: NetworkId,
+    pub from: Address,
+    pub to: Address,
+    pub asset: AssetId,
+    pub amount: Amount,
+    pub sequence: Option<u64>,
+    pub fee_max: Amount,
+    pub fee_paid: Option<Amount>,
+    pub block: Option<u64>,
+    pub created_at: u64,
+    pub status: SentStatus,
+    pub raw: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SentStatus {
+    Sending,
+    Pending,
+    Confirmed,
+    Failed(String),
+    Dropped,
+}
+
+impl SentStatus {
+    pub fn is_open(&self) -> bool {
+        matches!(self, Self::Sending | Self::Pending)
+    }
 }
 
 pub struct Store {
@@ -122,6 +159,29 @@ impl Store {
         self.delete(TOKENS, &asset.to_string())
     }
 
+    pub fn sent(&self) -> Result<Vec<SentTx>, StoreError> {
+        self.all(SENT)
+    }
+
+    pub fn save_sent(&self, tx: &SentTx) -> Result<(), StoreError> {
+        if !is_plain_text(&tx.id, MAX_TX_ID) {
+            return Err(StoreError::Invalid("not a transaction id"));
+        }
+        if let SentStatus::Failed(reason) = &tx.status
+            && !is_plain_text(reason, MAX_REASON)
+        {
+            return Err(StoreError::Invalid(
+                "a failure reason must be short plain text",
+            ));
+        }
+        if tx.status.is_open() != tx.raw.is_some() {
+            return Err(StoreError::Invalid(
+                "only a transaction still on its way keeps its signed bytes",
+            ));
+        }
+        self.put(SENT, &format!("{}/{}", tx.network, tx.id), &encode(tx)?)
+    }
+
     fn migrate(&self) -> Result<(), StoreError> {
         let txn = self.db.begin_write().map_err(database)?;
         {
@@ -137,7 +197,7 @@ impl Store {
                     meta.insert(SCHEMA_KEY, SCHEMA).map_err(database)?;
                 }
             }
-            for table in [SETTINGS, CONTACTS, TOKENS] {
+            for table in [SETTINGS, CONTACTS, TOKENS, SENT] {
                 txn.open_table(table).map_err(database)?;
             }
         }

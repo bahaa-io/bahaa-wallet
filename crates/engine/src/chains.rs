@@ -1,8 +1,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bahaa_chain::{Balance, Chain, ChainError};
+use bahaa_chain::{
+    Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus,
+};
 use bahaa_config::{Network, Registry};
-use bahaa_evm::EvmChain;
+use bahaa_crypto::Seed;
+use bahaa_evm::{EvmChain, EvmPlan};
 use bahaa_store::CustomToken;
 use bahaa_types::{Address, AssetId, ChainFamily};
 use futures_util::future::join_all;
@@ -11,6 +14,11 @@ use crate::portfolio::{Account, Held, NetworkHealth};
 
 pub(crate) enum AnyChain {
     Evm(EvmChain),
+}
+
+#[derive(Clone)]
+pub(crate) enum AnyPlan {
+    Evm(EvmPlan),
 }
 
 impl AnyChain {
@@ -31,6 +39,42 @@ impl AnyChain {
     ) -> Result<Vec<Balance>, ChainError> {
         match self {
             Self::Evm(chain) => chain.balances(address, assets).await,
+        }
+    }
+
+    pub(crate) async fn prepare(
+        &self,
+        transfer: &Transfer,
+    ) -> Result<(AnyPlan, FeeQuote), ChainError> {
+        match self {
+            Self::Evm(chain) => {
+                let (plan, fee) = chain.prepare(transfer).await?;
+                Ok((AnyPlan::Evm(plan), fee))
+            }
+        }
+    }
+
+    pub(crate) fn sign(&self, plan: &AnyPlan, seed: &Seed) -> Result<Signed, ChainError> {
+        match (self, plan) {
+            (Self::Evm(chain), AnyPlan::Evm(plan)) => chain.sign(plan, seed),
+        }
+    }
+
+    pub(crate) fn decode(&self, signed: &Signed) -> Result<Decoded, ChainError> {
+        match self {
+            Self::Evm(chain) => chain.decode(signed),
+        }
+    }
+
+    pub(crate) async fn broadcast(&self, signed: &Signed) -> Result<TxId, ChainError> {
+        match self {
+            Self::Evm(chain) => chain.broadcast(signed).await,
+        }
+    }
+
+    pub(crate) async fn status(&self, id: &TxId) -> Result<TxStatus, ChainError> {
+        match self {
+            Self::Evm(chain) => chain.status(id).await,
         }
     }
 }
@@ -107,9 +151,7 @@ async fn fetch_network(
             Err(err) => problem = Some(err.to_string()),
         }
     }
-    let checked_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
+    let checked_at = now();
     (
         held,
         NetworkHealth {
@@ -118,4 +160,10 @@ async fn fetch_network(
             checked_at,
         },
     )
+}
+
+pub(crate) fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }

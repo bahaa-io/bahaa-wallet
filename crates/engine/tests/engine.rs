@@ -38,6 +38,8 @@ impl Scratch {
             registry: Some(Registry::with_networks(Vec::new()).unwrap()),
             auto_lock_unit: Duration::from_millis(50),
             refresh_every: Duration::from_secs(60),
+            draft_ttl: Duration::from_secs(120),
+            track_every: Duration::from_secs(4),
         }
     }
 }
