@@ -27,6 +27,7 @@ pub struct Held {
 pub struct NetworkHealth {
     pub network: NetworkId,
     pub problem: Option<String>,
+    pub history_problem: Option<String>,
     pub checked_at: u64,
 }
 

@@ -1,3 +1,4 @@
+mod incoming;
 mod send;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,7 +10,7 @@ use bahaa_chain::ChainError;
 use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString, WordCount};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
-use bahaa_store::{CustomToken, SentTx, Store, StoreError};
+use bahaa_store::{CustomToken, Received, Scan, SentTx, Store, StoreError};
 use bahaa_types::ChainFamily;
 use bahaa_vault::KdfParams;
 use thiserror::Error;
@@ -21,6 +22,7 @@ use crate::chains::{self, AnyChain, Fetched};
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
 use crate::{Keyring, KeyringError, WalletId, WalletInfo};
 
+pub use incoming::IncomingHistory;
 use send::{Delivered, Prepared, Quoted};
 pub use send::{Draft, DraftId, SendRequest};
 
@@ -93,6 +95,7 @@ pub enum Event {
     AccountsChanged(Vec<Account>),
     SettingsChanged(Settings),
     TxUpdated(Box<SentTx>),
+    Received(Vec<Received>),
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
@@ -115,6 +118,7 @@ enum Command {
     PrepareSend(SendRequest, Reply<Draft>),
     ConfirmSend(DraftId, SecretString, Reply<SentTx>),
     History(Reply<Vec<SentTx>>),
+    Incoming(Reply<IncomingHistory>),
     Shutdown(Reply<()>),
 }
 
@@ -133,6 +137,7 @@ impl Command {
                 | Self::Accounts(_)
                 | Self::Settings(_)
                 | Self::History(_)
+                | Self::Incoming(_)
                 | Self::Shutdown(_)
         )
     }
@@ -165,6 +170,9 @@ impl Engine {
         let custom = Arc::new(store.tokens()?);
         let mut history = store.sent()?;
         history.sort_by_key(|tx| std::cmp::Reverse(tx.created_at));
+        let scans = store.scans()?;
+        let mut received = store.received()?;
+        incoming::sort(&mut received);
         let registry = match registry {
             Some(registry) => registry,
             None => Registry::builtin()?,
@@ -216,6 +224,8 @@ impl Engine {
             drafts: BTreeMap::new(),
             next_draft: 0,
             history,
+            scans,
+            received,
             broadcasting: BTreeSet::new(),
             tracking: None,
             next_track: None,
@@ -345,6 +355,10 @@ impl Engine {
         self.ask(Command::History).await
     }
 
+    pub async fn incoming(&self) -> Result<IncomingHistory, EngineError> {
+        self.ask(Command::Incoming).await
+    }
+
     pub async fn shutdown(&self) -> Result<(), EngineError> {
         self.ask(Command::Shutdown).await
     }
@@ -393,11 +407,17 @@ struct Worker {
     drafts: BTreeMap<DraftId, Prepared>,
     next_draft: u64,
     history: Vec<SentTx>,
+    scans: Vec<Scan>,
+    received: Vec<Received>,
     broadcasting: BTreeSet<String>,
     tracking: Option<JoinHandle<()>>,
     next_track: Option<Instant>,
     draft_ttl: Duration,
     track_every: Duration,
+}
+
+fn answer<T>(reply: Reply<T>, result: Result<T, EngineError>) {
+    let _ = reply.send(result);
 }
 
 async fn at(moment: Option<Instant>) {
@@ -461,9 +481,8 @@ impl Worker {
             Command::ConfirmSend(id, password, reply) => {
                 self.confirm_send(id, password, reply).await;
             }
-            Command::History(reply) => {
-                let _ = reply.send(self.history());
-            }
+            Command::History(reply) => answer(reply, self.history()),
+            Command::Incoming(reply) => answer(reply, self.incoming()),
             Command::Touch | Command::Shutdown(_) => {}
             Command::Wallets(reply) => {
                 let result = self.keyring(|keyring| keyring.wallets()).await;
@@ -515,9 +534,7 @@ impl Worker {
                     .await;
                 let _ = reply.send(result);
             }
-            Command::Settings(reply) => {
-                let _ = reply.send(Ok(self.settings.clone()));
-            }
+            Command::Settings(reply) => answer(reply, Ok(self.settings.clone())),
             Command::SetSettings(settings, reply) => {
                 let result = self
                     .store
@@ -629,10 +646,12 @@ impl Worker {
         let accounts = self.accounts.clone();
         let custom = Arc::clone(&self.custom);
         let testnets = self.settings.show_testnets;
+        let cursors = self.scans.clone();
         let generation = self.generation;
         let notices = self.notices_tx.clone();
         self.refreshing = Some(tokio::spawn(async move {
-            let fetched = chains::fetch(&chains, &accounts, &custom, testnets, generation).await;
+            let fetched =
+                chains::fetch(&chains, &accounts, &custom, &cursors, testnets, generation).await;
             let _ = notices.send(Notice::Fetched(fetched)).await;
         }));
     }
@@ -657,6 +676,7 @@ impl Worker {
         self.refreshing = None;
         self.held = fetched.held;
         self.health = fetched.health;
+        self.record_scans(fetched.scans);
         self.next_refresh = Some(Instant::now() + self.refresh_every);
         self.refresh_prices();
         self.publish_portfolio();

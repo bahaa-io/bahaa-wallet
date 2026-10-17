@@ -4,7 +4,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use bahaa_config::{Coin, Fiat, Settings};
-use bahaa_store::{Contact, CustomToken, SentStatus, SentTx, Store, StoreError};
+use bahaa_store::{Contact, CustomToken, Received, Scan, SentStatus, SentTx, Store, StoreError};
 use bahaa_types::{Address, Amount, ChainFamily};
 use redb::{Database, TableDefinition};
 
@@ -232,6 +232,71 @@ fn sent_transactions_are_validated() {
         .unwrap();
     store.save_sent(&sent(&id, SentStatus::Dropped)).unwrap();
     assert_eq!(store.sent().unwrap()[0].status, SentStatus::Dropped);
+}
+
+fn scan(next: u64) -> Scan {
+    Scan {
+        network: "bsc".parse().unwrap(),
+        address: evm("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+        next,
+        complete_from: 100,
+        complete_since: 1_760_000_000,
+    }
+}
+
+fn received(index: u64) -> Received {
+    Received {
+        id: format!("0x{}", "ef".repeat(32)),
+        index,
+        network: "bsc".parse().unwrap(),
+        from: evm("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+        to: evm("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+        asset: "bsc/0x55d398326f99059fF775485246999027B3197955"
+            .parse()
+            .unwrap(),
+        amount: Amount::parse("12.5", 18).unwrap(),
+        block: 150,
+        time: 1_760_000_300,
+    }
+}
+
+#[test]
+fn a_scan_and_what_it_found_are_saved_together() {
+    let scratch = Scratch::new();
+    {
+        let store = Store::open(&scratch.file()).unwrap();
+        store
+            .save_scan(&scan(200), &[received(1), received(2)])
+            .unwrap();
+        store.save_scan(&scan(300), &[received(2)]).unwrap();
+    }
+    let store = Store::open(&scratch.file()).unwrap();
+    assert_eq!(store.scans().unwrap(), [scan(300)]);
+    assert_eq!(store.received().unwrap(), [received(1), received(2)]);
+}
+
+#[test]
+fn a_bad_scan_saves_nothing() {
+    let scratch = Scratch::new();
+    let store = Store::open(&scratch.file()).unwrap();
+    let mut foreign = received(1);
+    foreign.to = evm("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
+    let mut hidden = received(2);
+    hidden.id = "0xef\u{202E}".to_owned();
+    let mut backwards = scan(200);
+    backwards.complete_from = 201;
+    for (scan, found) in [
+        (scan(200), vec![received(3), foreign]),
+        (scan(200), vec![hidden]),
+        (backwards, Vec::new()),
+    ] {
+        assert!(matches!(
+            store.save_scan(&scan, &found),
+            Err(StoreError::Invalid(_))
+        ));
+    }
+    assert_eq!(store.scans().unwrap(), Vec::<Scan>::new());
+    assert_eq!(store.received().unwrap(), Vec::<Received>::new());
 }
 
 #[test]

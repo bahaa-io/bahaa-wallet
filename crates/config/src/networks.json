@@ -44,9 +44,7 @@
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/bnb",
-        "features": [
-          "logs"
-        ]
+        "features": []
       }
     ],
     "explorer": {
@@ -94,16 +92,12 @@
       {
         "protocol": "json-rpc",
         "url": "https://eth.drpc.org",
-        "features": [
-          "logs"
-        ]
+        "features": []
       },
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/eth",
-        "features": [
-          "logs"
-        ]
+        "features": []
       }
     ],
     "explorer": {
@@ -151,16 +145,12 @@
       {
         "protocol": "json-rpc",
         "url": "https://polygon.drpc.org",
-        "features": [
-          "logs"
-        ]
+        "features": []
       },
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/matic",
-        "features": [
-          "logs"
-        ]
+        "features": []
       }
     ],
     "explorer": {
@@ -201,9 +191,7 @@
       {
         "protocol": "json-rpc",
         "url": "https://arbitrum-one-rpc.publicnode.com",
-        "features": [
-          "logs"
-        ]
+        "features": []
       },
       {
         "protocol": "json-rpc",
@@ -215,9 +203,7 @@
       {
         "protocol": "json-rpc",
         "url": "https://arbitrum.drpc.org",
-        "features": [
-          "logs"
-        ]
+        "features": []
       }
     ],
     "explorer": {
@@ -265,23 +251,17 @@
       {
         "protocol": "json-rpc",
         "url": "https://api.avax.network/ext/bc/C/rpc",
-        "features": [
-          "logs"
-        ]
+        "features": []
       },
       {
         "protocol": "json-rpc",
         "url": "https://avalanche.drpc.org",
-        "features": [
-          "logs"
-        ]
+        "features": []
       },
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/avax/c",
-        "features": [
-          "logs"
-        ]
+        "features": []
       }
     ],
     "explorer": {
@@ -327,16 +307,12 @@
       {
         "protocol": "json-rpc",
         "url": "https://base.drpc.org",
-        "features": [
-          "logs"
-        ]
+        "features": []
       },
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/base",
-        "features": [
-          "logs"
-        ]
+        "features": []
       }
     ],
     "explorer": {
@@ -391,9 +367,7 @@
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/op",
-        "features": [
-          "logs"
-        ]
+        "features": []
       }
     ],
     "explorer": {

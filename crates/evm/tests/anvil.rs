@@ -8,7 +8,7 @@ use std::time::Duration;
 use bahaa_chain::{Chain, ChainError, Transfer, TxId, TxStatus, check_signed};
 use bahaa_config::{Endpoint, Feature, Protocol, Registry};
 use bahaa_crypto::{Mnemonic, Seed};
-use bahaa_evm::EvmChain;
+use bahaa_evm::{EvmChain, ScanCursor};
 use bahaa_types::{Address, Amount, AssetId};
 use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
@@ -186,13 +186,19 @@ async fn sends_real_bsc_usdt_on_a_forked_chain() {
     let anvil = Anvil::start(Some("https://bsc-dataseed.bnbchain.org"));
     anvil.ready().await;
     let chain = anvil.chain();
+    let http = reqwest::Client::new();
+    let forked_at = anvil
+        .rpc(&http, "eth_blockNumber", json!([]))
+        .await
+        .unwrap();
+    let forked_at =
+        u64::from_str_radix(forked_at.as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
     let usdt: AssetId = format!("bsc/{USDT}").parse().unwrap();
     let from = chain.derive(&seed(), 0).unwrap();
     let Address::Evm(owner) = from else {
         panic!("not evm")
     };
     let funded = Amount::parse("1000", 18).unwrap();
-    let http = reqwest::Client::new();
     let mut slot_found = false;
     for slot in 0u8..20 {
         let mut key = [0u8; 64];
@@ -228,4 +234,25 @@ async fn sends_real_bsc_usdt_on_a_forked_chain() {
         balance(&chain, &transfer.from, &usdt).await,
         funded.checked_sub(amount).unwrap()
     );
+    anvil
+        .rpc(&http, "anvil_mine", json!(["0xc"]))
+        .await
+        .unwrap();
+    let local_only = ScanCursor {
+        next: forked_at + 1,
+        complete_from: forked_at + 1,
+        complete_since: 0,
+    };
+    let scanned = chain
+        .scan(&transfer.to, std::slice::from_ref(&usdt), Some(local_only))
+        .await
+        .unwrap()
+        .unwrap();
+    let seen = scanned.found.iter().find(|entry| entry.id == id).unwrap();
+    assert_eq!(
+        (seen.from, seen.to, seen.amount),
+        (transfer.from, transfer.to, amount)
+    );
+    assert_eq!(seen.asset, usdt);
+    assert!(seen.time > 1_700_000_000);
 }

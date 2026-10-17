@@ -20,6 +20,8 @@ const SETTINGS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("se
 const CONTACTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("contacts");
 const TOKENS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("tokens");
 const SENT: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("sent");
+const RECEIVED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("received");
+const SCANS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("scans");
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum StoreError {
@@ -86,6 +88,30 @@ impl SentStatus {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Received {
+    pub id: String,
+    pub index: u64,
+    pub network: NetworkId,
+    pub from: Address,
+    pub to: Address,
+    pub asset: AssetId,
+    pub amount: Amount,
+    pub block: u64,
+    pub time: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scan {
+    pub network: NetworkId,
+    pub address: Address,
+    pub next: u64,
+    pub complete_from: u64,
+    pub complete_since: u64,
+}
+
 pub struct Store {
     db: Database,
 }
@@ -129,7 +155,7 @@ impl Store {
                 "a contact name must be 1 to 40 visible characters, without hidden ones",
             ));
         }
-        let key = contact_key(&contact.network, &contact.address);
+        let key = address_key(&contact.network, &contact.address);
         self.put(CONTACTS, &key, &encode(contact)?)
     }
 
@@ -138,7 +164,7 @@ impl Store {
         network: &NetworkId,
         address: &Address,
     ) -> Result<bool, StoreError> {
-        self.delete(CONTACTS, &contact_key(network, address))
+        self.delete(CONTACTS, &address_key(network, address))
     }
 
     pub fn tokens(&self) -> Result<Vec<CustomToken>, StoreError> {
@@ -182,6 +208,48 @@ impl Store {
         self.put(SENT, &format!("{}/{}", tx.network, tx.id), &encode(tx)?)
     }
 
+    pub fn received(&self) -> Result<Vec<Received>, StoreError> {
+        self.all(RECEIVED)
+    }
+
+    pub fn scans(&self) -> Result<Vec<Scan>, StoreError> {
+        self.all(SCANS)
+    }
+
+    pub fn save_scan(&self, scan: &Scan, found: &[Received]) -> Result<(), StoreError> {
+        if scan.complete_from > scan.next {
+            return Err(StoreError::Invalid(
+                "a scan cannot be complete beyond where it stopped",
+            ));
+        }
+        for entry in found {
+            if !is_plain_text(&entry.id, MAX_TX_ID) {
+                return Err(StoreError::Invalid("not a transaction id"));
+            }
+            if entry.network != scan.network || entry.to != scan.address {
+                return Err(StoreError::Invalid(
+                    "a transfer must belong to the scan that found it",
+                ));
+            }
+        }
+        let txn = self.db.begin_write().map_err(database)?;
+        {
+            let mut received = txn.open_table(RECEIVED).map_err(database)?;
+            for entry in found {
+                let key = format!("{}/{}/{}", entry.network, entry.id, entry.index);
+                received
+                    .insert(key.as_str(), encode(entry)?.as_slice())
+                    .map_err(database)?;
+            }
+            let key = address_key(&scan.network, &scan.address);
+            txn.open_table(SCANS)
+                .map_err(database)?
+                .insert(key.as_str(), encode(scan)?.as_slice())
+                .map_err(database)?;
+        }
+        txn.commit().map_err(database)
+    }
+
     fn migrate(&self) -> Result<(), StoreError> {
         let txn = self.db.begin_write().map_err(database)?;
         {
@@ -197,7 +265,7 @@ impl Store {
                     meta.insert(SCHEMA_KEY, SCHEMA).map_err(database)?;
                 }
             }
-            for table in [SETTINGS, CONTACTS, TOKENS, SENT] {
+            for table in [SETTINGS, CONTACTS, TOKENS, SENT, RECEIVED, SCANS] {
                 txn.open_table(table).map_err(database)?;
             }
         }
@@ -265,7 +333,7 @@ impl Store {
     }
 }
 
-fn contact_key(network: &NetworkId, address: &Address) -> String {
+fn address_key(network: &NetworkId, address: &Address) -> String {
     format!("{network}/{}:{address}", address.family())
 }
 
