@@ -873,16 +873,21 @@ dependencies = [
 name = "bahaa-engine"
 version = "0.0.0"
 dependencies = [
+ "bahaa-chain",
  "bahaa-config",
  "bahaa-crypto",
+ "bahaa-evm",
  "bahaa-market",
  "bahaa-store",
  "bahaa-types",
  "bahaa-vault",
+ "futures-util",
  "getrandom 0.4.3",
  "secrecy",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "url",
  "zeroize",
 ]

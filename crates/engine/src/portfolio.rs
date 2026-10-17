@@ -1,0 +1,260 @@
+use std::collections::BTreeSet;
+
+use bahaa_config::{Coin, Fiat, Registry};
+use bahaa_market::{Snapshot, Status};
+use bahaa_store::CustomToken;
+use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, Price, PriceId};
+
+use crate::WalletId;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Account {
+    pub wallet: WalletId,
+    pub family: ChainFamily,
+    pub index: u32,
+    pub address: Address,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Held {
+    pub wallet: WalletId,
+    pub address: Address,
+    pub asset: AssetId,
+    pub amount: Amount,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkHealth {
+    pub network: NetworkId,
+    pub problem: Option<String>,
+    pub checked_at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Holding {
+    pub wallet: WalletId,
+    pub address: Address,
+    pub asset: AssetId,
+    pub symbol: String,
+    pub name: String,
+    pub amount: Amount,
+    pub price: Option<Price>,
+    pub value: Option<Amount>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Portfolio {
+    pub fiat: Fiat,
+    pub holdings: Vec<Holding>,
+    pub total: Option<Amount>,
+    pub networks: Vec<NetworkHealth>,
+    pub prices: Status,
+}
+
+pub(crate) fn coin<'a>(
+    registry: &'a Registry,
+    custom: &'a [CustomToken],
+    asset: &AssetId,
+) -> Option<&'a Coin> {
+    let builtin = registry.get(asset.network()).and_then(|network| {
+        network
+            .assets()
+            .find(|(id, _)| id == asset)
+            .map(|(_, coin)| coin)
+    });
+    builtin.or_else(|| {
+        custom
+            .iter()
+            .find(|token| &token.asset == asset)
+            .map(|token| &token.coin)
+    })
+}
+
+pub(crate) fn wanted(
+    registry: &Registry,
+    custom: &[CustomToken],
+    held: &[Held],
+) -> BTreeSet<PriceId> {
+    held.iter()
+        .filter(|holding| !holding.amount.is_zero())
+        .filter_map(|holding| coin(registry, custom, &holding.asset)?.price.clone())
+        .collect()
+}
+
+pub(crate) fn build(
+    registry: &Registry,
+    custom: &[CustomToken],
+    held: &[Held],
+    networks: Vec<NetworkHealth>,
+    snapshot: &Snapshot,
+    fiat: Fiat,
+) -> Portfolio {
+    let usable = snapshot.base == fiat.price_base();
+    let holdings: Vec<Holding> = held
+        .iter()
+        .filter_map(|holding| {
+            let coin = coin(registry, custom, &holding.asset)?;
+            let price = coin
+                .price
+                .as_ref()
+                .filter(|_| usable)
+                .and_then(|id| snapshot.quotes.get(id))
+                .map(|quote| quote.price);
+            let value = price.and_then(|price| price.value_of(holding.amount, fiat.places()).ok());
+            Some(Holding {
+                wallet: holding.wallet,
+                address: holding.address,
+                asset: holding.asset.clone(),
+                symbol: coin.symbol.clone(),
+                name: coin.name.clone(),
+                amount: holding.amount,
+                price,
+                value,
+            })
+        })
+        .collect();
+    let total = holdings
+        .iter()
+        .filter_map(|holding| holding.value)
+        .try_fold(None, |sum: Option<Amount>, value| match sum {
+            None => Some(Some(value)),
+            Some(sum) => sum.checked_add(value).ok().map(Some),
+        })
+        .flatten();
+    Portfolio {
+        fiat,
+        holdings,
+        total,
+        networks,
+        prices: snapshot.status,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bahaa_market::{Quote, Quotes};
+
+    use super::*;
+
+    fn registry() -> Registry {
+        Registry::builtin().unwrap()
+    }
+
+    fn held(asset: &str, amount: &str, decimals: u8) -> Held {
+        Held {
+            wallet: crate::keyring::test_wallet(1),
+            address: Address::Evm([1; 20]),
+            asset: asset.parse().unwrap(),
+            amount: Amount::parse(amount, decimals).unwrap(),
+        }
+    }
+
+    fn snapshot(base: &str, prices: &[(&str, &str)]) -> Snapshot {
+        let quotes: Quotes = prices
+            .iter()
+            .map(|(id, price)| {
+                (
+                    id.parse().unwrap(),
+                    Quote {
+                        price: Price::parse(price).unwrap(),
+                        updated_at: 1,
+                    },
+                )
+            })
+            .collect();
+        Snapshot {
+            base: base.to_owned(),
+            quotes,
+            status: Status::Live,
+        }
+    }
+
+    const USDT: &str = "bsc/0x55d398326f99059fF775485246999027B3197955";
+
+    #[test]
+    fn values_holdings_exactly_and_totals_them() {
+        let held = [
+            held("bsc", "1.5", 18),
+            held(USDT, "100", 18),
+            held("ethereum", "0", 18),
+        ];
+        let prices = snapshot(
+            "USDT",
+            &[
+                ("crypto/BNB", "714.3"),
+                ("crypto/USDT", "0.99873"),
+                ("crypto/ETH", "2408.54"),
+            ],
+        );
+        let portfolio = build(&registry(), &[], &held, Vec::new(), &prices, Fiat::Usd);
+        let values: Vec<Option<String>> = portfolio
+            .holdings
+            .iter()
+            .map(|h| h.value.map(|v| v.fixed()))
+            .collect();
+        assert_eq!(
+            values,
+            [
+                Some("1071.45".to_owned()),
+                Some("99.87".to_owned()),
+                Some("0.00".to_owned())
+            ]
+        );
+        assert_eq!(portfolio.total.unwrap().fixed(), "1171.32");
+        assert_eq!(portfolio.holdings[1].symbol, "USDT");
+        assert_eq!(portfolio.prices, Status::Live);
+    }
+
+    #[test]
+    fn prices_in_another_base_are_never_mixed_in() {
+        let held = [held("bsc", "1", 18)];
+        let prices = snapshot("USDT", &[("crypto/BNB", "714.3")]);
+        let portfolio = build(&registry(), &[], &held, Vec::new(), &prices, Fiat::Irt);
+        assert_eq!(portfolio.holdings[0].value, None);
+        assert_eq!(portfolio.total, None);
+    }
+
+    #[test]
+    fn unknown_assets_are_left_out_and_custom_tokens_are_named() {
+        let custom = [CustomToken {
+            asset: "bsc/0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82"
+                .parse()
+                .unwrap(),
+            coin: Coin {
+                symbol: "CAKE".to_owned(),
+                name: "PancakeSwap".to_owned(),
+                decimals: 18,
+                price: Some("crypto/CAKE".parse().unwrap()),
+            },
+        }];
+        let held = [
+            held("bsc/0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82", "3", 18),
+            held("bsc/0x1111111111111111111111111111111111111111", "9", 18),
+        ];
+        let portfolio = build(
+            &registry(),
+            &custom,
+            &held,
+            Vec::new(),
+            &Snapshot::default(),
+            Fiat::Usd,
+        );
+        assert_eq!(portfolio.holdings.len(), 1);
+        assert_eq!(portfolio.holdings[0].symbol, "CAKE");
+        assert_eq!(portfolio.holdings[0].price, None);
+    }
+
+    #[test]
+    fn only_held_coins_are_priced() {
+        let held = [
+            held("bsc", "1", 18),
+            held(USDT, "0", 18),
+            held("ethereum", "0.1", 18),
+        ];
+        let wanted: Vec<String> = wanted(&registry(), &[], &held)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(wanted, ["crypto/BNB", "crypto/ETH"]);
+    }
+}

@@ -305,7 +305,7 @@ impl Chain for EvmChain {
     }
 
     fn derive(&self, seed: &Seed, account: u32) -> Result<Address, ChainError> {
-        Ok(Address::Evm(address_of(&key(seed, account)?.public_key())))
+        derive(seed, account)
     }
 
     async fn balances(
@@ -482,6 +482,10 @@ impl Chain for EvmChain {
             TxStatus::Failed("the transaction reverted".to_owned())
         })
     }
+}
+
+pub fn derive(seed: &Seed, account: u32) -> Result<Address, ChainError> {
+    Ok(Address::Evm(address_of(&key(seed, account)?.public_key())))
 }
 
 fn key(seed: &Seed, account: u32) -> Result<k256::SecretKey, ChainError> {

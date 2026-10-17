@@ -17,6 +17,11 @@ impl WalletId {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_wallet(id: u32) -> WalletId {
+    WalletId(id)
+}
+
 impl fmt::Display for WalletId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)

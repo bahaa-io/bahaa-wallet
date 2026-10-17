@@ -165,10 +165,17 @@ impl Registry {
     pub fn from_json(text: &str) -> Result<Self, ConfigError> {
         let specs: Vec<Spec> =
             serde_json::from_str(text).map_err(|err| ConfigError::Json(err.to_string()))?;
+        let networks = specs
+            .into_iter()
+            .map(Spec::validate)
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::with_networks(networks)
+    }
+
+    pub fn with_networks(list: Vec<Network>) -> Result<Self, ConfigError> {
         let mut networks = BTreeMap::new();
         let mut chain_ids = BTreeSet::new();
-        for spec in specs {
-            let network = spec.validate()?;
+        for network in list {
             if let ChainKind::Evm { chain_id, .. } = network.kind
                 && !chain_ids.insert(chain_id)
             {

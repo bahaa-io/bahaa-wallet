@@ -14,6 +14,7 @@ publish = false
 bahaa-chain = { path = "crates/chain" }
 bahaa-config = { path = "crates/config" }
 bahaa-crypto = { path = "crates/crypto" }
+bahaa-evm = { path = "crates/evm" }
 bahaa-market = { path = "crates/market" }
 bahaa-store = { path = "crates/store" }
 bahaa-types = { path = "crates/types" }

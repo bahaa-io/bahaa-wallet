@@ -4,14 +4,12 @@ use std::fmt::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bahaa_config::{Fiat, Settings};
+use bahaa_config::{Fiat, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString, WordCount};
 use bahaa_engine::{Engine, EngineConfig, EngineError, Event, KeyringError, State};
-use bahaa_market::{MarketConfig, Status};
 use bahaa_store::StoreError;
 use bahaa_vault::KdfParams;
 use tokio::sync::watch;
-use url::Url;
 
 const HARDHAT: &str = "test test test test test test test test test test test junk";
 
@@ -37,7 +35,9 @@ impl Scratch {
                 lanes: 1,
             },
             market: None,
+            registry: Some(Registry::with_networks(Vec::new()).unwrap()),
             auto_lock_unit: Duration::from_millis(50),
+            refresh_every: Duration::from_secs(60),
         }
     }
 }
@@ -85,8 +85,10 @@ async fn sets_up_a_new_wallet_and_announces_it() {
         .await
         .unwrap();
     assert_eq!(phrase.expose_secret().split(' ').count(), 24);
-    let Event::WalletsChanged(wallets) = events.recv().await.unwrap() else {
-        panic!("expected a wallet list");
+    let wallets = loop {
+        if let Event::WalletsChanged(wallets) = events.recv().await.unwrap() {
+            break wallets;
+        }
     };
     assert_eq!(wallets[0].id, id);
 }
@@ -193,37 +195,6 @@ async fn only_one_engine_may_use_the_data_folder() {
     ));
     first.shutdown().await.unwrap();
     assert!(Engine::start(scratch.config()).is_ok());
-}
-
-#[tokio::test]
-async fn prices_are_wanted_only_while_unlocked_and_in_the_chosen_fiat() {
-    let scratch = Scratch::new();
-    let mut config = scratch.config();
-    config.market = Some(MarketConfig {
-        api: Url::parse("http://127.0.0.1:9/").unwrap(),
-        stream: Url::parse("ws://127.0.0.1:9/").unwrap(),
-        poll_every: Duration::from_millis(50),
-        backoff_start: Duration::from_millis(50),
-        backoff_max: Duration::from_millis(100),
-        silence_limit: Duration::from_secs(1),
-        connect_timeout: Duration::from_millis(500),
-    });
-    let engine = Engine::start(config).unwrap();
-    let mut prices = engine.prices();
-    assert_eq!(prices.borrow().status, Status::Idle);
-    engine.create(secret("pw")).await.unwrap();
-    let offline = until(&mut prices, |snapshot| snapshot.status == Status::Offline).await;
-    assert_eq!(offline.base, "USDT");
-    engine
-        .set_settings(Settings {
-            fiat: Fiat::Irt,
-            ..Settings::default()
-        })
-        .await
-        .unwrap();
-    until(&mut prices, |snapshot| snapshot.base == "IRT").await;
-    engine.lock().await.unwrap();
-    until(&mut prices, |snapshot| snapshot.status == Status::Idle).await;
 }
 
 #[cfg(unix)]

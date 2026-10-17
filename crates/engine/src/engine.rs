@@ -1,29 +1,36 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use bahaa_chain::ChainError;
 use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString, WordCount};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
-use bahaa_store::{Store, StoreError};
-use bahaa_types::PriceId;
+use bahaa_store::{CustomToken, Store, StoreError};
+use bahaa_types::ChainFamily;
 use bahaa_vault::KdfParams;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
+use crate::chains::{self, AnyChain, Fetched};
+use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
 use crate::{Keyring, KeyringError, WalletId, WalletInfo};
 
 const VAULT_FILE: &str = "vault.bin";
 const STORE_FILE: &str = "wallet.redb";
 const QUEUE: usize = 32;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct EngineConfig {
     pub data_dir: PathBuf,
     pub kdf: KdfParams,
     pub market: Option<MarketConfig>,
+    pub registry: Option<Registry>,
     pub auto_lock_unit: Duration,
+    pub refresh_every: Duration,
 }
 
 impl EngineConfig {
@@ -32,7 +39,9 @@ impl EngineConfig {
             data_dir: data_dir.into(),
             kdf: KdfParams::RECOMMENDED,
             market: MarketConfig::bahaa().ok(),
+            registry: None,
             auto_lock_unit: Duration::from_secs(60),
+            refresh_every: Duration::from_secs(60),
         }
     }
 }
@@ -47,6 +56,8 @@ pub enum EngineError {
     Config(#[from] ConfigError),
     #[error(transparent)]
     Market(#[from] MarketError),
+    #[error(transparent)]
+    Chain(#[from] ChainError),
     #[error("the wallet engine has stopped")]
     Stopped,
 }
@@ -62,6 +73,7 @@ pub enum State {
 pub enum Event {
     StateChanged(State),
     WalletsChanged(Vec<WalletInfo>),
+    AccountsChanged(Vec<Account>),
     SettingsChanged(Settings),
 }
 
@@ -72,7 +84,9 @@ enum Command {
     Unlock(SecretString, Reply<()>),
     Lock(Reply<()>),
     Touch,
+    Refresh,
     Wallets(Reply<Vec<WalletInfo>>),
+    Accounts(Reply<Vec<Account>>),
     Generate(WordCount, SecretString, Reply<(WalletId, SecretString)>),
     Import(SecretString, SecretString, Reply<WalletId>),
     Remove(WalletId, Reply<()>),
@@ -87,7 +101,7 @@ impl Command {
     fn is_activity(&self) -> bool {
         !matches!(
             self,
-            Self::Wallets(_) | Self::Settings(_) | Self::Shutdown(_)
+            Self::Wallets(_) | Self::Accounts(_) | Self::Settings(_) | Self::Shutdown(_)
         )
     }
 }
@@ -98,6 +112,7 @@ pub struct Engine {
     events: broadcast::Sender<Event>,
     state: watch::Receiver<State>,
     prices: watch::Receiver<Snapshot>,
+    portfolio: watch::Receiver<Portfolio>,
 }
 
 impl Engine {
@@ -106,12 +121,19 @@ impl Engine {
             data_dir,
             kdf,
             market,
+            registry,
             auto_lock_unit,
+            refresh_every,
         } = config;
         crate::keyring::private_dir(&data_dir)?;
         let store = Store::open(&data_dir.join(STORE_FILE))?;
         let settings = store.settings()?;
-        let registry = Registry::builtin()?;
+        let custom = Arc::new(store.tokens()?);
+        let registry = match registry {
+            Some(registry) => registry,
+            None => Registry::builtin()?,
+        };
+        let chains: Arc<Vec<AnyChain>> = Arc::new(chains::build(&registry));
         let keyring = Keyring::new(data_dir.join(VAULT_FILE), kdf);
         let initial = if keyring.exists() {
             State::Locked
@@ -124,18 +146,36 @@ impl Engine {
             .map_or_else(|| watch::channel(Snapshot::default()).1, Market::subscribe);
         let (commands, inbox) = mpsc::channel(QUEUE);
         let (events, _) = broadcast::channel(QUEUE);
-        let (publish, state) = watch::channel(initial);
+        let (publish_state, state) = watch::channel(initial);
+        let (publish_portfolio, portfolio) = watch::channel(Portfolio {
+            fiat: settings.fiat,
+            ..Portfolio::default()
+        });
+        let (results_tx, results) = mpsc::channel(4);
         let worker = Worker {
             keyring: Some(keyring),
             store,
             registry,
+            chains,
+            custom,
             settings,
             market,
+            prices: market_prices(&prices),
             inbox,
             events: events.clone(),
-            state: publish,
+            state: publish_state,
+            portfolio: publish_portfolio,
+            results_tx,
+            results,
+            accounts: Vec::new(),
+            held: Vec::new(),
+            health: Vec::new(),
+            generation: 0,
+            refreshing: None,
             deadline: None,
+            next_refresh: None,
             unit: auto_lock_unit,
+            refresh_every,
         };
         tokio::spawn(worker.run());
         Ok(Self {
@@ -143,6 +183,7 @@ impl Engine {
             events,
             state,
             prices,
+            portfolio,
         })
     }
 
@@ -162,8 +203,16 @@ impl Engine {
         self.prices.clone()
     }
 
+    pub fn portfolio(&self) -> watch::Receiver<Portfolio> {
+        self.portfolio.clone()
+    }
+
     pub fn touch(&self) {
         let _ = self.commands.try_send(Command::Touch);
+    }
+
+    pub fn refresh(&self) {
+        let _ = self.commands.try_send(Command::Refresh);
     }
 
     pub async fn create(&self, password: SecretString) -> Result<(), EngineError> {
@@ -180,6 +229,10 @@ impl Engine {
 
     pub async fn wallets(&self) -> Result<Vec<WalletInfo>, EngineError> {
         self.ask(Command::Wallets).await
+    }
+
+    pub async fn accounts(&self) -> Result<Vec<Account>, EngineError> {
+        self.ask(Command::Accounts).await
     }
 
     pub async fn generate(
@@ -244,29 +297,51 @@ impl Engine {
     }
 }
 
+fn market_prices(prices: &watch::Receiver<Snapshot>) -> watch::Receiver<Snapshot> {
+    let mut prices = prices.clone();
+    prices.mark_unchanged();
+    prices
+}
+
 struct Worker {
     keyring: Option<Keyring>,
     store: Store,
     registry: Registry,
+    chains: Arc<Vec<AnyChain>>,
+    custom: Arc<Vec<CustomToken>>,
     settings: Settings,
     market: Option<Market>,
+    prices: watch::Receiver<Snapshot>,
     inbox: mpsc::Receiver<Command>,
     events: broadcast::Sender<Event>,
     state: watch::Sender<State>,
+    portfolio: watch::Sender<Portfolio>,
+    results_tx: mpsc::Sender<Fetched>,
+    results: mpsc::Receiver<Fetched>,
+    accounts: Vec<Account>,
+    held: Vec<Held>,
+    health: Vec<NetworkHealth>,
+    generation: u64,
+    refreshing: Option<JoinHandle<()>>,
     deadline: Option<Instant>,
+    next_refresh: Option<Instant>,
     unit: Duration,
+    refresh_every: Duration,
+}
+
+async fn at(moment: Option<Instant>) {
+    match moment {
+        Some(moment) => sleep_until(moment).await,
+        None => std::future::pending().await,
+    }
 }
 
 impl Worker {
     async fn run(mut self) {
         let shutdown = loop {
             let deadline = self.deadline;
-            let expired = async move {
-                match deadline {
-                    Some(deadline) => sleep_until(deadline).await,
-                    None => std::future::pending().await,
-                }
-            };
+            let next_refresh = self.next_refresh;
+            let has_market = self.market.is_some();
             tokio::select! {
                 command = self.inbox.recv() => match command {
                     None => break None,
@@ -278,7 +353,10 @@ impl Worker {
                         self.handle(command).await;
                     }
                 },
-                () = expired => self.lock(),
+                () = at(deadline) => self.lock(),
+                () = at(next_refresh) => self.start_refresh(),
+                Some(fetched) = self.results.recv() => self.apply(fetched),
+                Ok(()) = self.prices.changed(), if has_market => self.publish_portfolio(),
             }
         };
         drop(self);
@@ -293,23 +371,36 @@ impl Worker {
                 let result = self
                     .keyring(move |keyring| keyring.create(password.expose_secret().as_bytes()))
                     .await;
-                self.after_unlock(result.is_ok());
+                if result.is_ok() {
+                    self.after_unlock().await;
+                }
                 let _ = reply.send(result);
             }
             Command::Unlock(password, reply) => {
                 let result = self
                     .keyring(move |keyring| keyring.unlock(password.expose_secret().as_bytes()))
                     .await;
-                self.after_unlock(result.is_ok());
+                if result.is_ok() {
+                    self.after_unlock().await;
+                }
                 let _ = reply.send(result);
             }
             Command::Lock(reply) => {
                 self.lock();
                 let _ = reply.send(Ok(()));
             }
+            Command::Refresh => self.start_refresh(),
             Command::Touch | Command::Shutdown(_) => {}
             Command::Wallets(reply) => {
                 let result = self.keyring(|keyring| keyring.wallets()).await;
+                let _ = reply.send(result);
+            }
+            Command::Accounts(reply) => {
+                let result = if self.unlocked() {
+                    Ok(self.accounts.clone())
+                } else {
+                    Err(EngineError::Keyring(KeyringError::Locked))
+                };
                 let _ = reply.send(result);
             }
             Command::Generate(words, passphrase, reply) => {
@@ -359,19 +450,24 @@ impl Worker {
                     .save_settings(&settings)
                     .map_err(EngineError::from);
                 if result.is_ok() {
+                    let testnets_changed = settings.show_testnets != self.settings.show_testnets;
                     self.settings = settings.clone();
                     let _ = self.events.send(Event::SettingsChanged(settings));
                     self.activity();
                     self.refresh_prices();
+                    self.publish_portfolio();
+                    if testnets_changed {
+                        self.restart_refresh();
+                    }
                 }
                 let _ = reply.send(result);
             }
         }
     }
 
-    async fn keyring<T: Send + 'static>(
+    async fn keyring<T: Send + 'static, E: Into<EngineError> + Send + 'static>(
         &mut self,
-        work: impl FnOnce(&mut Keyring) -> Result<T, KeyringError> + Send + 'static,
+        work: impl FnOnce(&mut Keyring) -> Result<T, E> + Send + 'static,
     ) -> Result<T, EngineError> {
         let mut keyring = self.keyring.take().ok_or(EngineError::Stopped)?;
         let (keyring, result) = tokio::task::spawn_blocking(move || {
@@ -381,25 +477,98 @@ impl Worker {
         .await
         .map_err(|_| EngineError::Stopped)?;
         self.keyring = Some(keyring);
-        result.map_err(EngineError::from)
+        result.map_err(Into::into)
     }
 
     fn unlocked(&self) -> bool {
         self.keyring.as_ref().is_some_and(Keyring::is_unlocked)
     }
 
-    fn after_unlock(&mut self, ok: bool) {
-        if ok {
-            self.set_state(State::Unlocked);
-            self.activity();
-            self.refresh_prices();
-        }
+    async fn after_unlock(&mut self) {
+        self.set_state(State::Unlocked);
+        self.activity();
+        self.derive_accounts().await;
     }
 
     async fn after_change(&mut self, ok: bool) {
-        if ok && let Ok(wallets) = self.keyring(|keyring| keyring.wallets()).await {
+        if !ok {
+            return;
+        }
+        if let Ok(wallets) = self.keyring(|keyring| keyring.wallets()).await {
             let _ = self.events.send(Event::WalletsChanged(wallets));
         }
+        self.derive_accounts().await;
+    }
+
+    async fn derive_accounts(&mut self) {
+        let derived = self
+            .keyring(|keyring| {
+                let mut accounts = Vec::new();
+                for wallet in keyring.wallets()? {
+                    let address = bahaa_evm::derive(keyring.seed(wallet.id)?, 0)?;
+                    accounts.push(Account {
+                        wallet: wallet.id,
+                        family: ChainFamily::Evm,
+                        index: 0,
+                        address,
+                    });
+                }
+                Ok::<_, EngineError>(accounts)
+            })
+            .await;
+        if let Ok(accounts) = derived {
+            let wallets: Vec<WalletId> = accounts.iter().map(|account| account.wallet).collect();
+            self.held.retain(|held| wallets.contains(&held.wallet));
+            self.accounts = accounts;
+            let _ = self
+                .events
+                .send(Event::AccountsChanged(self.accounts.clone()));
+            self.publish_portfolio();
+            self.refresh_prices();
+            self.restart_refresh();
+        }
+    }
+
+    fn start_refresh(&mut self) {
+        if !self.unlocked() || self.refreshing.is_some() {
+            return;
+        }
+        self.next_refresh = None;
+        let chains = Arc::clone(&self.chains);
+        let accounts = self.accounts.clone();
+        let custom = Arc::clone(&self.custom);
+        let testnets = self.settings.show_testnets;
+        let generation = self.generation;
+        let results = self.results_tx.clone();
+        self.refreshing = Some(tokio::spawn(async move {
+            let fetched = chains::fetch(&chains, &accounts, &custom, testnets, generation).await;
+            let _ = results.send(fetched).await;
+        }));
+    }
+
+    fn stop_refresh(&mut self) {
+        if let Some(task) = self.refreshing.take() {
+            task.abort();
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.next_refresh = None;
+    }
+
+    fn restart_refresh(&mut self) {
+        self.stop_refresh();
+        self.start_refresh();
+    }
+
+    fn apply(&mut self, fetched: Fetched) {
+        if fetched.generation != self.generation {
+            return;
+        }
+        self.refreshing = None;
+        self.held = fetched.held;
+        self.health = fetched.health;
+        self.next_refresh = Some(Instant::now() + self.refresh_every);
+        self.refresh_prices();
+        self.publish_portfolio();
     }
 
     fn lock(&mut self) {
@@ -407,6 +576,10 @@ impl Worker {
             keyring.lock();
         }
         self.deadline = None;
+        self.stop_refresh();
+        self.accounts.clear();
+        self.held.clear();
+        self.health.clear();
         let state = if self.keyring.as_ref().is_some_and(Keyring::exists) {
             State::Locked
         } else {
@@ -414,6 +587,7 @@ impl Worker {
         };
         self.set_state(state);
         self.refresh_prices();
+        self.publish_portfolio();
     }
 
     fn activity(&mut self) {
@@ -430,21 +604,25 @@ impl Worker {
         }
     }
 
+    fn publish_portfolio(&self) {
+        let snapshot = self.prices.borrow().clone();
+        let portfolio = portfolio::build(
+            &self.registry,
+            &self.custom,
+            &self.held,
+            self.health.clone(),
+            &snapshot,
+            self.settings.fiat,
+        );
+        self.portfolio.send_replace(portfolio);
+    }
+
     fn refresh_prices(&self) {
         let Some(market) = &self.market else {
             return;
         };
-        let wanted: BTreeSet<PriceId> = if self.unlocked() {
-            self.registry
-                .networks()
-                .filter(|network| !network.testnet)
-                .flat_map(|network| {
-                    network
-                        .assets()
-                        .filter_map(|(_, coin)| coin.price.clone())
-                        .collect::<Vec<_>>()
-                })
-                .collect()
+        let wanted = if self.unlocked() {
+            portfolio::wanted(&self.registry, &self.custom, &self.held)
         } else {
             BTreeSet::new()
         };
