@@ -12,6 +12,7 @@ publish = false
 
 [workspace.dependencies]
 bahaa-config = { path = "crates/config" }
+bahaa-crypto = { path = "crates/crypto" }
 bahaa-types = { path = "crates/types" }
 alloy-consensus = { version = "2.5.0", features = ["k256"] }
 alloy-eips = "2.5.0"

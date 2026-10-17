@@ -831,6 +831,9 @@ name = "bahaa-chain"
 version = "0.0.0"
 dependencies = [
  "bahaa-config",
+ "bahaa-crypto",
+ "bahaa-types",
+ "ruint",
  "thiserror 2.0.21",
  "tokio",
  "url",
