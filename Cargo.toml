@@ -17,8 +17,10 @@ alloy-primitives = "1.7.3"
 alloy-signer = "2.5.0"
 alloy-signer-local = { version = "2.5.0", features = ["mnemonic"] }
 anyhow = "1.0.104"
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 base64 = "0.23.1"
 bs58 = { version = "0.5.1", features = ["check"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 ed25519-dalek = "3.0.0"
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
@@ -62,6 +64,12 @@ todo = "deny"
 unimplemented = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
+
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 [profile.release]
 lto = true
