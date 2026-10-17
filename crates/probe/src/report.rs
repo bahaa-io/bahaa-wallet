@@ -64,15 +64,15 @@ impl Report {
         let took = took(elapsed);
         match result {
             Ok(outcome) => {
-                println!("  ok    {took:>8}  {name:<12}  {}", clean(&outcome.summary));
+                println!("  ok    {took:>8}  {name:<16}  {}", clean(&outcome.summary));
                 for line in outcome.lines {
-                    println!("{:32}{}", "", clean(&line));
+                    println!("{:36}{}", "", clean(&line));
                 }
             }
             Err(err) => {
                 self.failures += 1;
                 println!(
-                    "  FAIL  {took:>8}  {name:<12}  {}",
+                    "  FAIL  {took:>8}  {name:<16}  {}",
                     clean(&format!("{err:#}"))
                 );
             }

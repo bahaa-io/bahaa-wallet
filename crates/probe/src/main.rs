@@ -1,6 +1,7 @@
 mod bahaa;
 mod clock;
 mod evm;
+mod liteserver;
 mod net;
 mod report;
 mod ton;
@@ -52,7 +53,10 @@ async fn main() -> ExitCode {
             Target::Bahaa => bahaa::run(&net, &mut report).await,
             Target::Evm => evm::run(&net, &mut report).await,
             Target::Tron => tron::run(&net, &mut report).await,
-            Target::Ton => ton::run(&net, &mut report).await,
+            Target::Ton => {
+                ton::run(&net, &mut report).await;
+                liteserver::run(&net, &mut report).await;
+            }
         }
     }
     if report.passed() {

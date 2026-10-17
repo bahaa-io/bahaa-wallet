@@ -10,6 +10,9 @@ targets = [
 
 [advisories]
 yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2024-0388", reason = "derivative is a build-time macro pulled in by ton_liteapi for bahaa-probe only; revisit when choosing the TON library" },
+]
 
 [licenses]
 allow = [
@@ -21,6 +24,11 @@ allow = [
     "Unicode-3.0",
 ]
 confidence-threshold = 0.93
+
+[[licenses.clarify]]
+crate = "everscale-crypto"
+expression = "MIT"
+license-files = []
 
 [licenses.private]
 ignore = true

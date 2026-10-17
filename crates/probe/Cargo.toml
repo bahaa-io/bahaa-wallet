@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
@@ -17,6 +18,7 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tokio-tungstenite.workspace = true
+ton_liteapi.workspace = true
 
 [lints]
 workspace = true
