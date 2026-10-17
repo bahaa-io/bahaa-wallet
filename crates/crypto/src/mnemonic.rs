@@ -113,6 +113,10 @@ impl Mnemonic {
         Self::from_entropy(entropy)
     }
 
+    pub fn expose_entropy(&self) -> &[u8] {
+        self.entropy.expose_secret()
+    }
+
     pub fn word_count(&self) -> WordCount {
         WordCount::from_entropy_len(self.entropy.expose_secret().len())
             .unwrap_or(WordCount::TwentyFour)

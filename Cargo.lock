@@ -872,6 +872,20 @@ dependencies = [
 [[package]]
 name = "bahaa-engine"
 version = "0.0.0"
+dependencies = [
+ "bahaa-config",
+ "bahaa-crypto",
+ "bahaa-market",
+ "bahaa-store",
+ "bahaa-types",
+ "bahaa-vault",
+ "getrandom 0.4.3",
+ "secrecy",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+ "zeroize",
+]
 
 [[package]]
 name = "bahaa-evm"

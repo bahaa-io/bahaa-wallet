@@ -7,5 +7,22 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+bahaa-config.workspace = true
+bahaa-crypto.workspace = true
+bahaa-market.workspace = true
+bahaa-store.workspace = true
+bahaa-types.workspace = true
+bahaa-vault.workspace = true
+secrecy.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+zeroize.workspace = true
+
+[dev-dependencies]
+getrandom.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+url.workspace = true
+
 [lints]
 workspace = true

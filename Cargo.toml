@@ -13,7 +13,10 @@ publish = false
 [workspace.dependencies]
 bahaa-config = { path = "crates/config" }
 bahaa-crypto = { path = "crates/crypto" }
+bahaa-market = { path = "crates/market" }
+bahaa-store = { path = "crates/store" }
 bahaa-types = { path = "crates/types" }
+bahaa-vault = { path = "crates/vault" }
 alloy-consensus = { version = "2.5.0", features = ["k256"] }
 alloy-eips = "2.5.0"
 alloy-primitives = "1.7.3"

@@ -1,0 +1,242 @@
+#![allow(clippy::unwrap_used)]
+
+use std::fmt::Write;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use bahaa_config::{Fiat, Settings};
+use bahaa_crypto::{ExposeSecret, SecretString, WordCount};
+use bahaa_engine::{Engine, EngineConfig, EngineError, Event, KeyringError, State};
+use bahaa_market::{MarketConfig, Status};
+use bahaa_store::StoreError;
+use bahaa_vault::KdfParams;
+use tokio::sync::watch;
+use url::Url;
+
+const HARDHAT: &str = "test test test test test test test test test test test junk";
+
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> Self {
+        let mut random = [0u8; 8];
+        getrandom::fill(&mut random).unwrap();
+        let name = random.iter().fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        });
+        Self(std::env::temp_dir().join(format!("bahaa-engine-run-{name}")))
+    }
+
+    fn config(&self) -> EngineConfig {
+        EngineConfig {
+            data_dir: self.0.join("data"),
+            kdf: KdfParams {
+                memory_kib: 64,
+                iterations: 1,
+                lanes: 1,
+            },
+            market: None,
+            auto_lock_unit: Duration::from_millis(50),
+        }
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn secret(text: &str) -> SecretString {
+    SecretString::from(text)
+}
+
+async fn until<T: Clone>(watcher: &mut watch::Receiver<T>, done: impl Fn(&T) -> bool) -> T {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            {
+                let current = watcher.borrow_and_update();
+                if done(&current) {
+                    return current.clone();
+                }
+            }
+            watcher.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn sets_up_a_new_wallet_and_announces_it() {
+    let scratch = Scratch::new();
+    let engine = Engine::start(scratch.config()).unwrap();
+    let mut events = engine.events();
+    assert_eq!(engine.state(), State::NoVault);
+    engine.create(secret("pw")).await.unwrap();
+    assert_eq!(engine.state(), State::Unlocked);
+    assert_eq!(
+        events.recv().await.unwrap(),
+        Event::StateChanged(State::Unlocked)
+    );
+    let (id, phrase) = engine
+        .generate(WordCount::TwentyFour, secret(""))
+        .await
+        .unwrap();
+    assert_eq!(phrase.expose_secret().split(' ').count(), 24);
+    let Event::WalletsChanged(wallets) = events.recv().await.unwrap() else {
+        panic!("expected a wallet list");
+    };
+    assert_eq!(wallets[0].id, id);
+}
+
+#[tokio::test]
+async fn everything_is_there_after_a_restart() {
+    let scratch = Scratch::new();
+    let engine = Engine::start(scratch.config()).unwrap();
+    engine.create(secret("pw")).await.unwrap();
+    let id = engine.import(secret(HARDHAT), secret("")).await.unwrap();
+    let settings = Settings {
+        fiat: Fiat::Irt,
+        ..Settings::default()
+    };
+    engine.set_settings(settings.clone()).await.unwrap();
+    engine.shutdown().await.unwrap();
+    assert_eq!(engine.state(), State::Unlocked);
+    assert_eq!(engine.wallets().await.unwrap_err(), EngineError::Stopped);
+    let engine = Engine::start(scratch.config()).unwrap();
+    assert_eq!(engine.state(), State::Locked);
+    assert_eq!(engine.settings().await.unwrap(), settings);
+    engine.unlock(secret("pw")).await.unwrap();
+    assert_eq!(engine.wallets().await.unwrap()[0].id, id);
+}
+
+#[tokio::test]
+async fn locking_closes_the_secrets() {
+    let scratch = Scratch::new();
+    let engine = Engine::start(scratch.config()).unwrap();
+    engine.create(secret("pw")).await.unwrap();
+    let id = engine.import(secret(HARDHAT), secret("")).await.unwrap();
+    engine.lock().await.unwrap();
+    assert_eq!(engine.state(), State::Locked);
+    assert_eq!(
+        engine.wallets().await.unwrap_err(),
+        EngineError::Keyring(KeyringError::Locked)
+    );
+    assert_eq!(
+        engine.reveal(id, secret("pw")).await.unwrap_err(),
+        EngineError::Keyring(KeyringError::Locked)
+    );
+    assert_eq!(
+        engine.unlock(secret("nope")).await.unwrap_err(),
+        EngineError::Keyring(KeyringError::WrongPassword)
+    );
+    assert_eq!(engine.state(), State::Locked);
+    engine.unlock(secret("pw")).await.unwrap();
+    assert_eq!(
+        engine
+            .reveal(id, secret("pw"))
+            .await
+            .unwrap()
+            .expose_secret(),
+        HARDHAT
+    );
+}
+
+#[tokio::test]
+async fn locks_itself_after_the_idle_time() {
+    let scratch = Scratch::new();
+    let engine = Engine::start(scratch.config()).unwrap();
+    engine.create(secret("pw")).await.unwrap();
+    engine
+        .set_settings(Settings {
+            lock_after_minutes: 2,
+            ..Settings::default()
+        })
+        .await
+        .unwrap();
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        engine.touch();
+    }
+    assert_eq!(engine.state(), State::Unlocked);
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        engine.wallets().await.unwrap_or_default();
+    }
+    let mut state = engine.watch_state();
+    until(&mut state, |state| *state == State::Locked).await;
+}
+
+#[tokio::test]
+async fn changing_the_password_goes_through_the_engine() {
+    let scratch = Scratch::new();
+    let engine = Engine::start(scratch.config()).unwrap();
+    engine.create(secret("pw")).await.unwrap();
+    engine
+        .change_password(secret("pw"), secret("better"))
+        .await
+        .unwrap();
+    engine.lock().await.unwrap();
+    assert!(engine.unlock(secret("pw")).await.is_err());
+    engine.unlock(secret("better")).await.unwrap();
+}
+
+#[tokio::test]
+async fn only_one_engine_may_use_the_data_folder() {
+    let scratch = Scratch::new();
+    let first = Engine::start(scratch.config()).unwrap();
+    assert!(matches!(
+        Engine::start(scratch.config()),
+        Err(EngineError::Store(StoreError::AlreadyOpen))
+    ));
+    first.shutdown().await.unwrap();
+    assert!(Engine::start(scratch.config()).is_ok());
+}
+
+#[tokio::test]
+async fn prices_are_wanted_only_while_unlocked_and_in_the_chosen_fiat() {
+    let scratch = Scratch::new();
+    let mut config = scratch.config();
+    config.market = Some(MarketConfig {
+        api: Url::parse("http://127.0.0.1:9/").unwrap(),
+        stream: Url::parse("ws://127.0.0.1:9/").unwrap(),
+        poll_every: Duration::from_millis(50),
+        backoff_start: Duration::from_millis(50),
+        backoff_max: Duration::from_millis(100),
+        silence_limit: Duration::from_secs(1),
+        connect_timeout: Duration::from_millis(500),
+    });
+    let engine = Engine::start(config).unwrap();
+    let mut prices = engine.prices();
+    assert_eq!(prices.borrow().status, Status::Idle);
+    engine.create(secret("pw")).await.unwrap();
+    let offline = until(&mut prices, |snapshot| snapshot.status == Status::Offline).await;
+    assert_eq!(offline.base, "USDT");
+    engine
+        .set_settings(Settings {
+            fiat: Fiat::Irt,
+            ..Settings::default()
+        })
+        .await
+        .unwrap();
+    until(&mut prices, |snapshot| snapshot.base == "IRT").await;
+    engine.lock().await.unwrap();
+    until(&mut prices, |snapshot| snapshot.status == Status::Idle).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_data_folder_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new();
+    let config = scratch.config();
+    let _engine = Engine::start(config.clone()).unwrap();
+    let mode = std::fs::metadata(&config.data_dir)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700);
+}
