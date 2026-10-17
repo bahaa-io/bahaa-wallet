@@ -23,7 +23,7 @@ Rates are provided by [Bahaa](https://bahaa.io).
 
 ## Roadmap
 
-- [ ] 0. Setup and endpoint tests
+- [x] 0. Setup and endpoint tests
 - [ ] 1. Keys, mnemonics, encrypted vault
 - [ ] 2. Engine and TUI
 - [ ] 3. EVM networks (0.1)
