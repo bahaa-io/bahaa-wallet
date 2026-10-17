@@ -83,6 +83,15 @@ impl Amount {
         self.units.is_zero()
     }
 
+    pub fn fixed(&self) -> String {
+        let (whole, fraction) = self.parts();
+        if fraction.is_empty() {
+            whole
+        } else {
+            format!("{whole}.{fraction}")
+        }
+    }
+
     pub fn checked_add(self, other: Self) -> Result<Self, AmountError> {
         let decimals = self.same_decimals(other)?;
         let units = self
@@ -99,6 +108,17 @@ impl Amount {
             .checked_sub(other.units)
             .ok_or(AmountError::Underflow)?;
         Ok(Self { units, decimals })
+    }
+
+    fn parts(&self) -> (String, String) {
+        let scale = power(self.decimals);
+        let whole = (self.units / scale).to_string();
+        let width = usize::from(self.decimals);
+        if width == 0 {
+            return (whole, String::new());
+        }
+        let fraction = format!("{:0>width$}", (self.units % scale).to_string());
+        (whole, fraction)
     }
 
     fn same_decimals(self, other: Self) -> Result<u8, AmountError> {
@@ -118,15 +138,13 @@ impl PartialOrd for Amount {
 
 impl fmt::Display for Amount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let scale = power(self.decimals);
-        let whole = self.units / scale;
-        let fraction = self.units % scale;
-        if fraction.is_zero() {
-            return write!(f, "{whole}");
+        let (whole, fraction) = self.parts();
+        let fraction = fraction.trim_end_matches('0');
+        if fraction.is_empty() {
+            f.write_str(&whole)
+        } else {
+            write!(f, "{whole}.{fraction}")
         }
-        let width = usize::from(self.decimals);
-        let fraction = format!("{:0>width$}", fraction.to_string());
-        write!(f, "{whole}.{}", fraction.trim_end_matches('0'))
     }
 }
 
@@ -230,6 +248,14 @@ mod tests {
         assert_eq!(amount("42", 0).to_string(), "42");
         let one = Amount::new(U256::from(1u8), MAX_DECIMALS).unwrap();
         assert_eq!(one.to_string(), format!("0.{}1", "0".repeat(76)));
+    }
+
+    #[test]
+    fn fixed_keeps_every_decimal_place() {
+        assert_eq!(amount("12.5", 2).fixed(), "12.50");
+        assert_eq!(amount("12", 2).fixed(), "12.00");
+        assert_eq!(amount("0", 2).fixed(), "0.00");
+        assert_eq!(amount("7", 0).fixed(), "7");
     }
 
     #[test]
