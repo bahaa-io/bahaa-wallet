@@ -1,0 +1,567 @@
+[
+  {
+    "id": "bsc",
+    "name": "BNB Smart Chain",
+    "family": "evm",
+    "chain_id": 56,
+    "fee": "standard",
+    "testnet": false,
+    "native": {
+      "symbol": "BNB",
+      "name": "BNB",
+      "decimals": 18,
+      "price": "crypto/BNB"
+    },
+    "tokens": [
+      {
+        "contract": "0x55d398326f99059fF775485246999027B3197955",
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "decimals": 18,
+        "price": "crypto/USDT"
+      },
+      {
+        "contract": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 18,
+        "price": "crypto/USDC"
+      }
+    ],
+    "endpoints": [
+      {
+        "protocol": "json-rpc",
+        "url": "https://bsc-rpc.publicnode.com",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://bsc-dataseed.bnbchain.org",
+        "features": []
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://1rpc.io/bnb",
+        "features": [
+          "logs"
+        ]
+      }
+    ],
+    "explorer": {
+      "tx": "https://bscscan.com/tx/{tx}",
+      "address": "https://bscscan.com/address/{address}"
+    }
+  },
+  {
+    "id": "ethereum",
+    "name": "Ethereum",
+    "family": "evm",
+    "chain_id": 1,
+    "fee": "standard",
+    "testnet": false,
+    "native": {
+      "symbol": "ETH",
+      "name": "Ether",
+      "decimals": 18,
+      "price": "crypto/ETH"
+    },
+    "tokens": [
+      {
+        "contract": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "decimals": 6,
+        "price": "crypto/USDT"
+      },
+      {
+        "contract": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 6,
+        "price": "crypto/USDC"
+      }
+    ],
+    "endpoints": [
+      {
+        "protocol": "json-rpc",
+        "url": "https://ethereum-rpc.publicnode.com",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://eth.drpc.org",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://1rpc.io/eth",
+        "features": [
+          "logs"
+        ]
+      }
+    ],
+    "explorer": {
+      "tx": "https://etherscan.io/tx/{tx}",
+      "address": "https://etherscan.io/address/{address}"
+    }
+  },
+  {
+    "id": "polygon",
+    "name": "Polygon",
+    "family": "evm",
+    "chain_id": 137,
+    "fee": "standard",
+    "testnet": false,
+    "native": {
+      "symbol": "POL",
+      "name": "Polygon",
+      "decimals": 18,
+      "price": "crypto/POLYG"
+    },
+    "tokens": [
+      {
+        "contract": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "decimals": 6,
+        "price": "crypto/USDT"
+      },
+      {
+        "contract": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 6,
+        "price": "crypto/USDC"
+      }
+    ],
+    "endpoints": [
+      {
+        "protocol": "json-rpc",
+        "url": "https://polygon-bor-rpc.publicnode.com",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://polygon.drpc.org",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://1rpc.io/matic",
+        "features": [
+          "logs"
+        ]
+      }
+    ],
+    "explorer": {
+      "tx": "https://polygonscan.com/tx/{tx}",
+      "address": "https://polygonscan.com/address/{address}"
+    }
+  },
+  {
+    "id": "arbitrum",
+    "name": "Arbitrum One",
+    "family": "evm",
+    "chain_id": 42161,
+    "fee": "standard",
+    "testnet": false,
+    "native": {
+      "symbol": "ETH",
+      "name": "Ether",
+      "decimals": 18,
+      "price": "crypto/ETH"
+    },
+    "tokens": [
+      {
+        "contract": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "decimals": 6,
+        "price": "crypto/USDT"
+      },
+      {
+        "contract": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 6,
+        "price": "crypto/USDC"
+      }
+    ],
+    "endpoints": [
+      {
+        "protocol": "json-rpc",
+        "url": "https://arbitrum-one-rpc.publicnode.com",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://arb1.arbitrum.io/rpc",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://arbitrum.drpc.org",
+        "features": [
+          "logs"
+        ]
+      }
+    ],
+    "explorer": {
+      "tx": "https://arbiscan.io/tx/{tx}",
+      "address": "https://arbiscan.io/address/{address}"
+    }
+  },
+  {
+    "id": "avalanche",
+    "name": "Avalanche C-Chain",
+    "family": "evm",
+    "chain_id": 43114,
+    "fee": "standard",
+    "testnet": false,
+    "native": {
+      "symbol": "AVAX",
+      "name": "Avalanche",
+      "decimals": 18,
+      "price": "crypto/AVAX"
+    },
+    "tokens": [
+      {
+        "contract": "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "decimals": 6,
+        "price": "crypto/USDT"
+      },
+      {
+        "contract": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 6,
+        "price": "crypto/USDC"
+      }
+    ],
+    "endpoints": [
+      {
+        "protocol": "json-rpc",
+        "url": "https://avalanche-c-chain-rpc.publicnode.com",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://api.avax.network/ext/bc/C/rpc",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://avalanche.drpc.org",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://1rpc.io/avax/c",
+        "features": [
+          "logs"
+        ]
+      }
+    ],
+    "explorer": {
+      "tx": "https://snowtrace.io/tx/{tx}",
+      "address": "https://snowtrace.io/address/{address}"
+    }
+  },
+  {
+    "id": "base",
+    "name": "Base",
+    "family": "evm",
+    "chain_id": 8453,
+    "fee": "op-stack",
+    "testnet": false,
+    "native": {
+      "symbol": "ETH",
+      "name": "Ether",
+      "decimals": 18,
+      "price": "crypto/ETH"
+    },
+    "tokens": [
+      {
+        "contract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 6,
+        "price": "crypto/USDC"
+      }
+    ],
+    "endpoints": [
+      {
+        "protocol": "json-rpc",
+        "url": "https://base-rpc.publicnode.com",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://mainnet.base.org",
+        "features": []
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://base.drpc.org",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://1rpc.io/base",
+        "features": [
+          "logs"
+        ]
+      }
+    ],
+    "explorer": {
+      "tx": "https://basescan.org/tx/{tx}",
+      "address": "https://basescan.org/address/{address}"
+    }
+  },
+  {
+    "id": "optimism",
+    "name": "OP Mainnet",
+    "family": "evm",
+    "chain_id": 10,
+    "fee": "op-stack",
+    "testnet": false,
+    "native": {
+      "symbol": "ETH",
+      "name": "Ether",
+      "decimals": 18,
+      "price": "crypto/ETH"
+    },
+    "tokens": [
+      {
+        "contract": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "decimals": 6,
+        "price": "crypto/USDT"
+      },
+      {
+        "contract": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 6,
+        "price": "crypto/USDC"
+      }
+    ],
+    "endpoints": [
+      {
+        "protocol": "json-rpc",
+        "url": "https://optimism-rpc.publicnode.com",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://mainnet.optimism.io",
+        "features": [
+          "logs"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://1rpc.io/op",
+        "features": [
+          "logs"
+        ]
+      }
+    ],
+    "explorer": {
+      "tx": "https://optimistic.etherscan.io/tx/{tx}",
+      "address": "https://optimistic.etherscan.io/address/{address}"
+    }
+  },
+  {
+    "id": "tron",
+    "name": "Tron",
+    "family": "tron",
+    "testnet": false,
+    "native": {
+      "symbol": "TRX",
+      "name": "Tron",
+      "decimals": 6,
+      "price": "crypto/TRX"
+    },
+    "tokens": [
+      {
+        "contract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "decimals": 6,
+        "price": "crypto/USDT"
+      }
+    ],
+    "endpoints": [
+      {
+        "protocol": "tron-http",
+        "url": "https://api.trongrid.io",
+        "features": [
+          "history"
+        ]
+      },
+      {
+        "protocol": "tron-http",
+        "url": "https://tron-rpc.publicnode.com",
+        "features": []
+      }
+    ],
+    "explorer": {
+      "tx": "https://tronscan.org/#/transaction/{tx}",
+      "address": "https://tronscan.org/#/address/{address}"
+    }
+  },
+  {
+    "id": "ton",
+    "name": "TON",
+    "family": "ton",
+    "testnet": false,
+    "native": {
+      "symbol": "GRAM",
+      "name": "Gram",
+      "decimals": 9,
+      "price": "crypto/GRAM"
+    },
+    "tokens": [
+      {
+        "contract": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "decimals": 6,
+        "price": "crypto/USDT"
+      }
+    ],
+    "endpoints": [
+      {
+        "protocol": "ton-liteservers",
+        "url": "https://ton.org/global-config.json",
+        "features": []
+      },
+      {
+        "protocol": "ton-center",
+        "url": "https://toncenter.com/api",
+        "features": [
+          "history"
+        ]
+      },
+      {
+        "protocol": "ton-api",
+        "url": "https://tonapi.io/v2",
+        "features": [
+          "history"
+        ]
+      }
+    ],
+    "explorer": {
+      "tx": "https://tonviewer.com/transaction/{tx}",
+      "address": "https://tonviewer.com/{address}"
+    }
+  },
+  {
+    "id": "bsc-testnet",
+    "name": "BNB Smart Chain Testnet",
+    "family": "evm",
+    "chain_id": 97,
+    "fee": "standard",
+    "testnet": true,
+    "native": {
+      "symbol": "tBNB",
+      "name": "Testnet BNB",
+      "decimals": 18
+    },
+    "tokens": [],
+    "endpoints": [
+      {
+        "protocol": "json-rpc",
+        "url": "https://bsc-testnet-rpc.publicnode.com",
+        "features": []
+      }
+    ],
+    "explorer": {
+      "tx": "https://testnet.bscscan.com/tx/{tx}",
+      "address": "https://testnet.bscscan.com/address/{address}"
+    }
+  },
+  {
+    "id": "tron-nile",
+    "name": "Tron Nile Testnet",
+    "family": "tron",
+    "testnet": true,
+    "native": {
+      "symbol": "tTRX",
+      "name": "Nile TRX",
+      "decimals": 6
+    },
+    "tokens": [],
+    "endpoints": [
+      {
+        "protocol": "tron-http",
+        "url": "https://nile.trongrid.io",
+        "features": []
+      }
+    ],
+    "explorer": {
+      "tx": "https://nile.tronscan.org/#/transaction/{tx}",
+      "address": "https://nile.tronscan.org/#/address/{address}"
+    }
+  },
+  {
+    "id": "ton-testnet",
+    "name": "TON Testnet",
+    "family": "ton",
+    "testnet": true,
+    "native": {
+      "symbol": "tGRAM",
+      "name": "Testnet Gram",
+      "decimals": 9
+    },
+    "tokens": [],
+    "endpoints": [
+      {
+        "protocol": "ton-liteservers",
+        "url": "https://ton.org/testnet-global.config.json",
+        "features": []
+      },
+      {
+        "protocol": "ton-center",
+        "url": "https://testnet.toncenter.com/api",
+        "features": [
+          "history"
+        ]
+      }
+    ],
+    "explorer": {
+      "tx": "https://testnet.tonviewer.com/transaction/{tx}",
+      "address": "https://testnet.tonviewer.com/{address}"
+    }
+  }
+]

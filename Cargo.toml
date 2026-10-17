@@ -11,6 +11,7 @@ repository = "https://github.com/bahaa-io/bahaa-wallet"
 publish = false
 
 [workspace.dependencies]
+bahaa-types = { path = "crates/types" }
 alloy-consensus = { version = "2.5.0", features = ["k256"] }
 alloy-eips = "2.5.0"
 alloy-primitives = "1.7.3"
@@ -44,6 +45,7 @@ tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"]
 tonlib-core = "0.26.11"
 ton_liteapi = "0.2.0"
 unicode-normalization = "0.1.26"
+url = { version = "2.5.8", features = ["serde"] }
 zeroize = "1.9.1"
 
 [workspace.lints.rust]
