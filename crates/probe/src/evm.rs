@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::clock::unix_now;
 use crate::net::Net;
-use crate::report::{self, Outcome, Report, timed};
+use crate::report::{self, Extras, Outcome, Report, timed};
 
 const TRANSFER: &str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const DECIMALS: &str = "0x313ce567";
@@ -16,7 +16,6 @@ const FROM: &str = "0x1000000000000000000000000000000000000001";
 const TO: &str = "0x000000000000000000000000000000000000dEaD";
 const STALE_AFTER: u64 = 120;
 const LOG_BLOCKS: u128 = 10;
-const PROBLEM_WIDTH: usize = 110;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Family {
@@ -199,25 +198,6 @@ impl Rpc<'_> {
     }
 }
 
-#[derive(Default)]
-struct Extras {
-    parts: Vec<String>,
-    problems: Vec<String>,
-}
-
-impl Extras {
-    fn add(&mut self, name: &str, result: Result<String>) {
-        match result {
-            Ok(text) => self.parts.push(format!("{name} {text}")),
-            Err(err) => {
-                self.parts.push(format!("{name} no"));
-                let reason: String = format!("{err:#}").chars().take(PROBLEM_WIDTH).collect();
-                self.problems.push(format!("{name}: {reason}"));
-            }
-        }
-    }
-}
-
 pub async fn run(net: &Net, report: &mut Report) {
     for network in &NETWORKS {
         report::section(&format!("evm {} ({})", network.name, network.chain_id));
@@ -277,10 +257,7 @@ async fn endpoint(rpc: Rpc<'_>, network: &Network) -> Result<Outcome> {
         latency.as_millis(),
         gwei(gas_price)
     ));
-    outcome.line(extras.parts.join(", "));
-    for problem in extras.problems {
-        outcome.line(problem);
-    }
+    outcome.extras(extras);
     Ok(outcome)
 }
 

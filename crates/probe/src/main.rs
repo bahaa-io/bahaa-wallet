@@ -3,6 +3,8 @@ mod clock;
 mod evm;
 mod net;
 mod report;
+mod ton;
+mod tron;
 
 use std::process::ExitCode;
 
@@ -13,15 +15,19 @@ use report::Report;
 enum Target {
     Bahaa,
     Evm,
+    Tron,
+    Ton,
 }
 
 impl Target {
-    const ALL: [Self; 2] = [Self::Bahaa, Self::Evm];
+    const ALL: [Self; 4] = [Self::Bahaa, Self::Evm, Self::Tron, Self::Ton];
 
     fn name(self) -> &'static str {
         match self {
             Self::Bahaa => "bahaa",
             Self::Evm => "evm",
+            Self::Tron => "tron",
+            Self::Ton => "ton",
         }
     }
 }
@@ -45,6 +51,8 @@ async fn main() -> ExitCode {
         match target {
             Target::Bahaa => bahaa::run(&net, &mut report).await,
             Target::Evm => evm::run(&net, &mut report).await,
+            Target::Tron => tron::run(&net, &mut report).await,
+            Target::Ton => ton::run(&net, &mut report).await,
         }
     }
     if report.passed() {

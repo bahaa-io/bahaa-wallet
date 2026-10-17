@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
+const PROBLEM_WIDTH: usize = 110;
+
 pub struct Outcome {
     summary: String,
     lines: Vec<String>,
@@ -20,6 +22,30 @@ impl Outcome {
 
     pub fn line(&mut self, line: impl Into<String>) {
         self.lines.push(line.into());
+    }
+
+    pub fn extras(&mut self, extras: Extras) {
+        self.lines.push(extras.parts.join(", "));
+        self.lines.extend(extras.problems);
+    }
+}
+
+#[derive(Default)]
+pub struct Extras {
+    parts: Vec<String>,
+    problems: Vec<String>,
+}
+
+impl Extras {
+    pub fn add(&mut self, name: &str, result: anyhow::Result<String>) {
+        match result {
+            Ok(text) => self.parts.push(format!("{name} {text}")),
+            Err(err) => {
+                self.parts.push(format!("{name} no"));
+                let reason: String = format!("{err:#}").chars().take(PROBLEM_WIDTH).collect();
+                self.problems.push(format!("{name}: {reason}"));
+            }
+        }
     }
 }
 
@@ -38,14 +64,17 @@ impl Report {
         let took = took(elapsed);
         match result {
             Ok(outcome) => {
-                println!("  ok    {took:>8}  {name:<12}  {}", outcome.summary);
+                println!("  ok    {took:>8}  {name:<12}  {}", clean(&outcome.summary));
                 for line in outcome.lines {
-                    println!("{:32}{line}", "");
+                    println!("{:32}{}", "", clean(&line));
                 }
             }
             Err(err) => {
                 self.failures += 1;
-                println!("  FAIL  {took:>8}  {name:<12}  {err:#}");
+                println!(
+                    "  FAIL  {took:>8}  {name:<12}  {}",
+                    clean(&format!("{err:#}"))
+                );
             }
         }
     }
@@ -66,7 +95,7 @@ pub fn section(title: &str) {
 }
 
 pub fn fatal(err: &anyhow::Error) -> ExitCode {
-    eprintln!("bahaa-probe: {err:#}");
+    eprintln!("bahaa-probe: {}", clean(&format!("{err:#}")));
     ExitCode::FAILURE
 }
 
@@ -76,6 +105,17 @@ pub fn usage(target: &str, known: &[&str]) -> ExitCode {
         known.join(", ")
     );
     ExitCode::FAILURE
+}
+
+fn clean(text: &str) -> String {
+    text.chars()
+        .map(|c| if unsafe_to_print(c) { ' ' } else { c })
+        .collect()
+}
+
+fn unsafe_to_print(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 fn took(elapsed: Duration) -> String {
