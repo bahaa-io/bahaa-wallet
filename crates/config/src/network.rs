@@ -7,6 +7,7 @@ use url::Url;
 
 const MAX_NAME: usize = 40;
 const MAX_SYMBOL: usize = 11;
+const MAX_GAP_MS: u32 = 60_000;
 const BUILTIN: &str = include_str!("networks.json");
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
@@ -71,6 +72,8 @@ pub struct Endpoint {
     pub url: Url,
     #[serde(default)]
     pub features: Vec<Feature>,
+    #[serde(default)]
+    pub min_gap_ms: u32,
 }
 
 impl Endpoint {
@@ -262,6 +265,9 @@ impl Spec {
                     "an endpoint claims a feature its protocol cannot have",
                 ));
             }
+            if endpoint.min_gap_ms > MAX_GAP_MS {
+                return Err(problem("an endpoint's min_gap_ms is over one minute"));
+            }
             if !urls.insert(endpoint.url.as_str()) {
                 return Err(problem("an endpoint is listed twice"));
             }
@@ -447,6 +453,9 @@ mod tests {
         let tron = network("tron");
         assert!(tron.endpoints[0].has(Feature::History));
         assert!(!tron.endpoints[1].has(Feature::History));
+        assert_eq!(tron.endpoints[0].min_gap_ms, 400);
+        assert_eq!(network("ton").endpoints[1].min_gap_ms, 1100);
+        assert_eq!(bsc.endpoints[0].min_gap_ms, 0);
     }
 
     #[test]
@@ -507,6 +516,10 @@ mod tests {
             ("bsc", Box::new(|n| n["native"]["symbol"] = "B N B".into())),
             ("bsc", Box::new(|n| n["native"]["decimals"] = 78.into())),
             ("bsc", Box::new(|n| n["chainid"] = 56.into())),
+            (
+                "bsc",
+                Box::new(|n| n["endpoints"][0]["min_gap_ms"] = 60_001.into()),
+            ),
         ];
         for (index, (id, edit)) in cases.into_iter().enumerate() {
             assert!(edited(id, edit).is_err(), "case {index} was accepted");

@@ -829,6 +829,12 @@ dependencies = [
 [[package]]
 name = "bahaa-chain"
 version = "0.0.0"
+dependencies = [
+ "bahaa-config",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "bahaa-config"

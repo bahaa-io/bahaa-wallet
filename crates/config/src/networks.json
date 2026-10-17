@@ -427,7 +427,8 @@
         "url": "https://api.trongrid.io",
         "features": [
           "history"
-        ]
+        ],
+        "min_gap_ms": 400
       },
       {
         "protocol": "tron-http",
@@ -471,14 +472,16 @@
         "url": "https://toncenter.com/api",
         "features": [
           "history"
-        ]
+        ],
+        "min_gap_ms": 1100
       },
       {
         "protocol": "ton-api",
         "url": "https://tonapi.io/v2",
         "features": [
           "history"
-        ]
+        ],
+        "min_gap_ms": 1100
       }
     ],
     "explorer": {
@@ -526,7 +529,8 @@
       {
         "protocol": "tron-http",
         "url": "https://nile.trongrid.io",
-        "features": []
+        "features": [],
+        "min_gap_ms": 400
       }
     ],
     "explorer": {
@@ -556,7 +560,8 @@
         "url": "https://testnet.toncenter.com/api",
         "features": [
           "history"
-        ]
+        ],
+        "min_gap_ms": 1100
       }
     ],
     "explorer": {
