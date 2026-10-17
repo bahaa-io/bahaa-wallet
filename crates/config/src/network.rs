@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use bahaa_types::{Address, AssetId, ChainFamily, MAX_DECIMALS, NetworkId, PriceId};
+use bahaa_types::{Address, AssetId, ChainFamily, MAX_DECIMALS, NetworkId, PriceId, is_plain_text};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -223,7 +223,7 @@ impl Spec {
             network: self.id.to_string(),
             problem: text.to_owned(),
         };
-        if !plain_text(&self.name, MAX_NAME) {
+        if !is_plain_text(&self.name, MAX_NAME) {
             return Err(problem("name must be 1 to 40 printable characters"));
         }
         let kind = match (self.family, self.chain_id, self.fee) {
@@ -239,7 +239,9 @@ impl Spec {
             (ChainFamily::Ton, None, None) => ChainKind::Ton,
             _ => return Err(problem("only EVM networks have chain_id and fee")),
         };
-        check_coin(&self.native).map_err(|text| problem(&format!("native coin {text}")))?;
+        self.native
+            .check()
+            .map_err(|text| problem(&format!("native coin {text}")))?;
         if self.endpoints.is_empty() {
             return Err(problem("needs at least one endpoint"));
         }
@@ -281,7 +283,8 @@ impl Spec {
                 decimals: spec.decimals,
                 price: spec.price,
             };
-            check_coin(&coin).map_err(|text| problem(&format!("token {text}")))?;
+            coin.check()
+                .map_err(|text| problem(&format!("token {text}")))?;
             tokens.push(Token { contract, coin });
         }
         Ok(Network {
@@ -297,23 +300,25 @@ impl Spec {
     }
 }
 
-fn check_coin(coin: &Coin) -> Result<(), &'static str> {
-    let symbol_ok = (1..=MAX_SYMBOL).contains(&coin.symbol.len())
-        && coin.symbol.starts_with(|c: char| c.is_ascii_alphanumeric())
-        && coin
-            .symbol
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.');
-    if !symbol_ok {
-        return Err("symbol must be 1 to 11 letters, digits or dots");
+impl Coin {
+    pub fn check(&self) -> Result<(), &'static str> {
+        let symbol_ok = (1..=MAX_SYMBOL).contains(&self.symbol.len())
+            && self.symbol.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && self
+                .symbol
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.');
+        if !symbol_ok {
+            return Err("symbol must be 1 to 11 letters, digits or dots");
+        }
+        if !is_plain_text(&self.name, MAX_NAME) {
+            return Err("name must be 1 to 40 printable characters");
+        }
+        if self.decimals > MAX_DECIMALS {
+            return Err("has too many decimals");
+        }
+        Ok(())
     }
-    if !plain_text(&coin.name, MAX_NAME) {
-        return Err("name must be 1 to 40 printable characters");
-    }
-    if coin.decimals > MAX_DECIMALS {
-        return Err("has too many decimals");
-    }
-    Ok(())
 }
 
 fn check_template(template: &str, placeholder: &str) -> Result<(), &'static str> {
@@ -323,16 +328,6 @@ fn check_template(template: &str, placeholder: &str) -> Result<(), &'static str>
         return Err("explorer links must use https and contain their placeholder once");
     }
     Ok(())
-}
-
-fn plain_text(text: &str, max: usize) -> bool {
-    let count = text.chars().count();
-    (1..=max).contains(&count)
-        && text.trim() == text
-        && !text.chars().any(|c| {
-            c.is_control()
-                || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
-        })
 }
 
 #[cfg(test)]

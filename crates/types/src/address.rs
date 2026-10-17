@@ -2,6 +2,8 @@ use std::fmt::{self, Write};
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha3::{Digest, Keccak256};
 use thiserror::Error;
 
@@ -98,6 +100,23 @@ impl fmt::Display for Address {
 impl fmt::Debug for Address {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Address({} {self})", self.family())
+    }
+}
+
+impl Serialize for Address {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("{}:{self}", self.family()))
+    }
+}
+
+impl<'de> Deserialize<'de> for Address {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let (family, address) = text
+            .split_once(':')
+            .ok_or_else(|| D::Error::custom("an address needs its family, like evm:0x…"))?;
+        let family = family.parse().map_err(D::Error::custom)?;
+        Self::parse(family, address).map_err(D::Error::custom)
     }
 }
 
@@ -398,6 +417,33 @@ mod tests {
                 Err(AddressError::Format(ChainFamily::Ton)),
                 "{text:?}"
             );
+        }
+    }
+
+    #[test]
+    fn stored_addresses_carry_their_family() {
+        let samples = [
+            Address::parse(
+                ChainFamily::Evm,
+                "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+            )
+            .unwrap(),
+            Address::parse(ChainFamily::Tron, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t").unwrap(),
+            Address::parse_ton("EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N")
+                .unwrap()
+                .0,
+        ];
+        for address in samples {
+            let json = serde_json::to_string(&address).unwrap();
+            assert!(json.starts_with(&format!("\"{}:", address.family())));
+            assert_eq!(serde_json::from_str::<Address>(&json).unwrap(), address);
+        }
+        for bad in [
+            "\"0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed\"",
+            "\"tron:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed\"",
+            "\"btc:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\"",
+        ] {
+            assert!(serde_json::from_str::<Address>(bad).is_err(), "{bad}");
         }
     }
 

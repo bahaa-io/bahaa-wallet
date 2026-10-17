@@ -1,1 +1,239 @@
+use std::fs::OpenOptions;
+use std::path::Path;
 
+use bahaa_config::{Coin, Settings};
+use bahaa_types::{Address, AssetId, NetworkId, is_plain_text};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+const SCHEMA: u64 = 1;
+const SCHEMA_KEY: &str = "schema";
+const SETTINGS_KEY: &str = "settings";
+const MAX_CONTACT_NAME: usize = 40;
+
+const META: TableDefinition<'static, &str, u64> = TableDefinition::new("meta");
+const SETTINGS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("settings");
+const CONTACTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("contacts");
+const TOKENS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("tokens");
+
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum StoreError {
+    #[error("another Bahaa Wallet is already using this data")]
+    AlreadyOpen,
+    #[error("this data was written by a newer Bahaa Wallet (schema {0}), update the app")]
+    NewerSchema(u64),
+    #[error("{0}")]
+    Invalid(&'static str),
+    #[error("a stored entry could not be read: {0}")]
+    Corrupt(String),
+    #[error("local database error: {0}")]
+    Database(String),
+    #[error("could not access the data file: {0}")]
+    Io(std::io::ErrorKind),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Contact {
+    pub network: NetworkId,
+    pub address: Address,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomToken {
+    pub asset: AssetId,
+    pub coin: Coin,
+}
+
+pub struct Store {
+    db: Database,
+}
+
+impl Store {
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
+        prepare(path)?;
+        let db = Database::create(path).map_err(database)?;
+        let store = Self { db };
+        store.migrate()?;
+        Ok(store)
+    }
+
+    pub fn settings(&self) -> Result<Settings, StoreError> {
+        match self.get(SETTINGS, SETTINGS_KEY)? {
+            Some(bytes) => {
+                let text =
+                    String::from_utf8(bytes).map_err(|err| StoreError::Corrupt(err.to_string()))?;
+                Settings::from_json(&text).map_err(|err| StoreError::Corrupt(err.to_string()))
+            }
+            None => Ok(Settings::default()),
+        }
+    }
+
+    pub fn save_settings(&self, settings: &Settings) -> Result<(), StoreError> {
+        let text = settings
+            .to_json()
+            .map_err(|err| StoreError::Corrupt(err.to_string()))?;
+        Settings::from_json(&text)
+            .map_err(|_| StoreError::Invalid("these settings are out of range"))?;
+        self.put(SETTINGS, SETTINGS_KEY, text.as_bytes())
+    }
+
+    pub fn contacts(&self) -> Result<Vec<Contact>, StoreError> {
+        self.all(CONTACTS)
+    }
+
+    pub fn save_contact(&self, contact: &Contact) -> Result<(), StoreError> {
+        if !is_plain_text(&contact.name, MAX_CONTACT_NAME) {
+            return Err(StoreError::Invalid(
+                "a contact name must be 1 to 40 visible characters, without hidden ones",
+            ));
+        }
+        let key = contact_key(&contact.network, &contact.address);
+        self.put(CONTACTS, &key, &encode(contact)?)
+    }
+
+    pub fn remove_contact(
+        &self,
+        network: &NetworkId,
+        address: &Address,
+    ) -> Result<bool, StoreError> {
+        self.delete(CONTACTS, &contact_key(network, address))
+    }
+
+    pub fn tokens(&self) -> Result<Vec<CustomToken>, StoreError> {
+        self.all(TOKENS)
+    }
+
+    pub fn save_token(&self, token: &CustomToken) -> Result<(), StoreError> {
+        if token.asset.contract().is_none() {
+            return Err(StoreError::Invalid(
+                "a custom token needs a contract address",
+            ));
+        }
+        token.coin.check().map_err(StoreError::Invalid)?;
+        self.put(TOKENS, &token.asset.to_string(), &encode(token)?)
+    }
+
+    pub fn remove_token(&self, asset: &AssetId) -> Result<bool, StoreError> {
+        self.delete(TOKENS, &asset.to_string())
+    }
+
+    fn migrate(&self) -> Result<(), StoreError> {
+        let txn = self.db.begin_write().map_err(database)?;
+        {
+            let mut meta = txn.open_table(META).map_err(database)?;
+            let found = meta
+                .get(SCHEMA_KEY)
+                .map_err(database)?
+                .map(|value| value.value());
+            match found {
+                Some(schema) if schema > SCHEMA => return Err(StoreError::NewerSchema(schema)),
+                Some(_) => {}
+                None => {
+                    meta.insert(SCHEMA_KEY, SCHEMA).map_err(database)?;
+                }
+            }
+            for table in [SETTINGS, CONTACTS, TOKENS] {
+                txn.open_table(table).map_err(database)?;
+            }
+        }
+        txn.commit().map_err(database)
+    }
+
+    fn get(
+        &self,
+        table: TableDefinition<'_, &str, &[u8]>,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let txn = self.db.begin_read().map_err(database)?;
+        let table = txn.open_table(table).map_err(database)?;
+        Ok(table
+            .get(key)
+            .map_err(database)?
+            .map(|value| value.value().to_vec()))
+    }
+
+    fn put(
+        &self,
+        table: TableDefinition<'_, &str, &[u8]>,
+        key: &str,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        let txn = self.db.begin_write().map_err(database)?;
+        txn.open_table(table)
+            .map_err(database)?
+            .insert(key, bytes)
+            .map_err(database)?;
+        txn.commit().map_err(database)
+    }
+
+    fn delete(
+        &self,
+        table: TableDefinition<'_, &str, &[u8]>,
+        key: &str,
+    ) -> Result<bool, StoreError> {
+        let txn = self.db.begin_write().map_err(database)?;
+        let removed = txn
+            .open_table(table)
+            .map_err(database)?
+            .remove(key)
+            .map_err(database)?
+            .is_some();
+        txn.commit().map_err(database)?;
+        Ok(removed)
+    }
+
+    fn all<T: DeserializeOwned>(
+        &self,
+        table: TableDefinition<'_, &str, &[u8]>,
+    ) -> Result<Vec<T>, StoreError> {
+        let txn = self.db.begin_read().map_err(database)?;
+        let table = txn.open_table(table).map_err(database)?;
+        table
+            .iter()
+            .map_err(database)?
+            .map(|entry| {
+                let (_, value) = entry.map_err(database)?;
+                serde_json::from_slice(value.value())
+                    .map_err(|err| StoreError::Corrupt(err.to_string()))
+            })
+            .collect()
+    }
+}
+
+fn contact_key(network: &NetworkId, address: &Address) -> String {
+    format!("{network}/{}:{address}", address.family())
+}
+
+fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, StoreError> {
+    serde_json::to_vec(value).map_err(|err| StoreError::Corrupt(err.to_string()))
+}
+
+fn database(err: impl Into<redb::Error>) -> StoreError {
+    match err.into() {
+        redb::Error::DatabaseAlreadyOpen => StoreError::AlreadyOpen,
+        other => StoreError::Database(other.to_string()),
+    }
+}
+
+fn prepare(path: &Path) -> Result<(), StoreError> {
+    if path.exists() {
+        return Ok(());
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(StoreError::Io(err.kind())),
+    }
+}

@@ -11,6 +11,7 @@ repository = "https://github.com/bahaa-io/bahaa-wallet"
 publish = false
 
 [workspace.dependencies]
+bahaa-config = { path = "crates/config" }
 bahaa-types = { path = "crates/types" }
 alloy-consensus = { version = "2.5.0", features = ["k256"] }
 alloy-eips = "2.5.0"
@@ -30,6 +31,7 @@ k256 = "0.13.4"
 num-bigint = "0.4.8"
 pbkdf2 = "0.12.2"
 prost = "0.14.4"
+redb = "~4.3.0"
 reqwest = { version = "0.13.5", features = ["json"] }
 ruint = "1.20.1"
 rustls = "0.23.46"
