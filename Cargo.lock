@@ -886,6 +886,8 @@ name = "bahaa-types"
 version = "0.0.0"
 dependencies = [
  "ruint",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
