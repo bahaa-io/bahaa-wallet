@@ -880,6 +880,15 @@ version = "0.0.0"
 [[package]]
 name = "bahaa-market"
 version = "0.0.0"
+dependencies = [
+ "bahaa-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "bahaa-probe"
