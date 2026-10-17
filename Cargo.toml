@@ -23,6 +23,7 @@ ed25519-dalek = "3.0.0"
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
 hmac = "0.12.1"
+k256 = "0.13.4"
 num-bigint = "0.4.8"
 pbkdf2 = "0.12.2"
 prost = "0.14.4"
