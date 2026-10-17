@@ -890,6 +890,19 @@ dependencies = [
 [[package]]
 name = "bahaa-evm"
 version = "0.0.0"
+dependencies = [
+ "bahaa-chain",
+ "bahaa-config",
+ "bahaa-crypto",
+ "bahaa-types",
+ "k256",
+ "reqwest",
+ "ruint",
+ "serde_json",
+ "sha3 0.11.0",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "bahaa-market"

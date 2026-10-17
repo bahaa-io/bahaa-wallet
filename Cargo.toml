@@ -11,6 +11,7 @@ repository = "https://github.com/bahaa-io/bahaa-wallet"
 publish = false
 
 [workspace.dependencies]
+bahaa-chain = { path = "crates/chain" }
 bahaa-config = { path = "crates/config" }
 bahaa-crypto = { path = "crates/crypto" }
 bahaa-market = { path = "crates/market" }
