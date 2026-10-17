@@ -2,6 +2,8 @@
 
 mod bsc;
 mod keys;
+mod prompt;
+mod tron;
 
 use std::process::ExitCode;
 
@@ -14,8 +16,9 @@ async fn main() -> ExitCode {
         "new" => new(),
         "address" => address(),
         "bsc" => bsc::transfer().await,
+        "tron" => tron::transfer().await,
         _ => {
-            eprintln!("usage: bahaa-spike new | address | bsc");
+            eprintln!("usage: bahaa-spike new | address | bsc | tron");
             return ExitCode::FAILURE;
         }
     };
@@ -38,6 +41,11 @@ fn new() -> Result<()> {
 fn address() -> Result<()> {
     let phrase = keys::load()?;
     println!("bsc testnet  {}", keys::evm(&phrase)?.address());
+    println!("tron nile    {}", tron::address(&phrase, 0)?);
+    println!(
+        "tron nile    {} (receives the test transfer)",
+        tron::address(&phrase, 1)?
+    );
     Ok(())
 }
 

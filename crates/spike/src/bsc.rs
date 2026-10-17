@@ -1,4 +1,3 @@
-use std::io::{self, BufRead, Write};
 use std::time::Duration;
 
 use alloy_consensus::transaction::SignerRecoverable;
@@ -12,6 +11,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
 use crate::keys;
+use crate::prompt::confirm;
 
 const RPC: &str = "https://bsc-testnet-rpc.publicnode.com";
 const RPC_OVERRIDE: &str = "BAHAA_SPIKE_BSC_RPC";
@@ -192,14 +192,6 @@ fn fund(needed: U256) -> Result<()> {
         units(needed, 18)?
     );
     Ok(())
-}
-
-fn confirm() -> Result<bool> {
-    print!("type yes to broadcast: ");
-    io::stdout().flush()?;
-    let mut answer = String::new();
-    io::stdin().lock().read_line(&mut answer)?;
-    Ok(answer.trim() == "yes")
 }
 
 async fn wait(rpc: &Rpc, hash: &str) -> Result<Value> {

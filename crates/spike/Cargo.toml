@@ -14,9 +14,12 @@ alloy-primitives.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 anyhow.workspace = true
+bs58.workspace = true
 getrandom.workspace = true
+prost.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 zeroize.workspace = true
 

@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use zeroize::{Zeroize, Zeroizing};
 
 const EVM_PATH: &str = "m/44'/60'/0'/0/0";
+const TRON_PATH: &str = "m/44'/195'/0'/0";
 
 pub fn location() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").context("HOME is not set")?;
@@ -46,6 +47,13 @@ pub fn evm(phrase: &str) -> Result<PrivateKeySigner> {
     Ok(MnemonicBuilder::<English>::default()
         .phrase(phrase)
         .derivation_path(EVM_PATH)?
+        .build()?)
+}
+
+pub fn tron(phrase: &str, index: u32) -> Result<PrivateKeySigner> {
+    Ok(MnemonicBuilder::<English>::default()
+        .phrase(phrase)
+        .derivation_path(format!("{TRON_PATH}/{index}"))?
         .build()?)
 }
 
