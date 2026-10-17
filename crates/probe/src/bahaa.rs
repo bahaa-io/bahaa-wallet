@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
@@ -14,6 +14,7 @@ use tokio::time::{Instant, timeout_at};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{Connector, connect_async_tls_with_config};
 
+use crate::clock::unix_now;
 use crate::net::Net;
 use crate::report::{self, Outcome, Report};
 
@@ -234,8 +235,4 @@ fn items(frame: &Frame) -> usize {
 
 fn text(value: &Value) -> Message {
     Message::text(value.to_string())
-}
-
-fn unix_now() -> Result<u64> {
-    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }

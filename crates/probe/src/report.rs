@@ -30,9 +30,12 @@ pub struct Report {
 
 impl Report {
     pub async fn check(&mut self, name: &str, work: impl Future<Output = anyhow::Result<Outcome>>) {
-        let started = Instant::now();
-        let result = work.await;
-        let took = took(started.elapsed());
+        let (elapsed, result) = timed(work).await;
+        self.record(name, elapsed, result);
+    }
+
+    pub fn record(&mut self, name: &str, elapsed: Duration, result: anyhow::Result<Outcome>) {
+        let took = took(elapsed);
         match result {
             Ok(outcome) => {
                 println!("  ok    {took:>8}  {name:<12}  {}", outcome.summary);
@@ -52,6 +55,12 @@ impl Report {
     }
 }
 
+pub async fn timed<T>(work: impl Future<Output = T>) -> (Duration, T) {
+    let started = Instant::now();
+    let value = work.await;
+    (started.elapsed(), value)
+}
+
 pub fn section(title: &str) {
     println!("\n{title}");
 }
@@ -61,8 +70,11 @@ pub fn fatal(err: &anyhow::Error) -> ExitCode {
     ExitCode::FAILURE
 }
 
-pub fn usage(target: &str) -> ExitCode {
-    eprintln!("bahaa-probe: unknown target {target:?}, expected all or bahaa");
+pub fn usage(target: &str, known: &[&str]) -> ExitCode {
+    eprintln!(
+        "bahaa-probe: unknown target {target:?}, expected all, {}",
+        known.join(", ")
+    );
     ExitCode::FAILURE
 }
 
