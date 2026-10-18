@@ -1,11 +1,18 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
-use bahaa_chain::{Balance, ChainError};
+use bahaa_chain::{
+    Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus,
+};
 use bahaa_config::{ChainKind, Network};
 use bahaa_crypto::{DerivationPath, Seed};
 use bahaa_types::{Address, Amount, AssetId};
+use ed25519_dalek::SigningKey;
 use ruint::aliases::U256;
+
+mod send;
+
+pub use send::TonPlan;
 
 use crate::http::{Http, Item};
 use crate::wallet::{self, read_address};
@@ -34,55 +41,6 @@ impl TonChain {
             wallet_id: wallet::wallet_id(global_id),
             jetton_wallets: Mutex::new(HashMap::new()),
         })
-    }
-
-    pub fn network(&self) -> &Network {
-        &self.network
-    }
-
-    pub fn derive(&self, seed: &Seed, account: u32) -> Result<Address, ChainError> {
-        let path: DerivationPath = format!("m/44'/607'/{account}'")
-            .parse()
-            .map_err(|_| ChainError::Invalid("account index out of range"))?;
-        let key = bahaa_crypto::ed25519(seed, &path)?;
-        wallet::v5r1(&key.verifying_key().to_bytes(), self.wallet_id)
-    }
-
-    pub async fn balances(
-        &self,
-        address: &Address,
-        assets: &[AssetId],
-    ) -> Result<Vec<Balance>, ChainError> {
-        if !matches!(address, Address::Ton { .. }) {
-            return Err(ChainError::Invalid("not a TON address"));
-        }
-        let mut balances = Vec::with_capacity(assets.len());
-        for asset in assets {
-            if asset.network() != &self.network.id {
-                return Err(ChainError::Invalid("an asset belongs to another network"));
-            }
-            let amount = match asset.contract() {
-                None => amount(
-                    self.http.balance(address).await?,
-                    self.network.native.decimals,
-                )?,
-                Some(master) => {
-                    let decimals = self
-                        .network
-                        .tokens
-                        .iter()
-                        .find(|token| token.contract == *master)
-                        .map(|token| token.coin.decimals)
-                        .ok_or(ChainError::Unsupported("custom TON tokens yet"))?;
-                    amount(self.jetton_balance(address, master).await?, decimals)?
-                }
-            };
-            balances.push(Balance {
-                asset: asset.clone(),
-                amount,
-            });
-        }
-        Ok(balances)
     }
 
     async fn jetton_wallet(
@@ -138,6 +96,85 @@ impl TonChain {
     }
 }
 
+impl Chain for TonChain {
+    type Plan = TonPlan;
+
+    fn network(&self) -> &Network {
+        &self.network
+    }
+
+    fn derive(&self, seed: &Seed, account: u32) -> Result<Address, ChainError> {
+        wallet::v5r1(
+            &key(seed, account)?.verifying_key().to_bytes(),
+            self.wallet_id,
+        )
+    }
+
+    async fn balances(
+        &self,
+        address: &Address,
+        assets: &[AssetId],
+    ) -> Result<Vec<Balance>, ChainError> {
+        if !matches!(address, Address::Ton { .. }) {
+            return Err(ChainError::Invalid("not a TON address"));
+        }
+        let mut balances = Vec::with_capacity(assets.len());
+        for asset in assets {
+            if asset.network() != &self.network.id {
+                return Err(ChainError::Invalid("an asset belongs to another network"));
+            }
+            let amount = match asset.contract() {
+                None => amount(
+                    self.http.balance(address).await?,
+                    self.network.native.decimals,
+                )?,
+                Some(master) => {
+                    let decimals = self
+                        .network
+                        .tokens
+                        .iter()
+                        .find(|token| token.contract == *master)
+                        .map(|token| token.coin.decimals)
+                        .ok_or(ChainError::Unsupported("custom TON tokens yet"))?;
+                    amount(self.jetton_balance(address, master).await?, decimals)?
+                }
+            };
+            balances.push(Balance {
+                asset: asset.clone(),
+                amount,
+            });
+        }
+        Ok(balances)
+    }
+
+    async fn prepare(&self, transfer: &Transfer) -> Result<(TonPlan, FeeQuote), ChainError> {
+        self.plan(transfer).await
+    }
+
+    fn sign(&self, plan: &TonPlan, seed: &Seed) -> Result<Signed, ChainError> {
+        self.sign_plan(plan, seed)
+    }
+
+    fn decode(&self, signed: &Signed) -> Result<Decoded, ChainError> {
+        self.decode_signed(signed)
+    }
+
+    fn broadcast(&self, _signed: &Signed) -> impl Future<Output = Result<TxId, ChainError>> + Send {
+        std::future::ready(Err(ChainError::Unsupported("sending yet")))
+    }
+
+    fn status(&self, _id: &TxId) -> impl Future<Output = Result<TxStatus, ChainError>> + Send {
+        std::future::ready(Err(ChainError::Unsupported("sending yet")))
+    }
+}
+
+fn key(seed: &Seed, account: u32) -> Result<SigningKey, ChainError> {
+    let path: DerivationPath = format!("m/44'/607'/{account}'")
+        .parse()
+        .map_err(|_| ChainError::Invalid("account index out of range"))?;
+    Ok(bahaa_crypto::ed25519(seed, &path)?)
+}
+
 fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {
     Amount::new(units, decimals).map_err(|_| ChainError::Invalid("impossible decimals"))
 }
@@ -148,6 +185,7 @@ fn malformed() -> ChainError {
 
 #[cfg(test)]
 mod tests {
+    use bahaa_chain::Chain;
     use bahaa_config::Registry;
     use bahaa_crypto::Mnemonic;
 

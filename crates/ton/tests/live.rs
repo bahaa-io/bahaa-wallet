@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
+use bahaa_chain::Chain;
 use bahaa_config::{Protocol, Registry};
 use bahaa_ton::TonChain;
 use bahaa_types::{Address, AssetId, ChainFamily};
@@ -75,4 +76,80 @@ async fn live_fresh_accounts_hold_nothing_on_every_source() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     }
+}
+
+#[tokio::test]
+#[ignore = "talks to the real TON network, run with --test-threads=1"]
+async fn live_v5r1_quote_follows_the_network_fee_settings() {
+    let registry = Registry::builtin().unwrap();
+    let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
+    let config: serde_json::Value = reqwest::get("https://tonapi.io/v2/blockchain/config")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let gas = &config["21"]["gas_limits_prices"];
+    let field = |value: &serde_json::Value| value.as_u64().unwrap();
+    let extra = (4_939 - field(&gas["flat_gas_limit"])) * field(&gas["gas_price"]);
+    let compute = field(&gas["flat_gas_price"]) + extra.div_ceil(65_536);
+    let lump = field(&config["25"]["msg_forward_prices"]["lump_price"]);
+    let transfer = bahaa_chain::Transfer {
+        account: 0,
+        from: Address::parse(
+            ChainFamily::Ton,
+            "0:13fd9907ed89660d9b90f925bd54a6b029cafb368a172888f1ffc6fd690624e5",
+        )
+        .unwrap(),
+        to: Address::Ton {
+            workchain: 0,
+            hash: [0x5c; 32],
+        },
+        asset: "ton".parse().unwrap(),
+        amount: bahaa_types::Amount::parse("0.01", 9).unwrap(),
+    };
+    let nano = |text: &str| bahaa_types::Amount::parse(text, 9).unwrap();
+    let mut seen = Vec::new();
+    for protocol in [Protocol::TonLiteservers, Protocol::TonApi] {
+        let mut network = ton.clone();
+        network
+            .endpoints
+            .retain(|endpoint| endpoint.protocol == protocol);
+        let chain = TonChain::new(network).unwrap();
+        let (_, quote) = chain.prepare(&transfer).await.unwrap();
+        let lines = quote.lines();
+        assert_eq!(lines[0].item, bahaa_chain::FeeItem::Compute { gas: 4_939 });
+        assert_eq!(
+            lines[0].amount.units(),
+            ruint::aliases::U256::from(compute),
+            "{protocol:?}"
+        );
+        assert!(lines[1].amount < nano("0.0001"), "{protocol:?}: {quote:?}");
+        assert!(
+            lines[2].amount.units() > ruint::aliases::U256::from(2 * lump),
+            "{protocol:?}"
+        );
+        assert!(
+            quote.expected() > nano("0.0004") && quote.expected() < nano("0.0007"),
+            "{quote:?}"
+        );
+        assert_eq!(
+            quote.max().units(),
+            quote.expected().units() * ruint::aliases::U256::from(2u8)
+        );
+        seen.push((lines[0].amount, lines[2].amount));
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    }
+    assert_eq!(seen[0], seen[1]);
+    let mut center = ton.clone();
+    center
+        .endpoints
+        .retain(|endpoint| endpoint.protocol == Protocol::TonCenter);
+    assert!(
+        TonChain::new(center)
+            .unwrap()
+            .prepare(&transfer)
+            .await
+            .is_err()
+    );
 }

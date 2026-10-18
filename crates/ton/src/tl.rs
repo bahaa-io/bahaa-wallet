@@ -7,6 +7,8 @@ const GET_ACCOUNT_STATE: u32 = 0x6b89_0e25;
 const ACCOUNT_STATE: u32 = 0x7079_c751;
 const RUN_SMC_METHOD: u32 = 0x5cc6_5dd2;
 const RUN_METHOD_RESULT: u32 = 0xa39a_616b;
+const GET_CONFIG_PARAMS: u32 = 0x2a11_1c19;
+const CONFIG_INFO: u32 = 0xae7b_272f;
 const ERROR: u32 = 0xbba9_e148;
 const RESULT_ONLY: u32 = 4;
 const MAX_ERROR: usize = 200;
@@ -39,6 +41,13 @@ pub(crate) struct AccountState {
 pub(crate) struct MethodResult {
     pub exit_code: i32,
     pub stack: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConfigInfo {
+    pub block: BlockId,
+    pub state_proof: Vec<u8>,
+    pub config_proof: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,6 +223,30 @@ pub(crate) fn run_smc_method(
     writer.0
 }
 
+pub(crate) fn get_config_params(block: &BlockId, params: &[i32]) -> Vec<u8> {
+    let mut writer = Writer::default();
+    writer
+        .u32(GET_CONFIG_PARAMS)
+        .u32(0)
+        .block(block)
+        .u32(u32::try_from(params.len()).unwrap_or(0));
+    for param in params {
+        writer.i32(*param);
+    }
+    writer.0
+}
+
+pub(crate) fn config_info(answer: &[u8]) -> Option<Answer<ConfigInfo>> {
+    read(answer, CONFIG_INFO, |reader| {
+        reader.u32()?;
+        Some(ConfigInfo {
+            block: reader.block()?,
+            state_proof: reader.bytes()?.to_vec(),
+            config_proof: reader.bytes()?.to_vec(),
+        })
+    })
+}
+
 pub(crate) fn masterchain_info(answer: &[u8]) -> Option<Answer<MasterchainInfo>> {
     read(answer, MASTERCHAIN_INFO, |reader| {
         let last = reader.block()?;
@@ -359,9 +392,17 @@ mod tests {
                 ERROR,
                 "liteServer.error code:int message:string = liteServer.Error",
             ),
+            (
+                GET_CONFIG_PARAMS,
+                "liteServer.getConfigParams mode:# id:tonNode.blockIdExt param_list:(vector int) = liteServer.ConfigInfo",
+            ),
+            (
+                CONFIG_INFO,
+                "liteServer.configInfo mode:# id:tonNode.blockIdExt state_proof:bytes config_proof:bytes = liteServer.ConfigInfo",
+            ),
         ];
         for (id, schema) in schemas {
-            assert_eq!(id, crc32(schema), "{schema}");
+            assert_eq!(id, crc32(&schema.replace(['(', ')'], "")), "{schema}");
         }
     }
 

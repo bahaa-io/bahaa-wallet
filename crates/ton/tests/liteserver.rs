@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use adnl::AdnlPeer;
 use adnl::crypto::{KeyPair, SecretKey};
-use bahaa_chain::ChainError;
+use bahaa_chain::{Chain, ChainError};
 use bahaa_config::{Endpoint, Network, Protocol, Registry};
 use bahaa_ton::TonChain;
 use bahaa_types::{Address, AssetId};
@@ -22,6 +22,12 @@ use tonlib_core::{TonAddress, TonHash};
 use url::Url;
 
 const FIXTURE: &str = include_str!("fixtures/account_proofs.json");
+const QUOTE: &str = include_str!("fixtures/quote.json");
+const SENDER: [u8; 32] = [
+    0x13, 0xfd, 0x99, 0x07, 0xed, 0x89, 0x66, 0x0d, 0x9b, 0x90, 0xf9, 0x25, 0xbd, 0x54, 0xa6, 0xb0,
+    0x29, 0xca, 0xfb, 0x36, 0x8a, 0x17, 0x28, 0x88, 0xf1, 0xff, 0xc6, 0xfd, 0x69, 0x06, 0x24, 0xe5,
+];
+const GET_CONFIG_PARAMS: u32 = 0x2a11_1c19;
 const MAINNET: &str = "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321fb05569";
 const TESTNET: [u8; 32] = [0x82; 32];
 const OWNER: [u8; 32] = [
@@ -51,6 +57,7 @@ enum Tamper {
 
 #[derive(Clone, Copy)]
 struct Behaviour {
+    recording: &'static str,
     foreign: bool,
     refuse: bool,
     deployed: bool,
@@ -59,6 +66,7 @@ struct Behaviour {
 }
 
 const GOOD: Behaviour = Behaviour {
+    recording: FIXTURE,
     foreign: false,
     refuse: false,
     deployed: true,
@@ -140,14 +148,14 @@ fn mainnet() -> [u8; 32] {
     unhex(MAINNET).try_into().unwrap()
 }
 
-fn recorded_info() -> Vec<u8> {
-    let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
-    unhex(fixture["masterchain_info"].as_str().unwrap())
+fn recorded(recording: &str, path: &[&str]) -> Option<Vec<u8>> {
+    let fixture: Value = serde_json::from_str(recording).unwrap();
+    let value = path.iter().fold(&fixture, |value, key| &value[*key]);
+    value.as_str().map(unhex)
 }
 
 fn recorded_account(hash: &[u8; 32]) -> Vec<u8> {
-    let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
-    unhex(fixture["accounts"][hex(hash)].as_str().unwrap())
+    recorded(FIXTURE, &["accounts", &hex(hash)]).unwrap()
 }
 
 fn account_answer(answer: &[u8], tamper: Tamper) -> Vec<u8> {
@@ -206,7 +214,8 @@ fn forged(hash: &[u8; 32]) -> Vec<u8> {
         .unwrap()
         .store_u64(40, 5_000_000_000)
         .unwrap();
-    cell.store_bit(false).unwrap().store_bit(false).unwrap();
+    cell.store_bit(false).unwrap();
+    cell.store_u8(2, 0).unwrap();
     BagOfCells::from_root(cell.build().unwrap())
         .serialize(false)
         .unwrap()
@@ -289,7 +298,7 @@ fn reply(behaviour: Behaviour, data: &[u8]) -> Vec<u8> {
     }
     match function {
         GET_MASTERCHAIN_INFO => {
-            let mut info = recorded_info();
+            let mut info = recorded(behaviour.recording, &["masterchain_info"]).unwrap();
             if behaviour.foreign {
                 info[120..152].copy_from_slice(&TESTNET);
             }
@@ -300,14 +309,22 @@ fn reply(behaviour: Behaviour, data: &[u8]) -> Vec<u8> {
         }
         GET_ACCOUNT_STATE => {
             let hash: [u8; 32] = data[88..120].try_into().unwrap();
-            let answer = match (hash, behaviour.tamper) {
-                (OWNER, Tamper::Swap) | (FRESH, _) => recorded_account(&FRESH),
-                (OWNER, _) => recorded_account(&OWNER),
-                _ => {
-                    return Tl::default().u32(0xbba9_e148).i32(-400).bytes(b"unknown").0;
-                }
+            let wanted = match (hash, behaviour.tamper) {
+                (OWNER, Tamper::Swap) => FRESH,
+                (other, _) => other,
+            };
+            let Some(answer) = recorded(behaviour.recording, &["accounts", &hex(&wanted)]) else {
+                return Tl::default().u32(0xbba9_e148).i32(-400).bytes(b"unknown").0;
             };
             account_answer(&answer, behaviour.tamper)
+        }
+        GET_CONFIG_PARAMS => {
+            let mut config = recorded(behaviour.recording, &["config"]).unwrap();
+            if behaviour.tamper == Tamper::State {
+                let middle = config.len() / 2;
+                config[middle] ^= 1;
+            }
+            config
         }
         RUN_SMC_METHOD => {
             let hash: [u8; 32] = data[92..124].try_into().unwrap();
@@ -658,4 +675,88 @@ async fn when_no_liteserver_can_be_trusted_the_http_providers_answer() {
                 .any(|path| path.starts_with("/v2/accounts/0:"))
         );
     }
+}
+
+async fn quote_chain_for(tamper: Tamper) -> TonChain {
+    let behaviour = Behaviour {
+        recording: QUOTE,
+        tamper,
+        ..GOOD
+    };
+    let server = liteserver(20, behaviour, Arc::default()).await;
+    TonChain::new(network(config(&[server], mainnet()).await)).unwrap()
+}
+
+fn send(amount: &str) -> bahaa_chain::Transfer {
+    bahaa_chain::Transfer {
+        account: 0,
+        from: ton(SENDER),
+        to: ton([0x5c; 32]),
+        asset: gram(),
+        amount: bahaa_types::Amount::parse(amount, 9).unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn a_v5r1_quote_is_computed_from_proven_state_and_fee_settings() {
+    let chain = quote_chain_for(Tamper::Nothing).await;
+    let (_, quote) = chain.prepare(&send("0.01")).await.unwrap();
+    let lines: Vec<(bahaa_chain::FeeItem, String)> = quote
+        .lines()
+        .iter()
+        .map(|line| (line.item.clone(), line.amount.to_string()))
+        .collect();
+    assert_eq!(
+        lines[0],
+        (
+            bahaa_chain::FeeItem::Compute { gas: 4_939 },
+            "0.000329268".to_owned()
+        )
+    );
+    assert_eq!(lines[1].0, bahaa_chain::FeeItem::Storage);
+    assert_eq!(
+        lines[2],
+        (bahaa_chain::FeeItem::Forwarding, "0.000183201".to_owned())
+    );
+    assert_eq!(
+        quote.max().units(),
+        quote.expected().units() * ruint::aliases::U256::from(2u8)
+    );
+    let Err(ChainError::Insufficient {
+        symbol, available, ..
+    }) = chain.prepare(&send("2")).await
+    else {
+        panic!("expected a refusal");
+    };
+    assert_eq!(
+        (symbol.as_str(), available.to_string()),
+        ("GRAM", "1.848793222".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn quotes_come_only_from_v5r1_wallets_and_know_when_not_to_bounce() {
+    let older = chain_for(GOOD).await;
+    let mut from_v4 = send("0.01");
+    from_v4.from = ton(OWNER);
+    assert!(matches!(
+        older.prepare(&from_v4).await,
+        Err(ChainError::Unsupported(_))
+    ));
+    let chain = quote_chain_for(Tamper::Nothing).await;
+    let (plan, _) = chain.prepare(&send("0.01")).await.unwrap();
+    let shown = format!("{plan:?}");
+    assert!(
+        shown.contains("bounce: false") && shown.contains("deploy: false"),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn a_quote_needs_a_config_its_proof_covers() {
+    let chain = quote_chain_for(Tamper::State).await;
+    assert!(matches!(
+        chain.prepare(&send("0.01")).await,
+        Err(ChainError::Network(_))
+    ));
 }

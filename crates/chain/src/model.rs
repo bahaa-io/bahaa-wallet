@@ -89,6 +89,9 @@ pub enum FeeItem {
     Bandwidth { bytes: u64 },
     Energy { units: u64 },
     Activation,
+    Compute { gas: u64 },
+    Storage,
+    Forwarding,
     Network,
 }
 

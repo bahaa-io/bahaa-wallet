@@ -10,7 +10,7 @@ const MERKLE_UPDATE: u8 = 4;
 const MAX_SHARD_DEPTH: u32 = 60;
 
 #[derive(Debug, PartialEq, Eq)]
-enum Found {
+pub(crate) enum Found {
     Leaf(ArcCell, usize),
     Absent,
 }
@@ -46,6 +46,35 @@ pub(crate) fn account(
     let block = opened(&block, &shard_block.root_hash)?;
     let state = opened(&state, &state_hash(&block)?)?;
     account_in(&state, hash)
+}
+
+pub(crate) fn config(
+    masterchain: &BlockId,
+    state_proof: &[u8],
+    config_proof: &[u8],
+    params: &[i32],
+) -> Option<Vec<ArcCell>> {
+    let block = opened(&single(state_proof)?, &masterchain.root_hash)?;
+    let state = opened(&single(config_proof)?, &state_hash(&block)?)?;
+    let mut parser = shard_state(&state)?;
+    if !parser.load_bit().ok()? {
+        return None;
+    }
+    let extra = child(&state, 3)?;
+    let mut parser = extra.parser();
+    if parser.load_u16(16).ok()? != MC_STATE_EXTRA_TAG {
+        return None;
+    }
+    let shards = parser.load_bit().ok()?;
+    let dict = child(&extra, usize::from(shards))?;
+    params
+        .iter()
+        .map(|id| crate::fees::param(&dict, *id))
+        .collect()
+}
+
+fn single(boc: &[u8]) -> Option<ArcCell> {
+    BagOfCells::parse(boc).ok()?.single_root().ok()
 }
 
 fn roots(boc: &[u8]) -> Option<(ArcCell, ArcCell)> {
@@ -167,7 +196,7 @@ fn account_in(shard_state_cell: &Cell, hash: &[u8; 32]) -> Option<Proven> {
         .map(Proven::Present)
 }
 
-fn lookup(root: &ArcCell, key: &[u8], bits: usize) -> Option<Found> {
+pub(crate) fn lookup(root: &ArcCell, key: &[u8], bits: usize) -> Option<Found> {
     let mut cell = root.clone();
     let mut done = 0;
     loop {
@@ -194,7 +223,7 @@ fn lookup(root: &ArcCell, key: &[u8], bits: usize) -> Option<Found> {
     }
 }
 
-fn label(parser: &mut CellParser<'_>, max: usize) -> Option<Vec<bool>> {
+pub(crate) fn label(parser: &mut CellParser<'_>, max: usize) -> Option<Vec<bool>> {
     let width = usize::try_from(max.bit_width()).ok()?;
     if !parser.load_bit().ok()? {
         let mut length = 0;

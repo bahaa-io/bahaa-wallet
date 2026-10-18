@@ -19,10 +19,11 @@ use tokio::time::timeout;
 use tonlib_core::cell::BagOfCells;
 use url::Url;
 
-use crate::cells::{account_balance, address_argument, no_arguments, read_stack};
+use crate::cells::{Account, account, address_argument, no_arguments, read_stack};
+use crate::fees::{PARAMS, Settings};
 use crate::http::Item;
 use crate::proof::{self, Proven};
-use crate::tl::{self, AccountState, Answer, BlockId};
+use crate::tl::{self, AccountState, Answer, BlockId, ConfigInfo};
 
 const CONNECT: Duration = Duration::from_secs(5);
 const ANSWER: Duration = Duration::from_secs(10);
@@ -66,31 +67,32 @@ impl Lite {
         config: &Url,
         owner: &Address,
     ) -> Result<U256, Failure<ChainError>> {
-        let servers = self.servers(config).await?;
+        Ok(self.account(config, owner).await?.balance)
+    }
+
+    pub(crate) async fn account(
+        &self,
+        config: &Url,
+        owner: &Address,
+    ) -> Result<Account, Failure<ChainError>> {
         let (workchain, hash) = parts(owner)?;
-        let result = servers
-            .pool
-            .call(None, |endpoint| {
-                let servers = Arc::clone(&servers);
-                async move {
-                    let session = servers.session(&endpoint)?;
-                    let mut peer = session.lock().await;
-                    let outcome = async {
-                        let last = self.connect(&mut peer, &servers, &endpoint).await?;
-                        let function = tl::get_account_state(&last, workchain, &hash);
-                        let state =
-                            exchange(open(&mut peer)?, &function, tl::account_state).await?;
-                        proven_balance(&last, &state, workchain, &hash, owner)
-                    }
-                    .await;
-                    if outcome.is_err() {
-                        *peer = None;
-                    }
-                    outcome
-                }
-            })
-            .await;
-        result.map_err(outer)
+        self.ask(
+            config,
+            |last| tl::get_account_state(last, workchain, &hash),
+            tl::account_state,
+            |last, state| proven_account(last, &state, owner),
+        )
+        .await
+    }
+
+    pub(crate) async fn settings(&self, config: &Url) -> Result<Settings, Failure<ChainError>> {
+        self.ask(
+            config,
+            |last| tl::get_config_params(last, &PARAMS),
+            tl::config_info,
+            |last, info| proven_settings(last, &info),
+        )
+        .await
     }
 
     pub(crate) async fn run(
@@ -100,41 +102,57 @@ impl Lite {
         method: &str,
         arg: Option<&Address>,
     ) -> Result<Option<Vec<Item>>, Failure<ChainError>> {
-        let servers = self.servers(config).await?;
         let (workchain, hash) = parts(address)?;
         let params = match arg {
             Some(arg) => address_argument(arg),
             None => no_arguments(),
         }
         .map_err(|_| Failure::Fatal(ChainError::Invalid("cannot encode the method arguments")))?;
+        self.ask(
+            config,
+            |last| tl::run_smc_method(last, workchain, &hash, method, &params),
+            tl::method_result,
+            |_, result| {
+                match result.exit_code {
+                    0 | 1 => {}
+                    NOT_DEPLOYED | INACTIVE => return Ok(None),
+                    code => {
+                        return Err(Failure::Fatal(ChainError::Rejected(format!(
+                            "the contract method {method} stopped with exit code {code}"
+                        ))));
+                    }
+                }
+                result
+                    .stack
+                    .as_deref()
+                    .and_then(read_stack)
+                    .map(Some)
+                    .ok_or_else(|| retry("a liteserver sent an unreadable stack"))
+            },
+        )
+        .await
+    }
+
+    async fn ask<A, T>(
+        &self,
+        config: &Url,
+        function: impl Fn(&BlockId) -> Vec<u8>,
+        decode: fn(&[u8]) -> Option<Answer<A>>,
+        finish: impl Fn(&BlockId, A) -> Result<T, Failure<ChainError>>,
+    ) -> Result<T, Failure<ChainError>> {
+        let servers = self.servers(config).await?;
+        let (function, finish) = (&function, &finish);
         let result = servers
             .pool
             .call(None, |endpoint| {
                 let servers = Arc::clone(&servers);
-                let params = &params;
                 async move {
                     let session = servers.session(&endpoint)?;
                     let mut peer = session.lock().await;
                     let outcome = async {
                         let last = self.connect(&mut peer, &servers, &endpoint).await?;
-                        let function = tl::run_smc_method(&last, workchain, &hash, method, params);
-                        let result =
-                            exchange(open(&mut peer)?, &function, tl::method_result).await?;
-                        match result.exit_code {
-                            0 | 1 => {}
-                            NOT_DEPLOYED | INACTIVE => return Ok(None),
-                            code => {
-                                return Err(Failure::Fatal(ChainError::Rejected(format!(
-                                    "the contract method {method} stopped with exit code {code}"
-                                ))));
-                            }
-                        }
-                        result
-                            .stack
-                            .as_deref()
-                            .and_then(read_stack)
-                            .map(Some)
-                            .ok_or_else(|| retry("a liteserver sent an unreadable stack"))
+                        let answer = exchange(open(&mut peer)?, &function(&last), decode).await?;
+                        finish(&last, answer)
                     }
                     .await;
                     if matches!(outcome, Err(Failure::Retry(_))) {
@@ -308,13 +326,12 @@ async fn exchange<T>(
     Err(retry("a liteserver kept answering something else"))
 }
 
-fn proven_balance(
+pub(crate) fn proven_account(
     last: &BlockId,
     state: &AccountState,
-    workchain: i8,
-    hash: &[u8; 32],
     owner: &Address,
-) -> Result<U256, Failure<ChainError>> {
+) -> Result<Account, Failure<ChainError>> {
+    let (workchain, hash) = parts(owner)?;
     if state.block != *last {
         return Err(retry("a liteserver answered for another block"));
     }
@@ -324,7 +341,7 @@ fn proven_balance(
         &state.shard_proof,
         &state.proof,
         workchain,
-        hash,
+        &hash,
     )
     .ok_or_else(|| retry("a liteserver sent an account proof that does not hold"))?;
     let root = (!state.state.is_empty())
@@ -340,8 +357,25 @@ fn proven_balance(
             "a liteserver sent an account that its proof does not cover",
         ));
     }
-    account_balance(&state.state, owner)
-        .ok_or_else(|| retry("a liteserver sent an unreadable account"))
+    account(&state.state, owner).ok_or_else(|| retry("a liteserver sent an unreadable account"))
+}
+
+pub(crate) fn proven_settings(
+    last: &BlockId,
+    info: &ConfigInfo,
+) -> Result<Settings, Failure<ChainError>> {
+    if info.block != *last {
+        return Err(retry("a liteserver answered for another block"));
+    }
+    let params = proof::config(last, &info.state_proof, &info.config_proof, &PARAMS)
+        .ok_or_else(|| retry("a liteserver sent a config proof that does not hold"))?;
+    let now = u32::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs()),
+    )
+    .unwrap_or(u32::MAX);
+    Settings::read(&params, now).ok_or_else(|| retry("a liteserver sent unreadable fee settings"))
 }
 
 fn open(

@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt::Write;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
@@ -13,7 +14,10 @@ use ruint::aliases::U256;
 use serde_json::{Value, json};
 use url::Url;
 
-use crate::lite::Lite;
+use crate::cells::Account;
+use crate::fees::Settings;
+use crate::lite::{Lite, proven_account, proven_settings};
+use crate::tl::{AccountState, BlockId, ConfigInfo};
 use crate::wallet::address_boc;
 
 const MAX_REPLY: usize = 4 * 1024 * 1024;
@@ -134,6 +138,60 @@ impl Http {
             .await?)
     }
 
+    pub(crate) async fn account(&self, address: &Address) -> Result<Account, ChainError> {
+        Ok(self
+            .pool
+            .call(None, |endpoint| async move {
+                let base = &endpoint.url;
+                match endpoint.protocol {
+                    Protocol::TonLiteservers => self.lite.account(base, address).await,
+                    Protocol::TonApi => {
+                        self.ready(&endpoint).await?;
+                        let path = format!("liteserver/get_account_state/{address}");
+                        let reply =
+                            api(self.fetch(base, &path, None).await?)?.ok_or_else(unsupported)?;
+                        let state = proxied_state(&reply).ok_or_else(malformed)?;
+                        proven_account(&state.block, &state, address)
+                    }
+                    _ => Err(unsupported()),
+                }
+            })
+            .await?)
+    }
+
+    pub(crate) async fn settings(&self) -> Result<Settings, ChainError> {
+        Ok(self
+            .pool
+            .call(None, |endpoint| async move {
+                let base = &endpoint.url;
+                match endpoint.protocol {
+                    Protocol::TonLiteservers => self.lite.settings(base).await,
+                    Protocol::TonApi => {
+                        self.ready(&endpoint).await?;
+                        let head = api(self
+                            .fetch(base, "liteserver/get_masterchain_info", None)
+                            .await?)?
+                        .ok_or_else(unsupported)?;
+                        let last = proxied_block(&head["last"]).ok_or_else(malformed)?;
+                        let path = format!(
+                            "liteserver/get_config_all/({},{:016x},{},{},{})?mode=0",
+                            last.workchain,
+                            u64::from_be_bytes(last.shard.to_be_bytes()),
+                            last.seqno,
+                            hex(&last.root_hash),
+                            hex(&last.file_hash)
+                        );
+                        let reply =
+                            api(self.fetch(base, &path, None).await?)?.ok_or_else(unsupported)?;
+                        let info = proxied_config(&reply).ok_or_else(malformed)?;
+                        proven_settings(&last, &info)
+                    }
+                    _ => Err(unsupported()),
+                }
+            })
+            .await?)
+    }
+
     async fn ready(&self, endpoint: &Endpoint) -> Result<Provider, Failure<ChainError>> {
         let provider = match endpoint.protocol {
             Protocol::TonCenter => Provider::Center,
@@ -224,6 +282,35 @@ impl Http {
         }
         Ok((status, serde_json::from_slice(&bytes).ok()))
     }
+}
+
+fn proxied_block(value: &Value) -> Option<BlockId> {
+    let shard = u64::from_str_radix(value["shard"].as_str()?, 16).ok()?;
+    Some(BlockId {
+        workchain: i32::try_from(value["workchain"].as_i64()?).ok()?,
+        shard: i64::from_be_bytes(shard.to_be_bytes()),
+        seqno: i32::try_from(value["seqno"].as_i64()?).ok()?,
+        root_hash: unhex(value["root_hash"].as_str()?)?.try_into().ok()?,
+        file_hash: unhex(value["file_hash"].as_str()?)?.try_into().ok()?,
+    })
+}
+
+fn proxied_state(reply: &Value) -> Option<AccountState> {
+    Some(AccountState {
+        block: proxied_block(&reply["id"])?,
+        shard_block: proxied_block(&reply["shardblk"])?,
+        shard_proof: unhex(reply["shard_proof"].as_str()?)?,
+        proof: unhex(reply["proof"].as_str()?)?,
+        state: unhex(reply["state"].as_str()?)?,
+    })
+}
+
+fn proxied_config(reply: &Value) -> Option<ConfigInfo> {
+    Some(ConfigInfo {
+        block: proxied_block(&reply["id"])?,
+        state_proof: unhex(reply["state_proof"].as_str()?)?,
+        config_proof: unhex(reply["config_proof"].as_str()?)?,
+    })
 }
 
 fn center((status, reply): Reply) -> Result<Value, Failure<ChainError>> {
@@ -332,6 +419,13 @@ fn decimal(value: &Value) -> Result<U256, Failure<ChainError>> {
         })
         .and_then(|text| U256::from_str_radix(text, 10).ok())
         .ok_or_else(|| retry("an endpoint sent a malformed balance"))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {
