@@ -1,6 +1,6 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bahaa_chain::{ChainError, Failure, Pool};
 use bahaa_config::{Endpoint, Feature};
@@ -14,6 +14,7 @@ use url::Url;
 const MAX_REPLY: usize = 4 * 1024 * 1024;
 const MAX_MESSAGE: usize = 200;
 const TIMEOUT: Duration = Duration::from_secs(15);
+const REFUSAL_MEMORY: Duration = Duration::from_secs(3600);
 
 #[derive(Debug)]
 pub(crate) struct Rpc {
@@ -21,6 +22,7 @@ pub(crate) struct Rpc {
     http: reqwest::Client,
     chain_id: u64,
     verified: Mutex<BTreeSet<String>>,
+    refused: Mutex<HashMap<(String, String), Instant>>,
 }
 
 impl Rpc {
@@ -35,6 +37,7 @@ impl Rpc {
             http,
             chain_id,
             verified: Mutex::new(BTreeSet::new()),
+            refused: Mutex::new(HashMap::new()),
         })
     }
 
@@ -63,6 +66,12 @@ impl Rpc {
         params: Value,
     ) -> Result<Value, Failure<ChainError>> {
         let key = endpoint.url.to_string();
+        let refusal = (key.clone(), method.to_owned());
+        if self.refused_recently(&refusal) {
+            return Err(Failure::Unsupported(ChainError::Network(format!(
+                "an endpoint does not serve {method}"
+            ))));
+        }
         if !self.is_verified(&key) {
             let reported = quantity(&self.send(&endpoint.url, "eth_chainId", json!([])).await?)
                 .map_err(Failure::Retry)?;
@@ -77,7 +86,26 @@ impl Rpc {
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert(key);
         }
-        self.send(&endpoint.url, method, params).await
+        let result = self.send(&endpoint.url, method, params).await;
+        if let Err(Failure::Unsupported(_)) = &result {
+            self.refused
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(refusal, Instant::now() + REFUSAL_MEMORY);
+        }
+        result
+    }
+
+    fn refused_recently(&self, refusal: &(String, String)) -> bool {
+        let mut refused = self.refused.lock().unwrap_or_else(PoisonError::into_inner);
+        match refused.get(refusal) {
+            Some(until) if *until > Instant::now() => true,
+            Some(_) => {
+                refused.remove(refusal);
+                false
+            }
+            None => false,
+        }
     }
 
     fn is_verified(&self, key: &str) -> bool {
@@ -114,9 +142,6 @@ impl Rpc {
                 wait,
             ));
         }
-        if !status.is_success() {
-            return Err(network(format!("HTTP {status}")));
-        }
         let mut body = Vec::new();
         while let Some(chunk) = response
             .chunk()
@@ -128,13 +153,24 @@ impl Rpc {
             }
             body.extend_from_slice(&chunk);
         }
-        let reply: Value =
-            serde_json::from_slice(&body).map_err(|_| network("reply is not JSON".to_owned()))?;
-        if let Some(error) = reply.get("error") {
-            let code = error["code"].as_i64().unwrap_or(0);
-            let message = error["message"].as_str().unwrap_or("unknown error");
-            return Err(classify(code, message));
+        let reply: Option<Value> = serde_json::from_slice(&body).ok();
+        let error = reply
+            .as_ref()
+            .and_then(|reply| reply.get("error"))
+            .map(|error| {
+                let code = error["code"].as_i64().unwrap_or(0);
+                classify(code, error["message"].as_str().unwrap_or("unknown error"))
+            });
+        if !status.is_success() {
+            return Err(match error {
+                Some(failure @ (Failure::Unsupported(_) | Failure::RateLimited(..))) => failure,
+                _ => network(format!("HTTP {status}")),
+            });
         }
+        if let Some(failure) = error {
+            return Err(failure);
+        }
+        let reply = reply.ok_or_else(|| network("reply is not JSON".to_owned()))?;
         reply
             .get("result")
             .cloned()
@@ -158,7 +194,23 @@ pub(crate) fn classify(code: i64, message: &str) -> Failure<ChainError> {
     if limited {
         return Failure::RateLimited(ChainError::Network(message), None);
     }
-    if matches!(code, -32601 | -32603 | -32001 | -32002 | -32004) {
+    let unsupported = code == -32601
+        || [
+            "archive",
+            "personal token",
+            "block range",
+            "blocks range",
+            "free plan",
+            "specify an address",
+            "does not exist",
+            "method not found",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    if unsupported {
+        return Failure::Unsupported(ChainError::Network(message));
+    }
+    if matches!(code, -32603 | -32001 | -32002 | -32004) {
         return Failure::Retry(ChainError::Network(message));
     }
     Failure::Fatal(ChainError::Rejected(message))
@@ -182,6 +234,7 @@ mod tests {
         match failure {
             Failure::Retry(_) => "retry",
             Failure::RateLimited(..) => "limited",
+            Failure::Unsupported(_) => "unsupported",
             Failure::Fatal(_) => "fatal",
         }
     }
@@ -201,7 +254,28 @@ mod tests {
                 "Rate limit exceeded on Nodies public endpoints",
                 "limited",
             ),
-            (-32601, "the method eth_getLogs does not exist", "retry"),
+            (
+                -32601,
+                "the method eth_getLogs does not exist",
+                "unsupported",
+            ),
+            (
+                -32602,
+                "Archive requests require a personal token. Get one at: https://www.allnodes.com/publicnode",
+                "unsupported",
+            ),
+            (-32701, "exceed maximum block range: 10000", "unsupported"),
+            (
+                -32602,
+                "eth_getLogs is limited to 0 - 50 blocks range",
+                "unsupported",
+            ),
+            (
+                35,
+                "ranges over 10000 blocks are not supported on free plan",
+                "unsupported",
+            ),
+            (-32000, "transaction type not supported", "fatal"),
             (-32603, "Internal error", "retry"),
             (
                 -32000,

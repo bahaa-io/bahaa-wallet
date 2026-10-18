@@ -13,6 +13,7 @@ const MAX_DOUBLINGS: u32 = 10;
 pub enum Failure<E> {
     Retry(E),
     RateLimited(E, Option<Duration>),
+    Unsupported(E),
     Fatal(E),
 }
 
@@ -108,6 +109,10 @@ impl Pool {
                     slot.failed(Some(wait.unwrap_or(COOLDOWN_BASE)));
                     last = Some(err);
                 }
+                Err(Failure::Unsupported(err)) => {
+                    slot.answered();
+                    last = Some(err);
+                }
             }
         }
         if let Some(err) = last {
@@ -176,6 +181,11 @@ impl Slot {
         health.failures = 0;
         health.cooldown_until = None;
         health.latency = Some(health.latency.map_or(took, |old| old * 3 / 4 + took / 4));
+        self.finished(&mut health);
+    }
+
+    fn answered(&self) {
+        let mut health = self.health();
         self.finished(&mut health);
     }
 
@@ -336,6 +346,32 @@ mod tests {
         assert_eq!(taken(&log), ["a"]);
         assert_eq!(run(&pool, &log, |_| Ok(1)).await, Ok(1));
         assert_eq!(taken(&log), ["a"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_endpoint_that_cannot_serve_a_request_is_skipped_without_a_cooldown() {
+        let pool = pool(&["a", "b"]);
+        let log = Log::default();
+        let a_cannot = |host: &str| {
+            if host == "a" {
+                Err(Failure::Unsupported("archive only"))
+            } else {
+                Ok(1)
+            }
+        };
+        assert_eq!(run(&pool, &log, a_cannot).await, Ok(1));
+        assert_eq!(taken(&log), ["a", "b"]);
+        assert_eq!(run(&pool, &log, |_| Ok(2)).await, Ok(2));
+        assert_eq!(taken(&log), ["a"]);
+        assert_eq!(
+            (pool.status()[0].available, pool.status()[0].failures),
+            (true, 0)
+        );
+        assert_eq!(
+            run(&pool, &log, |_| Err(Failure::Unsupported("archive only"))).await,
+            Err(PoolError::Exhausted("archive only"))
+        );
+        assert_eq!(run(&pool, &log, |_| Ok(3)).await, Ok(3));
     }
 
     #[tokio::test(start_paused = true)]

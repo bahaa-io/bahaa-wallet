@@ -1,0 +1,97 @@
+#![allow(clippy::unwrap_used)]
+
+mod common;
+
+use std::sync::Arc;
+
+use bahaa_chain::{Chain, TxId, TxStatus};
+use bahaa_evm::EvmChain;
+use common::{Log, assets, bsc_on, node, owner, result};
+use serde_json::{Value, json};
+
+const ARCHIVE: &str =
+    "Archive requests require a personal token. Get one at: https://www.allnodes.com/publicnode";
+
+fn receipt() -> Value {
+    json!({"status": "0x1", "blockNumber": "0x10", "gasUsed": "0x5208", "effectiveGasPrice": "0x3b9aca00"})
+}
+
+fn serves(receipts: bool) -> impl Fn(&str, &Value) -> (u16, Value) + Send + Sync + 'static {
+    move |method, _| match method {
+        "eth_chainId" => result(&json!("0x38")),
+        "eth_getBalance" => result(&json!("0x1")),
+        "eth_getTransactionReceipt" if receipts => result(&receipt()),
+        "eth_getTransactionReceipt" => (
+            403,
+            json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": ARCHIVE}}),
+        ),
+        _ => (502, json!("bad gateway")),
+    }
+}
+
+fn count(log: &Log, method: &str) -> usize {
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter(|seen| *seen == method)
+        .count()
+}
+
+#[tokio::test]
+async fn an_endpoint_that_refuses_receipts_is_skipped_for_receipts_only() {
+    let (picky_log, full_log) = (Log::default(), Log::default());
+    let picky = node(Arc::clone(&picky_log), serves(false)).await;
+    let full = node(Arc::clone(&full_log), serves(true)).await;
+    let chain = EvmChain::new(bsc_on(&[picky, full])).unwrap();
+    let id = TxId::new(format!("0x{}", "ab".repeat(32))).unwrap();
+    let confirmed = chain.status(&id).await.unwrap();
+    assert!(matches!(
+        confirmed,
+        TxStatus::Confirmed {
+            block: Some(16),
+            ..
+        }
+    ));
+    assert_eq!(count(&picky_log, "eth_getTransactionReceipt"), 1);
+    assert_eq!(count(&full_log, "eth_getTransactionReceipt"), 1);
+    chain.balances(&owner(), &assets(&["bsc"])).await.unwrap();
+    assert_eq!(count(&picky_log, "eth_getBalance"), 1);
+    assert_eq!(count(&full_log, "eth_getBalance"), 0);
+    chain.status(&id).await.unwrap();
+    assert_eq!(count(&picky_log, "eth_getTransactionReceipt"), 1);
+    assert_eq!(count(&full_log, "eth_getTransactionReceipt"), 2);
+}
+
+#[tokio::test]
+async fn an_http_error_without_a_capability_reason_still_cools_the_endpoint_down() {
+    let (broken_log, full_log) = (Log::default(), Log::default());
+    let broken = node(Arc::clone(&broken_log), |method, _| match method {
+        "eth_chainId" => result(&json!("0x38")),
+        _ => (
+            401,
+            json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "tenant disabled"}}),
+        ),
+    })
+    .await;
+    let full = node(Arc::clone(&full_log), serves(true)).await;
+    let chain = EvmChain::new(bsc_on(&[broken, full])).unwrap();
+    chain.balances(&owner(), &assets(&["bsc"])).await.unwrap();
+    chain.balances(&owner(), &assets(&["bsc"])).await.unwrap();
+    assert_eq!(count(&broken_log, "eth_getBalance"), 1);
+    assert_eq!(count(&full_log, "eth_getBalance"), 2);
+}
+
+#[tokio::test]
+#[ignore = "talks to the real BSC network"]
+async fn live_bsc_status_of_a_real_transfer() {
+    let registry = bahaa_config::Registry::builtin().unwrap();
+    let chain = EvmChain::new(registry.get(&"bsc".parse().unwrap()).unwrap().clone()).unwrap();
+    let id =
+        TxId::new("0xf54187da477e131a07472915a7fd23896829b69ce8ad6f09f42e6690814fbbfe").unwrap();
+    let status = chain.status(&id).await.unwrap();
+    let TxStatus::Confirmed { block, fee } = status else {
+        panic!("expected a confirmed transfer, got {status:?}");
+    };
+    assert_eq!(block, Some(0x07a4_d222));
+    assert!(fee.is_some_and(|fee| !fee.is_zero()));
+}
