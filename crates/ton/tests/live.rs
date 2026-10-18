@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
-use bahaa_chain::{Chain, ChainError, Signed, TxId, TxStatus};
+use std::fmt::Write;
+
+use bahaa_chain::{Chain, ChainError, ScanCursor, Signed, TxId, TxStatus};
 use bahaa_config::{Protocol, Registry};
 use bahaa_ton::TonChain;
 use bahaa_types::{Address, Amount, AssetId, ChainFamily};
@@ -225,5 +227,94 @@ async fn live_a_real_transfer_is_tracked_and_its_message_cannot_be_sent_again() 
             )),
             "{protocol:?}"
         );
+    }
+}
+
+async fn indexed_receipts(account: &str, from_lt: u64, until_lt: u64) -> Vec<(String, u64)> {
+    let listed: serde_json::Value = reqwest::get(format!(
+        "https://toncenter.com/api/v3/transactions?account={account}&start_lt={from_lt}&end_lt={until_lt}&limit=100&sort=desc"
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let mut receipts = Vec::new();
+    for transaction in listed["transactions"].as_array().unwrap() {
+        let message = &transaction["in_msg"];
+        let plain = [
+            serde_json::Value::Null,
+            "0x00000000".into(),
+            "0x2167da4b".into(),
+        ]
+        .contains(&message["opcode"]);
+        let kept = message["source"].is_string()
+            && message["bounced"] == false
+            && message["init_state"].is_null()
+            && transaction["description"].get("bounce").is_none();
+        let nano = message["value"]
+            .as_str()
+            .map_or(0, |value| value.parse::<u64>().unwrap());
+        if plain && kept && nano > 0 {
+            let hash = STANDARD
+                .decode(transaction["hash"].as_str().unwrap())
+                .unwrap();
+            let hex = hash.iter().fold(String::new(), |mut out, byte| {
+                let _ = write!(out, "{byte:02x}");
+                out
+            });
+            receipts.push((hex, nano));
+        }
+    }
+    receipts
+}
+
+#[tokio::test]
+#[ignore = "talks to the real TON network, run with --test-threads=1"]
+async fn live_incoming_gram_matches_the_indexer() {
+    let registry = Registry::builtin().unwrap();
+    let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
+    let gram: AssetId = "ton".parse().unwrap();
+    let busy = Address::parse(ChainFamily::Ton, SENDER).unwrap();
+    let since = ScanCursor {
+        next: SENT_LT,
+        complete_from: SENT_LT,
+        complete_since: SENT_EXPIRES,
+    };
+    let test_seed = Address::parse(
+        ChainFamily::Ton,
+        "0:c73162b34cf19667210af3180d6fcfb88df1678cbbbe731f38642534cc6951e4",
+    )
+    .unwrap();
+    for protocol in [Protocol::TonLiteservers, Protocol::TonApi] {
+        let mut network = ton.clone();
+        network
+            .endpoints
+            .retain(|endpoint| endpoint.protocol == protocol);
+        let chain = TonChain::new(network).unwrap();
+        for (owner, cursor) in [(busy, Some(since)), (test_seed, None)] {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let scanned = chain
+                .scan(&owner, std::slice::from_ref(&gram), cursor)
+                .await
+                .unwrap()
+                .unwrap();
+            let start = cursor.map_or(scanned.cursor.complete_from, |cursor| cursor.next);
+            let found: Vec<(String, u64)> = scanned
+                .found
+                .iter()
+                .map(|incoming| {
+                    (
+                        incoming.id.as_str().to_owned(),
+                        u64::try_from(incoming.amount.units()).unwrap(),
+                    )
+                })
+                .collect();
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let indexed =
+                indexed_receipts(&owner.to_string(), start, scanned.cursor.next - 1).await;
+            assert!(!found.is_empty(), "{protocol:?} {owner}");
+            assert_eq!(found, indexed, "{protocol:?} {owner}");
+        }
     }
 }

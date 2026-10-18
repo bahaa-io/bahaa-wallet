@@ -1,27 +1,46 @@
+use bahaa_types::Address;
 use ruint::aliases::U256;
 use tonlib_core::cell::{ArcCell, BagOfCells, Cell, CellParser};
 
-use crate::cells::var_uint;
+use crate::cells::{from_ton, var_uint};
 use crate::wallet;
 
 pub(crate) const MAX_LISTED: u32 = 16;
 const TRANSACTION: u8 = 0b0111;
 const ORDINARY: u8 = 0;
+const COMMENT: u32 = 0;
+const ENCRYPTED_COMMENT: u32 = 0x2167_da4b;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Transaction {
+    pub hash: [u8; 32],
     pub lt: u64,
     pub previous: ([u8; 32], u64),
     pub now: u32,
     pub external: Option<[u8; 32]>,
+    pub credit: Option<Credit>,
     pub fees: U256,
-    description: ArcCell,
+    phases: Option<Phases>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Credit {
+    pub from: Address,
+    pub nano: U256,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Outcome {
     Sent { forward: U256 },
     Failed(&'static str),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Phases {
+    compute: Option<bool>,
+    action: Option<ArcCell>,
+    aborted: bool,
+    bounced: bool,
 }
 
 pub(crate) fn linked(
@@ -36,11 +55,8 @@ pub(crate) fn linked(
     let mut expected = from;
     let mut list = Vec::with_capacity(roots.len());
     for root in &roots {
-        if Cell::cell_hash(root).as_slice() != expected.0 {
-            return None;
-        }
         let transaction = read(root, account)?;
-        if transaction.lt != expected.1 {
+        if transaction.hash != expected.0 || transaction.lt != expected.1 {
             return None;
         }
         expected = transaction.previous;
@@ -68,57 +84,120 @@ fn read(root: &ArcCell, account: &[u8; 32]) -> Option<Transaction> {
     let description = parser.next_reference().ok()?;
     parser.ensure_empty().ok()?;
     let mut messages = messages.parser();
-    let external = if messages.load_bit().ok()? {
-        wallet::normalized(messages.next_reference().ok()?.as_ref())
+    let message = if messages.load_bit().ok()? {
+        Some(messages.next_reference().ok()?)
     } else {
         None
     };
+    let phases = phases(&description);
+    let credit = match (&message, &phases) {
+        (Some(message), Some(phases)) if !phases.bounced => credit(message, account),
+        _ => None,
+    };
     Some(Transaction {
+        hash: Cell::cell_hash(root).as_slice().try_into().ok()?,
         lt,
         previous: (previous_hash, previous_lt),
         now,
-        external,
+        external: message.as_deref().and_then(wallet::normalized),
+        credit,
         fees,
-        description,
+        phases,
     })
+}
+
+fn phases(description: &Cell) -> Option<Phases> {
+    let mut parser = description.parser();
+    if parser.load_u8(4).ok()? != ORDINARY {
+        return None;
+    }
+    parser.load_bit().ok()?;
+    if parser.load_bit().ok()? {
+        var_uint(&mut parser, 4)?;
+        maybe_grams(&mut parser)?;
+        status_change(&mut parser)?;
+    }
+    if parser.load_bit().ok()? {
+        maybe_grams(&mut parser)?;
+        var_uint(&mut parser, 4)?;
+        if parser.load_bit().ok()? {
+            parser.next_reference().ok()?;
+        }
+    }
+    let compute = if parser.load_bit().ok()? {
+        let success = parser.load_bit().ok()?;
+        parser.skip_bits(2).ok()?;
+        var_uint(&mut parser, 4)?;
+        parser.next_reference().ok()?;
+        Some(success)
+    } else {
+        if parser.load_u8(2).ok()? == 0b11 {
+            parser.load_bit().ok()?;
+        }
+        None
+    };
+    let action = if parser.load_bit().ok()? {
+        Some(parser.next_reference().ok()?)
+    } else {
+        None
+    };
+    Some(Phases {
+        compute,
+        action,
+        aborted: parser.load_bit().ok()?,
+        bounced: parser.load_bit().ok()?,
+    })
+}
+
+fn credit(message: &Cell, account: &[u8; 32]) -> Option<Credit> {
+    let mut parser = message.parser();
+    if parser.load_bit().ok()? {
+        return None;
+    }
+    parser.skip_bits(2).ok()?;
+    if parser.load_bit().ok()? {
+        return None;
+    }
+    let from = from_ton(&parser.load_address().ok()?)?;
+    if parser.load_address().ok()?.hash_part.as_slice() != account {
+        return None;
+    }
+    let nano = var_uint(&mut parser, 4)?;
+    if parser.load_bit().ok()? {
+        parser.next_reference().ok()?;
+    }
+    var_uint(&mut parser, 4)?;
+    var_uint(&mut parser, 4)?;
+    parser.skip_bits(64 + 32).ok()?;
+    if parser.load_bit().ok()? {
+        return None;
+    }
+    let body = if parser.load_bit().ok()? {
+        parser.next_reference().ok()?
+    } else {
+        parser.load_remaining().ok()?.to_arc()
+    };
+    (nano > U256::ZERO && plain(&body)).then_some(Credit { from, nano })
+}
+
+fn plain(body: &Cell) -> bool {
+    (body.bit_len() == 0 && body.references().is_empty())
+        || body
+            .parser()
+            .load_u32(32)
+            .is_ok_and(|op| op == COMMENT || op == ENCRYPTED_COMMENT)
 }
 
 impl Transaction {
     pub(crate) fn outcome(&self) -> Option<Outcome> {
-        let mut parser = self.description.parser();
-        if parser.load_u8(4).ok()? != ORDINARY {
-            return None;
-        }
-        parser.load_bit().ok()?;
-        if parser.load_bit().ok()? {
-            var_uint(&mut parser, 4)?;
-            maybe_grams(&mut parser)?;
-            status_change(&mut parser)?;
-        }
-        if parser.load_bit().ok()? {
-            maybe_grams(&mut parser)?;
-            var_uint(&mut parser, 4)?;
-            if parser.load_bit().ok()? {
-                parser.next_reference().ok()?;
-            }
-        }
-        if !parser.load_bit().ok()? {
+        let phases = self.phases.as_ref()?;
+        let Some(computed) = phases.compute else {
             return Some(Outcome::Failed("the wallet could not run the transfer"));
-        }
-        let computed = parser.load_bit().ok()?;
-        parser.skip_bits(2).ok()?;
-        var_uint(&mut parser, 4)?;
-        parser.next_reference().ok()?;
-        let action = if parser.load_bit().ok()? {
-            Some(parser.next_reference().ok()?)
-        } else {
-            None
         };
-        let aborted = parser.load_bit().ok()?;
         if !computed {
             return Some(Outcome::Failed("the wallet contract stopped with an error"));
         }
-        let Some(action) = action else {
+        let Some(action) = &phases.action else {
             return Some(Outcome::Failed("the wallet did not carry out the transfer"));
         };
         let mut parser = action.parser();
@@ -134,7 +213,7 @@ impl Transaction {
         parser.skip_bits(32).ok()?;
         let skipped = parser.load_u16(16).ok()?;
         let created = parser.load_u16(16).ok()?;
-        if !success || aborted {
+        if !success || phases.aborted {
             return Some(Outcome::Failed(
                 "the network could not carry out the transfer",
             ));
@@ -168,6 +247,7 @@ fn status_change(parser: &mut CellParser<'_>) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use tonlib_core::cell::CellBuilder;
+    use tonlib_core::{TonAddress, TonHash};
 
     use super::*;
 
@@ -312,13 +392,16 @@ mod tests {
             }
         }
         description.store_bit(aborted).unwrap();
+        description.store_bit(false).unwrap();
         Transaction {
+            hash: [0; 32],
             lt: 1,
             previous: ([0; 32], 0),
             now: 0,
             external: None,
+            credit: None,
             fees: U256::ZERO,
-            description: description.build().unwrap().to_arc(),
+            phases: phases(&description.build().unwrap()),
         }
     }
 
@@ -348,6 +431,247 @@ mod tests {
                 matches!(failure.outcome(), Some(Outcome::Failed(_))),
                 "{:?}",
                 failure.outcome()
+            );
+        }
+    }
+
+    const OURS: [u8; 32] = [0x3c; 32];
+
+    #[derive(Clone, Copy)]
+    enum Body {
+        Empty,
+        Inline(u32),
+        Referenced(Option<u32>),
+        Nested,
+    }
+
+    #[derive(Clone, Copy)]
+    struct Sent {
+        bounced: bool,
+        nano: u8,
+        to: [u8; 32],
+        extra: bool,
+        init: bool,
+        body: Body,
+    }
+
+    const PLAIN: Sent = Sent {
+        bounced: false,
+        nano: 7,
+        to: OURS,
+        extra: false,
+        init: false,
+        body: Body::Empty,
+    };
+
+    fn message(sent: Sent) -> ArcCell {
+        let empty = CellBuilder::new().build().unwrap().to_arc();
+        let mut cell = CellBuilder::new();
+        cell.store_bit(false).unwrap().store_bit(true).unwrap();
+        cell.store_bit(false)
+            .unwrap()
+            .store_bit(sent.bounced)
+            .unwrap();
+        cell.store_address(&TonAddress::new(0, TonHash::from([0x5a; 32])))
+            .unwrap();
+        cell.store_address(&TonAddress::new(0, TonHash::from(sent.to)))
+            .unwrap();
+        cell.store_u8(4, 1).unwrap().store_u8(8, sent.nano).unwrap();
+        cell.store_bit(sent.extra).unwrap();
+        if sent.extra {
+            cell.store_reference(&empty).unwrap();
+        }
+        cell.store_u8(4, 0).unwrap().store_u8(4, 0).unwrap();
+        cell.store_u64(64, 0).unwrap().store_u32(32, 0).unwrap();
+        cell.store_bit(sent.init).unwrap();
+        if sent.init {
+            cell.store_bit(true)
+                .unwrap()
+                .store_reference(&empty)
+                .unwrap();
+        }
+        match sent.body {
+            Body::Empty => {
+                cell.store_bit(false).unwrap();
+            }
+            Body::Inline(op) => {
+                cell.store_bit(false).unwrap().store_u32(32, op).unwrap();
+            }
+            Body::Referenced(op) => {
+                let mut body = CellBuilder::new();
+                if let Some(op) = op {
+                    body.store_u32(32, op).unwrap();
+                }
+                cell.store_bit(true).unwrap();
+                cell.store_reference(&body.build().unwrap().to_arc())
+                    .unwrap();
+            }
+            Body::Nested => {
+                let mut body = CellBuilder::new();
+                body.store_reference(&empty).unwrap();
+                cell.store_bit(true).unwrap();
+                cell.store_reference(&body.build().unwrap().to_arc())
+                    .unwrap();
+            }
+        }
+        cell.build().unwrap().to_arc()
+    }
+
+    fn received(sent: Sent, bounced_back: bool) -> Option<Credit> {
+        let mut messages = CellBuilder::new();
+        messages.store_bit(true).unwrap();
+        messages.store_reference(&message(sent)).unwrap();
+        messages.store_bit(false).unwrap();
+        let mut description = CellBuilder::new();
+        description
+            .store_u8(4, ORDINARY)
+            .unwrap()
+            .store_bit(false)
+            .unwrap();
+        description
+            .store_bit(false)
+            .unwrap()
+            .store_bit(false)
+            .unwrap();
+        description
+            .store_bit(false)
+            .unwrap()
+            .store_u8(2, 0)
+            .unwrap();
+        description
+            .store_bit(false)
+            .unwrap()
+            .store_bit(true)
+            .unwrap();
+        description.store_bit(bounced_back).unwrap();
+        description.store_u8(8, 0).unwrap();
+        let mut root = CellBuilder::new();
+        root.store_u8(4, TRANSACTION)
+            .unwrap()
+            .store_slice(&OURS)
+            .unwrap();
+        root.store_u64(64, 9)
+            .unwrap()
+            .store_slice(&[0; 32])
+            .unwrap();
+        root.store_u64(64, 0)
+            .unwrap()
+            .store_u32(32, 1_700_000_000)
+            .unwrap();
+        root.store_u16(15, 0).unwrap().store_u8(4, 0).unwrap();
+        root.store_reference(&messages.build().unwrap().to_arc())
+            .unwrap();
+        root.store_u8(4, 0).unwrap().store_bit(false).unwrap();
+        root.store_reference(&CellBuilder::new().build().unwrap().to_arc())
+            .unwrap();
+        root.store_reference(&description.build().unwrap().to_arc())
+            .unwrap();
+        read(&root.build().unwrap().to_arc(), &OURS).unwrap().credit
+    }
+
+    #[test]
+    fn only_plain_transfers_the_wallet_keeps_are_received() {
+        let credit = Some(Credit {
+            from: Address::Ton {
+                workchain: 0,
+                hash: [0x5a; 32],
+            },
+            nano: U256::from(7u8),
+        });
+        let plain = [
+            PLAIN,
+            Sent {
+                body: Body::Inline(COMMENT),
+                ..PLAIN
+            },
+            Sent {
+                body: Body::Referenced(Some(COMMENT)),
+                ..PLAIN
+            },
+            Sent {
+                body: Body::Referenced(Some(ENCRYPTED_COMMENT)),
+                ..PLAIN
+            },
+            Sent {
+                body: Body::Referenced(None),
+                ..PLAIN
+            },
+            Sent {
+                extra: true,
+                ..PLAIN
+            },
+        ];
+        for (at, sent) in plain.into_iter().enumerate() {
+            assert_eq!(received(sent, false), credit, "{at}");
+        }
+        let others = [
+            Sent {
+                body: Body::Inline(0x7362_d09c),
+                ..PLAIN
+            },
+            Sent {
+                body: Body::Referenced(Some(0xd532_76db)),
+                ..PLAIN
+            },
+            Sent {
+                bounced: true,
+                ..PLAIN
+            },
+            Sent { nano: 0, ..PLAIN },
+            Sent {
+                to: [1; 32],
+                ..PLAIN
+            },
+            Sent {
+                init: true,
+                ..PLAIN
+            },
+            Sent {
+                body: Body::Nested,
+                ..PLAIN
+            },
+        ];
+        for (at, sent) in others.into_iter().enumerate() {
+            assert_eq!(received(sent, false), None, "{at}");
+        }
+        assert_eq!(received(PLAIN, true), None);
+    }
+
+    #[test]
+    fn every_skipped_compute_reason_is_read_to_its_end() {
+        for reason in [(2, 0b00), (2, 0b01), (2, 0b10), (3, 0b110)] {
+            let mut description = CellBuilder::new();
+            description
+                .store_u8(4, ORDINARY)
+                .unwrap()
+                .store_bit(false)
+                .unwrap();
+            description
+                .store_bit(false)
+                .unwrap()
+                .store_bit(false)
+                .unwrap();
+            description.store_bit(false).unwrap();
+            description.store_u8(reason.0, reason.1).unwrap();
+            description
+                .store_bit(false)
+                .unwrap()
+                .store_bit(true)
+                .unwrap();
+            description
+                .store_bit(false)
+                .unwrap()
+                .store_bit(false)
+                .unwrap();
+            assert_eq!(
+                phases(&description.build().unwrap()),
+                Some(Phases {
+                    compute: None,
+                    action: None,
+                    aborted: true,
+                    bounced: false
+                }),
+                "{reason:?}"
             );
         }
     }

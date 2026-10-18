@@ -10,6 +10,7 @@ use bahaa_types::{Address, Amount, AssetId};
 use ed25519_dalek::SigningKey;
 use ruint::aliases::U256;
 
+mod incoming;
 mod send;
 mod track;
 
@@ -183,6 +184,14 @@ fn key(seed: &Seed, account: u32) -> Result<SigningKey, ChainError> {
 
 fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {
     Amount::new(units, decimals).map_err(|_| ChainError::Invalid("impossible decimals"))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut out, byte| {
+        use std::fmt::Write;
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
 }
 
 fn malformed() -> ChainError {

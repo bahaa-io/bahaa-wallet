@@ -7,7 +7,7 @@ use ed25519_dalek::{Signature, Signer};
 use ruint::aliases::U256;
 use tonlib_core::cell::BagOfCells;
 
-use super::{TonChain, amount, key};
+use super::{TonChain, amount, hex, key};
 use crate::cells::{Account, Status};
 use crate::fees::{Settings, TRANSFER_GAS, size_without_root};
 use crate::wallet::{self, Order};
@@ -233,14 +233,6 @@ pub(crate) fn estimate(
         compute: settings.gas_fee(TRANSFER_GAS).ok_or_else(overflow)?,
         storage,
         forwarding: import.checked_add(forward).ok_or_else(overflow)?,
-    })
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        use std::fmt::Write;
-        let _ = write!(out, "{byte:02x}");
-        out
     })
 }
 

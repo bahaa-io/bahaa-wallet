@@ -241,7 +241,7 @@ fn boc_of(cell: &ArcCell) -> Option<Vec<u8>> {
         .ok()
 }
 
-fn from_ton(address: &TonAddress) -> Option<Address> {
+pub(crate) fn from_ton(address: &TonAddress) -> Option<Address> {
     Some(Address::Ton {
         workchain: i8::try_from(address.workchain).ok()?,
         hash: address.hash_part.as_slice().try_into().ok()?,

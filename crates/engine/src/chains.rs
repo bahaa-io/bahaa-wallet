@@ -71,6 +71,7 @@ impl AnyChain {
         match self {
             Self::Evm(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
             Self::Tron(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
+            Self::Ton(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
             Self::Evm(_) | Self::Tron(_) | Self::Ton(_) => Ok(None),
         }
     }

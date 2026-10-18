@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use adnl::AdnlPeer;
 use adnl::crypto::{KeyPair, SecretKey};
-use bahaa_chain::{Chain, ChainError, Signed, TxId, TxStatus};
+use bahaa_chain::{Chain, ChainError, Incoming, ScanCursor, Signed, TxId, TxStatus};
 use bahaa_config::{Endpoint, Network, Protocol, Registry};
 use bahaa_ton::TonChain;
 use bahaa_types::{Address, AssetId};
@@ -951,4 +951,166 @@ async fn transfers_are_handed_over_and_only_message_refusals_are_final() {
             "{delivery:?}"
         );
     }
+}
+
+fn summed(found: &[Incoming]) -> (usize, ruint::aliases::U256) {
+    (
+        found.len(),
+        found.iter().map(|incoming| incoming.amount.units()).sum(),
+    )
+}
+
+fn incoming(id: &str, from: &str, to: [u8; 32], nano: &str, lt: u64, time: u64) -> Incoming {
+    Incoming {
+        id: TxId::new(id.to_owned()).unwrap(),
+        index: 0,
+        from: Address::parse(bahaa_types::ChainFamily::Ton, from).unwrap(),
+        to: ton(to),
+        asset: gram(),
+        amount: bahaa_types::Amount::parse(nano, 9).unwrap(),
+        block: lt,
+        time,
+    }
+}
+
+#[tokio::test]
+async fn a_first_scan_reads_back_to_the_cap_or_the_first_transaction() {
+    let chain = tracking_chain(GOOD).await;
+    let busy = chain
+        .scan(&ton(SENDER), &[gram()], None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        busy.cursor,
+        ScanCursor {
+            next: 110_383_004_000_041,
+            complete_from: 67_288_602_000_008,
+            complete_since: 1_771_939_107
+        }
+    );
+    assert_eq!(
+        summed(&busy.found),
+        (34, ruint::aliases::U256::from(915_967_845u64))
+    );
+    assert_eq!(
+        busy.found[0],
+        incoming(
+            "ca7ce93aedf52d8acefc446f635ebb2569f1720a05abe8d9e14d0133cc72a544",
+            "0:aaa71dfbda12f506eff5ec31ad26ea9a2133107c8d7493b0331c318aef12c4dc",
+            SENDER,
+            "0.000000001",
+            109_775_840_000_021,
+            1_791_927_519
+        )
+    );
+    assert_eq!(
+        busy.found[33].id.as_str(),
+        "c0c5d70321653e4534a4ee8308933151be8d8667ae360255255e57112248961e"
+    );
+    let young = chain
+        .scan(&ton(YOUNG), &[gram()], None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        young.cursor,
+        ScanCursor {
+            next: 109_677_718_000_019,
+            complete_from: 109_677_195_000_019,
+            complete_since: 1_791_888_066
+        }
+    );
+    assert_eq!(
+        young.found,
+        [
+            incoming(
+                "7ab267622380d313537edc04dbe4cc6036252295be130c43fd67f80c18740eab",
+                "0:2a0ef9232b5aab6a2ded5e2c60bc24815af53d50c34f40ea98d5c08ad5f45b01",
+                YOUNG,
+                "0.00001",
+                109_677_718_000_018,
+                1_791_888_274
+            ),
+            incoming(
+                "dfa71cba2dc3d7eb03c5b2ce5897547c6b6a47f589854c4b65ba36722d129375",
+                "0:3f0483d026c5651998a75832a9ea573e35c6dd8d49912f70f275c7bde7effacf",
+                YOUNG,
+                "0.0007",
+                109_677_195_000_019,
+                1_791_888_066
+            ),
+        ]
+    );
+    let fresh = quote_chain_for(Tamper::Nothing).await;
+    let nothing = fresh
+        .scan(&ton([0x5c; 32]), &[gram()], None)
+        .await
+        .unwrap()
+        .unwrap();
+    let checked = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert_eq!((nothing.cursor.next, nothing.cursor.complete_from), (0, 0));
+    assert!(nothing.cursor.complete_since.abs_diff(checked) < 60);
+    assert_eq!(nothing.found, []);
+    assert_eq!(
+        fresh
+            .scan(&ton([0x5c; 32]), &[gram()], Some(nothing.cursor))
+            .await,
+        Ok(None)
+    );
+}
+
+#[tokio::test]
+async fn later_scans_read_only_what_is_new() {
+    let asked = Arc::new(Mutex::new(0));
+    let behaviour = Behaviour {
+        recording: TRACK,
+        ..GOOD
+    };
+    let server = liteserver(31, behaviour, Arc::clone(&asked)).await;
+    let chain = TonChain::new(network(config(&[server], mainnet()).await)).unwrap();
+    let earlier = ScanCursor {
+        next: 109_579_107_000_018,
+        complete_from: 5,
+        complete_since: 7,
+    };
+    let later = chain
+        .scan(&ton(SENDER), &[gram()], Some(earlier))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        later.cursor,
+        ScanCursor {
+            next: 110_383_004_000_041,
+            ..earlier
+        }
+    );
+    assert_eq!(
+        summed(&later.found),
+        (12, ruint::aliases::U256::from(1_100_001u64))
+    );
+    assert_eq!(*asked.lock().unwrap(), 4);
+    assert_eq!(
+        chain
+            .scan(&ton(SENDER), &[gram()], Some(later.cursor))
+            .await,
+        Ok(None)
+    );
+    assert_eq!(*asked.lock().unwrap(), 6);
+    let tokens_only = &assets()[1..];
+    assert_eq!(chain.scan(&ton(SENDER), tokens_only, None).await, Ok(None));
+    assert_eq!(*asked.lock().unwrap(), 6);
+    let lying = tracking_chain(Behaviour {
+        tamper: Tamper::History,
+        ..GOOD
+    })
+    .await;
+    assert!(matches!(
+        lying.scan(&ton(SENDER), &[gram()], Some(earlier)).await,
+        Err(ChainError::Network(_))
+    ));
 }
