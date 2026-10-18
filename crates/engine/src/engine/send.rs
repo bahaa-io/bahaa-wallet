@@ -373,7 +373,7 @@ impl Worker {
             .collect()
     }
 
-    fn chain_index(&self, network: &NetworkId) -> Option<usize> {
+    pub(super) fn chain_index(&self, network: &NetworkId) -> Option<usize> {
         self.chains
             .iter()
             .position(|chain| &chain.network().id == network)

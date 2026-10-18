@@ -2,6 +2,7 @@
 
 mod common;
 
+use std::fmt::Write;
 use std::sync::Arc;
 
 use bahaa_chain::{Chain, ChainError};
@@ -135,6 +136,90 @@ async fn refuses_assets_and_addresses_of_other_networks() {
         chain.balances(&tron, &assets(&["bsc"])).await,
         Err(ChainError::Invalid(_))
     ));
+}
+
+fn abi_string(text: &str) -> String {
+    let mut padded = text.as_bytes().to_vec();
+    padded.resize(text.len().div_ceil(32) * 32, 0);
+    let body = padded.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    });
+    format!("0x{:064x}{:064x}{body}", 32, text.len())
+}
+
+#[tokio::test]
+async fn a_custom_token_reports_its_own_details() {
+    let url = node(Log::default(), |method, params| match method {
+        "eth_chainId" => result(&json!("0x38")),
+        "eth_call" => {
+            let to = params[0]["to"].as_str().unwrap().to_ascii_lowercase();
+            if to != CUSTOM.to_ascii_lowercase() {
+                return result(&json!("0x"));
+            }
+            match params[0]["data"].as_str().unwrap() {
+                "0x313ce567" => result(&json!(word(18))),
+                "0x95d89b41" => result(&json!(abi_string("Cake"))),
+                "0x06fdde03" => result(&json!(abi_string("PancakeSwap Token"))),
+                _ => result(&json!("0x")),
+            }
+        }
+        _ => result(&Value::Null),
+    })
+    .await;
+    let chain = EvmChain::new(bsc_on(&[url])).unwrap();
+    let custom = Address::parse(ChainFamily::Evm, CUSTOM).unwrap();
+    let coin = chain.token(&custom).await.unwrap();
+    assert_eq!(
+        (
+            coin.symbol.as_str(),
+            coin.name.as_str(),
+            coin.decimals,
+            coin.price
+        ),
+        ("Cake", "PancakeSwap Token", 18, None)
+    );
+    assert_eq!(
+        chain.token(&owner()).await,
+        Err(ChainError::Invalid("this address is not a token contract"))
+    );
+    assert!(matches!(
+        chain.token(&Address::Tron([7; 20])).await,
+        Err(ChainError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
+async fn known_decimals_are_used_without_asking_the_contract() {
+    let url = node(Log::default(), |method, params| match method {
+        "eth_chainId" => result(&json!("0x38")),
+        "eth_call" if params[0]["data"] == "0x313ce567" => result(&json!("0x")),
+        "eth_call" => result(&json!(word(1_234_567))),
+        _ => result(&Value::Null),
+    })
+    .await;
+    let chain = EvmChain::new(bsc_on(&[url])).unwrap();
+    let custom = format!("bsc/{CUSTOM}");
+    assert!(chain.balances(&owner(), &assets(&[&custom])).await.is_err());
+    chain.know(&Address::parse(ChainFamily::Evm, CUSTOM).unwrap(), 9);
+    let balances = chain.balances(&owner(), &assets(&[&custom])).await.unwrap();
+    assert_eq!(balances[0].amount.to_string(), "0.001234567");
+}
+
+#[tokio::test]
+#[ignore = "talks to public BSC endpoints"]
+async fn live_bsc_token_details() {
+    let registry = Registry::builtin().unwrap();
+    let chain = EvmChain::new(registry.get(&"bsc".parse().unwrap()).unwrap().clone()).unwrap();
+    let cake = Address::parse(ChainFamily::Evm, CUSTOM).unwrap();
+    let coin = chain.token(&cake).await.unwrap();
+    assert_eq!(
+        (coin.symbol.as_str(), coin.name.as_str(), coin.decimals),
+        ("Cake", "PancakeSwap Token", 18)
+    );
+    let usdt = Address::parse(ChainFamily::Evm, USDT).unwrap();
+    let coin = chain.token(&usdt).await.unwrap();
+    assert_eq!((coin.symbol.as_str(), coin.decimals), ("USDT", 18));
 }
 
 #[tokio::test]

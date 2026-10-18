@@ -9,7 +9,7 @@ use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeItem, FeeLine, FeeQuote, PoolError, Signed, Transfer,
     TxId, TxStatus, check_signed,
 };
-use bahaa_config::{Network, Registry};
+use bahaa_config::{Coin, Network, Registry};
 use bahaa_crypto::{Mnemonic, Seed};
 use bahaa_types::{Address, Amount, AssetId};
 
@@ -205,6 +205,12 @@ impl Chain for FakeChain {
             None => TxStatus::NotFound,
         })
     }
+
+    async fn token(&self, _contract: &Address) -> Result<Coin, ChainError> {
+        Err(ChainError::Unsupported("tokens"))
+    }
+
+    fn know(&self, _contract: &Address, _decimals: u8) {}
 }
 
 async fn send<C: Chain>(chain: &C, transfer: &Transfer, seed: &Seed) -> Result<TxId, ChainError> {

@@ -74,7 +74,7 @@ async fn balances_are_never_read_from_http_providers() {
 }
 
 #[tokio::test]
-async fn custom_tokens_and_foreign_addresses_are_refused() {
+async fn custom_tokens_need_liteservers_and_foreign_addresses_are_refused() {
     let url = node(Log::default(), |_, _| (404, json!("missing"))).await;
     let chain = TonChain::new(ton_on(&[(Protocol::TonApi, &url)])).unwrap();
     let custom = AssetId::Token(
@@ -86,7 +86,9 @@ async fn custom_tokens_and_foreign_addresses_are_refused() {
     );
     assert_eq!(
         chain.balances(&holder(), &[custom]).await,
-        Err(ChainError::Unsupported("custom TON tokens yet"))
+        Err(ChainError::Network(
+            "network problem: an endpoint does not serve this request".to_owned()
+        ))
     );
     assert!(matches!(
         chain.balances(&Address::Evm([1; 20]), &assets()).await,

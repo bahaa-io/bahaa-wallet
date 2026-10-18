@@ -79,10 +79,10 @@ fn argument(address: &Address) -> Result<OwnedCellSlice, ChainError> {
 fn item(value: &RcStackValue) -> Option<Item> {
     if let Some(number) = value.as_int() {
         let (sign, bytes) = number.to_bytes_be();
-        return (sign != Sign::Minus)
-            .then(|| U256::try_from_be_slice(&bytes))
-            .flatten()
-            .map(Item::Num);
+        if sign == Sign::Minus {
+            return Some(Item::Negative);
+        }
+        return U256::try_from_be_slice(&bytes).map(Item::Num);
     }
     if let Some(cell) = value.as_cell() {
         return Some(Item::Cell(Boc::encode(cell)));
@@ -321,7 +321,7 @@ mod tests {
             converted,
             [
                 Some(Item::Num(U256::from(5u8))),
-                None,
+                Some(Item::Negative),
                 Some(Item::Cell(boc.clone())),
                 Some(Item::Cell(boc)),
                 None

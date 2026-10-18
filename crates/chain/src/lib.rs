@@ -1,7 +1,9 @@
+mod abi;
 mod chain;
 mod model;
 mod pool;
 
+pub use abi::abi_text;
 pub use chain::{Chain, HistoryProvider};
 pub use model::{
     Balance, ChainError, Cursor, Decoded, Direction, FeeItem, FeeLine, FeeQuote, HistoryEntry,

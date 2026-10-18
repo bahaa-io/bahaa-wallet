@@ -30,6 +30,7 @@ const MAX_LIBRARIES: usize = 4;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Item {
     Num(U256),
+    Negative,
     Cell(Vec<u8>),
 }
 

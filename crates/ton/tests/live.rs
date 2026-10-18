@@ -570,3 +570,47 @@ async fn live_v4r2_sends_are_tracked_with_what_they_paid() {
         }
     );
 }
+
+#[tokio::test]
+#[ignore = "talks to the real TON network, run with --test-threads=1"]
+async fn live_custom_jettons_report_their_details_and_balances() {
+    let registry = Registry::builtin().unwrap();
+    let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
+    let chain = on(&ton, None);
+    let parse = |text: &str| Address::parse(ChainFamily::Ton, text).unwrap();
+    let ston = parse("EQA2kCVNwVsil2EM2mB0SkXytxCqQjS4mttjDpnXmwG9T6bO");
+    let cases = [
+        (USDT, "USD₮", "Tether USD", 6),
+        (
+            "EQA2kCVNwVsil2EM2mB0SkXytxCqQjS4mttjDpnXmwG9T6bO",
+            "STON",
+            "STON",
+            9,
+        ),
+        (
+            "EQAvlWFDxGF2lXm67y4yzC17wYKD9A0guwPkMs1gOsM__NOT",
+            "NOT",
+            "Notcoin",
+            9,
+        ),
+    ];
+    for (master, symbol, name, decimals) in cases {
+        let coin = chain.token(&parse(master)).await.unwrap();
+        assert_eq!(
+            (
+                coin.symbol.as_str(),
+                coin.name.as_str(),
+                coin.decimals,
+                coin.price
+            ),
+            (symbol, name, decimals, None),
+            "{master}"
+        );
+    }
+    assert!(chain.token(&parse(SENDER)).await.is_err());
+    let fresh = on(&ton, None);
+    let holder = parse("0:8da321031371f1242ce05be273abce9f8a23f2e244aa0d7b2f1e1d370686f4f3");
+    let asset: AssetId = format!("ton/{ston}").parse().unwrap();
+    let balances = fresh.balances(&holder, &[asset]).await.unwrap();
+    assert_eq!(balances[0].amount.to_string(), "37312576");
+}

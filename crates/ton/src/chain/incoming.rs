@@ -101,18 +101,15 @@ impl TonChain {
                     tokens: false,
                 }),
                 Some(master) => {
-                    let Some(token) = self
-                        .network
-                        .tokens
-                        .iter()
-                        .find(|token| token.contract == *master)
-                    else {
-                        continue;
+                    let address = match self.jetton_wallet(owner, master).await {
+                        Ok(address) => address,
+                        Err(ChainError::Invalid(_) | ChainError::Rejected(_)) => continue,
+                        Err(err) => return Err(err),
                     };
                     histories.push(History {
-                        address: self.jetton_wallet(owner, master).await?,
+                        address,
                         asset: asset.clone(),
-                        decimals: token.coin.decimals,
+                        decimals: self.token_decimals(master).await?,
                         tokens: true,
                     });
                 }

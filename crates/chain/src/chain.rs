@@ -1,4 +1,4 @@
-use bahaa_config::Network;
+use bahaa_config::{Coin, Network};
 use bahaa_crypto::Seed;
 use bahaa_types::{Address, AssetId};
 
@@ -36,6 +36,10 @@ pub trait Chain: Send + Sync {
         from: &Address,
         expires_at: Option<u64>,
     ) -> impl Future<Output = Result<TxStatus, ChainError>> + Send;
+
+    fn token(&self, contract: &Address) -> impl Future<Output = Result<Coin, ChainError>> + Send;
+
+    fn know(&self, contract: &Address, decimals: u8);
 }
 
 pub trait HistoryProvider: Send + Sync {

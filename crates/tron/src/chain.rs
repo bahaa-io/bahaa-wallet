@@ -3,9 +3,9 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus,
+    Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus, abi_text,
 };
-use bahaa_config::{ChainKind, Network};
+use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
 use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS};
 use ruint::aliases::U256;
@@ -22,6 +22,8 @@ use crate::tx::{self, Action};
 const PREFIX: &str = "41";
 const BALANCE_OF: &str = "balanceOf(address)";
 const DECIMALS: &str = "decimals()";
+const SYMBOL: &str = "symbol()";
+const NAME: &str = "name()";
 
 #[derive(Debug)]
 pub struct TronChain {
@@ -131,6 +133,27 @@ impl TronChain {
             }))
             .await?;
         constant_word(&reply)
+    }
+
+    async fn call_text(&self, contract: &[u8; 20], selector: &str) -> Result<String, ChainError> {
+        let reply = self
+            .trigger(json!({
+                "owner_address": tron_hex(contract),
+                "contract_address": tron_hex(contract),
+                "function_selector": selector,
+                "parameter": "",
+            }))
+            .await?;
+        let data = reply["constant_result"]
+            .as_array()
+            .filter(|results| results.len() == 1)
+            .and_then(|results| results[0].as_str())
+            .and_then(crate::http::unhex)
+            .ok_or_else(malformed)?;
+        if data.is_empty() {
+            return Err(ChainError::Invalid("this address is not a token contract"));
+        }
+        abi_text(&data).ok_or(ChainError::Invalid("this token reports unreadable details"))
     }
 
     async fn trigger(&self, body: Value) -> Result<Value, ChainError> {
@@ -257,6 +280,28 @@ impl Chain for TronChain {
         _expires_at: Option<u64>,
     ) -> Result<TxStatus, ChainError> {
         self.lookup(id).await
+    }
+
+    async fn token(&self, contract: &Address) -> Result<Coin, ChainError> {
+        let contract = bytes(contract)?;
+        let decimals = self.token_decimals(&contract, &contract).await?;
+        let symbol = self.call_text(&contract, SYMBOL).await?;
+        let name = self.call_text(&contract, NAME).await?;
+        Ok(Coin {
+            symbol,
+            name,
+            decimals,
+            price: None,
+        })
+    }
+
+    fn know(&self, contract: &Address, decimals: u8) {
+        if let Address::Tron(contract) = contract {
+            self.decimals
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(*contract, decimals);
+        }
     }
 }
 

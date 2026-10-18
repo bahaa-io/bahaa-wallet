@@ -1158,8 +1158,12 @@ async fn later_scans_read_only_what_is_new() {
             hash: [9; 32],
         },
     );
-    assert_eq!(chain.scan(&ton(SENDER), &[custom], None).await, Ok(None));
-    assert_eq!(*asked.lock().unwrap(), 9);
+    assert_eq!(
+        chain.scan(&ton(SENDER), &[custom], None).await,
+        Err(ChainError::Network(
+            "network problem: a liteserver refused with code -400: unknown".to_owned()
+        ))
+    );
     let lying = tracking_chain(Behaviour {
         tamper: Tamper::History,
         ..GOOD
@@ -1327,18 +1331,6 @@ async fn a_usdt_quote_emulates_both_token_wallets() {
         (symbol.as_str(), available.to_string()),
         ("USDT", "163442.252078".to_owned())
     );
-    let mut custom = usdt_send("1", OWNER);
-    custom.asset = AssetId::Token(
-        "ton".parse().unwrap(),
-        Address::Ton {
-            workchain: 0,
-            hash: [9; 32],
-        },
-    );
-    assert_eq!(
-        chain.prepare(&custom).await.map(|_| ()),
-        Err(ChainError::Unsupported("custom TON tokens yet"))
-    );
     assert_eq!(
         chain.prepare(&usdt_send("1", SENDER)).await.map(|_| ()),
         Err(ChainError::Invalid("send tokens to another account"))
@@ -1349,6 +1341,20 @@ async fn a_usdt_quote_emulates_both_token_wallets() {
         chain.prepare(&wrong).await,
         Err(ChainError::Invalid(_))
     ));
+    let mut custom = usdt_send("1", OWNER);
+    custom.asset = AssetId::Token(
+        "ton".parse().unwrap(),
+        Address::Ton {
+            workchain: 0,
+            hash: [9; 32],
+        },
+    );
+    assert_eq!(
+        chain.prepare(&custom).await.map(|_| ()),
+        Err(ChainError::Network(
+            "network problem: a liteserver refused with code -400: unknown".to_owned()
+        ))
+    );
 }
 
 #[tokio::test]

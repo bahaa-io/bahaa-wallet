@@ -5,6 +5,7 @@ mod emulate;
 mod fees;
 mod http;
 mod lite;
+mod metadata;
 mod proof;
 mod tl;
 mod transaction;

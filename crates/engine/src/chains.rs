@@ -4,7 +4,7 @@ use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Incoming, ScanCursor, Scanned, Signed, Transfer,
     TxId, TxStatus,
 };
-use bahaa_config::{Network, Registry};
+use bahaa_config::{Coin, Network, Registry};
 use bahaa_crypto::{Seed, SeedKind};
 use bahaa_evm::{EvmChain, EvmPlan};
 use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock};
@@ -68,6 +68,22 @@ impl AnyChain {
             Self::Evm(chain) => chain.balances(address, assets).await,
             Self::Tron(chain) => chain.balances(address, assets).await,
             Self::Ton(chain) => chain.balances(address, assets).await,
+        }
+    }
+
+    pub(crate) async fn token(&self, contract: &Address) -> Result<Coin, ChainError> {
+        match self {
+            Self::Evm(chain) => chain.token(contract).await,
+            Self::Tron(chain) => chain.token(contract).await,
+            Self::Ton(chain) => chain.token(contract).await,
+        }
+    }
+
+    pub(crate) fn know(&self, contract: &Address, decimals: u8) {
+        match self {
+            Self::Evm(chain) => chain.know(contract, decimals),
+            Self::Tron(chain) => chain.know(contract, decimals),
+            Self::Ton(chain) => chain.know(contract, decimals),
         }
     }
 
@@ -162,6 +178,18 @@ pub(crate) fn ton_mainnet(chains: &[AnyChain]) -> Option<&TonChain> {
         AnyChain::Ton(ton) if !ton.network().testnet => Some(&**ton),
         _ => None,
     })
+}
+
+pub(crate) fn know(chains: &[AnyChain], custom: &[CustomToken]) {
+    for token in custom {
+        if let Some(chain) = chains
+            .iter()
+            .find(|chain| &chain.network().id == token.asset.network())
+            && let Some(contract) = token.asset.contract()
+        {
+            chain.know(contract, token.coin.decimals);
+        }
+    }
 }
 
 pub(crate) fn restore(chains: &[AnyChain], saved: &[TrustedBlock]) {
@@ -265,13 +293,16 @@ async fn fetch_network(
     cursors: &[Scan],
 ) -> NetworkFetch {
     let network = chain.network();
-    let mut assets: Vec<AssetId> = network.assets().map(|(asset, _)| asset).collect();
+    let listed: Vec<AssetId> = network.assets().map(|(asset, _)| asset).collect();
+    let mut groups = vec![listed.clone()];
+    let mut assets = listed;
     for token in custom
         .iter()
         .filter(|token| token.asset.network() == &network.id)
     {
         if !assets.contains(&token.asset) {
             assets.push(token.asset.clone());
+            groups.push(vec![token.asset.clone()]);
         }
     }
     let mut result = NetworkFetch {
@@ -288,15 +319,17 @@ async fn fetch_network(
         .iter()
         .filter(|account| account.serves(&network.id, chain.family()))
     {
-        match chain.balances(&account.address, &assets).await {
-            Ok(balances) => result.held.extend(balances.into_iter().map(|balance| Held {
-                wallet: account.wallet,
-                address: account.address,
-                asset: balance.asset,
-                amount: balance.amount,
-                staked: balance.staked,
-            })),
-            Err(err) => result.health.problem = Some(err.to_string()),
+        for group in &groups {
+            match chain.balances(&account.address, group).await {
+                Ok(balances) => result.held.extend(balances.into_iter().map(|balance| Held {
+                    wallet: account.wallet,
+                    address: account.address,
+                    asset: balance.asset,
+                    amount: balance.amount,
+                    staked: balance.staked,
+                })),
+                Err(err) => result.health.problem = Some(err.to_string()),
+            }
         }
         let cursor = cursors
             .iter()

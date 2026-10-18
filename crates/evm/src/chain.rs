@@ -6,9 +6,9 @@ use alloy_consensus::TxEip1559;
 use alloy_primitives::TxKind;
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId,
-    TxStatus,
+    TxStatus, abi_text,
 };
-use bahaa_config::{ChainKind, Network};
+use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
 use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
@@ -24,6 +24,8 @@ use crate::tx;
 
 const BALANCE_OF: &str = "70a08231";
 const DECIMALS: &str = "313ce567";
+const SYMBOL: &str = "95d89b41";
+const NAME: &str = "06fdde03";
 const PLAIN_GAS: u64 = 21_000;
 
 #[derive(Debug)]
@@ -104,6 +106,25 @@ impl EvmChain {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(*contract, decimals);
         Ok(decimals)
+    }
+
+    async fn call_text(&self, contract: &[u8; 20], selector: &str) -> Result<String, ChainError> {
+        let reply = self
+            .rpc
+            .call(
+                "eth_call",
+                json!([{"to": hex(contract), "data": format!("0x{selector}")}, "latest"]),
+            )
+            .await?;
+        let data = reply
+            .as_str()
+            .and_then(|text| text.strip_prefix("0x"))
+            .and_then(|digits| alloy_primitives::hex::decode(digits).ok())
+            .ok_or_else(|| ChainError::Network("an endpoint sent a malformed reply".to_owned()))?;
+        if data.is_empty() {
+            return Err(ChainError::Invalid("this address is not a token contract"));
+        }
+        abi_text(&data).ok_or(ChainError::Invalid("this token reports unreadable details"))
     }
 
     async fn call_uint(&self, contract: &[u8; 20], data: &str) -> Result<U256, ChainError> {
@@ -511,6 +532,28 @@ impl Chain for EvmChain {
             block,
             fee: fee.map(|fee| self.native(fee)).transpose()?,
         })
+    }
+
+    async fn token(&self, contract: &Address) -> Result<Coin, ChainError> {
+        let contract = bytes(contract)?;
+        let decimals = self.token_decimals(&contract).await?;
+        let symbol = self.call_text(&contract, SYMBOL).await?;
+        let name = self.call_text(&contract, NAME).await?;
+        Ok(Coin {
+            symbol,
+            name,
+            decimals,
+            price: None,
+        })
+    }
+
+    fn know(&self, contract: &Address, decimals: u8) {
+        if let Address::Evm(contract) = contract {
+            self.decimals
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(*contract, decimals);
+        }
     }
 }
 

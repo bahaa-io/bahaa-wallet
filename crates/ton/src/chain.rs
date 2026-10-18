@@ -4,7 +4,7 @@ use std::sync::{Mutex, PoisonError};
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus,
 };
-use bahaa_config::{ChainKind, Checkpoint, Network};
+use bahaa_config::{ChainKind, Checkpoint, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed, SeedKind};
 use bahaa_types::{Address, Amount, AssetId, TonContract};
 use ed25519_dalek::SigningKey;
@@ -18,6 +18,7 @@ mod track;
 pub use send::TonPlan;
 
 use crate::http::{Http, Item};
+use crate::metadata;
 use crate::tl::BlockId;
 use crate::wallet::{self, read_address};
 
@@ -28,6 +29,7 @@ pub struct TonChain {
     wallet_id: i32,
     jetton_wallets: Mutex<HashMap<(Address, Address), Address>>,
     contracts: Mutex<HashMap<Address, TonContract>>,
+    decimals: Mutex<HashMap<Address, u8>>,
 }
 
 impl TonChain {
@@ -47,6 +49,7 @@ impl TonChain {
             wallet_id: wallet::wallet_id(global_id),
             jetton_wallets: Mutex::new(HashMap::new()),
             contracts: Mutex::new(HashMap::new()),
+            decimals: Mutex::new(HashMap::new()),
         })
     }
 
@@ -96,6 +99,78 @@ impl TonChain {
 
     pub fn restore(&self, checkpoint: &Checkpoint) {
         self.http.trust(block(checkpoint));
+    }
+
+    fn known_decimals(&self, master: &Address) -> Option<u8> {
+        self.network
+            .tokens
+            .iter()
+            .find(|token| token.contract == *master)
+            .map(|token| token.coin.decimals)
+            .or_else(|| {
+                self.decimals
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(master)
+                    .copied()
+            })
+    }
+
+    async fn token_decimals(&self, master: &Address) -> Result<u8, ChainError> {
+        match self.known_decimals(master) {
+            Some(decimals) => Ok(decimals),
+            None => Ok(self.details(master).await?.decimals),
+        }
+    }
+
+    fn symbol(&self, master: &Address) -> String {
+        self.network
+            .tokens
+            .iter()
+            .find(|token| token.contract == *master)
+            .map_or_else(
+                || "this token".to_owned(),
+                |token| token.coin.symbol.clone(),
+            )
+    }
+
+    async fn details(&self, master: &Address) -> Result<Coin, ChainError> {
+        let not_token = ChainError::Invalid("this address is not a token contract");
+        let stack = self
+            .http
+            .run(master, "get_jetton_data", None)
+            .await?
+            .ok_or(not_token.clone())?;
+        let [
+            Item::Num(_),
+            Item::Num(_) | Item::Negative,
+            Item::Cell(_),
+            Item::Cell(content),
+            Item::Cell(_),
+        ] = stack.as_slice()
+        else {
+            return Err(not_token);
+        };
+        let mut content = metadata::content(content).ok_or(ChainError::Invalid(
+            "this token's details are in an unknown format",
+        ))?;
+        if !content.complete()
+            && let Some(uri) = content.uri.clone()
+        {
+            content.fill(metadata::fetch(&uri).await?);
+        }
+        let decimals = content.decimals()?;
+        let symbol = content
+            .symbol
+            .ok_or(ChainError::Invalid("this token has no symbol"))?;
+        let name = content.name.unwrap_or_else(|| symbol.clone());
+        self.know(master, decimals);
+        Ok(Coin {
+            symbol,
+            name,
+            decimals,
+            price: None,
+        })
     }
 
     async fn jetton_wallet(
@@ -190,13 +265,7 @@ impl Chain for TonChain {
                     self.network.native.decimals,
                 )?,
                 Some(master) => {
-                    let decimals = self
-                        .network
-                        .tokens
-                        .iter()
-                        .find(|token| token.contract == *master)
-                        .map(|token| token.coin.decimals)
-                        .ok_or(ChainError::Unsupported("custom TON tokens yet"))?;
+                    let decimals = self.token_decimals(master).await?;
                     amount(self.jetton_balance(address, master).await?, decimals)?
                 }
             };
@@ -232,6 +301,22 @@ impl Chain for TonChain {
         expires_at: Option<u64>,
     ) -> Result<TxStatus, ChainError> {
         self.track(id, from, expires_at).await
+    }
+
+    async fn token(&self, contract: &Address) -> Result<Coin, ChainError> {
+        if !matches!(contract, Address::Ton { .. }) {
+            return Err(ChainError::Invalid("not a TON address"));
+        }
+        self.details(contract).await
+    }
+
+    fn know(&self, contract: &Address, decimals: u8) {
+        if matches!(contract, Address::Ton { .. }) {
+            self.decimals
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(*contract, decimals);
+        }
     }
 }
 

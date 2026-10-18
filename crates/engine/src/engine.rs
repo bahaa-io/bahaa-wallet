@@ -1,6 +1,7 @@
 mod contacts;
 mod incoming;
 mod send;
+mod tokens;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{
     Contact, CustomToken, Outgoing, Received, Scan, SentTx, Store, StoreError, TrustedBlock,
 };
-use bahaa_types::{Address, NetworkId, TonContract};
+use bahaa_types::{Address, AssetId, NetworkId, TonContract};
 use bahaa_vault::KdfParams;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -30,6 +31,7 @@ use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, 
 pub use incoming::IncomingHistory;
 use send::{Delivered, Prepared, Quoted};
 pub use send::{Draft, DraftId, SendRequest};
+use tokens::TokenRead;
 
 const VAULT_FILE: &str = "vault.bin";
 const STORE_FILE: &str = "wallet.redb";
@@ -105,6 +107,7 @@ pub enum Event {
     Received(Vec<Arrival>),
     ContactsChanged(Vec<Contact>),
     SentElsewhere(Vec<Outgoing>),
+    TokensChanged(Vec<CustomToken>),
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
@@ -138,6 +141,9 @@ enum Command {
     SaveContact(Contact, Reply<()>),
     RemoveContact(NetworkId, Address, Reply<bool>),
     Cautions(Address, Reply<Vec<Caution>>),
+    Tokens(Reply<Vec<CustomToken>>),
+    AddToken(AssetId, Reply<CustomToken>),
+    RemoveToken(AssetId, Reply<bool>),
     Shutdown(Reply<()>),
 }
 
@@ -146,6 +152,7 @@ enum Notice {
     Quoted(Box<Quoted>),
     Delivered(Box<Delivered>),
     Tracked(Vec<SentTx>),
+    TokenRead(Box<TokenRead>),
 }
 
 impl Command {
@@ -160,6 +167,7 @@ impl Command {
                 | Self::Outgoing(_)
                 | Self::Contacts(_)
                 | Self::Cautions(..)
+                | Self::Tokens(_)
                 | Self::Shutdown(_)
         )
     }
@@ -203,6 +211,7 @@ impl Engine {
         };
         let chains: Arc<Vec<AnyChain>> = Arc::new(chains::build(&registry));
         chains::restore(&chains, &store.trusted()?);
+        chains::know(&chains, &custom);
         let trusted = chains::trusted(&chains);
         let keyring = Keyring::new(data_dir.join(VAULT_FILE), kdf);
         let initial = if keyring.exists() {
@@ -418,6 +427,18 @@ impl Engine {
         self.ask(|reply| Command::Cautions(address, reply)).await
     }
 
+    pub async fn tokens(&self) -> Result<Vec<CustomToken>, EngineError> {
+        self.ask(Command::Tokens).await
+    }
+
+    pub async fn add_token(&self, asset: AssetId) -> Result<CustomToken, EngineError> {
+        self.ask(|reply| Command::AddToken(asset, reply)).await
+    }
+
+    pub async fn remove_token(&self, asset: AssetId) -> Result<bool, EngineError> {
+        self.ask(|reply| Command::RemoveToken(asset, reply)).await
+    }
+
     pub async fn incoming(&self) -> Result<IncomingHistory, EngineError> {
         self.ask(Command::Incoming).await
     }
@@ -555,6 +576,9 @@ impl Worker {
                 answer(reply, self.remove_contact(&network, &address));
             }
             Command::Cautions(address, reply) => answer(reply, self.cautions(&address)),
+            Command::Tokens(reply) => answer(reply, self.tokens()),
+            Command::AddToken(asset, reply) => self.add_token(asset, reply),
+            Command::RemoveToken(asset, reply) => answer(reply, self.remove_token(&asset)),
             Command::Touch | Command::Shutdown(_) => {}
             Command::Wallets(reply) => {
                 let result = self.keyring(|keyring| keyring.wallets()).await;
@@ -601,25 +625,22 @@ impl Worker {
                 let _ = reply.send(result);
             }
             Command::Settings(reply) => answer(reply, Ok(self.settings.clone())),
-            Command::SetSettings(settings, reply) => {
-                let result = self
-                    .store
-                    .save_settings(&settings)
-                    .map_err(EngineError::from);
-                if result.is_ok() {
-                    let testnets_changed = settings.show_testnets != self.settings.show_testnets;
-                    self.settings = settings.clone();
-                    let _ = self.events.send(Event::SettingsChanged(settings));
-                    self.activity();
-                    self.refresh_prices();
-                    self.publish_portfolio();
-                    if testnets_changed {
-                        self.restart_refresh();
-                    }
-                }
-                let _ = reply.send(result);
-            }
+            Command::SetSettings(settings, reply) => answer(reply, self.set_settings(settings)),
         }
+    }
+
+    fn set_settings(&mut self, settings: Settings) -> Result<(), EngineError> {
+        self.store.save_settings(&settings)?;
+        let testnets_changed = settings.show_testnets != self.settings.show_testnets;
+        self.settings = settings.clone();
+        let _ = self.events.send(Event::SettingsChanged(settings));
+        self.activity();
+        self.refresh_prices();
+        self.publish_portfolio();
+        if testnets_changed {
+            self.restart_refresh();
+        }
+        Ok(())
     }
 
     fn notice(&mut self, notice: Notice) {
@@ -628,6 +649,7 @@ impl Worker {
             Notice::Quoted(quoted) => self.quoted(*quoted),
             Notice::Delivered(delivered) => self.delivered(*delivered),
             Notice::Tracked(updates) => self.tracked(updates),
+            Notice::TokenRead(read) => self.token_read(*read),
         }
     }
 

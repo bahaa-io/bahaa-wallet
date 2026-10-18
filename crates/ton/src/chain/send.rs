@@ -42,6 +42,11 @@ impl TonChain {
         &self,
         transfer: &Transfer,
     ) -> Result<(TonPlan, FeeQuote), ChainError> {
+        if let Some(master) = transfer.asset.contract()
+            && transfer.asset.network() == &self.network.id
+        {
+            self.token_decimals(master).await?;
+        }
         let token = self.sendable(transfer)?;
         let wallet = self.http.account(&transfer.from).await?;
         let (seqno, deploy, contract) = self.sequence(&wallet, &transfer.from)?;
@@ -146,15 +151,9 @@ impl TonChain {
         }
         let decimals = match transfer.asset.contract() {
             None => self.network.native.decimals,
-            Some(master) => {
-                self.network
-                    .tokens
-                    .iter()
-                    .find(|token| token.contract == *master)
-                    .ok_or(ChainError::Unsupported("custom TON tokens yet"))?
-                    .coin
-                    .decimals
-            }
+            Some(master) => self
+                .known_decimals(master)
+                .ok_or(ChainError::Invalid("this token is not known yet"))?,
         };
         if transfer.amount.decimals() != decimals {
             return Err(ChainError::Invalid(
@@ -251,12 +250,8 @@ impl TonChain {
                         "the token wallet of this transfer is not known",
                     ))?;
                 let decimals = self
-                    .network
-                    .tokens
-                    .iter()
-                    .find(|known| known.contract == master)
-                    .map(|known| known.coin.decimals)
-                    .ok_or(ChainError::Unsupported("custom TON tokens yet"))?;
+                    .known_decimals(&master)
+                    .ok_or(ChainError::Invalid("this token is not known yet"))?;
                 (
                     AssetId::Token(self.network.id.clone(), master),
                     amount(token.units, decimals)?,

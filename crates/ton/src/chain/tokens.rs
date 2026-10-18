@@ -33,19 +33,14 @@ impl TonChain {
         wallet: &Account,
         contracts: Contracts<'_>,
     ) -> Result<u64, ChainError> {
-        let token = self
-            .network
-            .tokens
-            .iter()
-            .find(|token| token.contract == *master)
-            .ok_or(ChainError::Unsupported("custom TON tokens yet"))?;
+        let decimals = self.token_decimals(master).await?;
         let units = transfer.amount.units();
         let held = self.jetton_balance(&transfer.from, master).await?;
         if held < units {
             return Err(ChainError::Insufficient {
-                symbol: token.coin.symbol.clone(),
+                symbol: self.symbol(master),
                 needed: transfer.amount,
-                available: amount(held, token.coin.decimals)?,
+                available: amount(held, decimals)?,
             });
         }
         let ours = self.jetton_wallet(&transfer.from, master).await?;

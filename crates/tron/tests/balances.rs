@@ -2,6 +2,7 @@
 
 mod common;
 
+use std::fmt::Write;
 use std::sync::Arc;
 
 use bahaa_chain::{Chain, ChainError};
@@ -31,6 +32,21 @@ fn constant(value: u128) -> Value {
     })
 }
 
+fn text(value: &str) -> Value {
+    let mut padded = value.as_bytes().to_vec();
+    padded.resize(value.len().div_ceil(32) * 32, 0);
+    let body = padded.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    });
+    json!({
+        "result": {"result": true},
+        "energy_used": 900,
+        "constant_result": [format!("{:064x}{:064x}{body}", 32, value.len())],
+        "transaction": {"ret": [{}]}
+    })
+}
+
 fn ledger(genesis: &'static str) -> impl Fn(&str, &Value) -> (u16, Value) + Send + Sync + 'static {
     move |path, body| match path {
         "/wallet/getblockbynum" if body["num"] == 0 => (200, json!({"blockID": genesis})),
@@ -55,6 +71,8 @@ fn ledger(genesis: &'static str) -> impl Fn(&str, &Value) -> (u16, Value) + Send
             ) {
                 (USDT_HEX, "balanceOf(address)") if asks_owner => constant(held(owner) * 2_500_000),
                 (CUSTOM_HEX, "decimals()") if parameter.is_empty() => constant(18),
+                (CUSTOM_HEX, "symbol()") if parameter.is_empty() => text("JST"),
+                (CUSTOM_HEX, "name()") if parameter.is_empty() => text("JUST GOV v1.0"),
                 (CUSTOM_HEX, "balanceOf(address)") if asks_owner => {
                     constant(held(owner) * 3_000_000_000_000_000_000)
                 }
@@ -102,6 +120,64 @@ async fn reads_trx_known_and_custom_token_balances() {
     chain.balances(&tron(OWNER), &wanted).await.unwrap();
     assert_eq!(count(&log, "/wallet/getblockbynum"), 1);
     assert_eq!(count(&log, "/wallet/triggerconstantcontract"), 5);
+}
+
+#[tokio::test]
+async fn a_custom_token_reports_its_own_details() {
+    let chain = TronChain::new(tron_on(&[node(Log::default(), ledger(GENESIS)).await])).unwrap();
+    let coin = chain.token(&tron(CUSTOM)).await.unwrap();
+    assert_eq!(
+        (
+            coin.symbol.as_str(),
+            coin.name.as_str(),
+            coin.decimals,
+            coin.price
+        ),
+        ("JST", "JUST GOV v1.0", 18, None)
+    );
+    assert_eq!(
+        chain.token(&tron(OWNER)).await,
+        Err(ChainError::Invalid("this address is not a token contract"))
+    );
+}
+
+#[tokio::test]
+async fn known_decimals_are_used_without_asking_the_contract() {
+    let log = Log::default();
+    let chain = TronChain::new(tron_on(&[node(Arc::clone(&log), ledger(GENESIS)).await])).unwrap();
+    chain.know(&tron(CUSTOM), 6);
+    let balances = chain
+        .balances(&tron(OWNER), &assets(&[&format!("tron/{CUSTOM}")]))
+        .await
+        .unwrap();
+    assert_eq!(amounts(&balances), [format!("tron/{CUSTOM} 3000000000000")]);
+    assert_eq!(count(&log, "/wallet/triggerconstantcontract"), 1);
+}
+
+#[tokio::test]
+#[ignore = "talks to the real Tron network"]
+async fn live_tron_token_details() {
+    let registry = bahaa_config::Registry::builtin().unwrap();
+    let chain = TronChain::new(registry.get(&"tron".parse().unwrap()).unwrap().clone()).unwrap();
+    let coin = chain.token(&tron(USDT)).await.unwrap();
+    assert_eq!(
+        (coin.symbol.as_str(), coin.name.as_str(), coin.decimals),
+        ("USDT", "Tether USD", 6)
+    );
+    let coin = chain
+        .token(&tron("TAFjULxiVgT4qWk6UZwjqwZXTSaGaqnVp4"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (coin.symbol.as_str(), coin.name.as_str(), coin.decimals),
+        ("BTT", "BitTorrent", 18)
+    );
+    assert_eq!(
+        chain
+            .token(&tron("TQrY8tryqsYVCYS3MFbtffiPp2ccyn4STm"))
+            .await,
+        Err(ChainError::Invalid("this address is not a token contract"))
+    );
 }
 
 #[tokio::test]
