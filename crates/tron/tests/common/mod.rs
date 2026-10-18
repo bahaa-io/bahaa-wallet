@@ -56,7 +56,11 @@ pub async fn node(
                         break (path, request[end + 4..end + 4 + length].to_vec());
                     }
                 };
-                let body: Value = serde_json::from_slice(&body).unwrap();
+                let body: Value = if body.is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_slice(&body).unwrap()
+                };
                 log.lock().unwrap().push(path.clone());
                 let (status, answer) = reply(&path, &body);
                 let text = answer.to_string();

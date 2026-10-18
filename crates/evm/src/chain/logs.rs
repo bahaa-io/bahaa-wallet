@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use bahaa_chain::{ChainError, TxId};
+use bahaa_chain::{ChainError, Incoming, ScanCursor, Scanned, TxId};
 use bahaa_config::Feature;
-use bahaa_types::{Address, Amount, AssetId};
+use bahaa_types::{Address, AssetId};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
@@ -13,31 +13,6 @@ const TRANSFER_TOPIC: &str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a116
 const CHUNK: u64 = 2_000;
 const REACH: u64 = 4_000;
 const CONFIRMATIONS: u64 = 12;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScanCursor {
-    pub next: u64,
-    pub complete_from: u64,
-    pub complete_since: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Incoming {
-    pub id: TxId,
-    pub index: u64,
-    pub from: Address,
-    pub to: Address,
-    pub asset: AssetId,
-    pub amount: Amount,
-    pub block: u64,
-    pub time: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Scanned {
-    pub cursor: ScanCursor,
-    pub found: Vec<Incoming>,
-}
 
 #[derive(Debug, PartialEq, Eq)]
 struct Range {

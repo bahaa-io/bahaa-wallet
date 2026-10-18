@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use alloy_consensus::{SignableTransaction, TxEnvelope};
 use alloy_eips::eip2718::Decodable2718;
+use bahaa_chain::ScanCursor;
 use bahaa_chain::{Chain, ChainError, FeeItem, Transfer, TxId, TxStatus, check_signed};
 use bahaa_config::{ChainKind, Endpoint, Feature, Protocol, Registry};
 use bahaa_crypto::{Mnemonic, Seed};
-use bahaa_evm::{EvmChain, ScanCursor};
+use bahaa_evm::EvmChain;
 use bahaa_types::{Address, Amount, AssetId};
 use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};

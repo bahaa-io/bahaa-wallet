@@ -173,6 +173,31 @@ pub enum TxStatus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanCursor {
+    pub next: u64,
+    pub complete_from: u64,
+    pub complete_since: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Incoming {
+    pub id: TxId,
+    pub index: u64,
+    pub from: Address,
+    pub to: Address,
+    pub asset: AssetId,
+    pub amount: Amount,
+    pub block: u64,
+    pub time: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scanned {
+    pub cursor: ScanCursor,
+    pub found: Vec<Incoming>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Incoming,
     Outgoing,

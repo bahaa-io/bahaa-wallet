@@ -4,7 +4,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use bahaa_chain::{ChainError, Failure, Pool};
-use bahaa_config::Endpoint;
+use bahaa_config::{Endpoint, Feature};
 use bahaa_types::to_plain_text;
 use reqwest::StatusCode;
 use reqwest::header::RETRY_AFTER;
@@ -20,6 +20,12 @@ const BUSY: [&str; 4] = [
     "NOT_ENOUGH_EFFECTIVE_CONNECTION",
     "BLOCK_UNSOLIDIFIED",
 ];
+
+#[derive(Clone, Copy)]
+enum Request<'a> {
+    Post(&'a Value),
+    Get(&'a [(&'a str, String)]),
+}
 
 #[derive(Debug)]
 pub(crate) struct Http {
@@ -45,9 +51,27 @@ impl Http {
     }
 
     pub(crate) async fn post(&self, path: &str, body: Value) -> Result<Value, ChainError> {
+        self.request(None, path, Request::Post(&body)).await
+    }
+
+    pub(crate) async fn history(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<Value, ChainError> {
+        self.request(Some(Feature::History), path, Request::Get(query))
+            .await
+    }
+
+    async fn request(
+        &self,
+        need: Option<Feature>,
+        path: &str,
+        request: Request<'_>,
+    ) -> Result<Value, ChainError> {
         Ok(self
             .pool
-            .call(None, |endpoint| self.attempt(endpoint, path, body.clone()))
+            .call(need, |endpoint| self.attempt(endpoint, path, request))
             .await?)
     }
 
@@ -55,12 +79,16 @@ impl Http {
         &self,
         endpoint: Endpoint,
         path: &str,
-        body: Value,
+        request: Request<'_>,
     ) -> Result<Value, Failure<ChainError>> {
         let key = endpoint.url.to_string();
         if !self.is_verified(&key) {
             let first = self
-                .send(&endpoint.url, "wallet/getblockbynum", &json!({"num": 0}))
+                .send(
+                    &endpoint.url,
+                    "wallet/getblockbynum",
+                    Request::Post(&json!({"num": 0})),
+                )
                 .await?;
             let same = first["blockID"]
                 .as_str()
@@ -75,7 +103,7 @@ impl Http {
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert(key);
         }
-        self.send(&endpoint.url, path, &body).await
+        self.send(&endpoint.url, path, request).await
     }
 
     fn is_verified(&self, key: &str) -> bool {
@@ -89,15 +117,20 @@ impl Http {
         &self,
         base: &Url,
         path: &str,
-        body: &Value,
+        request: Request<'_>,
     ) -> Result<Value, Failure<ChainError>> {
         let network = |text: String| Failure::Retry(ChainError::Network(text));
-        let url = join(base, path)
+        let mut url = join(base, path)
             .ok_or_else(|| network("an endpoint URL cannot take a path".to_owned()))?;
-        let mut response = self
-            .client
-            .post(url)
-            .json(body)
+        let builder = match request {
+            Request::Post(body) => self.client.post(url).json(body),
+            Request::Get(query) => {
+                url.query_pairs_mut()
+                    .extend_pairs(query.iter().map(|(key, value)| (*key, value.as_str())));
+                self.client.get(url)
+            }
+        };
+        let mut response = builder
             .send()
             .await
             .map_err(|err| network(err.without_url().to_string()))?;

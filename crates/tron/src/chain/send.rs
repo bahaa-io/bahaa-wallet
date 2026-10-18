@@ -1,10 +1,8 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use bahaa_chain::{ChainError, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
-use super::{BALANCE_OF, TronChain, amount, bytes, count, malformed, tron_hex, word};
+use super::{BALANCE_OF, TronChain, amount, bytes, count, malformed, now_ms, tron_hex, word};
 use crate::fees::{self, Prices, Quote, Resources};
 use crate::http::{hex, node_text, unhex};
 use crate::proto::Raw;
@@ -315,14 +313,6 @@ fn insufficient(
 
 fn overflow() -> ChainError {
     ChainError::Invalid("fee overflow")
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

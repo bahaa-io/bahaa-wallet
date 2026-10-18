@@ -1,11 +1,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus,
+    Balance, Chain, ChainError, Decoded, FeeQuote, Incoming, ScanCursor, Scanned, Signed, Transfer,
+    TxId, TxStatus,
 };
 use bahaa_config::{Network, Registry};
 use bahaa_crypto::Seed;
-use bahaa_evm::{EvmChain, EvmPlan, Incoming, ScanCursor, Scanned};
+use bahaa_evm::{EvmChain, EvmPlan};
 use bahaa_store::{CustomToken, Received, Scan};
 use bahaa_tron::{TronChain, TronPlan};
 use bahaa_types::{Address, AssetId, ChainFamily, NetworkId};
@@ -62,6 +63,7 @@ impl AnyChain {
     ) -> Result<Option<Scanned>, ChainError> {
         match self {
             Self::Evm(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
+            Self::Tron(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
             Self::Evm(_) | Self::Tron(_) => Ok(None),
         }
     }

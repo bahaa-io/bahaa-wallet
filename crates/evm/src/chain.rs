@@ -19,8 +19,6 @@ use sha3::{Digest, Keccak256};
 mod logs;
 mod rollup;
 
-pub use logs::{Incoming, ScanCursor, Scanned};
-
 use crate::rpc::{Rpc, quantity};
 use crate::tx;
 

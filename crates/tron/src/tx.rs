@@ -39,6 +39,14 @@ pub(crate) enum Action {
     },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CoinsIn {
+    pub id: [u8; 32],
+    pub from: [u8; 20],
+    pub to: [u8; 20],
+    pub sun: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct Parsed {
     pub id: [u8; 32],
@@ -142,11 +150,43 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, ChainError> {
         return Err(invalid());
     }
     let raw = tx.raw_data.as_ref().ok_or_else(invalid)?;
-    let ([contract], [signature]) = (raw.contract.as_slice(), tx.signature.as_slice()) else {
+    let [signature] = tx.signature.as_slice() else {
         return Err(invalid());
     };
     let id = txid(raw);
     let signer = recover(&id, signature).ok_or_else(invalid)?;
+    let (owner, action) = action(raw)?;
+    if owner != signer {
+        return Err(ChainError::Invalid(
+            "the signature does not belong to the sender",
+        ));
+    }
+    Ok(Parsed {
+        id,
+        from: signer,
+        action,
+        expiration_ms: raw.expiration,
+    })
+}
+
+pub(crate) fn coins_in(raw_bytes: &[u8]) -> Option<CoinsIn> {
+    let raw = Raw::decode(raw_bytes).ok()?;
+    match action(&raw).ok()? {
+        (from, Action::Coins { to, sun }) => Some(CoinsIn {
+            id: Sha256::digest(raw_bytes).into(),
+            from,
+            to,
+            sun,
+        }),
+        (_, Action::Token { .. }) => None,
+    }
+}
+
+fn action(raw: &Raw) -> Result<([u8; 20], Action), ChainError> {
+    let invalid = || ChainError::Invalid("not a signed Tron transaction");
+    let [contract] = raw.contract.as_slice() else {
+        return Err(invalid());
+    };
     let parameter = contract.parameter.as_ref().ok_or_else(invalid)?;
     let (owner, action) = match (contract.kind, parameter.type_url.as_str()) {
         (TRANSFER_TYPE, TRANSFER_URL) => {
@@ -179,17 +219,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, ChainError> {
         }
         _ => return Err(ChainError::Invalid("not a plain transfer")),
     };
-    if address(&owner) != Some(signer) {
-        return Err(ChainError::Invalid(
-            "the signature does not belong to the sender",
-        ));
-    }
-    Ok(Parsed {
-        id,
-        from: signer,
-        action,
-        expiration_ms: raw.expiration,
-    })
+    Ok((address(&owner).ok_or_else(invalid)?, action))
 }
 
 fn exact<T: Message + Default>(bytes: &[u8]) -> Option<T> {
@@ -340,6 +370,31 @@ mod tests {
         let mut extended = bytes.clone();
         extended.extend_from_slice(&[0x18, 0x01]);
         assert!(parse(&extended).is_err());
+    }
+
+    #[test]
+    fn coin_transfers_from_history_are_read_from_the_bytes_their_id_covers() {
+        let key = key(7);
+        let from = owner(&key);
+        let built = raw(coins(&from, &[9; 20], 42), &anchor(), 0).unwrap();
+        let bytes = built.encode_to_vec();
+        let expected = CoinsIn {
+            id: txid(&built),
+            from,
+            to: [9; 20],
+            sun: 42,
+        };
+        assert_eq!(coins_in(&bytes), Some(expected));
+        let mut memo = bytes.clone();
+        memo.extend_from_slice(&[0x52, 0x02, 0x68, 0x69]);
+        let read = coins_in(&memo).unwrap();
+        assert_eq!(read.id, <[u8; 32]>::from(Sha256::digest(&memo)));
+        assert_ne!(read.id, txid(&built));
+        assert_eq!((read.from, read.to, read.sun), (from, [9; 20], 42));
+        let data = transfer_data(&[9; 20], U256::from(1u8));
+        let tokens = raw(token(&from, &[5; 20], data), &anchor(), 1).unwrap();
+        assert_eq!(coins_in(&tokens.encode_to_vec()), None);
+        assert_eq!(coins_in(&[0xff, 0x01]), None);
     }
 
     #[test]

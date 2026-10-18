@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus,
@@ -10,6 +11,7 @@ use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
+mod incoming;
 mod send;
 
 pub use send::TronPlan;
@@ -305,6 +307,14 @@ fn tron_hex(address: &[u8; 20]) -> String {
 
 fn word(address: &[u8; 20]) -> String {
     format!("{:0>64}", hex(address))
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 fn count(value: &Value, field: &str) -> Result<u64, ChainError> {

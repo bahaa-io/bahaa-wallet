@@ -102,7 +102,12 @@ where
                 let Some((path, body)) = read_request(&mut socket).await else {
                     return;
                 };
-                let text = answer(&path, &serde_json::from_slice(&body).unwrap()).to_string();
+                let body = if body.is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_slice(&body).unwrap()
+                };
+                let text = answer(&path, &body).to_string();
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
                     text.len()

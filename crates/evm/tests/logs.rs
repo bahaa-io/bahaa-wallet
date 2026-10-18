@@ -4,8 +4,9 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
+use bahaa_chain::{Incoming, ScanCursor};
 use bahaa_config::{Endpoint, Protocol};
-use bahaa_evm::{EvmChain, ScanCursor};
+use bahaa_evm::EvmChain;
 use bahaa_types::Address;
 use common::{Log, USDT, assets, bsc_on, node, owner, result};
 use serde_json::{Value, json};
@@ -163,7 +164,7 @@ async fn later_scans_continue_from_the_cursor_and_wait_when_caught_up() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(natives_only.found, Vec::<bahaa_evm::Incoming>::new());
+    assert_eq!(natives_only.found, Vec::<Incoming>::new());
     assert_eq!(natives_only.cursor.next, 9_989);
     assert_eq!(asked.lock().unwrap().len(), 1);
 }
