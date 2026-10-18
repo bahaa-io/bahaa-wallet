@@ -18,6 +18,10 @@ const MAINNET: &str = "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321
 const TESTNET: &str = "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879e95a128";
 const TON_0: &str = "0:c73162b34cf19667210af3180d6fcfb88df1678cbbbe731f38642534cc6951e4";
 const WALLET: &str = include_str!("fixtures/ton_wallet.json");
+const TOKENS: &str = include_str!("fixtures/ton_tokens.json");
+const USDT: &str = "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe";
+const TON_0_USDT: &str = "0:2b682898e4be73c23c32b56f58148c0877bbbeb577fcfe4df90e67e72ad46a83";
+const LIBRARY: &str = "8f452d7a4dfd74066b682365177259ed05734435be76b5fd4bd5d8af2b7c3d68";
 
 type Asked = Arc<Mutex<Vec<String>>>;
 
@@ -26,7 +30,8 @@ async fn tonapi(zero_state: &'static str, asked: &Asked) -> Url {
     common::rest_node(move |path, _| -> Value {
         asked.lock().unwrap().push(path.to_owned());
         if path == "/liteserver/get_masterchain_info" {
-            json!({"init": {"root_hash": zero_state}})
+            let tokens: Value = serde_json::from_str(TOKENS).unwrap();
+            json!({"init": {"root_hash": zero_state}, "last": tokens["head"]["last"]})
         } else if let Some(answer) = recorded(path) {
             answer
         } else {
@@ -37,6 +42,22 @@ async fn tonapi(zero_state: &'static str, asked: &Asked) -> Url {
 }
 
 fn recorded(path: &str) -> Option<Value> {
+    let tokens: Value = serde_json::from_str(TOKENS).unwrap();
+    for (route, key) in [
+        (format!("/liteserver/get_account_state/{USDT}"), "master"),
+        (
+            format!("/liteserver/get_account_state/{TON_0_USDT}"),
+            "wallet",
+        ),
+        (format!("/blockchain/libraries/{LIBRARY}"), "library"),
+    ] {
+        if path == route {
+            return Some(tokens[key].clone());
+        }
+    }
+    if path.starts_with("/liteserver/get_config_all/") {
+        return Some(tokens["config"].clone());
+    }
     let fixture: Value = serde_json::from_str(WALLET).unwrap();
     if path == format!("/liteserver/get_account_state/{TON_0}") {
         return Some(fixture["state"].clone());
@@ -222,7 +243,7 @@ async fn incoming_gram_joins_the_wallets_history_from_proven_state() {
 }
 
 #[tokio::test]
-async fn ton_token_sends_wait_for_their_tracking() {
+async fn ton_token_sends_are_quoted_from_proven_contract_state() {
     let scratch = Scratch::new();
     let asked = Asked::default();
     let mut network = ton("ton", tonapi(MAINNET, &asked).await);
@@ -248,8 +269,10 @@ async fn ton_token_sends_wait_for_their_tracking() {
     };
     assert_eq!(
         engine.prepare_send(request).await,
-        Err(EngineError::Chain(ChainError::Unsupported(
-            "sending TON tokens yet"
-        )))
+        Err(EngineError::Chain(ChainError::Insufficient {
+            symbol: "USDT".to_owned(),
+            needed: Amount::parse("1", 6).unwrap(),
+            available: Amount::parse("0", 6).unwrap(),
+        }))
     );
 }

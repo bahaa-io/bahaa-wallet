@@ -4,6 +4,7 @@ use tonlib_core::TonAddress;
 use tonlib_core::cell::{ArcCell, BagOfCells, Cell, CellParser};
 
 use crate::cells::{from_ton, var_uint};
+use crate::fees::leaves;
 use crate::wallet;
 
 pub(crate) const MAX_LISTED: u32 = 16;
@@ -11,7 +12,7 @@ const TRANSACTION: u8 = 0b0111;
 const ORDINARY: u8 = 0;
 const COMMENT: u32 = 0;
 const ENCRYPTED_COMMENT: u32 = 0x2167_da4b;
-const INTERNAL_TRANSFER: u32 = 0x178d_4519;
+pub(crate) const INTERNAL_TRANSFER: u32 = 0x178d_4519;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Transaction {
@@ -20,10 +21,20 @@ pub(crate) struct Transaction {
     pub previous: ([u8; 32], u64),
     pub now: u32,
     pub external: Option<[u8; 32]>,
+    pub received: Option<[u8; 32]>,
+    pub sent: Vec<Outgoing>,
     pub credit: Option<Credit>,
     pub tokens: Option<Credit>,
     pub fees: U256,
     phases: Option<Phases>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Outgoing {
+    pub hash: [u8; 32],
+    pub to: Address,
+    pub value: U256,
+    pub op: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +79,11 @@ pub(crate) fn linked(
     Some(list)
 }
 
+#[cfg(test)]
+pub(crate) fn single(boc: &[u8], account: &[u8; 32]) -> Option<Transaction> {
+    read(&BagOfCells::parse(boc).ok()?.single_root().ok()?, account)
+}
+
 fn read(root: &ArcCell, account: &[u8; 32]) -> Option<Transaction> {
     let mut parser = root.parser();
     if parser.load_u8(4).ok()? != TRANSACTION || parser.load_bits(256).ok()? != account {
@@ -92,6 +108,15 @@ fn read(root: &ArcCell, account: &[u8; 32]) -> Option<Transaction> {
     } else {
         None
     };
+    let sent = if messages.load_bit().ok()? {
+        let root = messages.next_reference().ok()?;
+        leaves(&root, 15)?
+            .iter()
+            .filter_map(|(leaf, _)| outgoing(leaf.reference(0).ok()?))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let phases = phases(&description);
     let credit = match (&message, &phases) {
         (Some(message), Some(phases)) if !phases.bounced => credit(message, account),
@@ -111,6 +136,10 @@ fn read(root: &ArcCell, account: &[u8; 32]) -> Option<Transaction> {
         previous: (previous_hash, previous_lt),
         now,
         external: message.as_deref().and_then(wallet::normalized),
+        received: message
+            .as_deref()
+            .and_then(|message| Cell::cell_hash(message).as_slice().try_into().ok()),
+        sent,
         credit,
         tokens,
         fees,
@@ -195,6 +224,37 @@ fn tokens(message: &Cell, account: &[u8; 32]) -> Option<Credit> {
     (units > U256::ZERO).then_some(Credit { from, units })
 }
 
+fn outgoing(message: &ArcCell) -> Option<Outgoing> {
+    let mut parser = message.parser();
+    if parser.load_bit().ok()? {
+        return None;
+    }
+    parser.skip_bits(3).ok()?;
+    parser.load_address().ok()?;
+    let to = from_ton(&parser.load_address().ok()?)?;
+    let value = var_uint(&mut parser, 4)?;
+    if parser.load_bit().ok()? {
+        parser.next_reference().ok()?;
+    }
+    var_uint(&mut parser, 4)?;
+    var_uint(&mut parser, 4)?;
+    parser.skip_bits(64 + 32).ok()?;
+    if parser.load_bit().ok()? {
+        if parser.load_bit().ok()? {
+            parser.next_reference().ok()?;
+        } else {
+            skip_state_init(&mut parser)?;
+        }
+    }
+    let body = body(&mut parser)?;
+    Some(Outgoing {
+        hash: Cell::cell_hash(message).as_slice().try_into().ok()?,
+        to,
+        value,
+        op: body.parser().load_u32(32).ok(),
+    })
+}
+
 fn internal(parser: &mut CellParser<'_>, account: &[u8; 32]) -> Option<(Address, U256)> {
     if parser.load_bit().ok()? {
         return None;
@@ -249,6 +309,15 @@ fn plain(body: &Cell) -> bool {
 }
 
 impl Transaction {
+    pub(crate) fn succeeded(&self) -> Option<bool> {
+        let phases = self.phases.as_ref()?;
+        let acted = match &phases.action {
+            Some(action) => action.parser().load_bit().ok()?,
+            None => false,
+        };
+        Some(phases.compute == Some(true) && acted && !phases.aborted && !phases.bounced)
+    }
+
     pub(crate) fn outcome(&self) -> Option<Outcome> {
         let phases = self.phases.as_ref()?;
         let Some(computed) = phases.compute else {
@@ -349,6 +418,26 @@ mod tests {
         );
         assert_eq!(transaction.now, 1_791_848_664);
         assert_eq!(transaction.external, Some(bytes32(NORMALIZED)));
+        assert!(
+            transaction
+                .received
+                .is_some_and(|hash| hash != bytes32(NORMALIZED))
+        );
+        assert_eq!(
+            transaction.sent,
+            [Outgoing {
+                hash: transaction.sent[0].hash,
+                to: Address::Ton {
+                    workchain: 0,
+                    hash: bytes32(
+                        "b7f4010ccc8540eb958f3d228284ca379595d3fa52e47072bc1ee781d35e01e7"
+                    ),
+                },
+                value: U256::from(51_186_605u32),
+                op: Some(0x0f8a_7ea5),
+            }]
+        );
+        assert_eq!(transaction.succeeded(), Some(true));
         assert_eq!(transaction.fees, U256::from(561_530u32));
         assert_eq!(
             transaction.outcome(),
@@ -459,6 +548,8 @@ mod tests {
             previous: ([0; 32], 0),
             now: 0,
             external: None,
+            received: None,
+            sent: Vec::new(),
             credit: None,
             tokens: None,
             fees: U256::ZERO,
@@ -852,6 +943,23 @@ mod tests {
             ),
         ] {
             assert_eq!(refused, None);
+        }
+    }
+
+    #[test]
+    fn a_transaction_succeeds_only_when_every_phase_does() {
+        assert_eq!(
+            described(Some(compute(true)), Some(action(true, 0, 1)), false).succeeded(),
+            Some(true)
+        );
+        for failed in [
+            described(Some(compute(true)), Some(action(false, 0, 1)), false),
+            described(Some(compute(true)), None, false),
+            described(Some(compute(true)), Some(action(true, 0, 1)), true),
+            described(Some(compute(false)), Some(action(true, 0, 1)), false),
+            described(None, Some(action(true, 0, 1)), false),
+        ] {
+            assert_eq!(failed.succeeded(), Some(false));
         }
     }
 }

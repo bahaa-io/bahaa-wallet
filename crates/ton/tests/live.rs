@@ -211,7 +211,13 @@ async fn live_a_real_transfer_is_tracked_and_its_message_cannot_be_sent_again() 
         STANDARD.encode(unhex(SENT_ID))
     );
     let nano = |value: &serde_json::Value| value.as_str().unwrap().parse::<u64>().unwrap();
-    let paid = nano(&indexed["total_fees"]) + nano(&indexed["out_msgs"][0]["fwd_fee"]);
+    let sent = &indexed["out_msgs"][0];
+    assert_eq!(sent["opcode"], "0x0f8a7ea5");
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let refund = indexed_transaction(SENDER, 109_578_663_000_008).await;
+    let paid = nano(&indexed["total_fees"]) + nano(&sent["fwd_fee"]) + nano(&sent["value"])
+        - nano(&refund["in_msg"]["value"])
+        + nano(&refund["total_fees"]);
     let confirmed = TxStatus::Confirmed {
         block: None,
         fee: Some(Amount::new(U256::from(paid), 9).unwrap()),

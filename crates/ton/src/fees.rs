@@ -160,7 +160,7 @@ fn storage_prices(root: &ArcCell, now: u32) -> Option<(u64, u64)> {
     best.map(|(_, bit, cell)| (bit, cell))
 }
 
-fn leaves(root: &ArcCell, bits: usize) -> Option<Vec<(ArcCell, usize)>> {
+pub(crate) fn leaves(root: &ArcCell, bits: usize) -> Option<Vec<(ArcCell, usize)>> {
     let mut found = Vec::new();
     let mut pending = vec![(root.clone(), bits)];
     while let Some((cell, remaining)) = pending.pop() {

@@ -750,7 +750,7 @@ async fn a_sent_transfer_is_found_in_the_proven_wallet_history() {
             .unwrap(),
         TxStatus::Confirmed {
             block: None,
-            fee: Some(bahaa_types::Amount::parse("0.000640998", 9).unwrap())
+            fee: Some(bahaa_types::Amount::parse("0.001186605", 9).unwrap())
         }
     );
     let unknown = TxId::new("ab".repeat(32)).unwrap();

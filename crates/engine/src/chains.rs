@@ -89,9 +89,6 @@ impl AnyChain {
                 let (plan, fee) = chain.prepare(transfer).await?;
                 Ok((AnyPlan::Tron(plan), fee))
             }
-            Self::Ton(_) if transfer.asset.contract().is_some() => {
-                Err(ChainError::Unsupported("sending TON tokens yet"))
-            }
             Self::Ton(chain) => {
                 let (plan, fee) = chain.prepare(transfer).await?;
                 Ok((AnyPlan::Ton(plan), fee))

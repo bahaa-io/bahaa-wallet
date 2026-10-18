@@ -119,8 +119,8 @@ async fn tonapi_and_ton_center_hand_transfers_over_and_name_refusals() {
     assert!(log.lock().unwrap().contains(&"/v2/sendBoc".to_owned()));
 }
 
-fn account_json() -> Value {
-    proxied_account(&recorded(TRACK, &["accounts", &SENDER[2..]]).unwrap())
+fn account_json(hash: &str) -> Option<Value> {
+    recorded(TRACK, &["accounts", hash]).map(|answer| proxied_account(&answer))
 }
 
 fn list_json(lt: &str, tampered: bool) -> Value {
@@ -136,17 +136,20 @@ fn list_json(lt: &str, tampered: bool) -> Value {
 }
 
 fn tonapi_history(path: &str, tampered: bool) -> (u16, Value) {
-    let listed = format!("/liteserver/get_transactions/{SENDER}?count=16&lt=");
+    let missing = || (404, json!({"error": "route not found"}));
     if path == "/liteserver/get_masterchain_info" {
-        (200, json!({"init": {"root_hash": ZERO_STATE}}))
-    } else if path == format!("/liteserver/get_account_state/{SENDER}") {
-        (200, account_json())
-    } else if let Some(query) = path.strip_prefix(&listed) {
-        let (lt, _) = query.split_once("&hash=").unwrap();
-        (200, list_json(lt, tampered))
-    } else {
-        (404, json!({"error": "route not found"}))
+        return (200, json!({"init": {"root_hash": ZERO_STATE}}));
     }
+    if let Some(address) = path.strip_prefix("/liteserver/get_account_state/0:") {
+        return account_json(address).map_or_else(missing, |state| (200, state));
+    }
+    if let Some(query) = path.strip_prefix("/liteserver/get_transactions/0:")
+        && let Some((_, query)) = query.split_once("?count=16&lt=")
+    {
+        let (lt, _) = query.split_once("&hash=").unwrap();
+        return (200, list_json(lt, tampered));
+    }
+    missing()
 }
 
 #[tokio::test]
@@ -161,7 +164,7 @@ async fn tonapi_history_is_checked_against_the_proven_state() {
             .unwrap(),
         TxStatus::Confirmed {
             block: None,
-            fee: Some(Amount::parse("0.000640998", 9).unwrap())
+            fee: Some(Amount::parse("0.001186605", 9).unwrap())
         }
     );
     let lying = node(Log::default(), |path, _| tonapi_history(path, true)).await;
