@@ -5,7 +5,7 @@ mod keyring;
 mod payload;
 mod portfolio;
 
-pub use bahaa_store::{Received, Scan, SentStatus, SentTx};
+pub use bahaa_store::{Contact, Received, Scan, SentStatus, SentTx, StoreError};
 pub use caution::{Arrival, Caution};
 pub use engine::{
     Draft, DraftId, Engine, EngineConfig, EngineError, Event, IncomingHistory, SendRequest, State,

@@ -1,3 +1,4 @@
+mod contacts;
 mod incoming;
 mod send;
 
@@ -10,15 +11,15 @@ use bahaa_chain::ChainError;
 use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
-use bahaa_store::{CustomToken, Received, Scan, SentTx, Store, StoreError, TrustedBlock};
-use bahaa_types::{Address, TonContract};
+use bahaa_store::{Contact, CustomToken, Received, Scan, SentTx, Store, StoreError, TrustedBlock};
+use bahaa_types::{Address, NetworkId, TonContract};
 use bahaa_vault::KdfParams;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
-use crate::caution::Arrival;
+use crate::caution::{Arrival, Caution};
 use crate::chains::{self, AnyChain, Fetched};
 use crate::keyring;
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
@@ -81,6 +82,8 @@ pub enum EngineError {
     StillSending,
     #[error("the wallet engine has stopped")]
     Stopped,
+    #[error("this network is not set up in the wallet")]
+    UnknownNetwork,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +101,7 @@ pub enum Event {
     SettingsChanged(Settings),
     TxUpdated(Box<SentTx>),
     Received(Vec<Arrival>),
+    ContactsChanged(Vec<Contact>),
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
@@ -126,6 +130,10 @@ enum Command {
     ConfirmSend(DraftId, SecretString, Reply<SentTx>),
     History(Reply<Vec<SentTx>>),
     Incoming(Reply<IncomingHistory>),
+    Contacts(Reply<Vec<Contact>>),
+    SaveContact(Contact, Reply<()>),
+    RemoveContact(NetworkId, Address, Reply<bool>),
+    Cautions(Address, Reply<Vec<Caution>>),
     Shutdown(Reply<()>),
 }
 
@@ -145,6 +153,8 @@ impl Command {
                 | Self::Settings(_)
                 | Self::History(_)
                 | Self::Incoming(_)
+                | Self::Contacts(_)
+                | Self::Cautions(..)
                 | Self::Shutdown(_)
         )
     }
@@ -375,6 +385,27 @@ impl Engine {
         self.ask(Command::History).await
     }
 
+    pub async fn contacts(&self) -> Result<Vec<Contact>, EngineError> {
+        self.ask(Command::Contacts).await
+    }
+
+    pub async fn save_contact(&self, contact: Contact) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SaveContact(contact, reply)).await
+    }
+
+    pub async fn remove_contact(
+        &self,
+        network: NetworkId,
+        address: Address,
+    ) -> Result<bool, EngineError> {
+        self.ask(|reply| Command::RemoveContact(network, address, reply))
+            .await
+    }
+
+    pub async fn cautions(&self, address: Address) -> Result<Vec<Caution>, EngineError> {
+        self.ask(|reply| Command::Cautions(address, reply)).await
+    }
+
     pub async fn incoming(&self) -> Result<IncomingHistory, EngineError> {
         self.ask(Command::Incoming).await
     }
@@ -504,6 +535,12 @@ impl Worker {
             }
             Command::History(reply) => answer(reply, self.history()),
             Command::Incoming(reply) => answer(reply, self.incoming()),
+            Command::Contacts(reply) => answer(reply, self.contacts()),
+            Command::SaveContact(contact, reply) => answer(reply, self.save_contact(&contact)),
+            Command::RemoveContact(network, address, reply) => {
+                answer(reply, self.remove_contact(&network, &address));
+            }
+            Command::Cautions(address, reply) => answer(reply, self.cautions(&address)),
             Command::Touch | Command::Shutdown(_) => {}
             Command::Wallets(reply) => {
                 let result = self.keyring(|keyring| keyring.wallets()).await;
