@@ -300,7 +300,7 @@ async fn reads_the_same_through_tonapi_and_unknown_accounts_hold_nothing() {
 }
 
 #[tokio::test]
-async fn liteservers_wait_and_other_networks_and_busy_providers_are_skipped() {
+async fn broken_liteservers_other_networks_and_busy_providers_are_passed_over() {
     let (lite_log, testnet_log, busy_log) = (Log::default(), Log::default(), Log::default());
     let lite = node(Arc::clone(&lite_log), |_, _| (500, json!("unused"))).await;
     let testnet = serve(&Center::new(TESTNET_ZERO_STATE), Arc::clone(&testnet_log)).await;
@@ -318,7 +318,7 @@ async fn liteservers_wait_and_other_networks_and_busy_providers_are_skipped() {
     .unwrap();
     let balances = chain.balances(&holder(), &assets()[..1]).await.unwrap();
     assert_eq!(amounts(&balances), ["59570010.146444835"]);
-    assert_eq!(*lite_log.lock().unwrap(), Vec::<String>::new());
+    assert_eq!(*lite_log.lock().unwrap(), ["/"]);
     assert_eq!(*testnet_log.lock().unwrap(), ["/v2/getMasterchainInfo"]);
     assert_eq!(busy_log.lock().unwrap().len(), 1);
 }

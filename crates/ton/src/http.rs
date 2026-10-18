@@ -13,6 +13,7 @@ use ruint::aliases::U256;
 use serde_json::{Value, json};
 use url::Url;
 
+use crate::lite::Lite;
 use crate::wallet::address_boc;
 
 const MAX_REPLY: usize = 4 * 1024 * 1024;
@@ -40,6 +41,7 @@ pub(crate) struct Http {
     client: reqwest::Client,
     zero_state: [u8; 32],
     verified: Mutex<BTreeSet<String>>,
+    lite: Lite,
 }
 
 impl Http {
@@ -51,6 +53,7 @@ impl Http {
             .map_err(|err| ChainError::Network(err.to_string()))?;
         Ok(Self {
             pool: Pool::new(endpoints),
+            lite: Lite::new(client.clone(), zero_state),
             client,
             zero_state,
             verified: Mutex::new(BTreeSet::new()),
@@ -62,6 +65,9 @@ impl Http {
             .pool
             .call(None, |endpoint| async move {
                 let base = &endpoint.url;
+                if endpoint.protocol == Protocol::TonLiteservers {
+                    return self.lite.balance(base, address).await;
+                }
                 match self.ready(&endpoint).await? {
                     Provider::Center => {
                         let path = format!("v2/getAddressBalance?address={address}");
@@ -93,6 +99,9 @@ impl Http {
             .pool
             .call(None, |endpoint| async move {
                 let base = &endpoint.url;
+                if endpoint.protocol == Protocol::TonLiteservers {
+                    return self.lite.run(base, address, method, arg).await;
+                }
                 match self.ready(&endpoint).await? {
                     Provider::Center => {
                         let stack = match arg {
