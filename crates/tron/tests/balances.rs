@@ -4,7 +4,7 @@ mod common;
 
 use std::sync::Arc;
 
-use bahaa_chain::ChainError;
+use bahaa_chain::{Chain, ChainError};
 use bahaa_tron::TronChain;
 use bahaa_types::{Address, ChainFamily};
 use common::{

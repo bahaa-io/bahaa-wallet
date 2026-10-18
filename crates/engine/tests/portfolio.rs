@@ -374,6 +374,8 @@ async fn tron_holdings_join_the_portfolio_under_the_wallets_tron_account() {
     };
     assert_eq!(
         engine.prepare_send(request).await,
-        Err(EngineError::Chain(ChainError::Unsupported("sending yet")))
+        Err(EngineError::Chain(ChainError::Invalid(
+            "Tron does not allow sending TRX to the same account"
+        )))
     );
 }

@@ -1,16 +1,21 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
-use bahaa_chain::{Balance, ChainError};
+use bahaa_chain::{
+    Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus,
+};
 use bahaa_config::{ChainKind, Network};
 use bahaa_crypto::{DerivationPath, Seed};
 use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS};
-use k256::elliptic_curve::sec1::ToEncodedPoint;
 use ruint::aliases::U256;
 use serde_json::{Value, json};
-use sha3::{Digest, Keccak256};
+
+mod send;
+
+pub use send::TronPlan;
 
 use crate::http::{Http, hex, node_text};
+use crate::tx::{self, Action};
 
 const PREFIX: &str = "41";
 const BALANCE_OF: &str = "balanceOf(address)";
@@ -36,51 +41,14 @@ impl TronChain {
         })
     }
 
-    pub fn network(&self) -> &Network {
-        &self.network
-    }
-
-    pub async fn balances(
-        &self,
-        address: &Address,
-        assets: &[AssetId],
-    ) -> Result<Vec<Balance>, ChainError> {
-        let owner = bytes(address)?;
-        let mut balances = Vec::with_capacity(assets.len());
-        for asset in assets {
-            if asset.network() != &self.network.id {
-                return Err(ChainError::Invalid("an asset belongs to another network"));
-            }
-            let amount = match asset.contract() {
-                None => amount(
-                    self.trx_balance(&owner).await?,
-                    self.network.native.decimals,
-                )?,
-                Some(contract) => {
-                    let contract = bytes(contract)?;
-                    let decimals = self.token_decimals(&owner, &contract).await?;
-                    let units = self
-                        .call(&owner, &contract, BALANCE_OF, &word(&owner))
-                        .await?;
-                    amount(units, decimals)?
-                }
-            };
-            balances.push(Balance {
-                asset: asset.clone(),
-                amount,
-            });
-        }
-        Ok(balances)
-    }
-
-    async fn trx_balance(&self, owner: &[u8; 20]) -> Result<U256, ChainError> {
+    async fn account(&self, owner: &[u8; 20]) -> Result<Option<U256>, ChainError> {
         let reply = self
             .http
             .post("wallet/getaccount", json!({"address": tron_hex(owner)}))
             .await?;
         let account = reply.as_object().ok_or_else(malformed)?;
         if account.is_empty() {
-            return Ok(U256::ZERO);
+            return Ok(None);
         }
         let ours = account
             .get("address")
@@ -91,10 +59,7 @@ impl TronChain {
                 "an endpoint answered for another account".to_owned(),
             ));
         }
-        match account.get("balance") {
-            None => Ok(U256::ZERO),
-            Some(balance) => balance.as_u64().map(U256::from).ok_or_else(malformed),
-        }
+        Ok(Some(U256::from(count(&reply, "balance")?)))
     }
 
     fn known_decimals(&self, contract: &[u8; 20]) -> Option<u8> {
@@ -110,6 +75,17 @@ impl TronChain {
                     .get(contract)
                     .copied()
             })
+    }
+
+    fn symbol(&self, contract: &[u8; 20]) -> String {
+        self.network
+            .tokens
+            .iter()
+            .find(|token| token.contract == Address::Tron(*contract))
+            .map_or_else(
+                || "this token".to_owned(),
+                |token| token.coin.symbol.clone(),
+            )
     }
 
     async fn token_decimals(
@@ -142,34 +118,147 @@ impl TronChain {
         parameter: &str,
     ) -> Result<U256, ChainError> {
         let reply = self
-            .http
-            .post(
-                "wallet/triggerconstantcontract",
-                json!({
-                    "owner_address": tron_hex(owner),
-                    "contract_address": tron_hex(contract),
-                    "function_selector": selector,
-                    "parameter": parameter,
-                }),
-            )
+            .trigger(json!({
+                "owner_address": tron_hex(owner),
+                "contract_address": tron_hex(contract),
+                "function_selector": selector,
+                "parameter": parameter,
+            }))
             .await?;
         constant_word(&reply)
+    }
+
+    async fn trigger(&self, body: Value) -> Result<Value, ChainError> {
+        let reply = self
+            .http
+            .post("wallet/triggerconstantcontract", body)
+            .await?;
+        succeeded(&reply)?;
+        Ok(reply)
+    }
+}
+
+impl Chain for TronChain {
+    type Plan = TronPlan;
+
+    fn network(&self) -> &Network {
+        &self.network
+    }
+
+    fn derive(&self, seed: &Seed, account: u32) -> Result<Address, ChainError> {
+        derive(seed, account)
+    }
+
+    async fn balances(
+        &self,
+        address: &Address,
+        assets: &[AssetId],
+    ) -> Result<Vec<Balance>, ChainError> {
+        let owner = bytes(address)?;
+        let mut balances = Vec::with_capacity(assets.len());
+        for asset in assets {
+            if asset.network() != &self.network.id {
+                return Err(ChainError::Invalid("an asset belongs to another network"));
+            }
+            let amount = match asset.contract() {
+                None => amount(
+                    self.account(&owner).await?.unwrap_or(U256::ZERO),
+                    self.network.native.decimals,
+                )?,
+                Some(contract) => {
+                    let contract = bytes(contract)?;
+                    let decimals = self.token_decimals(&owner, &contract).await?;
+                    let units = self
+                        .call(&owner, &contract, BALANCE_OF, &word(&owner))
+                        .await?;
+                    amount(units, decimals)?
+                }
+            };
+            balances.push(Balance {
+                asset: asset.clone(),
+                amount,
+            });
+        }
+        Ok(balances)
+    }
+
+    async fn prepare(&self, transfer: &Transfer) -> Result<(TronPlan, FeeQuote), ChainError> {
+        self.plan(transfer).await
+    }
+
+    fn sign(&self, plan: &TronPlan, seed: &Seed) -> Result<Signed, ChainError> {
+        let key = key(seed, plan.transfer.account)?;
+        if Address::Tron(tx::address_of(&key.public_key())) != plan.transfer.from {
+            return Err(ChainError::Invalid(
+                "this seed does not own the sending account",
+            ));
+        }
+        let (bytes, id) = tx::sign(plan.raw.clone(), &key)?;
+        Ok(Signed {
+            id: TxId::new(hex(&id))?,
+            bytes,
+        })
+    }
+
+    fn decode(&self, signed: &Signed) -> Result<Decoded, ChainError> {
+        let parsed = tx::parse(&signed.bytes)?;
+        if hex(&parsed.id) != signed.id.as_str() {
+            return Err(ChainError::Mismatch("the transaction id"));
+        }
+        let (to, asset, amount) = match parsed.action {
+            Action::Coins { to, sun } => (
+                to,
+                AssetId::Native(self.network.id.clone()),
+                amount(U256::from(sun), self.network.native.decimals)?,
+            ),
+            Action::Token {
+                contract,
+                to,
+                units,
+            } => {
+                let decimals = self.known_decimals(&contract).ok_or(ChainError::Invalid(
+                    "unknown token, prepare the transfer first",
+                ))?;
+                (
+                    to,
+                    AssetId::Token(self.network.id.clone(), Address::Tron(contract)),
+                    amount(units, decimals)?,
+                )
+            }
+        };
+        Ok(Decoded {
+            from: Address::Tron(parsed.from),
+            to: Address::Tron(to),
+            asset,
+            amount,
+            sequence: None,
+            expires_at: u64::try_from(parsed.expiration_ms).ok().map(|ms| ms / 1000),
+        })
+    }
+
+    async fn broadcast(&self, signed: &Signed) -> Result<TxId, ChainError> {
+        self.push(signed).await
+    }
+
+    async fn status(&self, id: &TxId) -> Result<TxStatus, ChainError> {
+        self.lookup(id).await
     }
 }
 
 pub fn derive(seed: &Seed, account: u32) -> Result<Address, ChainError> {
+    Ok(Address::Tron(tx::address_of(
+        &key(seed, account)?.public_key(),
+    )))
+}
+
+fn key(seed: &Seed, account: u32) -> Result<k256::SecretKey, ChainError> {
     let path: DerivationPath = format!("m/44'/195'/0'/0/{account}")
         .parse()
         .map_err(|_| ChainError::Invalid("account index out of range"))?;
-    let key = bahaa_crypto::secp256k1(seed, &path)?;
-    let point = key.public_key().to_encoded_point(false);
-    let hash = Keccak256::digest(&point.as_bytes()[1..]);
-    let mut out = [0u8; 20];
-    out.copy_from_slice(&hash[12..]);
-    Ok(Address::Tron(out))
+    Ok(bahaa_crypto::secp256k1(seed, &path)?)
 }
 
-fn constant_word(reply: &Value) -> Result<U256, ChainError> {
+fn succeeded(reply: &Value) -> Result<(), ChainError> {
     let outcome = &reply["result"];
     if outcome["code"] == "CONTRACT_VALIDATE_ERROR" {
         let message = node_text(&outcome["message"]);
@@ -190,6 +279,10 @@ fn constant_word(reply: &Value) -> Result<U256, ChainError> {
     if outcome["result"] != true || outcome.get("message").is_some() || failed {
         return Err(ChainError::Rejected(node_text(&outcome["message"])));
     }
+    Ok(())
+}
+
+fn constant_word(reply: &Value) -> Result<U256, ChainError> {
     let word = reply["constant_result"]
         .as_array()
         .filter(|results| results.len() == 1)
@@ -212,6 +305,13 @@ fn tron_hex(address: &[u8; 20]) -> String {
 
 fn word(address: &[u8; 20]) -> String {
     format!("{:0>64}", hex(address))
+}
+
+fn count(value: &Value, field: &str) -> Result<u64, ChainError> {
+    match value.get(field) {
+        None | Some(Value::Null) => Ok(0),
+        Some(number) => number.as_u64().ok_or_else(malformed),
+    }
 }
 
 fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {
@@ -271,38 +371,42 @@ mod tests {
         })
     }
 
+    fn read(reply: &Value) -> Result<U256, ChainError> {
+        succeeded(reply).and_then(|()| constant_word(reply))
+    }
+
     #[test]
     fn reads_only_a_clean_constant_result() {
         assert_eq!(
-            constant_word(&reply(&format!("{:064x}", 6))).unwrap(),
+            read(&reply(&format!("{:064x}", 6))).unwrap(),
             U256::from(6u8)
         );
         let mut reverted = reply("");
         reverted["result"]["message"] = json!("524556455254206f70636f6465206578656375746564");
         reverted["transaction"]["ret"][0]["ret"] = json!("FAILED");
         assert_eq!(
-            constant_word(&reverted),
+            read(&reverted),
             Err(ChainError::Rejected("REVERT opcode executed".to_owned()))
         );
         let mut silent_failure = reply(&format!("{:064x}", 6));
         silent_failure["transaction"]["ret"][0]["ret"] = json!("FAILED");
         assert!(matches!(
-            constant_word(&silent_failure),
+            read(&silent_failure),
             Err(ChainError::Rejected(_))
         ));
         let missing = json!({"result": {"code": "CONTRACT_VALIDATE_ERROR", "message": "536d61727420636f6e7472616374206973206e6f742065786973742e"}});
         assert_eq!(
-            constant_word(&missing),
+            read(&missing),
             Err(ChainError::Invalid("this address is not a token contract"))
         );
         for bad in ["6", &format!("{:065x}", 6), &format!("0x{:062x}", 6)] {
             assert!(
-                matches!(constant_word(&reply(bad)), Err(ChainError::Network(_))),
+                matches!(read(&reply(bad)), Err(ChainError::Network(_))),
                 "{bad}"
             );
         }
         let mut two = reply(&format!("{:064x}", 6));
         two["constant_result"] = json!([format!("{:064x}", 6), format!("{:064x}", 7)]);
-        assert!(matches!(constant_word(&two), Err(ChainError::Network(_))));
+        assert!(matches!(read(&two), Err(ChainError::Network(_))));
     }
 }

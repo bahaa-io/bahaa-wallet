@@ -7,7 +7,7 @@ use bahaa_config::{Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmChain, EvmPlan, Incoming, ScanCursor, Scanned};
 use bahaa_store::{CustomToken, Received, Scan};
-use bahaa_tron::TronChain;
+use bahaa_tron::{TronChain, TronPlan};
 use bahaa_types::{Address, AssetId, ChainFamily, NetworkId};
 use futures_util::future::join_all;
 
@@ -21,6 +21,7 @@ pub(crate) enum AnyChain {
 #[derive(Clone)]
 pub(crate) enum AnyPlan {
     Evm(EvmPlan),
+    Tron(TronPlan),
 }
 
 impl AnyChain {
@@ -74,41 +75,41 @@ impl AnyChain {
                 let (plan, fee) = chain.prepare(transfer).await?;
                 Ok((AnyPlan::Evm(plan), fee))
             }
-            Self::Tron(_) => Err(not_yet()),
+            Self::Tron(chain) => {
+                let (plan, fee) = chain.prepare(transfer).await?;
+                Ok((AnyPlan::Tron(plan), fee))
+            }
         }
     }
 
     pub(crate) fn sign(&self, plan: &AnyPlan, seed: &Seed) -> Result<Signed, ChainError> {
         match (self, plan) {
             (Self::Evm(chain), AnyPlan::Evm(plan)) => chain.sign(plan, seed),
-            (Self::Tron(_), _) => Err(ChainError::Mismatch("the network")),
+            (Self::Tron(chain), AnyPlan::Tron(plan)) => chain.sign(plan, seed),
+            _ => Err(ChainError::Mismatch("the network")),
         }
     }
 
     pub(crate) fn decode(&self, signed: &Signed) -> Result<Decoded, ChainError> {
         match self {
             Self::Evm(chain) => chain.decode(signed),
-            Self::Tron(_) => Err(not_yet()),
+            Self::Tron(chain) => chain.decode(signed),
         }
     }
 
     pub(crate) async fn broadcast(&self, signed: &Signed) -> Result<TxId, ChainError> {
         match self {
             Self::Evm(chain) => chain.broadcast(signed).await,
-            Self::Tron(_) => Err(not_yet()),
+            Self::Tron(chain) => chain.broadcast(signed).await,
         }
     }
 
     pub(crate) async fn status(&self, id: &TxId) -> Result<TxStatus, ChainError> {
         match self {
             Self::Evm(chain) => chain.status(id).await,
-            Self::Tron(_) => Err(not_yet()),
+            Self::Tron(chain) => chain.status(id).await,
         }
     }
-}
-
-fn not_yet() -> ChainError {
-    ChainError::Unsupported("sending yet")
 }
 
 pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {

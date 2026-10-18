@@ -13,9 +13,11 @@ bahaa-config.workspace = true
 bahaa-crypto.workspace = true
 bahaa-types.workspace = true
 k256.workspace = true
+prost.workspace = true
 reqwest.workspace = true
 ruint.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sha3.workspace = true
 url.workspace = true
 

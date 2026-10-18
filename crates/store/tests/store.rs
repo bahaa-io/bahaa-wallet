@@ -174,9 +174,22 @@ fn sent(id: &str, status: SentStatus) -> SentTx {
         fee_paid: None,
         block: None,
         created_at: 1_760_000_000,
+        expires_at: None,
         status,
         raw,
     }
+}
+
+#[test]
+fn records_from_before_expiry_times_still_load() {
+    let mut older = serde_json::to_value(sent("0x01", SentStatus::Pending)).unwrap();
+    older.as_object_mut().unwrap().remove("expires_at");
+    let loaded: SentTx = serde_json::from_value(older).unwrap();
+    assert_eq!(loaded, sent("0x01", SentStatus::Pending));
+    let mut tron = sent("0x02", SentStatus::Pending);
+    tron.expires_at = Some(1_760_000_300);
+    let round = serde_json::to_value(&tron).unwrap();
+    assert_eq!(serde_json::from_value::<SentTx>(round).unwrap(), tron);
 }
 
 #[test]

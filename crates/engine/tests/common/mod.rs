@@ -68,7 +68,7 @@ where
             let (mut socket, _) = listener.accept().await.unwrap();
             let answer = Arc::clone(&answer);
             tokio::spawn(async move {
-                let Some(body) = read_body(&mut socket).await else {
+                let Some((_, body)) = read_request(&mut socket).await else {
                     return;
                 };
                 let call: Value = serde_json::from_slice(&body).unwrap();
@@ -87,7 +87,35 @@ where
     url
 }
 
-async fn read_body(socket: &mut tokio::net::TcpStream) -> Option<Vec<u8>> {
+pub async fn rest_node<F>(answer: F) -> Url
+where
+    F: Fn(&str, &Value) -> Value + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let answer = Arc::new(answer);
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let answer = Arc::clone(&answer);
+            tokio::spawn(async move {
+                let Some((path, body)) = read_request(&mut socket).await else {
+                    return;
+                };
+                let text = answer(&path, &serde_json::from_slice(&body).unwrap()).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                    text.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    url
+}
+
+async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<(String, Vec<u8>)> {
     let mut request = Vec::new();
     let mut buffer = [0u8; 8192];
     loop {
@@ -109,7 +137,8 @@ async fn read_body(socket: &mut tokio::net::TcpStream) -> Option<Vec<u8>> {
             })
             .map_or(0, |value| value.trim().parse::<usize>().unwrap());
         if request.len() >= end + 4 + length {
-            return Some(request[end + 4..end + 4 + length].to_vec());
+            let path = text.split(' ').nth(1)?.to_owned();
+            return Some((path, request[end + 4..end + 4 + length].to_vec()));
         }
     }
 }

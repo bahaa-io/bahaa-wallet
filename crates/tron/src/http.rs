@@ -14,6 +14,12 @@ use url::Url;
 const MAX_REPLY: usize = 4 * 1024 * 1024;
 const MAX_MESSAGE: usize = 200;
 const TIMEOUT: Duration = Duration::from_secs(15);
+const BUSY: [&str; 4] = [
+    "SERVER_BUSY",
+    "NO_CONNECTION",
+    "NOT_ENOUGH_EFFECTIVE_CONNECTION",
+    "BLOCK_UNSOLIDIFIED",
+];
 
 #[derive(Debug)]
 pub(crate) struct Http {
@@ -141,7 +147,13 @@ impl Http {
         if let Some(failure) = error {
             return Err(failure);
         }
-        reply.ok_or_else(|| network("reply is not JSON".to_owned()))
+        let reply = reply.ok_or_else(|| network("reply is not JSON".to_owned()))?;
+        if let Some(code) = reply["code"].as_str().filter(|code| BUSY.contains(code)) {
+            return Err(network(format!(
+                "an endpoint cannot take transactions now: {code}"
+            )));
+        }
+        Ok(reply)
     }
 }
 
@@ -159,20 +171,20 @@ pub(crate) fn classify(message: &str) -> Failure<ChainError> {
 
 pub(crate) fn node_text(value: &Value) -> String {
     let text = value.as_str().unwrap_or("unknown error");
-    let decoded = (text.len().is_multiple_of(2)
-        && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    .then(|| {
-        (0..text.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&text[at..at + 2], 16))
-            .collect::<Result<Vec<u8>, _>>()
-            .ok()
-    })
-    .flatten();
-    match decoded {
+    match unhex(text) {
         Some(bytes) => to_plain_text(&String::from_utf8_lossy(&bytes), MAX_MESSAGE),
         None => to_plain_text(text, MAX_MESSAGE),
     }
+}
+
+pub(crate) fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok())
+        .collect()
 }
 
 fn join(base: &Url, path: &str) -> Option<Url> {

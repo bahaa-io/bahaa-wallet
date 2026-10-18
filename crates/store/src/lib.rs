@@ -68,6 +68,8 @@ pub struct SentTx {
     pub fee_paid: Option<Amount>,
     pub block: Option<u64>,
     pub created_at: u64,
+    #[serde(default)]
+    pub expires_at: Option<u64>,
     pub status: SentStatus,
     pub raw: Option<String>,
 }

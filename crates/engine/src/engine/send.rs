@@ -15,6 +15,7 @@ use crate::{KeyringError, WalletId};
 
 const MAX_DRAFTS: usize = 8;
 const DROP_AFTER_SECS: u64 = 600;
+const EXPIRY_GRACE_SECS: u64 = 120;
 const MAX_REASON: usize = 200;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -234,6 +235,7 @@ impl Worker {
             fee_paid: None,
             block: None,
             created_at: chains::now(),
+            expires_at: decoded.expires_at,
             status: SentStatus::Sending,
             raw: Some(to_hex(&signed.bytes)),
         };
@@ -425,15 +427,20 @@ fn step(tx: &SentTx, status: TxStatus, now: u64) -> Step {
             next.raw = None;
         }
         TxStatus::Pending => next.status = SentStatus::Pending,
-        TxStatus::NotFound if now.saturating_sub(tx.created_at) >= DROP_AFTER_SECS => {
+        TxStatus::NotFound => {
+            let gone = match tx.expires_at {
+                Some(expires) => now >= expires.saturating_add(EXPIRY_GRACE_SECS),
+                None => now.saturating_sub(tx.created_at) >= DROP_AFTER_SECS,
+            };
+            if !gone {
+                let expired = tx.expires_at.is_some_and(|expires| now >= expires);
+                return match tx.raw.as_deref().and_then(from_hex) {
+                    Some(bytes) if !expired => Step::Rebroadcast(bytes),
+                    _ => Step::Keep,
+                };
+            }
             next.status = SentStatus::Dropped;
             next.raw = None;
-        }
-        TxStatus::NotFound => {
-            return match tx.raw.as_deref().and_then(from_hex) {
-                Some(bytes) => Step::Rebroadcast(bytes),
-                None => Step::Keep,
-            };
         }
     }
     if next == *tx {
@@ -489,6 +496,7 @@ mod tests {
             fee_paid: None,
             block: None,
             created_at,
+            expires_at: None,
             status,
             raw: Some("02f801".to_owned()),
         }
@@ -534,6 +542,31 @@ mod tests {
             panic!("expected an update");
         };
         assert_eq!((dropped.status, dropped.raw), (SentStatus::Dropped, None));
+    }
+
+    #[test]
+    fn a_transaction_with_an_expiry_is_dropped_only_once_it_can_never_land() {
+        let mut tron = open(SentStatus::Pending, 1_000);
+        tron.expires_at = Some(1_300);
+        assert!(matches!(
+            step(&tron, TxStatus::NotFound, 1_299),
+            Step::Rebroadcast(_)
+        ));
+        assert_eq!(step(&tron, TxStatus::NotFound, 1_300), Step::Keep);
+        assert_eq!(
+            step(&tron, TxStatus::NotFound, 1_300 + EXPIRY_GRACE_SECS - 1),
+            Step::Keep
+        );
+        let Step::Update(dropped) = step(&tron, TxStatus::NotFound, 1_300 + EXPIRY_GRACE_SECS)
+        else {
+            panic!("expected an update");
+        };
+        assert_eq!((dropped.status, dropped.raw), (SentStatus::Dropped, None));
+        tron.expires_at = Some(1_000 + 3 * DROP_AFTER_SECS);
+        assert!(matches!(
+            step(&tron, TxStatus::NotFound, 1_000 + 2 * DROP_AFTER_SECS),
+            Step::Rebroadcast(_)
+        ));
     }
 
     #[test]
