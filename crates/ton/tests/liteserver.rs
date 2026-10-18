@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use adnl::AdnlPeer;
 use adnl::crypto::{KeyPair, SecretKey};
-use bahaa_chain::{Chain, ChainError};
+use bahaa_chain::{Chain, ChainError, Signed, TxId, TxStatus};
 use bahaa_config::{Endpoint, Network, Protocol, Registry};
 use bahaa_ton::TonChain;
 use bahaa_types::{Address, AssetId};
@@ -23,6 +23,19 @@ use url::Url;
 
 const FIXTURE: &str = include_str!("fixtures/account_proofs.json");
 const QUOTE: &str = include_str!("fixtures/quote.json");
+const TRACK: &str = include_str!("fixtures/track.json");
+const SENT: &str = "b5ee9c72410205010001100001e5880027fb320fdb12cc1b3721f24b7aa94d605395f66d142e5111e3ff8dfad20c49ca039b4b3b73fffff88b566b9008000000559e4f7c61649cead47b81fc559961f1397ad6d17bf54953722f26dc0e635781c76df6d6f81c372949e1c8cb6a2cd85973bdab865f605980a59459cdf5e17aca0701020a0ec3c86d0302030000016862005bfa00866642a075cac79e914142651bcacae9fd297238395e0f73c0e9af00f3a018685d68000000000000000000000000010400ac0f8a7ea5000000006acd70d7506cc74a400801bca4e3e99d4b7eeed43fa097305639a10a68520be36b0b239c7ece42e7159acf0004ff6641fb62598366e43e496f5529ac0a72becda285ca223c7ff1bf5a41893942027a92ffc8";
+const SENT_ID: &str = "88d7201d27158e7cbaf4cceaef8ce46f460e9dc1e084490b2485eb6e6112bd54";
+const SENT_EXPIRES: u64 = 1_791_848_961;
+const LATEST: u64 = 1_792_170_273;
+const LATEST_LT: i64 = 110_383_004_000_040;
+const YOUNG: [u8; 32] = [
+    0x33, 0xa2, 0xfe, 0x1a, 0x7b, 0xd6, 0x96, 0xdf, 0x31, 0xe1, 0x8d, 0xc8, 0x3b, 0x1c, 0xab, 0xb7,
+    0xee, 0x33, 0x40, 0xe1, 0x48, 0xf6, 0x25, 0x0d, 0xac, 0x2b, 0x15, 0x49, 0x21, 0x0f, 0x17, 0x43,
+];
+const DEPLOYED_ID: &str = "fbeb45558f4b19cbd0bfd02efea09b2303382c8fbecb471de9df383b75234891";
+const DEPLOYED_EXPIRES: u64 = 1_791_888_072 + 300;
+const REFUSAL: &str = "cannot apply external message to current state : External message was not accepted: cannot run message on account: inbound external message rejected by transaction 13FD9907ED89660D9B90F925BD54A6B029CAFB368A172888F1FFC6FD690624E5:\nexitcode=133, steps=49, gas_used=0\nVM Log (truncated):\n...SIGNU";
 const SENDER: [u8; 32] = [
     0x13, 0xfd, 0x99, 0x07, 0xed, 0x89, 0x66, 0x0d, 0x9b, 0x90, 0xf9, 0x25, 0xbd, 0x54, 0xa6, 0xb0,
     0x29, 0xca, 0xfb, 0x36, 0x8a, 0x17, 0x28, 0x88, 0xf1, 0xff, 0xc6, 0xfd, 0x69, 0x06, 0x24, 0xe5,
@@ -43,6 +56,8 @@ const WALLET: [u8; 32] = [0x7f; 32];
 const GET_MASTERCHAIN_INFO: u32 = 0x89b5_e62e;
 const GET_ACCOUNT_STATE: u32 = 0x6b89_0e25;
 const RUN_SMC_METHOD: u32 = 0x5cc6_5dd2;
+const GET_TRANSACTIONS: u32 = 0x1c40_e7a1;
+const SEND_MESSAGE: u32 = 0x690a_d482;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tamper {
@@ -53,6 +68,15 @@ enum Tamper {
     Anchor,
     Swap,
     Forge,
+    History,
+    Replay,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Delivery {
+    Taken,
+    Ignored,
+    Refused(i32, &'static str),
 }
 
 #[derive(Clone, Copy)]
@@ -63,6 +87,7 @@ struct Behaviour {
     deployed: bool,
     holder: [u8; 32],
     tamper: Tamper,
+    delivery: Delivery,
 }
 
 const GOOD: Behaviour = Behaviour {
@@ -72,6 +97,7 @@ const GOOD: Behaviour = Behaviour {
     deployed: true,
     holder: OWNER,
     tamper: Tamper::Nothing,
+    delivery: Delivery::Taken,
 };
 
 #[derive(Default)]
@@ -174,7 +200,12 @@ fn account_answer(answer: &[u8], tamper: Tamper) -> Vec<u8> {
             shard_proof[middle] ^= 1;
         }
         Tamper::Forge => state = forged(&head_hash(answer)),
-        Tamper::Nothing | Tamper::Block | Tamper::Anchor | Tamper::Swap => {}
+        Tamper::Nothing
+        | Tamper::Block
+        | Tamper::Anchor
+        | Tamper::Swap
+        | Tamper::History
+        | Tamper::Replay => {}
     }
     let mut head = head.to_vec();
     if tamper == Tamper::Anchor {
@@ -350,7 +381,50 @@ fn reply(behaviour: Behaviour, data: &[u8]) -> Vec<u8> {
                 _ => method_result(11, None),
             }
         }
+        GET_TRANSACTIONS => history(behaviour, data),
+        SEND_MESSAGE => delivered(behaviour, data),
         _ => Tl::default().u32(0xbba9_e148).i32(-400).bytes(b"unknown").0,
+    }
+}
+
+fn history(behaviour: Behaviour, data: &[u8]) -> Vec<u8> {
+    let asked = i64::from_le_bytes(data[44..52].try_into().unwrap());
+    let lt = if behaviour.tamper == Tamper::Replay {
+        LATEST_LT
+    } else {
+        asked
+    };
+    let Some(mut list) = recorded(behaviour.recording, &["transactions", &lt.to_string()]) else {
+        return Tl::default().u32(0xbba9_e148).i32(-400).bytes(b"unknown").0;
+    };
+    if behaviour.tamper == Tamper::History {
+        let middle = list.len() / 2;
+        list[middle] ^= 1;
+    }
+    list
+}
+
+fn delivered(behaviour: Behaviour, data: &[u8]) -> Vec<u8> {
+    let (body, _) = read_bytes(&data[4..]);
+    match behaviour.delivery {
+        Delivery::Refused(code, message) => {
+            Tl::default()
+                .u32(0xbba9_e148)
+                .i32(code)
+                .bytes(message.as_bytes())
+                .0
+        }
+        Delivery::Ignored => Tl::default().u32(0x3950_e597).i32(0).0,
+        Delivery::Taken if body == unhex(SENT).as_slice() => {
+            Tl::default().u32(0x3950_e597).i32(1).0
+        }
+        Delivery::Taken => {
+            Tl::default()
+                .u32(0xbba9_e148)
+                .i32(0)
+                .bytes(b"unexpected message")
+                .0
+        }
     }
 }
 
@@ -759,4 +833,122 @@ async fn a_quote_needs_a_config_its_proof_covers() {
         chain.prepare(&send("0.01")).await,
         Err(ChainError::Network(_))
     ));
+}
+
+async fn tracking_chain(behaviour: Behaviour) -> TonChain {
+    let behaviour = Behaviour {
+        recording: TRACK,
+        ..behaviour
+    };
+    let server = liteserver(30, behaviour, Arc::default()).await;
+    TonChain::new(network(config(&[server], mainnet()).await)).unwrap()
+}
+
+fn sent_id() -> TxId {
+    TxId::new(SENT_ID.to_owned()).unwrap()
+}
+
+#[tokio::test]
+async fn a_sent_transfer_is_found_in_the_proven_wallet_history() {
+    let chain = tracking_chain(GOOD).await;
+    assert_eq!(
+        chain
+            .status(&sent_id(), &ton(SENDER), Some(SENT_EXPIRES))
+            .await
+            .unwrap(),
+        TxStatus::Confirmed {
+            block: None,
+            fee: Some(bahaa_types::Amount::parse("0.000640998", 9).unwrap())
+        }
+    );
+    let unknown = TxId::new("ab".repeat(32)).unwrap();
+    assert_eq!(
+        chain
+            .status(&unknown, &ton(SENDER), Some(SENT_EXPIRES))
+            .await
+            .unwrap(),
+        TxStatus::NotFound
+    );
+    assert_eq!(
+        chain
+            .status(&sent_id(), &ton(SENDER), Some(LATEST + 3_900 + 1))
+            .await
+            .unwrap(),
+        TxStatus::NotFound
+    );
+    assert!(matches!(
+        chain.status(&sent_id(), &ton(SENDER), None).await,
+        Err(ChainError::Invalid(_))
+    ));
+    let deployed = TxId::new(DEPLOYED_ID.to_owned()).unwrap();
+    assert_eq!(
+        chain
+            .status(&deployed, &ton(YOUNG), Some(DEPLOYED_EXPIRES))
+            .await
+            .unwrap(),
+        TxStatus::Confirmed {
+            block: None,
+            fee: Some(bahaa_types::Amount::parse("0.00046067", 9).unwrap())
+        }
+    );
+    assert_eq!(
+        chain
+            .status(&unknown, &ton(YOUNG), Some(DEPLOYED_EXPIRES))
+            .await
+            .unwrap(),
+        TxStatus::NotFound
+    );
+    let fresh = quote_chain_for(Tamper::Nothing).await;
+    assert_eq!(
+        fresh
+            .status(&sent_id(), &ton([0x5c; 32]), Some(SENT_EXPIRES))
+            .await
+            .unwrap(),
+        TxStatus::NotFound
+    );
+}
+
+#[tokio::test]
+async fn history_that_does_not_continue_the_proven_state_is_refused() {
+    for tamper in [Tamper::History, Tamper::Replay] {
+        let chain = tracking_chain(Behaviour { tamper, ..GOOD }).await;
+        let unknown = TxId::new("ab".repeat(32)).unwrap();
+        assert!(
+            matches!(
+                chain
+                    .status(&unknown, &ton(SENDER), Some(SENT_EXPIRES))
+                    .await,
+                Err(ChainError::Network(_))
+            ),
+            "{tamper:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn transfers_are_handed_over_and_only_message_refusals_are_final() {
+    let signed = Signed {
+        id: sent_id(),
+        bytes: unhex(SENT),
+    };
+    let taking = tracking_chain(GOOD).await;
+    assert_eq!(taking.broadcast(&signed).await, Ok(sent_id()));
+    let refusing = tracking_chain(Behaviour {
+        delivery: Delivery::Refused(-701, REFUSAL),
+        ..GOOD
+    })
+    .await;
+    assert_eq!(
+        refusing.broadcast(&signed).await,
+        Err(ChainError::Rejected(
+            "the wallet contract refused the message with exit code 133".to_owned()
+        ))
+    );
+    for delivery in [Delivery::Refused(651, "state not ready"), Delivery::Ignored] {
+        let busy = tracking_chain(Behaviour { delivery, ..GOOD }).await;
+        assert!(
+            matches!(busy.broadcast(&signed).await, Err(ChainError::Network(_))),
+            "{delivery:?}"
+        );
+    }
 }

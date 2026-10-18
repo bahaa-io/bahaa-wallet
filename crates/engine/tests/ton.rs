@@ -120,8 +120,14 @@ async fn ton_accounts_follow_each_networks_wallet_id_and_show_gram() {
         to: test,
         amount: Amount::parse("1", 9).unwrap(),
     };
-    assert_eq!(
+    assert!(matches!(
         engine.prepare_send(request).await,
-        Err(EngineError::Chain(ChainError::Unsupported("sending yet")))
+        Err(EngineError::Chain(ChainError::Network(_)))
+    ));
+    assert!(
+        main_asked
+            .lock()
+            .unwrap()
+            .contains(&format!("/liteserver/get_account_state/{main}"))
     );
 }

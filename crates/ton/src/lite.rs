@@ -24,6 +24,7 @@ use crate::fees::{PARAMS, Settings};
 use crate::http::Item;
 use crate::proof::{self, Proven};
 use crate::tl::{self, AccountState, Answer, BlockId, ConfigInfo};
+use crate::transaction::{self, MAX_LISTED, Transaction};
 
 const CONNECT: Duration = Duration::from_secs(5);
 const ANSWER: Duration = Duration::from_secs(10);
@@ -31,6 +32,8 @@ const MAX_CONFIG: usize = 1024 * 1024;
 const MAX_SERVERS: usize = 64;
 const MAX_FRAMES: usize = 4;
 const NOT_DEPLOYED: i32 = -13;
+const NOT_APPLIED: &str = "cannot apply external message";
+const EXIT_CODE: &str = "exitcode=";
 const INACTIVE: i32 = -256;
 
 type Session = Arc<Mutex<Option<AdnlPeer<TcpStream>>>>;
@@ -91,6 +94,32 @@ impl Lite {
             |last| tl::get_config_params(last, &PARAMS),
             tl::config_info,
             |last, info| proven_settings(last, &info),
+        )
+        .await
+    }
+
+    pub(crate) async fn send(&self, config: &Url, boc: &[u8]) -> Result<(), Failure<ChainError>> {
+        self.ask(
+            config,
+            |_| tl::send_message(boc),
+            send_answer,
+            |_, outcome| sent(outcome),
+        )
+        .await
+    }
+
+    pub(crate) async fn transactions(
+        &self,
+        config: &Url,
+        owner: &Address,
+        from: ([u8; 32], u64),
+    ) -> Result<Vec<Transaction>, Failure<ChainError>> {
+        let (workchain, hash) = parts(owner)?;
+        self.ask(
+            config,
+            |_| tl::get_transactions(MAX_LISTED, workchain, &hash, from.1, &from.0),
+            tl::transaction_list,
+            |_, list| proven_transactions(&list.transactions, owner, from),
         )
         .await
     }
@@ -347,17 +376,70 @@ pub(crate) fn proven_account(
     let root = (!state.state.is_empty())
         .then(|| BagOfCells::parse(&state.state).ok()?.single_root().ok())
         .flatten();
-    let matches = match (proven, &root) {
-        (Proven::Present(expected), Some(root)) => root.cell_hash().as_slice() == expected,
-        (Proven::Absent, None) => true,
-        _ => false,
+    let last = match (proven, &root) {
+        (Proven::Present { account, last }, Some(root))
+            if root.cell_hash().as_slice() == account =>
+        {
+            Some(last)
+        }
+        (Proven::Absent, None) => None,
+        _ => {
+            return Err(retry(
+                "a liteserver sent an account that its proof does not cover",
+            ));
+        }
     };
-    if !matches {
-        return Err(retry(
-            "a liteserver sent an account that its proof does not cover",
-        ));
+    let mut read = account(&state.state, owner)
+        .ok_or_else(|| retry("a liteserver sent an unreadable account"))?;
+    read.last = last;
+    Ok(read)
+}
+
+pub(crate) fn proven_transactions(
+    boc: &[u8],
+    owner: &Address,
+    from: ([u8; 32], u64),
+) -> Result<Vec<Transaction>, Failure<ChainError>> {
+    let (_, hash) = parts(owner)?;
+    transaction::linked(boc, &hash, from)
+        .ok_or_else(|| retry("a server sent transactions that do not continue the proven history"))
+}
+
+fn send_answer(answer: &[u8]) -> Option<Answer<Result<bool, (i32, String)>>> {
+    Some(match tl::send_status(answer)? {
+        Answer::Ok(status) => Answer::Ok(Ok(status)),
+        Answer::Refused { code, message } => Answer::Ok(Err((code, message))),
+    })
+}
+
+fn sent(outcome: Result<bool, (i32, String)>) -> Result<(), Failure<ChainError>> {
+    match outcome {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(retry("a liteserver did not take the message")),
+        Err((code, message)) => Err(refused(&message).map_or_else(
+            || retry(&format!("a liteserver refused with code {code}: {message}")),
+            Failure::Fatal,
+        )),
     }
-    account(&state.state, owner).ok_or_else(|| retry("a liteserver sent an unreadable account"))
+}
+
+pub(crate) fn refused(error: &str) -> Option<ChainError> {
+    if !error.contains(NOT_APPLIED) {
+        return None;
+    }
+    let code = error
+        .split_once(EXIT_CODE)
+        .map(|(_, rest)| {
+            rest.bytes()
+                .take_while(|byte| byte.is_ascii_digit() || *byte == b'-')
+                .map(char::from)
+                .collect::<String>()
+        })
+        .filter(|code| !code.is_empty() && code.len() <= 11);
+    Some(ChainError::Rejected(match code {
+        Some(code) => format!("the wallet contract refused the message with exit code {code}"),
+        None => "the network refused the message".to_owned(),
+    }))
 }
 
 pub(crate) fn proven_settings(
@@ -438,5 +520,41 @@ mod tests {
         let mut empty = list;
         empty["liteservers"] = json!([]);
         assert!(matches!(lite().read_list(&empty), Err(Failure::Retry(_))));
+    }
+
+    #[test]
+    fn only_message_refusals_are_final_and_they_name_the_exit_code() {
+        let named = |code: &str| {
+            Some(ChainError::Rejected(format!(
+                "the wallet contract refused the message with exit code {code}"
+            )))
+        };
+        assert_eq!(
+            refused(
+                "cannot apply external message to current state : External message was not accepted\nexitcode=133, steps=49"
+            ),
+            named("133")
+        );
+        assert_eq!(
+            refused(
+                "lite server error, code -701: cannot apply external message to current state : exitcode=-14, steps=3"
+            ),
+            named("-14")
+        );
+        let unnamed = Some(ChainError::Rejected(
+            "the network refused the message".to_owned(),
+        ));
+        assert_eq!(
+            refused(
+                "cannot apply external message to current state : cannot deserialize bag-of-cells"
+            ),
+            unnamed
+        );
+        assert_eq!(
+            refused("cannot apply external message exitcode=123456789012345"),
+            unnamed
+        );
+        assert_eq!(refused("LITE_SERVER_NOTREADY: timeout"), None);
+        assert_eq!(refused("state not ready"), None);
     }
 }

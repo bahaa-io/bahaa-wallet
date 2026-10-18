@@ -30,7 +30,12 @@ pub trait Chain: Send + Sync {
 
     fn broadcast(&self, signed: &Signed) -> impl Future<Output = Result<TxId, ChainError>> + Send;
 
-    fn status(&self, id: &TxId) -> impl Future<Output = Result<TxStatus, ChainError>> + Send;
+    fn status(
+        &self,
+        id: &TxId,
+        from: &Address,
+        expires_at: Option<u64>,
+    ) -> impl Future<Output = Result<TxStatus, ChainError>> + Send;
 }
 
 pub trait HistoryProvider: Send + Sync {

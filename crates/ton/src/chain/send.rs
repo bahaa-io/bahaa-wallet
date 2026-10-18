@@ -12,7 +12,7 @@ use crate::cells::{Account, Status};
 use crate::fees::{Settings, TRANSFER_GAS, size_without_root};
 use crate::wallet::{self, Order};
 
-const LIFETIME: u64 = 300;
+pub(super) const LIFETIME: u64 = 300;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TonPlan {
@@ -165,7 +165,9 @@ impl TonChain {
             &signature.to_bytes(),
             plan.deploy.then_some(&public),
         )?;
-        let id = message.cell_hash().to_hex();
+        let id = wallet::normalized(&message)
+            .map(|id| hex(&id))
+            .ok_or(ChainError::Invalid("cannot encode the wallet message"))?;
         let bytes = BagOfCells::from_root(message)
             .serialize(true)
             .map_err(|_| ChainError::Invalid("cannot encode the wallet message"))?;
@@ -405,6 +407,7 @@ mod tests {
             last_paid: 0,
             due: U256::ZERO,
             status,
+            last: None,
         }
     }
 
@@ -462,7 +465,7 @@ mod tests {
         parsed.signature[0] ^= 1;
         let message =
             wallet::external(&parsed.order, &parsed.signature, parsed.public_key.as_ref()).unwrap();
-        signed.id = TxId::new(message.cell_hash().to_hex()).unwrap();
+        signed.id = TxId::new(hex(&wallet::normalized(&message).unwrap())).unwrap();
         signed.bytes = BagOfCells::from_root(message).serialize(true).unwrap();
         assert!(matches!(ton.decode(&signed), Err(ChainError::Invalid(_))));
     }
@@ -477,7 +480,7 @@ mod tests {
         let signature = stranger.sign(digest.as_slice()).to_bytes();
         let message = wallet::external(&ours.order, &signature, Some(&theirs)).unwrap();
         let signed = Signed {
-            id: TxId::new(message.cell_hash().to_hex()).unwrap(),
+            id: TxId::new(hex(&wallet::normalized(&message).unwrap())).unwrap(),
             bytes: BagOfCells::from_root(message).serialize(true).unwrap(),
         };
         assert!(matches!(ton.decode(&signed), Err(ChainError::Invalid(_))));

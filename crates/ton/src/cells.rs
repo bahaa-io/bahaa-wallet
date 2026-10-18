@@ -29,6 +29,7 @@ pub(crate) struct Account {
     pub last_paid: u32,
     pub due: U256,
     pub status: Status,
+    pub last: Option<([u8; 32], u64)>,
 }
 
 impl Account {
@@ -40,6 +41,7 @@ impl Account {
             last_paid: 0,
             due: U256::ZERO,
             status: Status::Missing,
+            last: None,
         }
     }
 }
@@ -92,6 +94,7 @@ pub(crate) fn account(boc: &[u8], owner: &Address) -> Option<Account> {
         last_paid,
         due,
         status,
+        last: None,
     })
 }
 
@@ -118,7 +121,7 @@ fn state_init(parser: &mut CellParser<'_>) -> Option<Status> {
     })
 }
 
-fn var_uint(parser: &mut CellParser<'_>, length_bits: usize) -> Option<U256> {
+pub(crate) fn var_uint(parser: &mut CellParser<'_>, length_bits: usize) -> Option<U256> {
     let length = usize::from(parser.load_u8(length_bits).ok()?);
     if length == 0 {
         return Some(U256::ZERO);

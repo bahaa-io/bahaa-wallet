@@ -126,7 +126,11 @@ async fn send(chain: &EvmChain, transfer: &Transfer) -> (TxId, Amount, Amount) {
 
 async fn settled(chain: &EvmChain, id: &TxId) -> Option<Amount> {
     for _ in 0..50 {
-        match chain.status(id).await.unwrap() {
+        match chain
+            .status(id, &Address::Evm([0; 20]), None)
+            .await
+            .unwrap()
+        {
             TxStatus::Confirmed { fee, .. } => return fee,
             TxStatus::Failed(reason) => panic!("failed: {reason}"),
             _ => tokio::time::sleep(Duration::from_millis(100)).await,
@@ -193,7 +197,13 @@ async fn refuses_to_overspend_and_knows_unknown_ids() {
         Err(ChainError::Insufficient { .. })
     ));
     let unknown = TxId::new(format!("0x{}", "ab".repeat(32))).unwrap();
-    assert_eq!(chain.status(&unknown).await.unwrap(), TxStatus::NotFound);
+    assert_eq!(
+        chain
+            .status(&unknown, &Address::Evm([0; 20]), None)
+            .await
+            .unwrap(),
+        TxStatus::NotFound
+    );
 }
 
 #[tokio::test]

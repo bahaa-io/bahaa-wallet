@@ -199,11 +199,26 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
     };
     Ok(Parsed {
         order,
-        id: hash_of(&root)?,
+        id: normalized(&root).ok_or_else(invalid)?,
         unsigned: hash_of(&unsigned_cell.to_arc())?,
         signature,
         public_key,
     })
+}
+
+pub(crate) fn normalized(message: &Cell) -> Option<[u8; 32]> {
+    let parsed = Message::from_cell(message).ok()?;
+    let CommonMsgInfo::ExtIn(info) = &parsed.info else {
+        return None;
+    };
+    let mut cell = CellBuilder::new();
+    cell.store_u8(2, 0b10).ok()?.store_u8(2, 0).ok()?;
+    cell.store_address(&TonAddress::from_msg_address(info.dest.clone()).ok()?)
+        .ok()?;
+    cell.store_u8(4, 0).ok()?;
+    cell.store_bit(false).ok()?.store_bit(true).ok()?;
+    cell.store_reference(&parsed.body.value).ok()?;
+    hash_of(&cell.build().ok()?.to_arc()).ok()
 }
 
 fn deployed_key(init: &StateInit, wallet_id: i32) -> Result<[u8; 32], ChainError> {
@@ -332,5 +347,50 @@ mod tests {
             .step_by(2)
             .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn a_relay_cannot_change_the_id_of_a_signed_message() {
+        let order = Order {
+            wallet: v5r1(&[7; 32], wallet_id(-239)).unwrap(),
+            wallet_id: wallet_id(-239),
+            seqno: 3,
+            valid_until: 1_800_000_000,
+            to: Address::Ton {
+                workchain: 0,
+                hash: [0x5c; 32],
+            },
+            nano: U256::from(5u8),
+            bounce: false,
+        };
+        let plain = external(&order, &[9; 64], None).unwrap();
+        let id = normalized(&plain).unwrap();
+        let deploying = external(&order, &[9; 64], Some(&[7; 32])).unwrap();
+        assert_eq!(normalized(&deploying), Some(id));
+        let message = Message::from_cell(&plain.clone().to_arc()).unwrap();
+        let CommonMsgInfo::ExtIn(info) = &message.info else {
+            panic!("an external message expected");
+        };
+        let mut relayed = CellBuilder::new();
+        relayed.store_u8(2, 0b10).unwrap();
+        relayed.store_u8(2, 0b01).unwrap().store_u16(9, 8).unwrap();
+        relayed.store_u8(8, 0xab).unwrap();
+        relayed
+            .store_address(&TonAddress::from_msg_address(info.dest.clone()).unwrap())
+            .unwrap();
+        relayed.store_u8(4, 1).unwrap().store_u8(8, 5).unwrap();
+        relayed.store_bit(false).unwrap().store_bit(false).unwrap();
+        relayed.store_cell(&message.body.value).unwrap();
+        assert_eq!(normalized(&relayed.build().unwrap()), Some(id));
+        let later = external(&Order { seqno: 4, ..order }, &[9; 64], None).unwrap();
+        assert_ne!(normalized(&later), Some(id));
+        let body = WalletExtMsgBodyV5::from_cell(&unsigned(&order).unwrap().to_arc()).unwrap();
+        assert_eq!(normalized(&body.msgs[0]), None);
+        assert_eq!(
+            parse(&BagOfCells::from_root(plain).serialize(true).unwrap())
+                .unwrap()
+                .id,
+            id
+        );
     }
 }

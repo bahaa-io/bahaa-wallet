@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 
 use bahaa_chain::{Chain, ChainError};
@@ -9,12 +11,10 @@ use bahaa_types::{Address, AssetId, ChainFamily};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 use tonlib_core::cell::BagOfCells;
 use url::Url;
 
-type Log = Arc<Mutex<Vec<String>>>;
+use common::{Log, node, unhex};
 
 const ZERO_STATE: &str = "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321fb05569";
 const TESTNET_ZERO_STATE: &str = "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879e95a128";
@@ -27,72 +27,8 @@ const WALLET_CELL: &str = "b5ee9c72010101010024000043800fe049efd8198af70fd5e02e0
 const CODE_CELL: &str =
     "b5ee9c72010101010023000842028f452d7a4dfd74066b682365177259ed05734435be76b5fd4bd5d8af2b7c3d68";
 
-fn unhex(text: &str) -> Vec<u8> {
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
-        .collect()
-}
-
 fn base64_of(hex: &str) -> String {
     STANDARD.encode(unhex(hex))
-}
-
-async fn node(
-    log: Log,
-    reply: impl Fn(&str, &Value) -> (u16, Value) + Send + Sync + 'static,
-) -> Url {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-    let reply = Arc::new(reply);
-    tokio::spawn(async move {
-        loop {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let (log, reply) = (Arc::clone(&log), Arc::clone(&reply));
-            tokio::spawn(async move {
-                let mut request = Vec::new();
-                let mut buffer = [0u8; 8192];
-                let (path, body) = loop {
-                    let read = socket.read(&mut buffer).await.unwrap_or(0);
-                    if read == 0 {
-                        return;
-                    }
-                    request.extend_from_slice(&buffer[..read]);
-                    let text = String::from_utf8_lossy(&request).to_string();
-                    let Some(end) = text.find("\r\n\r\n") else {
-                        continue;
-                    };
-                    let length = text
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length: ")
-                                .map(str::to_owned)
-                        })
-                        .map_or(0, |value| value.trim().parse::<usize>().unwrap());
-                    if request.len() >= end + 4 + length {
-                        let path = text.split(' ').nth(1).unwrap().to_owned();
-                        break (path, request[end + 4..end + 4 + length].to_vec());
-                    }
-                };
-                let body = if body.is_empty() {
-                    Value::Null
-                } else {
-                    serde_json::from_slice(&body).unwrap()
-                };
-                log.lock().unwrap().push(path.clone());
-                let (status, answer) = reply(&path, &body);
-                let text = answer.to_string();
-                let response = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-                    text.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
-            });
-        }
-    });
-    url
 }
 
 fn ton_on(endpoints: &[(Protocol, &Url)]) -> Network {

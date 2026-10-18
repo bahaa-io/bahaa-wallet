@@ -9,9 +9,13 @@ const RUN_SMC_METHOD: u32 = 0x5cc6_5dd2;
 const RUN_METHOD_RESULT: u32 = 0xa39a_616b;
 const GET_CONFIG_PARAMS: u32 = 0x2a11_1c19;
 const CONFIG_INFO: u32 = 0xae7b_272f;
+const SEND_MESSAGE: u32 = 0x690a_d482;
+const SEND_MSG_STATUS: u32 = 0x3950_e597;
+const GET_TRANSACTIONS: u32 = 0x1c40_e7a1;
+const TRANSACTION_LIST: u32 = 0x6f26_c60b;
 const ERROR: u32 = 0xbba9_e148;
 const RESULT_ONLY: u32 = 4;
-const MAX_ERROR: usize = 200;
+const MAX_ERROR: usize = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BlockId {
@@ -48,6 +52,12 @@ pub(crate) struct ConfigInfo {
     pub block: BlockId,
     pub state_proof: Vec<u8>,
     pub config_proof: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TransactionList {
+    pub ids: Vec<BlockId>,
+    pub transactions: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -247,6 +257,49 @@ pub(crate) fn config_info(answer: &[u8]) -> Option<Answer<ConfigInfo>> {
     })
 }
 
+pub(crate) fn send_message(boc: &[u8]) -> Vec<u8> {
+    let mut writer = Writer::default();
+    writer.u32(SEND_MESSAGE).bytes(boc);
+    writer.0
+}
+
+pub(crate) fn get_transactions(
+    count: u32,
+    workchain: i8,
+    hash: &[u8; 32],
+    lt: u64,
+    last: &[u8; 32],
+) -> Vec<u8> {
+    let mut writer = Writer::default();
+    writer
+        .u32(GET_TRANSACTIONS)
+        .u32(count)
+        .account(workchain, hash)
+        .i64(i64::from_le_bytes(lt.to_le_bytes()))
+        .int256(last);
+    writer.0
+}
+
+pub(crate) fn send_status(answer: &[u8]) -> Option<Answer<bool>> {
+    read(answer, SEND_MSG_STATUS, |reader| Some(reader.i32()? == 1))
+}
+
+pub(crate) fn transaction_list(answer: &[u8]) -> Option<Answer<TransactionList>> {
+    read(answer, TRANSACTION_LIST, |reader| {
+        let count = reader.u32()?;
+        if count > crate::transaction::MAX_LISTED {
+            return None;
+        }
+        let ids = (0..count)
+            .map(|_| reader.block())
+            .collect::<Option<Vec<_>>>()?;
+        Some(TransactionList {
+            ids,
+            transactions: reader.bytes()?.to_vec(),
+        })
+    })
+}
+
 pub(crate) fn masterchain_info(answer: &[u8]) -> Option<Answer<MasterchainInfo>> {
     read(answer, MASTERCHAIN_INFO, |reader| {
         let last = reader.block()?;
@@ -400,6 +453,22 @@ mod tests {
                 CONFIG_INFO,
                 "liteServer.configInfo mode:# id:tonNode.blockIdExt state_proof:bytes config_proof:bytes = liteServer.ConfigInfo",
             ),
+            (
+                SEND_MESSAGE,
+                "liteServer.sendMessage body:bytes = liteServer.SendMsgStatus",
+            ),
+            (
+                SEND_MSG_STATUS,
+                "liteServer.sendMsgStatus status:int = liteServer.SendMsgStatus",
+            ),
+            (
+                GET_TRANSACTIONS,
+                "liteServer.getTransactions count:# account:liteServer.accountId lt:long hash:int256 = liteServer.TransactionList",
+            ),
+            (
+                TRANSACTION_LIST,
+                "liteServer.transactionList ids:(vector tonNode.blockIdExt) transactions:bytes = liteServer.TransactionList",
+            ),
         ];
         for (id, schema) in schemas {
             assert_eq!(id, crc32(&schema.replace(['(', ')'], "")), "{schema}");
@@ -552,5 +621,44 @@ mod tests {
         frame.u32(ADNL_ANSWER).int256(&[9; 32]).bytes(b"hello");
         assert_eq!(answer(&[9; 32], &frame.0), Some(b"hello".as_slice()));
         assert_eq!(answer(&[8; 32], &frame.0), None);
+    }
+
+    #[test]
+    fn history_and_sending_have_their_reference_layout() {
+        let asked = get_transactions(16, 0, &[0x13; 32], 109_578_663_000_001, &[0x5b; 32]);
+        assert_eq!(asked[..4], GET_TRANSACTIONS.to_le_bytes());
+        assert_eq!(asked[4..8], 16u32.to_le_bytes());
+        assert_eq!(asked[8..12], 0i32.to_le_bytes());
+        assert_eq!(asked[12..44], [0x13; 32]);
+        assert_eq!(asked[44..52], 109_578_663_000_001u64.to_le_bytes());
+        assert_eq!(asked[52..], [0x5b; 32]);
+        let sent = send_message(b"boc");
+        assert_eq!(sent[..4], SEND_MESSAGE.to_le_bytes());
+        assert_eq!(sent[4..], [3, b'b', b'o', b'c']);
+        for (status, taken) in [(1, true), (0, false)] {
+            let mut answer = Writer::default();
+            answer.u32(SEND_MSG_STATUS).i32(status);
+            assert_eq!(send_status(&answer.0), Some(Answer::Ok(taken)));
+        }
+        let listed = |count: u32| {
+            let mut answer = Writer::default();
+            answer.u32(TRANSACTION_LIST).u32(count);
+            for _ in 0..count {
+                answer.block(&block());
+            }
+            answer.bytes(b"txs");
+            answer.0
+        };
+        assert_eq!(
+            transaction_list(&listed(16)),
+            Some(Answer::Ok(TransactionList {
+                ids: vec![block(); 16],
+                transactions: b"txs".to_vec()
+            }))
+        );
+        assert_eq!(transaction_list(&listed(17)), None);
+        let mut huge = Writer::default();
+        huge.u32(TRANSACTION_LIST).u32(u32::MAX);
+        assert_eq!(transaction_list(&huge.0), None);
     }
 }

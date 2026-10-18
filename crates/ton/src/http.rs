@@ -16,8 +16,9 @@ use url::Url;
 
 use crate::cells::Account;
 use crate::fees::Settings;
-use crate::lite::{Lite, proven_account, proven_settings};
+use crate::lite::{Lite, proven_account, proven_settings, proven_transactions, refused};
 use crate::tl::{AccountState, BlockId, ConfigInfo};
+use crate::transaction::{MAX_LISTED, Transaction};
 use crate::wallet::address_boc;
 
 const MAX_REPLY: usize = 4 * 1024 * 1024;
@@ -185,6 +186,72 @@ impl Http {
                             api(self.fetch(base, &path, None).await?)?.ok_or_else(unsupported)?;
                         let info = proxied_config(&reply).ok_or_else(malformed)?;
                         proven_settings(&last, &info)
+                    }
+                    _ => Err(unsupported()),
+                }
+            })
+            .await?)
+    }
+
+    pub(crate) async fn send(&self, boc: &[u8]) -> Result<(), ChainError> {
+        let encoded = STANDARD.encode(boc);
+        let encoded = encoded.as_str();
+        Ok(self
+            .pool
+            .call(None, |endpoint| async move {
+                let base = &endpoint.url;
+                if endpoint.protocol == Protocol::TonLiteservers {
+                    return self.lite.send(base, boc).await;
+                }
+                let provider = self.ready(&endpoint).await?;
+                let reply = match provider {
+                    Provider::Api => {
+                        let body = json!({ "body": encoded });
+                        self.fetch(base, "liteserver/send_message", Some(&body))
+                            .await?
+                    }
+                    Provider::Center => {
+                        let body = json!({ "boc": encoded });
+                        self.fetch(base, "v2/sendBoc", Some(&body)).await?
+                    }
+                };
+                let error = reply.1.as_ref().and_then(|reply| reply["error"].as_str());
+                if let Some(rejected) = error.and_then(refused) {
+                    return Err(Failure::Fatal(rejected));
+                }
+                match provider {
+                    Provider::Api => api(reply)?.ok_or_else(unsupported).map(drop),
+                    Provider::Center => center(reply).map(drop),
+                }
+            })
+            .await?)
+    }
+
+    pub(crate) async fn transactions(
+        &self,
+        address: &Address,
+        from: ([u8; 32], u64),
+    ) -> Result<Vec<Transaction>, ChainError> {
+        Ok(self
+            .pool
+            .call(None, |endpoint| async move {
+                let base = &endpoint.url;
+                match endpoint.protocol {
+                    Protocol::TonLiteservers => self.lite.transactions(base, address, from).await,
+                    Protocol::TonApi => {
+                        self.ready(&endpoint).await?;
+                        let path = format!(
+                            "liteserver/get_transactions/{address}?count={MAX_LISTED}&lt={}&hash={}",
+                            from.1,
+                            hex(&from.0)
+                        );
+                        let reply =
+                            api(self.fetch(base, &path, None).await?)?.ok_or_else(unsupported)?;
+                        let list = reply["transactions"]
+                            .as_str()
+                            .and_then(unhex)
+                            .ok_or_else(malformed)?;
+                        proven_transactions(&list, address, from)
                     }
                     _ => Err(unsupported()),
                 }
@@ -448,8 +515,10 @@ fn join(base: &Url, path: &str) -> Option<Url> {
         .pop_if_empty()
         .extend(path.split('/'));
     if let Some(query) = query {
-        let (key, value) = query.split_once('=')?;
-        url.query_pairs_mut().append_pair(key, value);
+        for pair in query.split('&') {
+            let (key, value) = pair.split_once('=')?;
+            url.query_pairs_mut().append_pair(key, value);
+        }
     }
     Some(url)
 }
@@ -488,6 +557,16 @@ mod tests {
                 .as_str(),
             "https://tonapi.io/v2/blockchain/accounts/0:ab/methods/seqno"
         );
+        assert_eq!(
+            join(
+                &tonapi,
+                "liteserver/get_transactions/0:ab?count=16&lt=7&hash=cd"
+            )
+            .unwrap()
+            .as_str(),
+            "https://tonapi.io/v2/liteserver/get_transactions/0:ab?count=16&lt=7&hash=cd"
+        );
+        assert_eq!(join(&tonapi, "a?b"), None);
     }
 
     #[test]

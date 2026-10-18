@@ -8,7 +8,7 @@ use bahaa_config::{Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmChain, EvmPlan};
 use bahaa_store::{CustomToken, Received, Scan};
-use bahaa_ton::TonChain;
+use bahaa_ton::{TonChain, TonPlan};
 use bahaa_tron::{TronChain, TronPlan};
 use bahaa_types::{Address, AssetId, ChainFamily, NetworkId};
 use futures_util::future::join_all;
@@ -26,6 +26,7 @@ pub(crate) enum AnyChain {
 pub(crate) enum AnyPlan {
     Evm(EvmPlan),
     Tron(TronPlan),
+    Ton(TonPlan),
 }
 
 impl AnyChain {
@@ -87,7 +88,10 @@ impl AnyChain {
                 let (plan, fee) = chain.prepare(transfer).await?;
                 Ok((AnyPlan::Tron(plan), fee))
             }
-            Self::Ton(_) => Err(not_yet()),
+            Self::Ton(chain) => {
+                let (plan, fee) = chain.prepare(transfer).await?;
+                Ok((AnyPlan::Ton(plan), fee))
+            }
         }
     }
 
@@ -95,6 +99,7 @@ impl AnyChain {
         match (self, plan) {
             (Self::Evm(chain), AnyPlan::Evm(plan)) => chain.sign(plan, seed),
             (Self::Tron(chain), AnyPlan::Tron(plan)) => chain.sign(plan, seed),
+            (Self::Ton(chain), AnyPlan::Ton(plan)) => chain.sign(plan, seed),
             _ => Err(ChainError::Mismatch("the network")),
         }
     }
@@ -103,7 +108,7 @@ impl AnyChain {
         match self {
             Self::Evm(chain) => chain.decode(signed),
             Self::Tron(chain) => chain.decode(signed),
-            Self::Ton(_) => Err(not_yet()),
+            Self::Ton(chain) => chain.decode(signed),
         }
     }
 
@@ -111,21 +116,22 @@ impl AnyChain {
         match self {
             Self::Evm(chain) => chain.broadcast(signed).await,
             Self::Tron(chain) => chain.broadcast(signed).await,
-            Self::Ton(_) => Err(not_yet()),
+            Self::Ton(chain) => chain.broadcast(signed).await,
         }
     }
 
-    pub(crate) async fn status(&self, id: &TxId) -> Result<TxStatus, ChainError> {
+    pub(crate) async fn status(
+        &self,
+        id: &TxId,
+        from: &Address,
+        expires_at: Option<u64>,
+    ) -> Result<TxStatus, ChainError> {
         match self {
-            Self::Evm(chain) => chain.status(id).await,
-            Self::Tron(chain) => chain.status(id).await,
-            Self::Ton(_) => Err(not_yet()),
+            Self::Evm(chain) => chain.status(id, from, expires_at).await,
+            Self::Tron(chain) => chain.status(id, from, expires_at).await,
+            Self::Ton(chain) => chain.status(id, from, expires_at).await,
         }
     }
-}
-
-fn not_yet() -> ChainError {
-    ChainError::Unsupported("sending yet")
 }
 
 pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {

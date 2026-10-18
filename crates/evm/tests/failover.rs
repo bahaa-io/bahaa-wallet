@@ -44,7 +44,7 @@ async fn an_endpoint_that_refuses_receipts_is_skipped_for_receipts_only() {
     let full = node(Arc::clone(&full_log), serves(true)).await;
     let chain = EvmChain::new(bsc_on(&[picky, full])).unwrap();
     let id = TxId::new(format!("0x{}", "ab".repeat(32))).unwrap();
-    let confirmed = chain.status(&id).await.unwrap();
+    let confirmed = chain.status(&id, &common::owner(), None).await.unwrap();
     assert!(matches!(
         confirmed,
         TxStatus::Confirmed {
@@ -57,7 +57,7 @@ async fn an_endpoint_that_refuses_receipts_is_skipped_for_receipts_only() {
     chain.balances(&owner(), &assets(&["bsc"])).await.unwrap();
     assert_eq!(count(&picky_log, "eth_getBalance"), 1);
     assert_eq!(count(&full_log, "eth_getBalance"), 0);
-    chain.status(&id).await.unwrap();
+    chain.status(&id, &common::owner(), None).await.unwrap();
     assert_eq!(count(&picky_log, "eth_getTransactionReceipt"), 1);
     assert_eq!(count(&full_log, "eth_getTransactionReceipt"), 2);
 }
@@ -88,7 +88,7 @@ async fn live_bsc_status_of_a_real_transfer() {
     let chain = EvmChain::new(registry.get(&"bsc".parse().unwrap()).unwrap().clone()).unwrap();
     let id =
         TxId::new("0xf54187da477e131a07472915a7fd23896829b69ce8ad6f09f42e6690814fbbfe").unwrap();
-    let status = chain.status(&id).await.unwrap();
+    let status = chain.status(&id, &common::owner(), None).await.unwrap();
     let TxStatus::Confirmed { block, fee } = status else {
         panic!("expected a confirmed transfer, got {status:?}");
     };

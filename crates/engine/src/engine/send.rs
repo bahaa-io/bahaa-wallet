@@ -250,7 +250,7 @@ impl Worker {
         let chains = Arc::clone(&self.chains);
         let notices = self.notices_tx.clone();
         tokio::spawn(async move {
-            let delivery = deliver(&chains[chain], &signed).await;
+            let delivery = deliver(&chains[chain], &signed, &record).await;
             let delivered = Delivered {
                 record,
                 delivery,
@@ -380,10 +380,13 @@ impl Worker {
     }
 }
 
-async fn deliver(chain: &AnyChain, signed: &Signed) -> Delivery {
+async fn deliver(chain: &AnyChain, signed: &Signed, record: &SentTx) -> Delivery {
     match chain.broadcast(signed).await {
         Ok(_) => Delivery::Accepted,
-        Err(ChainError::Rejected(reason)) => match chain.status(&signed.id).await {
+        Err(ChainError::Rejected(reason)) => match chain
+            .status(&signed.id, &record.from, record.expires_at)
+            .await
+        {
             Ok(TxStatus::Pending | TxStatus::Confirmed { .. }) => Delivery::Accepted,
             Ok(_) => Delivery::Refused(failure(&reason)),
             Err(_) => Delivery::Unknown,
@@ -394,7 +397,7 @@ async fn deliver(chain: &AnyChain, signed: &Signed) -> Delivery {
 
 async fn track(chain: &AnyChain, tx: &SentTx, now: u64) -> Option<SentTx> {
     let id = TxId::new(tx.id.clone()).ok()?;
-    let status = chain.status(&id).await.ok()?;
+    let status = chain.status(&id, &tx.from, tx.expires_at).await.ok()?;
     match step(tx, status, now) {
         Step::Keep => None,
         Step::Update(next) => Some(*next),

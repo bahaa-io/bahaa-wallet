@@ -424,9 +424,15 @@ async fn the_status_comes_from_the_receipt_or_the_pending_pool() {
     let ledger = Ledger::new(5_000_000, 0, json!({}));
     let chain = chain(&ledger).await;
     let id = TxId::new("cd".repeat(32)).unwrap();
-    assert_eq!(chain.status(&id).await.unwrap(), TxStatus::NotFound);
+    assert_eq!(
+        chain.status(&id, &tron(OWNER), None).await.unwrap(),
+        TxStatus::NotFound
+    );
     *ledger.pending.lock().unwrap() = true;
-    assert_eq!(chain.status(&id).await.unwrap(), TxStatus::Pending);
+    assert_eq!(
+        chain.status(&id, &tron(OWNER), None).await.unwrap(),
+        TxStatus::Pending
+    );
     let receipts = [
         (
             json!({"id": id.as_str(), "blockNumber": 87_210_600, "fee": 1_100_000, "receipt": {"net_fee": 100_000}}),
@@ -453,11 +459,15 @@ async fn the_status_comes_from_the_receipt_or_the_pending_pool() {
     ];
     for (info, expected) in receipts {
         *ledger.info.lock().unwrap() = info.clone();
-        assert_eq!(chain.status(&id).await.unwrap(), expected, "{info}");
+        assert_eq!(
+            chain.status(&id, &tron(OWNER), None).await.unwrap(),
+            expected,
+            "{info}"
+        );
     }
     *ledger.info.lock().unwrap() = json!({"id": "ef".repeat(32), "blockNumber": 1});
     assert!(matches!(
-        chain.status(&id).await,
+        chain.status(&id, &tron(OWNER), None).await,
         Err(ChainError::Network(_))
     ));
 }

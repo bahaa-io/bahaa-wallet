@@ -190,7 +190,12 @@ impl Chain for FakeChain {
         Ok(signed.id.clone())
     }
 
-    async fn status(&self, id: &TxId) -> Result<TxStatus, ChainError> {
+    async fn status(
+        &self,
+        id: &TxId,
+        _from: &Address,
+        _expires_at: Option<u64>,
+    ) -> Result<TxStatus, ChainError> {
         Ok(match self.sent.lock().unwrap().get(id) {
             Some(fee) => TxStatus::Confirmed {
                 block: Some(1),
@@ -242,7 +247,7 @@ async fn a_transfer_goes_through_every_step() {
     check_signed(&transfer, &decoded).unwrap();
     let id = chain.broadcast(&signed).await.unwrap();
     assert!(matches!(
-        chain.status(&id).await.unwrap(),
+        chain.status(&id, &transfer.from, None).await.unwrap(),
         TxStatus::Confirmed { block: Some(1), .. }
     ));
     let balances = chain
@@ -258,7 +263,7 @@ async fn any_chain_works_through_the_same_generic_code() {
     let (chain, seed, transfer) = setup();
     let id = assert_send(send(&chain, &transfer, &seed)).await.unwrap();
     assert_eq!(
-        chain.status(&id).await.unwrap(),
+        chain.status(&id, &transfer.from, None).await.unwrap(),
         TxStatus::Confirmed {
             block: Some(1),
             fee: Some(native("0.000021"))

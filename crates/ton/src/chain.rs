@@ -11,6 +11,7 @@ use ed25519_dalek::SigningKey;
 use ruint::aliases::U256;
 
 mod send;
+mod track;
 
 pub use send::TonPlan;
 
@@ -159,12 +160,17 @@ impl Chain for TonChain {
         self.decode_signed(signed)
     }
 
-    fn broadcast(&self, _signed: &Signed) -> impl Future<Output = Result<TxId, ChainError>> + Send {
-        std::future::ready(Err(ChainError::Unsupported("sending yet")))
+    async fn broadcast(&self, signed: &Signed) -> Result<TxId, ChainError> {
+        self.send_signed(signed).await
     }
 
-    fn status(&self, _id: &TxId) -> impl Future<Output = Result<TxStatus, ChainError>> + Send {
-        std::future::ready(Err(ChainError::Unsupported("sending yet")))
+    async fn status(
+        &self,
+        id: &TxId,
+        from: &Address,
+        expires_at: Option<u64>,
+    ) -> Result<TxStatus, ChainError> {
+        self.track(id, from, expires_at).await
     }
 }
 

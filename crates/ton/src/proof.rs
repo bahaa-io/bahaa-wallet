@@ -17,7 +17,10 @@ pub(crate) enum Found {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Proven {
-    Present([u8; 32]),
+    Present {
+        account: [u8; 32],
+        last: ([u8; 32], u64),
+    },
     Absent,
 }
 
@@ -188,12 +191,12 @@ fn account_in(shard_state_cell: &Cell, hash: &[u8; 32]) -> Option<Proven> {
     parser.skip_bits(length * 8).ok()?;
     let account_ref = usize::from(parser.load_bit().ok()?);
     let account = leaf.reference(account_ref).ok()?;
-    account
-        .get_hash(0)
-        .as_slice()
-        .try_into()
-        .ok()
-        .map(Proven::Present)
+    let last_hash = parser.load_bits(256).ok()?.try_into().ok()?;
+    let last_lt = parser.load_u64(64).ok()?;
+    Some(Proven::Present {
+        account: account.get_hash(0).as_slice().try_into().ok()?,
+        last: (last_hash, last_lt),
+    })
 }
 
 pub(crate) fn lookup(root: &ArcCell, key: &[u8], bits: usize) -> Option<Found> {
@@ -496,9 +499,9 @@ mod tests {
             .store_bit(false)
             .unwrap();
         leaf.store_reference(account).unwrap();
-        leaf.store_slice(&[0; 32])
+        leaf.store_slice(&[0x77; 32])
             .unwrap()
-            .store_u64(64, 0)
+            .store_u64(64, 4_242)
             .unwrap();
         let leaf = leaf.build().unwrap().to_arc();
         let mut accounts = CellBuilder::new();
@@ -619,7 +622,13 @@ mod tests {
         let held = data.build().unwrap().to_arc();
         let ours = [0x3c; 32];
         let good = chain(&accounts_holding(&ours, &held), None);
-        assert_eq!(proven(&good, &ours), Some(Proven::Present(hash_of(&held))));
+        assert_eq!(
+            proven(&good, &ours),
+            Some(Proven::Present {
+                account: hash_of(&held),
+                last: ([0x77; 32], 4_242)
+            })
+        );
         assert_eq!(proven(&good, &[0xc3; 32]), Some(Proven::Absent));
         let unlisted = chain(&accounts_holding(&ours, &held), Some([0x55; 32]));
         assert_eq!(proven(&unlisted, &ours), None);

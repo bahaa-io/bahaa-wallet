@@ -214,7 +214,7 @@ async fn a_confirmed_base_transfer_counts_the_l1_and_operator_fees_it_paid() {
     for (extra, fee, oracle_calls) in cases {
         let (url, calls) = fake("0x2105", 0, receipt(&extra)).await;
         let chain = EvmChain::new(network_on("base", &[url])).unwrap();
-        let status = chain.status(&id).await.unwrap();
+        let status = chain.status(&id, &common::owner(), None).await.unwrap();
         assert_eq!(
             status,
             TxStatus::Confirmed {
@@ -243,7 +243,7 @@ async fn other_networks_never_ask_the_oracle() {
     assert_eq!(quote.expected(), wei(ESTIMATE * (BASE_FEE + TIP)));
     let id = TxId::new(format!("0x{}", "ab".repeat(32))).unwrap();
     assert_eq!(
-        chain.status(&id).await.unwrap(),
+        chain.status(&id, &common::owner(), None).await.unwrap(),
         TxStatus::Confirmed {
             block: Some(16),
             fee: Some(wei(21_000 * (BASE_FEE + TIP)))

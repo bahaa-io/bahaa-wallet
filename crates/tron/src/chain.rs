@@ -242,7 +242,12 @@ impl Chain for TronChain {
         self.push(signed).await
     }
 
-    async fn status(&self, id: &TxId) -> Result<TxStatus, ChainError> {
+    async fn status(
+        &self,
+        id: &TxId,
+        _from: &Address,
+        _expires_at: Option<u64>,
+    ) -> Result<TxStatus, ChainError> {
         self.lookup(id).await
     }
 }
