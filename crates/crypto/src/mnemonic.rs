@@ -13,7 +13,7 @@ const SEED_ROUNDS: u32 = 2048;
 const SEED_LEN: usize = 64;
 const BITS_PER_WORD: usize = 11;
 
-static WORDS: LazyLock<Vec<&'static str>> =
+pub(crate) static WORDS: LazyLock<Vec<&'static str>> =
     LazyLock::new(|| include_str!("english.txt").lines().collect());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,7 +75,16 @@ pub struct Mnemonic {
     entropy: SecretBox<[u8]>,
 }
 
-pub struct Seed(SecretBox<[u8]>);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeedKind {
+    Bip39,
+    Ton,
+}
+
+pub struct Seed {
+    kind: SeedKind,
+    bytes: SecretBox<[u8]>,
+}
 
 impl Mnemonic {
     pub fn generate(count: WordCount) -> Result<Self, MnemonicError> {
@@ -153,13 +162,29 @@ impl Mnemonic {
             SEED_ROUNDS,
             seed.expose_secret_mut(),
         );
-        Seed(seed)
+        Seed {
+            kind: SeedKind::Bip39,
+            bytes: seed,
+        }
     }
 }
 
 impl Seed {
     pub fn expose(&self) -> &[u8] {
-        self.0.expose_secret()
+        self.bytes.expose_secret()
+    }
+
+    pub fn kind(&self) -> SeedKind {
+        self.kind
+    }
+}
+
+pub(crate) fn seed_of(kind: SeedKind, bytes: &[u8]) -> Seed {
+    let mut secret = secret_bytes(bytes.len());
+    secret.expose_secret_mut().copy_from_slice(bytes);
+    Seed {
+        kind,
+        bytes: secret,
     }
 }
 

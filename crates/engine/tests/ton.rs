@@ -18,6 +18,7 @@ const MAINNET: &str = "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321
 const TESTNET: &str = "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879e95a128";
 const TON_0: &str = "0:c73162b34cf19667210af3180d6fcfb88df1678cbbbe731f38642534cc6951e4";
 const RECORDING: &str = include_str!("fixtures/ton.json");
+const TON_PHRASE: &str = "dose ice enrich trigger test dove century still betray gas diet dune use other base gym mad law immense village world example praise game";
 
 fn ton(id: &str, config: Url) -> Network {
     let mut network = common::ton_network(id, config);
@@ -263,4 +264,60 @@ async fn the_newest_trusted_ton_block_is_kept_for_the_next_start() {
     })
     .await;
     assert_eq!(proofs(&asked), ["99746941"]);
+}
+
+#[tokio::test]
+async fn a_ton_phrase_opens_only_its_ton_accounts() {
+    let scratch = Scratch::new();
+    let dead = Url::parse("http://127.0.0.1:9/").unwrap();
+    let registry = Registry::with_networks(vec![
+        common::network("bsc", dead.clone()),
+        ton("ton", dead.clone()),
+        ton("ton-testnet", dead),
+    ])
+    .unwrap();
+    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .import(SecretString::from(TON_PHRASE), SecretString::from(""))
+        .await
+        .unwrap();
+    let accounts = engine.accounts().await.unwrap();
+    let shape: Vec<(ChainFamily, Option<String>, String)> = accounts
+        .iter()
+        .map(|account| {
+            (
+                account.family,
+                account.network.as_ref().map(NetworkId::to_string),
+                account.address.to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            (
+                ChainFamily::Ton,
+                Some("ton".to_owned()),
+                "0:dbb94cc66ee709eb191e2e3af93b9b3b036bbcc69fb70e5c426cef0b9b7930a1".to_owned()
+            ),
+            (
+                ChainFamily::Ton,
+                Some("ton-testnet".to_owned()),
+                "0:14bae359b81d05e6d760007a109b21446c29697ee169ffc884bde0d5a0380d3e".to_owned()
+            ),
+        ]
+    );
+    let bnb = SendRequest {
+        wallet,
+        asset: "bsc".parse().unwrap(),
+        to: bahaa_types::Address::parse(ChainFamily::Evm, HARDHAT_0).unwrap(),
+        amount: Amount::parse("1", 18).unwrap(),
+    };
+    assert_eq!(
+        engine.prepare_send(bnb).await,
+        Err(EngineError::Chain(ChainError::Key(
+            bahaa_crypto::DeriveError::TonOnly
+        )))
+    );
 }

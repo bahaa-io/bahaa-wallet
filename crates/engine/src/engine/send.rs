@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_chain::{ChainError, FeeQuote, Signed, Transfer, TxId, TxStatus, check_signed};
-use bahaa_crypto::{ExposeSecret, SecretString};
+use bahaa_crypto::{DeriveError, ExposeSecret, SecretString};
 use bahaa_store::{Received, SentStatus, SentTx};
 use bahaa_types::{Address, Amount, AssetId, NetworkId, to_plain_text};
 use futures_util::future::join_all;
@@ -104,13 +104,17 @@ impl Worker {
             .chain_index(request.asset.network())
             .ok_or(ChainError::Unsupported("sending in this version"))?;
         let family = self.chains[chain].family();
-        let from = self
+        let mut mine = self
             .accounts
             .iter()
-            .find(|account| {
-                account.wallet == request.wallet && account.serves(request.asset.network(), family)
-            })
-            .ok_or(KeyringError::UnknownWallet)?
+            .filter(|account| account.wallet == request.wallet)
+            .peekable();
+        if mine.peek().is_none() {
+            return Err(KeyringError::UnknownWallet.into());
+        }
+        let from = mine
+            .find(|account| account.serves(request.asset.network(), family))
+            .ok_or(ChainError::Key(DeriveError::TonOnly))?
             .address;
         if request.asset.contract() == Some(&request.to) {
             return Err(ChainError::Invalid(

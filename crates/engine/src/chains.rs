@@ -5,7 +5,7 @@ use bahaa_chain::{
     TxId, TxStatus,
 };
 use bahaa_config::{Network, Registry};
-use bahaa_crypto::Seed;
+use bahaa_crypto::{Seed, SeedKind};
 use bahaa_evm::{EvmChain, EvmPlan};
 use bahaa_store::{CustomToken, Received, Scan, TrustedBlock};
 use bahaa_ton::{TonChain, TonPlan};
@@ -40,6 +40,10 @@ impl AnyChain {
 
     pub(crate) fn family(&self) -> ChainFamily {
         self.network().family()
+    }
+
+    pub(crate) fn holds(&self, kind: SeedKind) -> bool {
+        matches!(self, Self::Ton(_)) || kind == SeedKind::Bip39
     }
 
     pub(crate) fn derive(&self, seed: &Seed, account: u32) -> Result<Address, ChainError> {

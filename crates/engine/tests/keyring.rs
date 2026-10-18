@@ -3,8 +3,9 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 
-use bahaa_crypto::{ExposeSecret, Mnemonic, WordCount};
-use bahaa_engine::{Keyring, KeyringError, NewPhrase};
+use bahaa_crypto::{ExposeSecret, Mnemonic, SeedKind, TonPhraseError, WordCount};
+use bahaa_engine::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletKind};
+use bahaa_types::TonContract;
 use bahaa_vault::{KdfParams, Vault};
 
 const FAST: KdfParams = KdfParams {
@@ -14,6 +15,8 @@ const FAST: KdfParams = KdfParams {
 };
 const PASSWORD: &[u8] = b"correct horse battery staple";
 const HARDHAT: &str = "test test test test test test test test test test test junk";
+const TON: &str = "dose ice enrich trigger test dove century still betray gas diet dune use other base gym mad law immense village world example praise game";
+const BOTH: &str = "floor doctor sight adult spare hope fitness limit together ski damp photo car season parade sure fade long diesel toward resource try mobile junk";
 
 struct Scratch(PathBuf);
 
@@ -264,4 +267,87 @@ fn the_vault_folder_and_file_are_private() {
         |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(scratch.vault().parent().unwrap()), 0o700);
     assert_eq!(mode(&scratch.vault()), 0o600);
+}
+
+#[test]
+fn a_ton_phrase_becomes_a_ton_only_wallet_that_survives_a_restart() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    let id = keyring.import(TON, "").unwrap();
+    assert_eq!(
+        keyring.import(&TON.to_uppercase(), "").unwrap_err(),
+        KeyringError::Duplicate
+    );
+    assert_eq!(keyring.seed(id).unwrap().kind(), SeedKind::Ton);
+    let keyring = reopened(&scratch);
+    let wallets = keyring.wallets().unwrap();
+    assert_eq!(
+        (
+            wallets[0].id,
+            wallets[0].words,
+            wallets[0].passphrase,
+            wallets[0].kind
+        ),
+        (
+            id,
+            WordCount::TwentyFour,
+            false,
+            WalletKind::Ton(TonContract::W5)
+        )
+    );
+    assert_eq!(keyring.reveal(id, PASSWORD).unwrap().expose_secret(), TON);
+    assert_eq!(keyring.seed(id).unwrap().expose().len(), 32);
+}
+
+#[test]
+fn ton_phrases_take_no_passphrase_and_bad_words_say_why() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    assert_eq!(
+        keyring.import(TON, "extra").unwrap_err(),
+        KeyringError::Mnemonic(bahaa_crypto::MnemonicError::Checksum)
+    );
+    assert_eq!(
+        keyring
+            .import_as(TON, "extra", PhraseKind::Ton)
+            .unwrap_err(),
+        KeyringError::TonPassphrase
+    );
+    let swapped = TON.replacen("dose ice", "ice dose", 1);
+    assert_eq!(
+        keyring
+            .import_as(&swapped, "", PhraseKind::Ton)
+            .unwrap_err(),
+        KeyringError::TonPhrase(TonPhraseError::NotTon)
+    );
+    assert_eq!(
+        keyring.import(&swapped, "").unwrap_err(),
+        KeyringError::Mnemonic(bahaa_crypto::MnemonicError::Checksum)
+    );
+    assert_eq!(keyring.wallets().unwrap(), []);
+}
+
+#[test]
+fn words_that_fit_both_standards_wait_for_the_users_choice() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    assert_eq!(
+        keyring.import(BOTH, "").unwrap_err(),
+        KeyringError::Ambiguous
+    );
+    let multi = keyring.import_as(BOTH, "", PhraseKind::Bip39).unwrap();
+    let ton = keyring.import_as(BOTH, "", PhraseKind::Ton).unwrap();
+    assert_ne!(multi, ton);
+    let kinds: Vec<WalletKind> = keyring.wallets().unwrap().iter().map(|w| w.kind).collect();
+    assert_eq!(kinds, [WalletKind::Bip39, WalletKind::Ton(TonContract::W5)]);
+    assert_eq!(keyring.seed(multi).unwrap().kind(), SeedKind::Bip39);
+    assert_eq!(keyring.seed(ton).unwrap().kind(), SeedKind::Ton);
+    let with_passphrase = keyring.import(BOTH, "extra").unwrap();
+    assert_eq!(
+        keyring.seed(with_passphrase).unwrap().kind(),
+        SeedKind::Bip39
+    );
 }

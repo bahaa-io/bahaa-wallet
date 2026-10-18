@@ -8,7 +8,7 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::path::HARDENED;
-use crate::{DerivationPath, Seed};
+use crate::{DerivationPath, Seed, SeedKind};
 
 const BIP32_KEY: &[u8] = b"Bitcoin seed";
 const SLIP10_ED25519_KEY: &[u8] = b"ed25519 seed";
@@ -19,6 +19,10 @@ pub enum DeriveError {
     NotHardened,
     #[error("this path leads to an invalid key, use the next index")]
     InvalidKey,
+    #[error("this recovery phrase only holds a TON wallet")]
+    TonOnly,
+    #[error("this wallet's keys come from derivation paths")]
+    NotTon,
 }
 
 struct Node {
@@ -27,13 +31,32 @@ struct Node {
 }
 
 pub fn secp256k1(seed: &Seed, path: &DerivationPath) -> Result<SecretKey, DeriveError> {
-    let node = secp256k1_node(seed.expose(), path)?;
+    let node = secp256k1_node(hd(seed)?, path)?;
     SecretKey::from_bytes(&FieldBytes::from(*node.key)).map_err(|_| DeriveError::InvalidKey)
 }
 
 pub fn ed25519(seed: &Seed, path: &DerivationPath) -> Result<SigningKey, DeriveError> {
-    let node = ed25519_node(seed.expose(), path)?;
+    let node = ed25519_node(hd(seed)?, path)?;
     Ok(SigningKey::from_bytes(&node.key))
+}
+
+pub fn ton_key(seed: &Seed) -> Result<SigningKey, DeriveError> {
+    if seed.kind() != SeedKind::Ton {
+        return Err(DeriveError::NotTon);
+    }
+    let key: Zeroizing<[u8; 32]> = Zeroizing::new(
+        seed.expose()
+            .try_into()
+            .map_err(|_| DeriveError::InvalidKey)?,
+    );
+    Ok(SigningKey::from_bytes(&key))
+}
+
+fn hd(seed: &Seed) -> Result<&[u8], DeriveError> {
+    match seed.kind() {
+        SeedKind::Bip39 => Ok(seed.expose()),
+        SeedKind::Ton => Err(DeriveError::TonOnly),
+    }
 }
 
 fn secp256k1_node(seed: &[u8], path: &DerivationPath) -> Result<Node, DeriveError> {

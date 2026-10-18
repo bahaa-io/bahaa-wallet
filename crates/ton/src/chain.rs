@@ -5,7 +5,7 @@ use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus,
 };
 use bahaa_config::{ChainKind, Checkpoint, Network};
-use bahaa_crypto::{DerivationPath, Seed};
+use bahaa_crypto::{DerivationPath, Seed, SeedKind};
 use bahaa_types::{Address, Amount, AssetId};
 use ed25519_dalek::SigningKey;
 use ruint::aliases::U256;
@@ -201,6 +201,12 @@ impl Chain for TonChain {
 }
 
 fn key(seed: &Seed, account: u32) -> Result<SigningKey, ChainError> {
+    if seed.kind() == SeedKind::Ton {
+        if account != 0 {
+            return Err(ChainError::Invalid("a TON recovery phrase has one account"));
+        }
+        return Ok(bahaa_crypto::ton_key(seed)?);
+    }
     let path: DerivationPath = format!("m/44'/607'/{account}'")
         .parse()
         .map_err(|_| ChainError::Invalid("account index out of range"))?;
@@ -256,6 +262,33 @@ mod tests {
         assert_ne!(main, test);
         assert_ne!(main, chain("ton").derive(&seed, 1).unwrap());
         assert!(matches!(main, Address::Ton { workchain: 0, .. }));
+    }
+
+    #[test]
+    fn a_ton_phrase_has_one_w5_account_like_tonlib_computes() {
+        use tonlib_core::wallet::mnemonic::KeyPair;
+        use tonlib_core::wallet::ton_wallet::TonWallet;
+        use tonlib_core::wallet::wallet_version::WalletVersion;
+        let seed = bahaa_crypto::TonMnemonic::parse("dose ice enrich trigger test dove century still betray gas diet dune use other base gym mad law immense village world example praise game")
+            .unwrap()
+            .to_seed()
+            .unwrap();
+        let main = chain("ton").derive(&seed, 0).unwrap();
+        let public = key(&seed, 0).unwrap().verifying_key().to_bytes().to_vec();
+        let reference = TonWallet::new(
+            WalletVersion::V5R1,
+            KeyPair {
+                public_key: public,
+                secret_key: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(main.to_string(), reference.address.to_hex());
+        assert!(matches!(
+            chain("ton").derive(&seed, 1),
+            Err(ChainError::Invalid(_))
+        ));
+        assert_ne!(chain("ton-testnet").derive(&seed, 0).unwrap(), main);
     }
 
     #[test]

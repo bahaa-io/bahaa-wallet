@@ -20,7 +20,7 @@ use tokio::time::{Instant, sleep_until};
 use crate::caution::Arrival;
 use crate::chains::{self, AnyChain, Fetched};
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
-use crate::{Keyring, KeyringError, NewPhrase, WalletId, WalletInfo};
+use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo};
 
 pub use incoming::IncomingHistory;
 use send::{Delivered, Prepared, Quoted};
@@ -109,7 +109,12 @@ enum Command {
     Wallets(Reply<Vec<WalletInfo>>),
     Accounts(Reply<Vec<Account>>),
     Generate(NewPhrase, SecretString, Reply<(WalletId, SecretString)>),
-    Import(SecretString, SecretString, Reply<WalletId>),
+    Import(
+        SecretString,
+        SecretString,
+        Option<PhraseKind>,
+        Reply<WalletId>,
+    ),
     Remove(WalletId, Reply<()>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
     ChangePassword(SecretString, SecretString, Reply<()>),
@@ -307,7 +312,17 @@ impl Engine {
         phrase: SecretString,
         passphrase: SecretString,
     ) -> Result<WalletId, EngineError> {
-        self.ask(|reply| Command::Import(phrase, passphrase, reply))
+        self.ask(|reply| Command::Import(phrase, passphrase, None, reply))
+            .await
+    }
+
+    pub async fn import_as(
+        &self,
+        phrase: SecretString,
+        passphrase: SecretString,
+        kind: PhraseKind,
+    ) -> Result<WalletId, EngineError> {
+        self.ask(|reply| Command::Import(phrase, passphrase, Some(kind), reply))
             .await
     }
 
@@ -507,14 +522,8 @@ impl Worker {
                 self.after_change(result.is_ok()).await;
                 let _ = reply.send(result);
             }
-            Command::Import(phrase, passphrase, reply) => {
-                let result = self
-                    .keyring(move |keyring| {
-                        keyring.import(phrase.expose_secret(), passphrase.expose_secret())
-                    })
-                    .await;
-                self.after_change(result.is_ok()).await;
-                let _ = reply.send(result);
+            Command::Import(phrase, passphrase, kind, reply) => {
+                self.import(phrase, passphrase, kind, reply).await;
             }
             Command::Remove(id, reply) => {
                 let result = self.keyring(move |keyring| keyring.remove(id)).await;
@@ -602,6 +611,26 @@ impl Worker {
         self.start_tracking();
     }
 
+    async fn import(
+        &mut self,
+        phrase: SecretString,
+        passphrase: SecretString,
+        kind: Option<PhraseKind>,
+        reply: Reply<WalletId>,
+    ) {
+        let result = self
+            .keyring(move |keyring| {
+                let (phrase, passphrase) = (phrase.expose_secret(), passphrase.expose_secret());
+                match kind {
+                    Some(kind) => keyring.import_as(phrase, passphrase, kind),
+                    None => keyring.import(phrase, passphrase),
+                }
+            })
+            .await;
+        self.after_change(result.is_ok()).await;
+        let _ = reply.send(result);
+    }
+
     async fn after_change(&mut self, ok: bool) {
         if !ok {
             return;
@@ -620,7 +649,7 @@ impl Worker {
                 for wallet in keyring.wallets()? {
                     let seed = keyring.seed(wallet.id)?;
                     let mut derived = Vec::with_capacity(chains.len());
-                    for chain in chains.iter() {
+                    for chain in chains.iter().filter(|chain| chain.holds(seed.kind())) {
                         derived.push((
                             chain.family(),
                             chain.network().id.clone(),

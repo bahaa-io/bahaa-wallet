@@ -2,11 +2,15 @@ use std::fmt;
 use std::fs::DirBuilder;
 use std::path::{Path, PathBuf};
 
-use bahaa_crypto::{ExposeSecret, Mnemonic, MnemonicError, SecretString, Seed, WordCount};
+use bahaa_crypto::{
+    ExposeSecret, Mnemonic, MnemonicError, SecretString, Seed, TonMnemonic, TonPhraseError,
+    WordCount,
+};
+use bahaa_types::TonContract;
 use bahaa_vault::{KdfParams, Vault, VaultError};
 use thiserror::Error;
 
-use crate::payload::{self, Contents, Entry};
+use crate::payload::{self, Contents, Entry, Phrase};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WalletId(u32);
@@ -33,6 +37,19 @@ pub struct WalletInfo {
     pub id: WalletId,
     pub words: WordCount,
     pub passphrase: bool,
+    pub kind: WalletKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WalletKind {
+    Bip39,
+    Ton(TonContract),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhraseKind {
+    Bip39,
+    Ton,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -71,6 +88,16 @@ pub enum KeyringError {
     PassphraseTooLong,
     #[error("the vault contents are damaged")]
     Damaged,
+    #[error("this vault was written by a newer Bahaa Wallet, update the app")]
+    Newer,
+    #[error(
+        "these words work both as a TON phrase and as a multi-chain phrase, choose which app made them"
+    )]
+    Ambiguous,
+    #[error("TON recovery phrases with a password are not supported yet")]
+    TonPassphrase,
+    #[error(transparent)]
+    TonPhrase(#[from] TonPhraseError),
     #[error(transparent)]
     Vault(VaultError),
     #[error(transparent)]
@@ -147,8 +174,8 @@ impl Keyring {
         let seeds = contents
             .entries
             .iter()
-            .map(|entry| entry.mnemonic.to_seed(entry.passphrase.expose_secret()))
-            .collect();
+            .map(|entry| seed(&entry.phrase))
+            .collect::<Result<_, _>>()?;
         self.session = Some(Session {
             vault,
             contents,
@@ -167,10 +194,22 @@ impl Keyring {
             .contents
             .entries
             .iter()
-            .map(|entry| WalletInfo {
-                id: WalletId(entry.id),
-                words: entry.mnemonic.word_count(),
-                passphrase: !entry.passphrase.expose_secret().is_empty(),
+            .map(|entry| match &entry.phrase {
+                Phrase::Bip39 {
+                    mnemonic,
+                    passphrase,
+                } => WalletInfo {
+                    id: WalletId(entry.id),
+                    words: mnemonic.word_count(),
+                    passphrase: !passphrase.expose_secret().is_empty(),
+                    kind: WalletKind::Bip39,
+                },
+                Phrase::Ton { contract, .. } => WalletInfo {
+                    id: WalletId(entry.id),
+                    words: WordCount::TwentyFour,
+                    passphrase: false,
+                    kind: WalletKind::Ton(*contract),
+                },
             })
             .collect())
     }
@@ -183,13 +222,43 @@ impl Keyring {
         self.session()?;
         let mnemonic = Mnemonic::generate(words.words())?;
         let phrase = mnemonic.phrase();
-        let id = self.add(mnemonic, passphrase)?;
+        let id = self.add(bip39(mnemonic, passphrase)?)?;
         Ok((id, phrase))
     }
 
     pub fn import(&mut self, phrase: &str, passphrase: &str) -> Result<WalletId, KeyringError> {
         self.session()?;
-        self.add(Mnemonic::parse(phrase)?, passphrase)
+        let multi = Mnemonic::parse(phrase);
+        let ton = passphrase
+            .is_empty()
+            .then(|| TonMnemonic::parse(phrase).ok())
+            .flatten();
+        match (multi, ton) {
+            (Ok(_), Some(_)) => Err(KeyringError::Ambiguous),
+            (Ok(mnemonic), None) => self.add(bip39(mnemonic, passphrase)?),
+            (Err(_), Some(mnemonic)) => self.add(Phrase::Ton {
+                mnemonic,
+                contract: TonContract::W5,
+            }),
+            (Err(err), None) => Err(err.into()),
+        }
+    }
+
+    pub fn import_as(
+        &mut self,
+        phrase: &str,
+        passphrase: &str,
+        kind: PhraseKind,
+    ) -> Result<WalletId, KeyringError> {
+        self.session()?;
+        match kind {
+            PhraseKind::Bip39 => self.add(bip39(Mnemonic::parse(phrase)?, passphrase)?),
+            PhraseKind::Ton if !passphrase.is_empty() => Err(KeyringError::TonPassphrase),
+            PhraseKind::Ton => self.add(Phrase::Ton {
+                mnemonic: TonMnemonic::parse(phrase)?,
+                contract: TonContract::W5,
+            }),
+        }
     }
 
     pub fn remove(&mut self, id: WalletId) -> Result<(), KeyringError> {
@@ -220,7 +289,10 @@ impl Keyring {
         let session = self.session()?;
         let index = session.index(id)?;
         self.verify(password)?;
-        Ok(session.contents.entries[index].mnemonic.phrase())
+        Ok(match &session.contents.entries[index].phrase {
+            Phrase::Bip39 { mnemonic, .. } => mnemonic.phrase(),
+            Phrase::Ton { mnemonic, .. } => mnemonic.phrase(),
+        })
     }
 
     pub fn change_password(&mut self, old: &[u8], new: &[u8]) -> Result<(), KeyringError> {
@@ -238,27 +310,20 @@ impl Keyring {
         Ok(())
     }
 
-    fn add(&mut self, mnemonic: Mnemonic, passphrase: &str) -> Result<WalletId, KeyringError> {
-        payload::check_passphrase(passphrase)?;
+    fn add(&mut self, phrase: Phrase) -> Result<WalletId, KeyringError> {
         let path = self.path.clone();
         let session = self.session_mut()?;
-        let seed = mnemonic.to_seed(passphrase);
+        let seed = seed(&phrase)?;
         if session
             .seeds
             .iter()
-            .any(|known| known.expose() == seed.expose())
+            .any(|known| known.kind() == seed.kind() && known.expose() == seed.expose())
         {
             return Err(KeyringError::Duplicate);
         }
         let id = session.contents.next_id;
         let next = id.checked_add(1).ok_or(KeyringError::TooManyWallets)?;
-        let mut owned = String::with_capacity(passphrase.len());
-        owned.push_str(passphrase);
-        session.contents.entries.push(Entry {
-            id,
-            mnemonic,
-            passphrase: SecretString::from(owned),
-        });
+        session.contents.entries.push(Entry { id, phrase });
         session.seeds.push(seed);
         session.contents.next_id = next;
         if let Err(err) = persist(&path, session) {
@@ -305,6 +370,26 @@ impl fmt::Debug for Keyring {
             ),
             None => f.write_str("Keyring(locked)"),
         }
+    }
+}
+
+fn bip39(mnemonic: Mnemonic, passphrase: &str) -> Result<Phrase, KeyringError> {
+    payload::check_passphrase(passphrase)?;
+    let mut owned = String::with_capacity(passphrase.len());
+    owned.push_str(passphrase);
+    Ok(Phrase::Bip39 {
+        mnemonic,
+        passphrase: SecretString::from(owned),
+    })
+}
+
+fn seed(phrase: &Phrase) -> Result<Seed, KeyringError> {
+    match phrase {
+        Phrase::Bip39 {
+            mnemonic,
+            passphrase,
+        } => Ok(mnemonic.to_seed(passphrase.expose_secret())),
+        Phrase::Ton { mnemonic, .. } => mnemonic.to_seed().map_err(|_| KeyringError::Damaged),
     }
 }
 

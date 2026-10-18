@@ -25,6 +25,13 @@ pub enum Address {
     Ton { workchain: i8, hash: [u8; 32] },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TonContract {
+    #[default]
+    W5,
+    V4R2,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TonForm {
     pub bounceable: bool,
