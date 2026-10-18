@@ -43,7 +43,7 @@ impl TronChain {
         })
     }
 
-    async fn account(&self, owner: &[u8; 20]) -> Result<Option<U256>, ChainError> {
+    async fn account(&self, owner: &[u8; 20]) -> Result<Option<(U256, U256)>, ChainError> {
         let reply = self
             .http
             .post("wallet/getaccount", json!({"address": tron_hex(owner)}))
@@ -61,7 +61,10 @@ impl TronChain {
                 "an endpoint answered for another account".to_owned(),
             ));
         }
-        Ok(Some(U256::from(count(&reply, "balance")?)))
+        Ok(Some((
+            U256::from(count(&reply, "balance")?),
+            staked(&reply)?,
+        )))
     }
 
     fn known_decimals(&self, contract: &[u8; 20]) -> Option<u8> {
@@ -162,23 +165,28 @@ impl Chain for TronChain {
             if asset.network() != &self.network.id {
                 return Err(ChainError::Invalid("an asset belongs to another network"));
             }
-            let amount = match asset.contract() {
-                None => amount(
-                    self.account(&owner).await?.unwrap_or(U256::ZERO),
-                    self.network.native.decimals,
-                )?,
+            let (amount, staked) = match asset.contract() {
+                None => {
+                    let decimals = self.network.native.decimals;
+                    let (free, staked) = self.account(&owner).await?.unwrap_or_default();
+                    let staked = (!staked.is_zero())
+                        .then(|| amount(staked, decimals))
+                        .transpose()?;
+                    (amount(free, decimals)?, staked)
+                }
                 Some(contract) => {
                     let contract = bytes(contract)?;
                     let decimals = self.token_decimals(&owner, &contract).await?;
                     let units = self
                         .call(&owner, &contract, BALANCE_OF, &word(&owner))
                         .await?;
-                    amount(units, decimals)?
+                    (amount(units, decimals)?, None)
                 }
             };
             balances.push(Balance {
                 asset: asset.clone(),
                 amount,
+                staked,
             });
         }
         Ok(balances)
@@ -329,6 +337,34 @@ fn count(value: &Value, field: &str) -> Result<u64, ChainError> {
     }
 }
 
+fn staked(account: &Value) -> Result<U256, ChainError> {
+    let resource = &account["account_resource"];
+    let listed = |field: &str, inner: &str| -> Result<Vec<u64>, ChainError> {
+        match account.get(field) {
+            None | Some(Value::Null) => Ok(Vec::new()),
+            Some(Value::Array(entries)) => {
+                entries.iter().map(|entry| count(entry, inner)).collect()
+            }
+            Some(_) => Err(malformed()),
+        }
+    };
+    let mut parts = Vec::new();
+    parts.extend(listed("frozenV2", "amount")?);
+    parts.extend(listed("unfrozenV2", "unfreeze_amount")?);
+    parts.extend(listed("frozen", "frozen_balance")?);
+    parts.push(count(account, "delegated_frozenV2_balance_for_bandwidth")?);
+    parts.push(count(account, "delegated_frozen_balance_for_bandwidth")?);
+    parts.push(count(resource, "delegated_frozenV2_balance_for_energy")?);
+    parts.push(count(resource, "delegated_frozen_balance_for_energy")?);
+    parts.push(count(
+        &resource["frozen_balance_for_energy"],
+        "frozen_balance",
+    )?);
+    parts.into_iter().try_fold(U256::ZERO, |total, part| {
+        total.checked_add(U256::from(part)).ok_or_else(malformed)
+    })
+}
+
 fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {
     Amount::new(units, decimals).map_err(|_| ChainError::Invalid("impossible decimals"))
 }
@@ -345,6 +381,29 @@ mod tests {
     use super::*;
 
     const HARDHAT: &str = "test test test test test test test test test test test junk";
+
+    #[test]
+    fn staking_fields_are_summed_strictly() {
+        let account = json!({
+            "frozenV2": [{"amount": 5}, {"type": "ENERGY", "amount": 7}, {"type": "TRON_POWER"}],
+            "unfrozenV2": [{"unfreeze_amount": 11, "unfreeze_expire_time": 1}],
+            "frozen": [{"frozen_balance": 13, "expire_time": 1}],
+            "delegated_frozenV2_balance_for_bandwidth": 17,
+            "delegated_frozen_balance_for_bandwidth": 19,
+            "acquired_delegated_frozenV2_balance_for_bandwidth": 1000,
+            "account_resource": {
+                "delegated_frozenV2_balance_for_energy": 23,
+                "delegated_frozen_balance_for_energy": 29,
+                "acquired_delegated_frozenV2_balance_for_energy": 1000,
+                "frozen_balance_for_energy": {"frozen_balance": 31, "expire_time": 1}
+            }
+        });
+        assert_eq!(staked(&account), Ok(U256::from(155u16)));
+        assert_eq!(staked(&json!({"balance": 9})), Ok(U256::ZERO));
+        assert!(staked(&json!({"frozenV2": {"amount": 5}})).is_err());
+        assert!(staked(&json!({"frozenV2": [{"amount": "5"}]})).is_err());
+        assert!(staked(&json!({"frozenV2": [{"amount": -5}]})).is_err());
+    }
 
     #[test]
     fn derives_the_accounts_tronlink_derives() {

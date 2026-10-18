@@ -294,6 +294,7 @@ async fn fetch_network(
                 address: account.address,
                 asset: balance.asset,
                 amount: balance.amount,
+                staked: balance.staked,
             })),
             Err(err) => result.health.problem = Some(err.to_string()),
         }

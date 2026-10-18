@@ -28,6 +28,7 @@ pub struct Held {
     pub address: Address,
     pub asset: AssetId,
     pub amount: Amount,
+    pub staked: Option<Amount>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +47,7 @@ pub struct Holding {
     pub symbol: String,
     pub name: String,
     pub amount: Amount,
+    pub staked: Option<Amount>,
     pub price: Option<Price>,
     pub value: Option<Amount>,
 }
@@ -105,7 +107,7 @@ pub(crate) fn wanted(
     held: &[Held],
 ) -> BTreeSet<PriceId> {
     held.iter()
-        .filter(|holding| !holding.amount.is_zero())
+        .filter(|holding| !holding.amount.is_zero() || holding.staked.is_some())
         .filter_map(|holding| coin(registry, custom, &holding.asset)?.price.clone())
         .collect()
 }
@@ -123,7 +125,13 @@ pub(crate) fn build(
         .filter_map(|holding| {
             let coin = coin(registry, custom, &holding.asset)?;
             let price = price(coin, snapshot, fiat);
-            let value = price.and_then(|price| price.value_of(holding.amount, fiat.places()).ok());
+            let owned = match holding.staked {
+                Some(staked) => holding.amount.checked_add(staked).ok(),
+                None => Some(holding.amount),
+            };
+            let value = price
+                .zip(owned)
+                .and_then(|(price, owned)| price.value_of(owned, fiat.places()).ok());
             Some(Holding {
                 wallet: holding.wallet,
                 address: holding.address,
@@ -131,6 +139,7 @@ pub(crate) fn build(
                 symbol: coin.symbol.clone(),
                 name: coin.name.clone(),
                 amount: holding.amount,
+                staked: holding.staked,
                 price,
                 value,
             })
@@ -169,6 +178,7 @@ mod tests {
             address: Address::Evm([1; 20]),
             asset: asset.parse().unwrap(),
             amount: Amount::parse(amount, decimals).unwrap(),
+            staked: None,
         }
     }
 
@@ -193,6 +203,52 @@ mod tests {
     }
 
     const USDT: &str = "bsc/0x55d398326f99059fF775485246999027B3197955";
+
+    #[test]
+    fn staked_coins_are_shown_apart_but_count_toward_the_value() {
+        let mut trx = held("tron", "10", 6);
+        trx.staked = Some(Amount::parse("90", 6).unwrap());
+        let mut locked = held("tron", "0", 6);
+        locked.staked = Some(Amount::parse("5", 6).unwrap());
+        let prices = snapshot("USDT", &[("crypto/TRX", "0.25")]);
+        let portfolio = build(
+            &registry(),
+            &[],
+            &[trx.clone(), locked.clone()],
+            Vec::new(),
+            &prices,
+            Fiat::Usd,
+        );
+        let shown: Vec<(String, Option<String>, Option<String>)> = portfolio
+            .holdings
+            .iter()
+            .map(|h| {
+                (
+                    h.amount.to_string(),
+                    h.staked.map(|staked| staked.to_string()),
+                    h.value.map(|value| value.fixed()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    "10".to_owned(),
+                    Some("90".to_owned()),
+                    Some("25.00".to_owned())
+                ),
+                (
+                    "0".to_owned(),
+                    Some("5".to_owned()),
+                    Some("1.25".to_owned())
+                ),
+            ]
+        );
+        assert_eq!(portfolio.total.unwrap().fixed(), "26.25");
+        let asked = wanted(&registry(), &[], &[locked]);
+        assert_eq!(asked.len(), 1);
+    }
 
     #[test]
     fn values_holdings_exactly_and_totals_them() {

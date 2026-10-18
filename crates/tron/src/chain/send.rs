@@ -34,7 +34,10 @@ impl TronChain {
                 "the amount uses the wrong number of decimals",
             ));
         }
-        let balance = self.account(&from).await?.unwrap_or(U256::ZERO);
+        let balance = self
+            .account(&from)
+            .await?
+            .map_or(U256::ZERO, |(free, _)| free);
         let held = match &token {
             None => None,
             Some(contract) => Some(self.call(&from, contract, BALANCE_OF, &word(&from)).await?),

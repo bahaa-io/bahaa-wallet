@@ -80,6 +80,7 @@ impl Chain for FakeChain {
             .map(|asset| Balance {
                 asset: asset.clone(),
                 amount: self.balance(address),
+                staked: None,
             })
             .collect())
     }

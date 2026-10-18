@@ -70,6 +70,7 @@ impl fmt::Display for TxId {
 pub struct Balance {
     pub asset: AssetId,
     pub amount: Amount,
+    pub staked: Option<Amount>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

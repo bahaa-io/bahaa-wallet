@@ -16,6 +16,7 @@ const CUSTOM: &str = "TPjjvMwjPoDC32V2dGDYTkLH4E5LAtBZ6C";
 const CUSTOM_HEX: &str = "419705bf55c3dcc6d277ebb8fe2a68762268822ba2";
 const FRESH_HEX: &str = "410c96c0e10bb5e7e7edacf82ad00e3d60790351da";
 const QUIET_HEX: &str = "41000000000000000000000000000000000000beef";
+const STAKED: &str = include_str!("fixtures/staked.json");
 
 fn word(value: u128) -> String {
     format!("{value:064x}")
@@ -38,7 +39,9 @@ fn ledger(genesis: &'static str) -> impl Fn(&str, &Value) -> (u16, Value) + Send
             match body["address"].as_str().unwrap() {
                 OWNER_HEX => json!({"address": OWNER_HEX, "balance": 1_500_000, "create_time": 1}),
                 QUIET_HEX => json!({"address": QUIET_HEX, "create_time": 1}),
-                _ => json!({}),
+                other => serde_json::from_str::<Value>(STAKED).unwrap()[other]
+                    .as_object()
+                    .map_or_else(|| json!({}), |account| json!(account)),
             },
         ),
         "/wallet/triggerconstantcontract" => {
@@ -239,6 +242,35 @@ async fn refuses_other_networks_and_contracts_that_are_not_tokens() {
 
 #[tokio::test]
 #[ignore = "talks to the real Tron network"]
+async fn live_staked_trx_matches_tronscan() {
+    const STAKER: &str = "TT2T17KZhoDu47i2E4FWxfG79zdkEWkU9N";
+    let listed: Value = reqwest::get(
+        "https://apilist.tronscanapi.com/api/account/list?sort=-power&limit=20&start=0",
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let power = listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|account| account["address"] == STAKER)
+        .map(|account| account["power"].as_u64().unwrap())
+        .unwrap();
+    let registry = bahaa_config::Registry::builtin().unwrap();
+    let chain = TronChain::new(registry.get(&"tron".parse().unwrap()).unwrap().clone()).unwrap();
+    let address = Address::parse(ChainFamily::Tron, STAKER).unwrap();
+    let balances = chain.balances(&address, &assets(&["tron"])).await.unwrap();
+    assert_eq!(
+        balances[0].staked.unwrap().units(),
+        ruint::aliases::U256::from(power)
+    );
+}
+
+#[tokio::test]
+#[ignore = "talks to the real Tron network"]
 async fn live_tron_balances() {
     let registry = bahaa_config::Registry::builtin().unwrap();
     let chain = TronChain::new(registry.get(&"tron".parse().unwrap()).unwrap().clone()).unwrap();
@@ -257,4 +289,45 @@ fn bytes(hex: &str) -> [u8; 20] {
         *slot = u8::from_str_radix(&hex[at..at + 2], 16).unwrap();
     }
     out
+}
+
+#[tokio::test]
+async fn staked_trx_is_shown_apart_and_matches_what_tronscan_counts() {
+    let chain = TronChain::new(tron_on(&[node(Log::default(), ledger(GENESIS)).await])).unwrap();
+    let cases = [
+        (
+            "41c64e69acde1c7b16c2a3efcdbbdaa96c3644c2b3",
+            "10421406.439706",
+            Some("9853192928.887326"),
+        ),
+        (
+            "41cde88ba9dfdc3cfd94ee41332570803a2525bac4",
+            "528169630.615266",
+            Some("950251217"),
+        ),
+        (
+            "41bb1712d44d09feee51d071219b4c5d9792b76b29",
+            "804995576.759876",
+            Some("1032571349.168049"),
+        ),
+        (OWNER_HEX, "1.5", None),
+    ];
+    for (hex, free, staked) in cases {
+        let address = Address::Tron(bytes(hex));
+        let balances = chain.balances(&address, &assets(&["tron"])).await.unwrap();
+        assert_eq!(balances[0].amount.to_string(), free, "{hex}");
+        assert_eq!(
+            balances[0].staked.map(|staked| staked.to_string()),
+            staked.map(str::to_owned),
+            "{hex}"
+        );
+    }
+    let usdt = chain
+        .balances(
+            &Address::Tron(bytes("41bb1712d44d09feee51d071219b4c5d9792b76b29")),
+            &assets(&[&format!("tron/{USDT}")]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(usdt[0].staked, None);
 }

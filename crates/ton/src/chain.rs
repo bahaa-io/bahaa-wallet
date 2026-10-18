@@ -203,6 +203,7 @@ impl Chain for TonChain {
             balances.push(Balance {
                 asset: asset.clone(),
                 amount,
+                staked: None,
             });
         }
         Ok(balances)
