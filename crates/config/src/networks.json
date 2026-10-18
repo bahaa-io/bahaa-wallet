@@ -422,6 +422,11 @@
     "family": "ton",
     "global_id": -239,
     "zero_state": "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321fb05569",
+    "checkpoint": {
+      "seqno": 99746941,
+      "root_hash": "09b48141aa77df65bc7b237ffe04fa540981b73d7e8ce14951ec8c03c24715b9",
+      "file_hash": "1d0561589eaf050d1cf9d8f145df05766d0adfa559570eb017dcaf92d8e7f48e"
+    },
     "testnet": false,
     "native": {
       "symbol": "GRAM",
@@ -522,6 +527,11 @@
     "family": "ton",
     "global_id": -3,
     "zero_state": "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879e95a128",
+    "checkpoint": {
+      "seqno": 92078093,
+      "root_hash": "633abff8fb4211ec52841d8cbd87709374e283ea7f3b1ecab23a1e7e156916cd",
+      "file_hash": "7635e1e366f1affca8a0d91e6e1b069e1131d95ac42f3d7eb495f9ec92ccefaf"
+    },
     "testnet": true,
     "native": {
       "symbol": "tGRAM",

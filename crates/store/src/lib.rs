@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
 use std::path::Path;
 
-use bahaa_config::{Coin, Settings};
+use bahaa_config::{Checkpoint, Coin, Settings};
 use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
@@ -22,6 +22,7 @@ const TOKENS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("toke
 const SENT: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("sent");
 const RECEIVED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("received");
 const SCANS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("scans");
+const TRUSTED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("trusted");
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum StoreError {
@@ -112,6 +113,13 @@ pub struct Scan {
     pub next: u64,
     pub complete_from: u64,
     pub complete_since: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustedBlock {
+    pub network: NetworkId,
+    pub checkpoint: Checkpoint,
 }
 
 pub struct Store {
@@ -252,6 +260,19 @@ impl Store {
         txn.commit().map_err(database)
     }
 
+    pub fn trusted(&self) -> Result<Vec<TrustedBlock>, StoreError> {
+        self.all(TRUSTED)
+    }
+
+    pub fn save_trusted(&self, block: &TrustedBlock) -> Result<(), StoreError> {
+        if block.checkpoint.seqno == 0 {
+            return Err(StoreError::Invalid(
+                "a trusted block cannot be the zero state",
+            ));
+        }
+        self.put(TRUSTED, block.network.as_str(), &encode(block)?)
+    }
+
     fn migrate(&self) -> Result<(), StoreError> {
         let txn = self.db.begin_write().map_err(database)?;
         {
@@ -267,7 +288,7 @@ impl Store {
                     meta.insert(SCHEMA_KEY, SCHEMA).map_err(database)?;
                 }
             }
-            for table in [SETTINGS, CONTACTS, TOKENS, SENT, RECEIVED, SCANS] {
+            for table in [SETTINGS, CONTACTS, TOKENS, SENT, RECEIVED, SCANS, TRUSTED] {
                 txn.open_table(table).map_err(database)?;
             }
         }

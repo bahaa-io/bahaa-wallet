@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use adnl::AdnlPeer;
 use bahaa_chain::{ChainError, Failure, Pool, PoolError};
@@ -11,7 +11,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use ruint::aliases::U256;
 use serde_json::Value;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -19,6 +18,7 @@ use tokio::time::timeout;
 use tonlib_core::cell::BagOfCells;
 use url::Url;
 
+use crate::blocks::{self, Trust};
 use crate::cells::{Account, account};
 use crate::fees::{Config, PARAMS};
 use crate::proof::{self, Proven};
@@ -30,10 +30,17 @@ const ANSWER: Duration = Duration::from_secs(10);
 const MAX_CONFIG: usize = 1024 * 1024;
 const MAX_SERVERS: usize = 64;
 const MAX_FRAMES: usize = 4;
+const MAX_ROUNDS: usize = 64;
 const NOT_APPLIED: &str = "cannot apply external message";
 const EXIT_CODE: &str = "exitcode=";
 
 type Session = Arc<Mutex<Option<AdnlPeer<TcpStream>>>>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    Authenticated,
+    Unused,
+}
 
 struct Servers {
     pool: Pool,
@@ -44,6 +51,7 @@ struct Servers {
 pub(crate) struct Lite {
     client: reqwest::Client,
     zero_state: [u8; 32],
+    trust: Trust,
     servers: Mutex<HashMap<String, Arc<Servers>>>,
 }
 
@@ -54,20 +62,21 @@ impl std::fmt::Debug for Lite {
 }
 
 impl Lite {
-    pub(crate) fn new(client: reqwest::Client, zero_state: [u8; 32]) -> Self {
+    pub(crate) fn new(client: reqwest::Client, zero_state: [u8; 32], checkpoint: BlockId) -> Self {
         Self {
             client,
             zero_state,
+            trust: Trust::new(checkpoint),
             servers: Mutex::new(HashMap::new()),
         }
     }
 
-    pub(crate) async fn balance(
-        &self,
-        config: &Url,
-        owner: &Address,
-    ) -> Result<U256, Failure<ChainError>> {
-        Ok(self.account(config, owner).await?.balance)
+    pub(crate) fn trusted(&self) -> BlockId {
+        self.trust.key()
+    }
+
+    pub(crate) fn trust(&self, key: BlockId) {
+        self.trust.reached(key);
     }
 
     pub(crate) async fn account(
@@ -76,7 +85,7 @@ impl Lite {
         owner: &Address,
     ) -> Result<Account, Failure<ChainError>> {
         let (workchain, hash) = parts(owner)?;
-        self.ask(
+        self.ask_at(
             config,
             |last| tl::get_account_state(last, workchain, &hash),
             tl::account_state,
@@ -86,7 +95,7 @@ impl Lite {
     }
 
     pub(crate) async fn config(&self, config: &Url) -> Result<Config, Failure<ChainError>> {
-        self.ask(
+        self.ask_at(
             config,
             |last| tl::get_config_params(last, &PARAMS),
             tl::config_info,
@@ -102,14 +111,15 @@ impl Lite {
     ) -> Result<Vec<u8>, Failure<ChainError>> {
         self.ask(
             config,
-            |_| tl::get_libraries(&[*hash]),
-            tl::library_result,
-            |_, entries| {
+            &tl::get_libraries(&[*hash]),
+            kept_libraries,
+            |entries| {
                 entries
                     .into_iter()
+                    .flatten()
                     .find(|(listed, _)| listed == hash)
                     .map(|(_, data)| data)
-                    .ok_or_else(|| retry("a liteserver does not have a library"))
+                    .ok_or_else(|| missing("a liteserver does not have a library"))
                     .and_then(|data| proven_library(data, hash))
             },
         )
@@ -117,13 +127,8 @@ impl Lite {
     }
 
     pub(crate) async fn send(&self, config: &Url, boc: &[u8]) -> Result<(), Failure<ChainError>> {
-        self.ask(
-            config,
-            |_| tl::send_message(boc),
-            send_answer,
-            |_, outcome| sent(outcome),
-        )
-        .await
+        self.ask(config, &tl::send_message(boc), send_answer, sent)
+            .await
     }
 
     pub(crate) async fn transactions(
@@ -135,16 +140,49 @@ impl Lite {
         let (workchain, hash) = parts(owner)?;
         self.ask(
             config,
-            |_| tl::get_transactions(MAX_LISTED, workchain, &hash, from.1, &from.0),
-            tl::transaction_list,
-            |_, list| proven_transactions(&list.transactions, owner, from),
+            &tl::get_transactions(MAX_LISTED, workchain, &hash, from.1, &from.0),
+            kept_history,
+            |list| {
+                let list =
+                    list.ok_or_else(|| missing("a liteserver does not keep this history"))?;
+                proven_transactions(&list.transactions, owner, from)
+            },
         )
         .await
+    }
+
+    async fn ask_at<A, T>(
+        &self,
+        config: &Url,
+        function: impl Fn(&BlockId) -> Vec<u8>,
+        decode: fn(&[u8]) -> Option<Answer<A>>,
+        finish: impl Fn(&BlockId, A) -> Result<T, Failure<ChainError>>,
+    ) -> Result<T, Failure<ChainError>> {
+        self.call(config, Anchor::Authenticated, function, decode, finish)
+            .await
     }
 
     async fn ask<A, T>(
         &self,
         config: &Url,
+        query: &[u8],
+        decode: fn(&[u8]) -> Option<Answer<A>>,
+        finish: impl Fn(A) -> Result<T, Failure<ChainError>>,
+    ) -> Result<T, Failure<ChainError>> {
+        self.call(
+            config,
+            Anchor::Unused,
+            |_| query.to_vec(),
+            decode,
+            |_, answer| finish(answer),
+        )
+        .await
+    }
+
+    async fn call<A, T>(
+        &self,
+        config: &Url,
+        anchor: Anchor,
         function: impl Fn(&BlockId) -> Vec<u8>,
         decode: fn(&[u8]) -> Option<Answer<A>>,
         finish: impl Fn(&BlockId, A) -> Result<T, Failure<ChainError>>,
@@ -160,8 +198,13 @@ impl Lite {
                     let mut peer = session.lock().await;
                     let outcome = async {
                         let last = self.connect(&mut peer, &servers, &endpoint).await?;
-                        let answer = exchange(open(&mut peer)?, &function(&last), decode).await?;
-                        finish(&last, answer)
+                        let open = open(&mut peer)?;
+                        let block = match anchor {
+                            Anchor::Authenticated => self.anchored(open, &last).await?,
+                            Anchor::Unused => last,
+                        };
+                        let answer = exchange(open, &function(&block), decode).await?;
+                        finish(&block, answer)
                     }
                     .await;
                     if matches!(outcome, Err(Failure::Retry(_))) {
@@ -204,6 +247,37 @@ impl Lite {
             return Err(retry("a liteserver serves another TON network"));
         }
         Ok(info.last)
+    }
+
+    async fn anchored(
+        &self,
+        open: &mut AdnlPeer<TcpStream>,
+        last: &BlockId,
+    ) -> Result<BlockId, Failure<ChainError>> {
+        if let Some(block) = self.trust.recent(Some(last), Instant::now()) {
+            return Ok(block);
+        }
+        let mut known = self.trust.key();
+        for _ in 0..MAX_ROUNDS {
+            if last.seqno <= known.seqno {
+                return Err(retry("a liteserver is behind the trusted TON blocks"));
+            }
+            let proof = exchange(open, &tl::get_block_proof(&known, last), tl::block_proof).await?;
+            let walk = blocks::walk(&known, last, &proof).map_err(|_| {
+                retry("a liteserver sent a block proof that validators did not sign")
+            })?;
+            self.trust.reached(walk.key);
+            known = walk.key;
+            if let Some(reached) = walk.reached {
+                if !self.trust.current(reached.utime) {
+                    return Err(retry("a liteserver serves an outdated block"));
+                }
+                self.trust
+                    .authenticated(reached.block, reached.utime, Instant::now());
+                return Ok(reached.block);
+            }
+        }
+        Err(retry("a liteserver sent a block proof that does not end"))
     }
 
     async fn servers(&self, config: &Url) -> Result<Arc<Servers>, Failure<ChainError>> {
@@ -385,6 +459,20 @@ pub(crate) fn proven_transactions(
         .ok_or_else(|| retry("a server sent transactions that do not continue the proven history"))
 }
 
+fn kept_history(answer: &[u8]) -> Option<Answer<Option<tl::TransactionList>>> {
+    Some(Answer::Ok(match tl::transaction_list(answer)? {
+        Answer::Ok(list) => Some(list),
+        Answer::Refused { .. } => None,
+    }))
+}
+
+fn kept_libraries(answer: &[u8]) -> Option<Answer<Option<tl::Libraries>>> {
+    Some(Answer::Ok(match tl::library_result(answer)? {
+        Answer::Ok(entries) => Some(entries),
+        Answer::Refused { .. } => None,
+    }))
+}
+
 fn send_answer(answer: &[u8]) -> Option<Answer<Result<bool, (i32, String)>>> {
     Some(match tl::send_status(answer)? {
         Answer::Ok(status) => Answer::Ok(Ok(status)),
@@ -465,6 +553,7 @@ fn outer(err: PoolError<ChainError>) -> Failure<ChainError> {
     match err {
         PoolError::Fatal(err) => Failure::Fatal(err),
         PoolError::Exhausted(err) => Failure::Retry(err),
+        PoolError::Unserved(err) => Failure::Unsupported(err),
         PoolError::Unavailable(_) | PoolError::NoEndpoint => {
             retry("no liteserver is available right now")
         }
@@ -475,6 +564,10 @@ fn retry(text: &str) -> Failure<ChainError> {
     Failure::Retry(ChainError::Network(text.to_owned()))
 }
 
+fn missing(text: &str) -> Failure<ChainError> {
+    Failure::Unsupported(ChainError::Network(text.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -482,7 +575,17 @@ mod tests {
     use super::*;
 
     fn lite() -> Lite {
-        Lite::new(reqwest::Client::new(), [0x17; 32])
+        Lite::new(
+            reqwest::Client::new(),
+            [0x17; 32],
+            BlockId {
+                workchain: -1,
+                shard: i64::MIN,
+                seqno: 1,
+                root_hash: [0; 32],
+                file_hash: [0; 32],
+            },
+        )
     }
 
     #[test]
@@ -555,5 +658,91 @@ mod tests {
             proven_library(boc, &[0; 32]),
             Err(Failure::Retry(ChainError::Network(_)))
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "talks to the real TON network for about two minutes, run with --test-threads=1"]
+    async fn live_the_mainnet_checkpoint_follows_from_the_official_init_block() {
+        let registry = bahaa_config::Registry::builtin().unwrap();
+        let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
+        let bahaa_config::ChainKind::Ton {
+            zero_state,
+            checkpoint,
+            ..
+        } = ton.kind
+        else {
+            panic!("not TON");
+        };
+        let config = ton
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.protocol == Protocol::TonLiteservers)
+            .unwrap()
+            .url
+            .clone();
+        let published: Value = reqwest::get(config.clone())
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let init = &published["validator"]["init_block"];
+        let hash = |field: &str| -> [u8; 32] {
+            STANDARD
+                .decode(init[field].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap()
+        };
+        let init = BlockId {
+            workchain: -1,
+            shard: i64::MIN,
+            seqno: i32::try_from(init["seqno"].as_i64().unwrap()).unwrap(),
+            root_hash: hash("root_hash"),
+            file_hash: hash("file_hash"),
+        };
+        let wanted = crate::chain::block(&checkpoint);
+        assert!(init.seqno < wanted.seqno);
+        let lite = Lite::new(reqwest::Client::new(), zero_state, init);
+        let servers = lite.servers(&config).await.unwrap();
+        for url in servers.keys.keys() {
+            let endpoint = Endpoint {
+                protocol: Protocol::TonLiteservers,
+                url: Url::parse(url).unwrap(),
+                features: Vec::new(),
+                min_gap_ms: 0,
+            };
+            let mut peer = None;
+            let Ok(last) = lite.connect(&mut peer, &servers, &endpoint).await else {
+                continue;
+            };
+            let open = peer.as_mut().unwrap();
+            let mut known = init;
+            let mut keys = Vec::new();
+            let reached = loop {
+                let Ok(proof) =
+                    exchange(open, &tl::get_block_proof(&known, &last), tl::block_proof).await
+                else {
+                    break false;
+                };
+                let walked = blocks::walk(&known, &last, &proof).unwrap();
+                keys.extend(
+                    proof
+                        .steps
+                        .iter()
+                        .filter(|link| link.to_key_block)
+                        .map(|link| link.to),
+                );
+                known = walked.key;
+                if walked.reached.is_some() {
+                    break true;
+                }
+            };
+            if reached {
+                assert!(keys.contains(&wanted), "{} key blocks", keys.len());
+                return;
+            }
+        }
+        panic!("no liteserver proved the chain");
     }
 }

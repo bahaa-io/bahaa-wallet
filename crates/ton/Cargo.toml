@@ -22,6 +22,7 @@ num-bigint.workspace = true
 reqwest.workspace = true
 ruint.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["net", "sync", "time"] }
 tonlib-core.workspace = true
 tycho-executor.workspace = true

@@ -2,83 +2,25 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bahaa_chain::ChainError;
-use bahaa_config::{Endpoint, Network, Protocol, Registry};
+use bahaa_config::{ChainKind, Network, Registry};
 use bahaa_crypto::SecretString;
 use bahaa_engine::{Engine, EngineError, Event, Received, SendRequest};
 use bahaa_types::{Amount, ChainFamily, NetworkId};
-use common::{HARDHAT, HARDHAT_0, Scratch, config, until};
-use serde_json::{Value, json};
+use common::{
+    Asked, GET_ACCOUNT_STATE, GET_BLOCK_PROOF, HARDHAT, HARDHAT_0, Scratch, config, until,
+};
 use url::Url;
 
 const MAINNET: &str = "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321fb05569";
 const TESTNET: &str = "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879e95a128";
 const TON_0: &str = "0:c73162b34cf19667210af3180d6fcfb88df1678cbbbe731f38642534cc6951e4";
-const WALLET: &str = include_str!("fixtures/ton_wallet.json");
-const TOKENS: &str = include_str!("fixtures/ton_tokens.json");
-const USDT: &str = "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe";
-const TON_0_USDT: &str = "0:2b682898e4be73c23c32b56f58148c0877bbbeb577fcfe4df90e67e72ad46a83";
-const LIBRARY: &str = "8f452d7a4dfd74066b682365177259ed05734435be76b5fd4bd5d8af2b7c3d68";
+const RECORDING: &str = include_str!("fixtures/ton.json");
 
-type Asked = Arc<Mutex<Vec<String>>>;
-
-async fn tonapi(zero_state: &'static str, asked: &Asked) -> Url {
-    let asked = Arc::clone(asked);
-    common::rest_node(move |path, _| -> Value {
-        asked.lock().unwrap().push(path.to_owned());
-        if path == "/liteserver/get_masterchain_info" {
-            let tokens: Value = serde_json::from_str(TOKENS).unwrap();
-            json!({"init": {"root_hash": zero_state}, "last": tokens["head"]["last"]})
-        } else if let Some(answer) = recorded(path) {
-            answer
-        } else {
-            json!({"balance": 2_500_000_000_u64, "status": "active"})
-        }
-    })
-    .await
-}
-
-fn recorded(path: &str) -> Option<Value> {
-    let tokens: Value = serde_json::from_str(TOKENS).unwrap();
-    for (route, key) in [
-        (format!("/liteserver/get_account_state/{USDT}"), "master"),
-        (
-            format!("/liteserver/get_account_state/{TON_0_USDT}"),
-            "wallet",
-        ),
-        (format!("/blockchain/libraries/{LIBRARY}"), "library"),
-    ] {
-        if path == route {
-            return Some(tokens[key].clone());
-        }
-    }
-    if path.starts_with("/liteserver/get_config_all/") {
-        return Some(tokens["config"].clone());
-    }
-    let fixture: Value = serde_json::from_str(WALLET).unwrap();
-    if path == format!("/liteserver/get_account_state/{TON_0}") {
-        return Some(fixture["state"].clone());
-    }
-    let listed = format!("/liteserver/get_transactions/{TON_0}?count=16&lt=");
-    let (lt, _) = path.strip_prefix(&listed)?.split_once("&hash=")?;
-    Some(fixture["transactions"][lt].clone()).filter(|answer| !answer.is_null())
-}
-
-fn ton(id: &str, url: Url) -> Network {
-    let mut network = Registry::builtin()
-        .unwrap()
-        .get(&id.parse().unwrap())
-        .unwrap()
-        .clone();
-    network.endpoints = vec![Endpoint {
-        protocol: Protocol::TonApi,
-        url,
-        features: Vec::new(),
-        min_gap_ms: 0,
-    }];
+fn ton(id: &str, config: Url) -> Network {
+    let mut network = common::ton_network(id, config);
     network.tokens.clear();
     network
 }
@@ -91,8 +33,14 @@ async fn ton_accounts_follow_each_networks_wallet_id_and_show_gram() {
     let registry = Registry::with_networks(vec![
         common::network("bsc", dead.clone()),
         common::network("bsc-testnet", dead),
-        ton("ton", tonapi(MAINNET, &main_asked).await),
-        ton("ton-testnet", tonapi(TESTNET, &test_asked).await),
+        ton(
+            "ton",
+            common::liteserver(RECORDING, MAINNET, &main_asked).await,
+        ),
+        ton(
+            "ton-testnet",
+            common::liteserver(RECORDING, TESTNET, &test_asked).await,
+        ),
     ])
     .unwrap();
     let engine = Engine::start(config(&scratch, registry, None)).unwrap();
@@ -134,22 +82,18 @@ async fn ton_accounts_follow_each_networks_wallet_id_and_show_gram() {
         .unwrap();
     assert_eq!(
         (gram.address, gram.amount.to_string()),
-        (main, "2.5".to_owned())
+        (main, "0.000063599".to_owned())
     );
     assert_eq!(gram.asset.network().as_str(), "ton");
-    assert!(
-        main_asked
-            .lock()
-            .unwrap()
-            .contains(&format!("/accounts/{main}"))
-    );
-    assert!(
-        !main_asked
-            .lock()
-            .unwrap()
-            .contains(&format!("/accounts/{test}"))
-    );
-    assert_eq!(*test_asked.lock().unwrap(), Vec::<String>::new());
+    let hash = |address: &bahaa_types::Address| match address {
+        bahaa_types::Address::Ton { hash, .. } => common::hex(hash),
+        _ => panic!("not a TON address"),
+    };
+    let asked = main_asked.lock().unwrap().clone();
+    assert!(asked.contains(&(GET_BLOCK_PROOF, "99746941".to_owned())));
+    assert!(asked.contains(&(GET_ACCOUNT_STATE, hash(&main))));
+    assert!(!asked.contains(&(GET_ACCOUNT_STATE, hash(&test))));
+    assert_eq!(*test_asked.lock().unwrap(), Vec::new());
     let request = SendRequest {
         wallet,
         asset: "ton".parse().unwrap(),
@@ -158,13 +102,14 @@ async fn ton_accounts_follow_each_networks_wallet_id_and_show_gram() {
     };
     assert!(matches!(
         engine.prepare_send(request).await,
-        Err(EngineError::Chain(ChainError::Network(_)))
+        Err(EngineError::Chain(ChainError::Insufficient { symbol, available, .. }))
+            if symbol == "GRAM" && available.to_string() == "0.000063599"
     ));
     assert!(
         main_asked
             .lock()
             .unwrap()
-            .contains(&format!("/liteserver/get_account_state/{main}"))
+            .contains(&(GET_ACCOUNT_STATE, hash(&test)))
     );
 }
 
@@ -186,8 +131,11 @@ fn received(id: &str, from: &str, lt: u64, time: u64) -> Received {
 async fn incoming_gram_joins_the_wallets_history_from_proven_state() {
     let scratch = Scratch::new();
     let asked = Asked::default();
-    let registry =
-        Registry::with_networks(vec![ton("ton", tonapi(MAINNET, &asked).await)]).unwrap();
+    let registry = Registry::with_networks(vec![ton(
+        "ton",
+        common::liteserver(RECORDING, MAINNET, &asked).await,
+    )])
+    .unwrap();
     let engine = Engine::start(config(&scratch, registry, None)).unwrap();
     let mut events = engine.events();
     engine.create(SecretString::from("pw")).await.unwrap();
@@ -246,13 +194,7 @@ async fn incoming_gram_joins_the_wallets_history_from_proven_state() {
 async fn ton_token_sends_are_quoted_from_proven_contract_state() {
     let scratch = Scratch::new();
     let asked = Asked::default();
-    let mut network = ton("ton", tonapi(MAINNET, &asked).await);
-    network.tokens = Registry::builtin()
-        .unwrap()
-        .get(&"ton".parse().unwrap())
-        .unwrap()
-        .tokens
-        .clone();
+    let network = common::ton_network("ton", common::liteserver(RECORDING, MAINNET, &asked).await);
     let usdt = network.tokens[0].contract;
     let registry = Registry::with_networks(vec![network]).unwrap();
     let engine = Engine::start(config(&scratch, registry, None)).unwrap();
@@ -275,4 +217,46 @@ async fn ton_token_sends_are_quoted_from_proven_contract_state() {
             available: Amount::parse("0", 6).unwrap(),
         }))
     );
+}
+
+#[tokio::test]
+async fn the_newest_trusted_ton_block_is_kept_for_the_next_start() {
+    let scratch = Scratch::new();
+    let asked = Asked::default();
+    let mut network = ton("ton", common::liteserver(RECORDING, MAINNET, &asked).await);
+    if let ChainKind::Ton { checkpoint, .. } = &mut network.kind {
+        *checkpoint = common::PREVIOUS_KEY;
+    }
+    let registry = Registry::with_networks(vec![network]).unwrap();
+    let engine = Engine::start(config(&scratch, registry.clone(), None)).unwrap();
+    let mut portfolio = engine.portfolio();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    until(&mut portfolio, |p| {
+        p.holdings.iter().any(|holding| holding.symbol == "GRAM")
+    })
+    .await;
+    engine.shutdown().await.unwrap();
+    let proofs = |asked: &Asked| -> Vec<String> {
+        asked
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(function, _)| *function == GET_BLOCK_PROOF)
+            .map(|(_, known)| known.clone())
+            .collect()
+    };
+    assert_eq!(proofs(&asked), ["99727067"]);
+    asked.lock().unwrap().clear();
+    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
+    let mut portfolio = engine.portfolio();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    until(&mut portfolio, |p| {
+        p.holdings.iter().any(|holding| holding.symbol == "GRAM")
+    })
+    .await;
+    assert_eq!(proofs(&asked), ["99746941"]);
 }

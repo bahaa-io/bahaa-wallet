@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::fmt::Write;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -59,6 +61,7 @@ const GET_LIBRARIES: u32 = 0xd122_b662;
 const GET_MASTERCHAIN_INFO: u32 = 0x89b5_e62e;
 const GET_ACCOUNT_STATE: u32 = 0x6b89_0e25;
 const GET_TRANSACTIONS: u32 = 0x1c40_e7a1;
+const GET_BLOCK_PROOF: u32 = 0x8aea_9c44;
 const SEND_MESSAGE: u32 = 0x690a_d482;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +75,7 @@ enum Tamper {
     Forge,
     History,
     Replay,
+    Proof,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +90,7 @@ struct Behaviour {
     recording: &'static str,
     foreign: bool,
     refuse: bool,
+    partial: bool,
     tamper: Tamper,
     delivery: Delivery,
 }
@@ -94,6 +99,7 @@ const GOOD: Behaviour = Behaviour {
     recording: FIXTURE,
     foreign: false,
     refuse: false,
+    partial: false,
     tamper: Tamper::Nothing,
     delivery: Delivery::Taken,
 };
@@ -195,7 +201,8 @@ fn account_answer(answer: &[u8], tamper: Tamper) -> Vec<u8> {
         | Tamper::Anchor
         | Tamper::Swap
         | Tamper::History
-        | Tamper::Replay => {}
+        | Tamper::Replay
+        | Tamper::Proof => {}
     }
     let mut head = head.to_vec();
     if tamper == Tamper::Anchor {
@@ -285,12 +292,28 @@ fn reply(behaviour: Behaviour, data: &[u8]) -> Vec<u8> {
             }
             config
         }
+        GET_LIBRARIES | GET_TRANSACTIONS if behaviour.partial => {
+            Tl::default()
+                .u32(0xbba9_e148)
+                .i32(-400)
+                .bytes(b"not in db")
+                .0
+        }
         GET_LIBRARIES => {
             let hash: [u8; 32] = data[8..40].try_into().unwrap();
             recorded(behaviour.recording, &["libraries", &hex(&hash)])
                 .unwrap_or_else(|| Tl::default().u32(0xbba9_e148).i32(-400).bytes(b"unknown").0)
         }
         GET_TRANSACTIONS => history(behaviour, data),
+        GET_BLOCK_PROOF => {
+            let info = recorded(behaviour.recording, &["masterchain_info"]).unwrap();
+            let mut proof = common::anchor_proof(&info);
+            if behaviour.tamper == Tamper::Proof {
+                let at = proof.len() - 40;
+                proof[at] ^= 1;
+            }
+            proof
+        }
         SEND_MESSAGE => delivered(behaviour, data),
         _ => Tl::default().u32(0xbba9_e148).i32(-400).bytes(b"unknown").0,
     }
@@ -422,7 +445,7 @@ async fn config(servers: &[(SocketAddr, [u8; 32])], zero_state: [u8; 32]) -> Url
 
 fn network(config: Url) -> Network {
     let registry = Registry::builtin().unwrap();
-    let mut network = registry.get(&"ton".parse().unwrap()).unwrap().clone();
+    let mut network = common::pinned(registry.get(&"ton".parse().unwrap()).unwrap().clone());
     network.endpoints = vec![Endpoint {
         protocol: Protocol::TonLiteservers,
         url: config,
@@ -480,10 +503,10 @@ async fn proven_gram_and_usdt_arrive_over_adnl() {
     let chain = TonChain::new(network(config(&[server], mainnet()).await)).unwrap();
     let balances = chain.balances(&ton(OWNER), &assets()).await.unwrap();
     assert_eq!(amounts(&balances), ["59570010.146444835", "94631240.538"]);
-    assert_eq!(*asked.lock().unwrap(), 10);
+    assert_eq!(*asked.lock().unwrap(), 11);
     let again = chain.balances(&ton(OWNER), &assets()).await.unwrap();
     assert_eq!(amounts(&again), amounts(&balances));
-    assert_eq!(*asked.lock().unwrap(), 14);
+    assert_eq!(*asked.lock().unwrap(), 15);
     let fresh = chain.balances(&ton(FRESH), &[gram()]).await.unwrap();
     assert_eq!(amounts(&fresh), ["0"]);
 }
@@ -496,6 +519,7 @@ async fn answers_their_proofs_do_not_cover_are_refused() {
         Tamper::Block,
         Tamper::Anchor,
         Tamper::Swap,
+        Tamper::Proof,
     ] {
         let chain = chain_for(Behaviour { tamper, ..GOOD }).await;
         let result = chain.balances(&ton(OWNER), &[gram()]).await;
@@ -605,7 +629,7 @@ async fn tonapi(asked: Arc<Mutex<Vec<String>>>) -> Url {
 }
 
 #[tokio::test]
-async fn when_no_liteserver_can_be_trusted_the_http_providers_answer() {
+async fn when_no_liteserver_can_be_trusted_balances_are_not_taken_from_http_providers() {
     let cases = [
         Behaviour {
             foreign: true,
@@ -617,6 +641,10 @@ async fn when_no_liteserver_can_be_trusted_the_http_providers_answer() {
         },
         Behaviour {
             tamper: Tamper::State,
+            ..GOOD
+        },
+        Behaviour {
+            tamper: Tamper::Proof,
             ..GOOD
         },
     ];
@@ -631,15 +659,11 @@ async fn when_no_liteserver_can_be_trusted_the_http_providers_answer() {
             min_gap_ms: 0,
         });
         let chain = TonChain::new(network).unwrap();
-        let balances = chain.balances(&ton(OWNER), &[gram()]).await.unwrap();
-        assert_eq!(amounts(&balances), ["9"]);
-        assert!(
-            asked
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|path| path.starts_with("/v2/accounts/0:"))
-        );
+        assert!(matches!(
+            chain.balances(&ton(OWNER), &[gram()]).await,
+            Err(ChainError::Network(_))
+        ));
+        assert_eq!(*asked.lock().unwrap(), Vec::<String>::new());
     }
 }
 
@@ -738,6 +762,128 @@ async fn tracking_chain(behaviour: Behaviour) -> TonChain {
 
 fn sent_id() -> TxId {
     TxId::new(SENT_ID.to_owned()).unwrap()
+}
+
+fn tonapi_extras(path: &str, recording: &'static str, tampered: bool) -> (u16, Value) {
+    let flipped = |mut bytes: Vec<u8>| {
+        if tampered {
+            let middle = bytes.len() / 2;
+            bytes[middle] ^= 1;
+        }
+        bytes
+    };
+    if path == "/liteserver/get_masterchain_info" {
+        return (200, json!({"init": {"root_hash": MAINNET}}));
+    }
+    if let Some(hash) = path.strip_prefix("/blockchain/libraries/") {
+        let answer = recorded(recording, &["libraries", hash]).unwrap();
+        let (data, _) = read_bytes(&answer[40..]);
+        return (200, json!({"boc": hex(&flipped(data.to_vec()))}));
+    }
+    if let Some(query) = path.strip_prefix("/liteserver/get_transactions/0:")
+        && let Some((_, query)) = query.split_once("?count=16&lt=")
+    {
+        let (lt, _) = query.split_once("&hash=").unwrap();
+        let answer = recorded(recording, &["transactions", lt]).unwrap();
+        let count = usize::try_from(u32::from_le_bytes(answer[4..8].try_into().unwrap())).unwrap();
+        let (transactions, _) = read_bytes(&answer[8 + 80 * count..]);
+        return (
+            200,
+            json!({"ids": [], "transactions": hex(&flipped(transactions.to_vec()))}),
+        );
+    }
+    (404, json!({"error": "route not found"}))
+}
+
+async fn with_tonapi(behaviour: Behaviour, tampered: bool) -> (TonChain, common::Log) {
+    let log = common::Log::default();
+    let recording = behaviour.recording;
+    let tonapi = common::node(Arc::clone(&log), move |path, _| {
+        tonapi_extras(path, recording, tampered)
+    })
+    .await;
+    let server = liteserver(40, behaviour, Arc::default()).await;
+    let mut network = network(config(&[server], mainnet()).await);
+    network.endpoints.push(Endpoint {
+        protocol: Protocol::TonApi,
+        url: tonapi,
+        features: Vec::new(),
+        min_gap_ms: 0,
+    });
+    (TonChain::new(network).unwrap(), log)
+}
+
+#[tokio::test]
+async fn tonapi_fills_in_history_and_libraries_checked_against_proven_state() {
+    let partial = Behaviour {
+        partial: true,
+        ..GOOD
+    };
+    let (chain, log) = with_tonapi(partial, false).await;
+    let balances = chain.balances(&ton(OWNER), &assets()).await.unwrap();
+    assert_eq!(amounts(&balances), ["59570010.146444835", "94631240.538"]);
+    assert!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|path| path.starts_with("/blockchain/libraries/"))
+    );
+    let (lying, _) = with_tonapi(partial, true).await;
+    assert!(matches!(
+        lying.balances(&ton(OWNER), &assets()).await,
+        Err(ChainError::Network(_))
+    ));
+    let tracking = Behaviour {
+        recording: TRACK,
+        ..partial
+    };
+    let (chain, log) = with_tonapi(tracking, false).await;
+    assert_eq!(
+        chain
+            .status(&sent_id(), &ton(SENDER), Some(SENT_EXPIRES))
+            .await
+            .unwrap(),
+        TxStatus::Confirmed {
+            block: None,
+            fee: Some(bahaa_types::Amount::parse("0.001186605", 9).unwrap())
+        }
+    );
+    assert!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|path| path.starts_with("/liteserver/get_transactions/"))
+    );
+    let (lying, _) = with_tonapi(tracking, true).await;
+    assert!(matches!(
+        lying
+            .status(&sent_id(), &ton(SENDER), Some(SENT_EXPIRES))
+            .await,
+        Err(ChainError::Network(_))
+    ));
+}
+
+#[tokio::test]
+async fn a_restored_checkpoint_only_moves_trust_forward() {
+    let chain = chain_for(GOOD).await;
+    let start = chain.checkpoint();
+    let mut older = start;
+    older.seqno -= 1;
+    chain.restore(&older);
+    assert_eq!(chain.checkpoint(), start);
+    assert_eq!(
+        amounts(&chain.balances(&ton(OWNER), &[gram()]).await.unwrap()),
+        ["59570010.146444835"]
+    );
+    let mut ahead = start;
+    ahead.seqno = 99_800_000;
+    let restored = chain_for(GOOD).await;
+    restored.restore(&ahead);
+    assert_eq!(restored.checkpoint(), ahead);
+    assert!(matches!(
+        restored.balances(&ton(OWNER), &[gram()]).await,
+        Err(ChainError::Network(_))
+    ));
 }
 
 #[tokio::test]
@@ -987,14 +1133,14 @@ async fn later_scans_read_only_what_is_new() {
         summed(&later.found),
         (12, ruint::aliases::U256::from(1_100_001u64))
     );
-    assert_eq!(*asked.lock().unwrap(), 4);
+    assert_eq!(*asked.lock().unwrap(), 5);
     assert_eq!(
         chain
             .scan(&ton(SENDER), &[gram()], Some(later.cursor))
             .await,
         Ok(None)
     );
-    assert_eq!(*asked.lock().unwrap(), 8);
+    assert_eq!(*asked.lock().unwrap(), 9);
     let custom = AssetId::Token(
         "ton".parse().unwrap(),
         Address::Ton {
@@ -1003,7 +1149,7 @@ async fn later_scans_read_only_what_is_new() {
         },
     );
     assert_eq!(chain.scan(&ton(SENDER), &[custom], None).await, Ok(None));
-    assert_eq!(*asked.lock().unwrap(), 8);
+    assert_eq!(*asked.lock().unwrap(), 9);
     let lying = tracking_chain(Behaviour {
         tamper: Tamper::History,
         ..GOOD

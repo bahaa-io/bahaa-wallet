@@ -110,7 +110,16 @@ pub enum ChainKind {
     Ton {
         global_id: i32,
         zero_state: [u8; 32],
+        checkpoint: Checkpoint,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checkpoint {
+    pub seqno: u32,
+    pub root_hash: [u8; 32],
+    pub file_hash: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,12 +231,32 @@ struct Spec {
     global_id: Option<i32>,
     #[serde(default)]
     zero_state: Option<String>,
+    #[serde(default)]
+    checkpoint: Option<CheckpointSpec>,
     testnet: bool,
     native: Coin,
     #[serde(default)]
     tokens: Vec<TokenSpec>,
     endpoints: Vec<Endpoint>,
     explorer: Explorer,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckpointSpec {
+    seqno: u32,
+    root_hash: String,
+    file_hash: String,
+}
+
+impl CheckpointSpec {
+    fn read(&self) -> Option<Checkpoint> {
+        Some(Checkpoint {
+            seqno: (self.seqno > 0 && i32::try_from(self.seqno).is_ok()).then_some(self.seqno)?,
+            root_hash: block_id(Some(&self.root_hash))?,
+            file_hash: block_id(Some(&self.file_hash))?,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -242,6 +271,48 @@ struct TokenSpec {
 }
 
 impl Spec {
+    fn kind(&self) -> Result<ChainKind, &'static str> {
+        let kind = match (self.family, self.chain_id, self.fee) {
+            (ChainFamily::Evm, Some(chain_id), Some(fee)) if chain_id > 0 => {
+                ChainKind::Evm { chain_id, fee }
+            }
+            (ChainFamily::Evm, _, _) => {
+                return Err("EVM networks need a non-zero chain_id and a fee model");
+            }
+            (ChainFamily::Tron, None, None) => ChainKind::Tron {
+                genesis: block_id(self.genesis.as_deref())
+                    .ok_or("Tron networks need a 64 hex digit genesis")?,
+            },
+            (ChainFamily::Ton, None, None) => ChainKind::Ton {
+                global_id: self.global_id.ok_or("TON networks need their global_id")?,
+                zero_state: block_id(self.zero_state.as_deref())
+                    .ok_or("TON networks need a 64 hex digit zero_state")?,
+                checkpoint: self
+                    .checkpoint
+                    .as_ref()
+                    .and_then(CheckpointSpec::read)
+                    .ok_or("TON networks need a checkpoint key block with its two hashes")?,
+            },
+            _ => return Err("only EVM networks have chain_id and fee"),
+        };
+        let foreign = match self.family {
+            ChainFamily::Evm => {
+                self.genesis.is_some()
+                    || self.global_id.is_some()
+                    || self.zero_state.is_some()
+                    || self.checkpoint.is_some()
+            }
+            ChainFamily::Tron => {
+                self.global_id.is_some() || self.zero_state.is_some() || self.checkpoint.is_some()
+            }
+            ChainFamily::Ton => self.genesis.is_some(),
+        };
+        if foreign {
+            return Err("a field belongs to another chain family");
+        }
+        Ok(kind)
+    }
+
     fn validate(self) -> Result<Network, ConfigError> {
         let problem = |text: &str| ConfigError::Network {
             network: self.id.to_string(),
@@ -250,38 +321,7 @@ impl Spec {
         if !is_plain_text(&self.name, MAX_NAME) {
             return Err(problem("name must be 1 to 40 printable characters"));
         }
-        let kind = match (self.family, self.chain_id, self.fee) {
-            (ChainFamily::Evm, Some(chain_id), Some(fee)) if chain_id > 0 => {
-                ChainKind::Evm { chain_id, fee }
-            }
-            (ChainFamily::Evm, _, _) => {
-                return Err(problem(
-                    "EVM networks need a non-zero chain_id and a fee model",
-                ));
-            }
-            (ChainFamily::Tron, None, None) => ChainKind::Tron {
-                genesis: block_id(self.genesis.as_deref())
-                    .ok_or_else(|| problem("Tron networks need a 64 hex digit genesis"))?,
-            },
-            (ChainFamily::Ton, None, None) => ChainKind::Ton {
-                global_id: self
-                    .global_id
-                    .ok_or_else(|| problem("TON networks need their global_id"))?,
-                zero_state: block_id(self.zero_state.as_deref())
-                    .ok_or_else(|| problem("TON networks need a 64 hex digit zero_state"))?,
-            },
-            _ => return Err(problem("only EVM networks have chain_id and fee")),
-        };
-        let foreign = match self.family {
-            ChainFamily::Evm => {
-                self.genesis.is_some() || self.global_id.is_some() || self.zero_state.is_some()
-            }
-            ChainFamily::Tron => self.global_id.is_some() || self.zero_state.is_some(),
-            ChainFamily::Ton => self.genesis.is_some(),
-        };
-        if foreign {
-            return Err(problem("a field belongs to another chain family"));
-        }
+        let kind = self.kind().map_err(problem)?;
         self.native
             .check()
             .map_err(|text| problem(&format!("native coin {text}")))?;
@@ -468,6 +508,7 @@ mod tests {
             let ChainKind::Ton {
                 global_id: found,
                 zero_state,
+                ..
             } = network(id).kind
             else {
                 panic!("{id} is not a TON network");
@@ -553,6 +594,25 @@ mod tests {
             ("ton", Box::new(|n| n["global_id"] = Value::Null)),
             ("ton", Box::new(|n| n["zero_state"] = "17a3".into())),
             ("ton", Box::new(|n| n["genesis"] = "0".repeat(64).into())),
+            ("ton", Box::new(|n| n["checkpoint"] = Value::Null)),
+            ("ton", Box::new(|n| n["checkpoint"]["seqno"] = 0.into())),
+            (
+                "ton",
+                Box::new(|n| n["checkpoint"]["seqno"] = 3_000_000_000_u64.into()),
+            ),
+            (
+                "ton",
+                Box::new(|n| n["checkpoint"]["root_hash"] = "17a3".into()),
+            ),
+            (
+                "ton",
+                Box::new(|n| n["checkpoint"]["file_hash"] = Value::Null),
+            ),
+            ("ton", Box::new(|n| n["checkpoint"]["lt"] = 1.into())),
+            (
+                "tron",
+                Box::new(|n| n["checkpoint"] = serde_json::json!({"seqno": 1})),
+            ),
             ("tron", Box::new(|n| n["global_id"] = (-239).into())),
             (
                 "bsc",

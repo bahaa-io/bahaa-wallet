@@ -23,6 +23,8 @@ pub enum PoolError<E> {
     Fatal(E),
     #[error("every endpoint failed, the last said: {0}")]
     Exhausted(E),
+    #[error("no endpoint can serve this request: {0}")]
+    Unserved(E),
     #[error("no endpoint is available right now, try again in {} s", .0.as_secs().max(1))]
     Unavailable(Duration),
     #[error("no endpoint offers what this request needs")]
@@ -89,6 +91,7 @@ impl Pool {
             .filter(|slot| slot.available(now))
             .collect();
         let mut last = None;
+        let mut failed = false;
         for slot in ready {
             sleep_until(slot.reserve()).await;
             let started = Instant::now();
@@ -103,10 +106,12 @@ impl Pool {
                 }
                 Err(Failure::Retry(err)) => {
                     slot.failed(None);
+                    failed = true;
                     last = Some(err);
                 }
                 Err(Failure::RateLimited(err, wait)) => {
                     slot.failed(Some(wait.unwrap_or(COOLDOWN_BASE)));
+                    failed = true;
                     last = Some(err);
                 }
                 Err(Failure::Unsupported(err)) => {
@@ -116,7 +121,11 @@ impl Pool {
             }
         }
         if let Some(err) = last {
-            return Err(PoolError::Exhausted(err));
+            return Err(if failed {
+                PoolError::Exhausted(err)
+            } else {
+                PoolError::Unserved(err)
+            });
         }
         let now = Instant::now();
         let soonest = candidates
@@ -369,9 +378,20 @@ mod tests {
         );
         assert_eq!(
             run(&pool, &log, |_| Err(Failure::Unsupported("archive only"))).await,
-            Err(PoolError::Exhausted("archive only"))
+            Err(PoolError::Unserved("archive only"))
         );
         assert_eq!(run(&pool, &log, |_| Ok(3)).await, Ok(3));
+        let mixed = |host: &str| {
+            if host == "a" {
+                Err(Failure::Retry("down"))
+            } else {
+                Err(Failure::Unsupported("archive only"))
+            }
+        };
+        assert_eq!(
+            run(&pool, &log, mixed).await,
+            Err(PoolError::Exhausted("archive only"))
+        );
     }
 
     #[tokio::test(start_paused = true)]

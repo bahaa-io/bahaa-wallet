@@ -3,8 +3,10 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use bahaa_config::{Coin, Fiat, Settings};
-use bahaa_store::{Contact, CustomToken, Received, Scan, SentStatus, SentTx, Store, StoreError};
+use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
+use bahaa_store::{
+    Contact, CustomToken, Received, Scan, SentStatus, SentTx, Store, StoreError, TrustedBlock,
+};
 use bahaa_types::{Address, Amount, ChainFamily};
 use redb::{Database, TableDefinition};
 
@@ -310,6 +312,45 @@ fn a_bad_scan_saves_nothing() {
     }
     assert_eq!(store.scans().unwrap(), Vec::<Scan>::new());
     assert_eq!(store.received().unwrap(), Vec::<Received>::new());
+}
+
+fn trusted(network: &str, seqno: u32) -> TrustedBlock {
+    TrustedBlock {
+        network: network.parse().unwrap(),
+        checkpoint: Checkpoint {
+            seqno,
+            root_hash: [1; 32],
+            file_hash: [2; 32],
+        },
+    }
+}
+
+#[test]
+fn the_latest_trusted_block_of_each_network_survives_a_restart() {
+    let scratch = Scratch::new();
+    {
+        let store = Store::open(&scratch.file()).unwrap();
+        assert_eq!(store.trusted().unwrap(), Vec::new());
+        store.save_trusted(&trusted("ton", 99_746_941)).unwrap();
+        store.save_trusted(&trusted("ton", 99_766_000)).unwrap();
+        store
+            .save_trusted(&trusted("ton-testnet", 92_078_093))
+            .unwrap();
+        assert_eq!(
+            store.save_trusted(&trusted("ton", 0)),
+            Err(StoreError::Invalid(
+                "a trusted block cannot be the zero state"
+            ))
+        );
+    }
+    let store = Store::open(&scratch.file()).unwrap();
+    assert_eq!(
+        store.trusted().unwrap(),
+        [
+            trusted("ton", 99_766_000),
+            trusted("ton-testnet", 92_078_093)
+        ]
+    );
 }
 
 #[test]

@@ -7,7 +7,7 @@ use bahaa_chain::{
 use bahaa_config::{Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmChain, EvmPlan};
-use bahaa_store::{CustomToken, Received, Scan};
+use bahaa_store::{CustomToken, Received, Scan, TrustedBlock};
 use bahaa_ton::{TonChain, TonPlan};
 use bahaa_tron::{TronChain, TronPlan};
 use bahaa_types::{Address, AssetId, ChainFamily, NetworkId};
@@ -144,6 +144,29 @@ pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
             ChainFamily::Ton => TonChain::new(network.clone())
                 .ok()
                 .map(|chain| AnyChain::Ton(Box::new(chain))),
+        })
+        .collect()
+}
+
+pub(crate) fn restore(chains: &[AnyChain], saved: &[TrustedBlock]) {
+    for chain in chains {
+        if let AnyChain::Ton(ton) = chain
+            && let Some(block) = saved.iter().find(|block| block.network == ton.network().id)
+        {
+            ton.restore(&block.checkpoint);
+        }
+    }
+}
+
+pub(crate) fn trusted(chains: &[AnyChain]) -> Vec<TrustedBlock> {
+    chains
+        .iter()
+        .filter_map(|chain| match chain {
+            AnyChain::Ton(ton) => Some(TrustedBlock {
+                network: ton.network().id.clone(),
+                checkpoint: ton.checkpoint(),
+            }),
+            AnyChain::Evm(_) | AnyChain::Tron(_) => None,
         })
         .collect()
 }

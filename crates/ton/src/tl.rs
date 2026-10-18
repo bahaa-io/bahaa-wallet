@@ -14,6 +14,24 @@ const TRANSACTION_LIST: u32 = 0x6f26_c60b;
 const GET_LIBRARIES: u32 = 0xd122_b662;
 const LIBRARY_RESULT: u32 = 0x117a_b96b;
 const MAX_LIBRARIES: u32 = 16;
+const GET_BLOCK_PROOF: u32 = 0x8aea_9c44;
+const TO_TARGET: u32 = 0x1001;
+const PARTIAL_BLOCK_PROOF: u32 = 0x8ed0_d2c1;
+const BLOCK_LINK_FORWARD: u32 = 0x520f_ce1c;
+const ORDINARY_SIGNATURES: u32 = 0xf644_a6e6;
+const SIMPLEX_SIGNATURES: u32 = 0xac24_9800;
+const BLOCK_SIGNED: u32 = 0xc50b_6e70;
+const DATA_TO_SIGN: u32 = 0xa8e3_3df8;
+const FINALIZE_VOTE: u32 = 0x40a7_e105;
+const CANDIDATE_ID: u32 = 0xb691_cd3f;
+const CANDIDATE_ORDINARY: u32 = 0xe8f9_bcdc;
+const CANDIDATE_EMPTY: u32 = 0x72b4_d933;
+const CANDIDATE_PARENT: u32 = 0x1a4b_9af1;
+const WITHOUT_PARENTS: u32 = 0x22cb_cca9;
+const BOOL_TRUE: u32 = 0x9972_75b5;
+const BOOL_FALSE: u32 = 0xbc79_9737;
+const MAX_STEPS: u32 = 16;
+const MAX_SIGNATURES: u32 = 1024;
 const ERROR: u32 = 0xbba9_e148;
 const MAX_ERROR: usize = 1024;
 
@@ -55,6 +73,39 @@ pub(crate) struct TransactionList {
 }
 
 pub(crate) type Libraries = Vec<([u8; 32], Vec<u8>)>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Simplex {
+    pub session_id: [u8; 32],
+    pub slot: u32,
+    pub candidate: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Signed {
+    pub validator_set_hash: u32,
+    pub catchain_seqno: u32,
+    pub signatures: Vec<([u8; 32], Vec<u8>)>,
+    pub simplex: Option<Simplex>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Link {
+    pub to_key_block: bool,
+    pub from: BlockId,
+    pub to: BlockId,
+    pub dest_proof: Vec<u8>,
+    pub config_proof: Vec<u8>,
+    pub signed: Signed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BlockProof {
+    pub complete: bool,
+    pub from: BlockId,
+    pub to: BlockId,
+    pub steps: Vec<Link>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Answer<T> {
@@ -166,6 +217,90 @@ impl<'a> Reader<'a> {
         Some(value)
     }
 
+    fn bool(&mut self) -> Option<bool> {
+        match self.u32()? {
+            BOOL_TRUE => Some(true),
+            BOOL_FALSE => Some(false),
+            _ => None,
+        }
+    }
+
+    fn link(&mut self) -> Option<Link> {
+        if self.u32()? != BLOCK_LINK_FORWARD {
+            return None;
+        }
+        Some(Link {
+            to_key_block: self.bool()?,
+            from: self.block()?,
+            to: self.block()?,
+            dest_proof: self.bytes()?.to_vec(),
+            config_proof: self.bytes()?.to_vec(),
+            signed: self.signed()?,
+        })
+    }
+
+    fn signed(&mut self) -> Option<Signed> {
+        let kind = self.u32()?;
+        let (validator_set_hash, catchain_seqno) = match kind {
+            ORDINARY_SIGNATURES => (self.u32()?, self.u32()?),
+            SIMPLEX_SIGNATURES => {
+                let catchain_seqno = self.u32()?;
+                (self.u32()?, catchain_seqno)
+            }
+            _ => return None,
+        };
+        let count = self.u32()?;
+        if count > MAX_SIGNATURES {
+            return None;
+        }
+        let signatures = (0..count)
+            .map(|_| Some((self.int256()?, self.bytes()?.to_vec())))
+            .collect::<Option<Vec<_>>>()?;
+        let simplex = if kind == SIMPLEX_SIGNATURES {
+            Some(Simplex {
+                session_id: self.int256()?,
+                slot: self.u32()?,
+                candidate: self.bytes()?.to_vec(),
+            })
+        } else {
+            None
+        };
+        Some(Signed {
+            validator_set_hash,
+            catchain_seqno,
+            signatures,
+            simplex,
+        })
+    }
+
+    fn candidate(&mut self) -> Option<BlockId> {
+        let kind = self.u32()?;
+        let block = self.block()?;
+        match kind {
+            CANDIDATE_ORDINARY => {
+                self.int256()?;
+                match self.u32()? {
+                    CANDIDATE_PARENT => self.candidate_id()?,
+                    WITHOUT_PARENTS => {}
+                    _ => return None,
+                }
+            }
+            CANDIDATE_EMPTY => {
+                self.u32()?;
+                self.int256()?;
+            }
+            _ => return None,
+        }
+        Some(block)
+    }
+
+    fn candidate_id(&mut self) -> Option<()> {
+        (self.u32()? == CANDIDATE_ID).then_some(())?;
+        self.u32()?;
+        self.int256()?;
+        Some(())
+    }
+
     fn block(&mut self) -> Option<BlockId> {
         Some(BlockId {
             workchain: self.i32()?,
@@ -222,6 +357,63 @@ pub(crate) fn get_config_params(block: &BlockId, params: &[i32]) -> Vec<u8> {
         writer.i32(*param);
     }
     writer.0
+}
+
+pub(crate) fn get_block_proof(known: &BlockId, target: &BlockId) -> Vec<u8> {
+    let mut writer = Writer::default();
+    writer
+        .u32(GET_BLOCK_PROOF)
+        .u32(TO_TARGET)
+        .block(known)
+        .block(target);
+    writer.0
+}
+
+pub(crate) fn block_signed(block: &BlockId) -> Vec<u8> {
+    let mut writer = Writer::default();
+    writer
+        .u32(BLOCK_SIGNED)
+        .int256(&block.root_hash)
+        .int256(&block.file_hash);
+    writer.0
+}
+
+pub(crate) fn finalized(session_id: &[u8; 32], slot: u32, candidate: &[u8; 32]) -> Vec<u8> {
+    let mut vote = Writer::default();
+    vote.u32(FINALIZE_VOTE)
+        .u32(CANDIDATE_ID)
+        .u32(slot)
+        .int256(candidate);
+    let mut writer = Writer::default();
+    writer.u32(DATA_TO_SIGN).int256(session_id).bytes(&vote.0);
+    writer.0
+}
+
+pub(crate) fn candidate_block(candidate: &[u8]) -> Option<BlockId> {
+    let mut reader = Reader::new(candidate);
+    let block = reader.candidate()?;
+    reader.done().then_some(block)
+}
+
+pub(crate) fn block_proof(answer: &[u8]) -> Option<Answer<BlockProof>> {
+    read(answer, PARTIAL_BLOCK_PROOF, |reader| {
+        let complete = reader.bool()?;
+        let from = reader.block()?;
+        let to = reader.block()?;
+        let count = reader.u32()?;
+        if count > MAX_STEPS {
+            return None;
+        }
+        let steps = (0..count)
+            .map(|_| reader.link())
+            .collect::<Option<Vec<_>>>()?;
+        Some(BlockProof {
+            complete,
+            from,
+            to,
+            steps,
+        })
+    })
 }
 
 pub(crate) fn get_libraries(hashes: &[[u8; 32]]) -> Vec<u8> {
@@ -425,13 +617,78 @@ mod tests {
                 GET_LIBRARIES,
                 "liteServer.getLibraries library_list:(vector int256) = liteServer.LibraryResult",
             ),
+        ];
+        named_by_their_schema(&schemas);
+    }
+
+    #[test]
+    fn block_proof_ids_are_the_crc_of_their_schema() {
+        let schemas = [
+            (
+                GET_BLOCK_PROOF,
+                "liteServer.getBlockProof mode:# known_block:tonNode.blockIdExt target_block:mode.0?tonNode.blockIdExt = liteServer.PartialBlockProof",
+            ),
+            (
+                PARTIAL_BLOCK_PROOF,
+                "liteServer.partialBlockProof complete:Bool from:tonNode.blockIdExt to:tonNode.blockIdExt steps:(vector liteServer.BlockLink) = liteServer.PartialBlockProof",
+            ),
+            (
+                BLOCK_LINK_FORWARD,
+                "liteServer.blockLinkForward to_key_block:Bool from:tonNode.blockIdExt to:tonNode.blockIdExt dest_proof:bytes config_proof:bytes signatures:liteServer.SignatureSet = liteServer.BlockLink",
+            ),
+            (
+                ORDINARY_SIGNATURES,
+                "liteServer.signatureSet validator_set_hash:int catchain_seqno:int signatures:(vector liteServer.signature) = liteServer.SignatureSet",
+            ),
+            (
+                SIMPLEX_SIGNATURES,
+                "liteServer.signatureSet.simplex cc_seqno:int validator_set_hash:int signatures:(vector liteServer.signature) session_id:int256 slot:int candidate:bytes = liteServer.SignatureSet",
+            ),
+            (
+                BLOCK_SIGNED,
+                "ton.blockId root_cell_hash:int256 file_hash:int256 = ton.BlockId",
+            ),
+            (
+                DATA_TO_SIGN,
+                "consensus.dataToSign session_id:int256 data:bytes = consensus.DataToSign",
+            ),
+            (
+                FINALIZE_VOTE,
+                "consensus.simplex.finalizeVote id:consensus.CandidateId = consensus.simplex.UnsignedVote",
+            ),
+            (
+                CANDIDATE_ID,
+                "consensus.candidateId slot:int hash:int256 = consensus.CandidateId",
+            ),
+            (
+                CANDIDATE_ORDINARY,
+                "consensus.candidateHashDataOrdinary block:tonNode.blockIdExt collated_file_hash:int256 parent:consensus.CandidateParent = consensus.CandidateHashData",
+            ),
+            (
+                CANDIDATE_EMPTY,
+                "consensus.candidateHashDataEmpty block:tonNode.blockIdExt parent:consensus.candidateId = consensus.CandidateHashData",
+            ),
+            (
+                CANDIDATE_PARENT,
+                "consensus.candidateParent id:consensus.CandidateId = consensus.CandidateParent",
+            ),
+            (
+                WITHOUT_PARENTS,
+                "consensus.candidateWithoutParents = consensus.CandidateParent",
+            ),
+            (BOOL_TRUE, "boolTrue = Bool"),
+            (BOOL_FALSE, "boolFalse = Bool"),
             (
                 LIBRARY_RESULT,
                 "liteServer.libraryResult result:(vector liteServer.libraryEntry) = liteServer.LibraryResult",
             ),
         ];
+        named_by_their_schema(&schemas);
+    }
+
+    fn named_by_their_schema(schemas: &[(u32, &str)]) {
         for (id, schema) in schemas {
-            assert_eq!(id, crc32(&schema.replace(['(', ')'], "")), "{schema}");
+            assert_eq!(*id, crc32(&schema.replace(['(', ')'], "")), "{schema}");
         }
     }
 
@@ -601,5 +858,118 @@ mod tests {
         let mut huge = Writer::default();
         huge.u32(LIBRARY_RESULT).u32(17);
         assert_eq!(library_result(&huge.0), None);
+    }
+
+    #[test]
+    fn block_proofs_are_asked_to_the_target_and_read_strictly() {
+        let known = block();
+        let mut target = block();
+        target.seqno += 5;
+        let asked = get_block_proof(&known, &target);
+        assert_eq!(asked[..4], GET_BLOCK_PROOF.to_le_bytes());
+        assert_eq!(asked[4..8], TO_TARGET.to_le_bytes());
+        assert_eq!(asked.len(), 8 + 80 + 80);
+        assert_eq!(asked[8 + 12..8 + 16], known.seqno.to_le_bytes());
+        assert_eq!(asked[88 + 12..88 + 16], target.seqno.to_le_bytes());
+        let answer = |link: u32, signatures: u32, steps: u32| {
+            let mut writer = Writer::default();
+            writer
+                .u32(PARTIAL_BLOCK_PROOF)
+                .u32(BOOL_TRUE)
+                .block(&known)
+                .block(&target)
+                .u32(steps);
+            for _ in 0..steps.min(1) {
+                writer
+                    .u32(link)
+                    .u32(BOOL_FALSE)
+                    .block(&known)
+                    .block(&target)
+                    .bytes(b"dest")
+                    .bytes(b"config")
+                    .u32(signatures)
+                    .u32(7)
+                    .u32(9)
+                    .u32(1)
+                    .int256(&[3; 32])
+                    .bytes(&[4; 64]);
+            }
+            writer.0
+        };
+        let Some(Answer::Ok(read)) =
+            block_proof(&answer(BLOCK_LINK_FORWARD, ORDINARY_SIGNATURES, 1))
+        else {
+            panic!("an ordinary link should read");
+        };
+        assert_eq!(read.steps[0].signed.validator_set_hash, 7);
+        assert_eq!(read.steps[0].signed.catchain_seqno, 9);
+        assert_eq!(read.steps[0].signed.simplex, None);
+        assert_eq!(
+            block_proof(&answer(0xef7e_1bef, ORDINARY_SIGNATURES, 1)),
+            None
+        );
+        assert_eq!(
+            block_proof(&answer(BLOCK_LINK_FORWARD, 0x1234_5678, 1)),
+            None
+        );
+        assert_eq!(
+            block_proof(&answer(BLOCK_LINK_FORWARD, SIMPLEX_SIGNATURES, 1)),
+            None
+        );
+        assert_eq!(
+            block_proof(&answer(
+                BLOCK_LINK_FORWARD,
+                ORDINARY_SIGNATURES,
+                MAX_STEPS + 1
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn every_candidate_form_names_its_block() {
+        let target = block();
+        let parent = |writer: &mut Writer| {
+            writer.u32(CANDIDATE_ID).u32(41).int256(&[6; 32]);
+        };
+        let mut with_parent = Writer::default();
+        with_parent
+            .u32(CANDIDATE_ORDINARY)
+            .block(&target)
+            .int256(&[5; 32])
+            .u32(CANDIDATE_PARENT);
+        parent(&mut with_parent);
+        let mut first = Writer::default();
+        first
+            .u32(CANDIDATE_ORDINARY)
+            .block(&target)
+            .int256(&[5; 32])
+            .u32(WITHOUT_PARENTS);
+        let mut empty = Writer::default();
+        empty
+            .u32(CANDIDATE_EMPTY)
+            .block(&target)
+            .u32(41)
+            .int256(&[6; 32]);
+        for candidate in [&with_parent.0, &first.0, &empty.0] {
+            assert_eq!(candidate_block(candidate), Some(target));
+            let mut longer = candidate.clone();
+            longer.extend_from_slice(&[0; 4]);
+            assert_eq!(candidate_block(&longer), None);
+            assert_eq!(candidate_block(&candidate[..candidate.len() - 4]), None);
+        }
+        let mut foreign = with_parent.0.clone();
+        foreign[..4].copy_from_slice(&0x1111_1111_u32.to_le_bytes());
+        assert_eq!(candidate_block(&foreign), None);
+        let mut unparented = with_parent.0.clone();
+        let at = 4 + 80 + 32;
+        unparented[at..at + 4].copy_from_slice(&0x2222_2222_u32.to_le_bytes());
+        assert_eq!(candidate_block(&unparented), None);
+        let finalized = finalized(&[8; 32], 41, &[9; 32]);
+        assert_eq!(finalized.len(), 4 + 32 + 48);
+        assert_eq!(finalized[36], 44);
+        assert_eq!(finalized[37..41], FINALIZE_VOTE.to_le_bytes());
+        assert_eq!(finalized[41..45], CANDIDATE_ID.to_le_bytes());
+        assert_eq!(block_signed(&target)[..4], BLOCK_SIGNED.to_le_bytes());
     }
 }

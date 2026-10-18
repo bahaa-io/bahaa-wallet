@@ -16,10 +16,8 @@ use url::Url;
 
 use crate::cells::{Account, Status};
 use crate::fees::Config;
-use crate::lite::{
-    Lite, proven_account, proven_config, proven_library, proven_transactions, refused,
-};
-use crate::tl::{AccountState, BlockId, ConfigInfo};
+use crate::lite::{Lite, proven_library, proven_transactions, refused};
+use crate::tl::BlockId;
 use crate::transaction::{MAX_LISTED, Transaction};
 use crate::vm::{self, Ran};
 
@@ -55,7 +53,11 @@ pub(crate) struct Http {
 }
 
 impl Http {
-    pub(crate) fn new(endpoints: Vec<Endpoint>, zero_state: [u8; 32]) -> Result<Self, ChainError> {
+    pub(crate) fn new(
+        endpoints: Vec<Endpoint>,
+        zero_state: [u8; 32],
+        checkpoint: BlockId,
+    ) -> Result<Self, ChainError> {
         let client = reqwest::Client::builder()
             .user_agent(concat!("bahaa-wallet/", env!("CARGO_PKG_VERSION")))
             .timeout(TIMEOUT)
@@ -63,7 +65,7 @@ impl Http {
             .map_err(|err| ChainError::Network(err.to_string()))?;
         Ok(Self {
             pool: Pool::new(endpoints),
-            lite: Lite::new(client.clone(), zero_state),
+            lite: Lite::new(client.clone(), zero_state, checkpoint),
             client,
             zero_state,
             verified: Mutex::new(BTreeSet::new()),
@@ -72,33 +74,12 @@ impl Http {
         })
     }
 
-    pub(crate) async fn balance(&self, address: &Address) -> Result<U256, ChainError> {
-        Ok(self
-            .pool
-            .call(None, |endpoint| async move {
-                let base = &endpoint.url;
-                if endpoint.protocol == Protocol::TonLiteservers {
-                    return self.lite.balance(base, address).await;
-                }
-                match self.ready(&endpoint).await? {
-                    Provider::Center => {
-                        let path = format!("v2/getAddressBalance?address={address}");
-                        let result = center(self.fetch(base, &path, None).await?)?;
-                        decimal(&result)
-                    }
-                    Provider::Api => {
-                        let path = format!("accounts/{address}");
-                        api(self.fetch(base, &path, None).await?)?.map_or(Ok(U256::ZERO), |reply| {
-                            reply["balance"]
-                                .as_u64()
-                                .map(U256::from)
-                                .or_else(|| decimal(&reply["balance"]).ok())
-                                .ok_or_else(malformed)
-                        })
-                    }
-                }
-            })
-            .await?)
+    pub(crate) fn trusted(&self) -> BlockId {
+        self.lite.trusted()
+    }
+
+    pub(crate) fn trust(&self, key: BlockId) {
+        self.lite.trust(key);
     }
 
     pub(crate) async fn run(
@@ -139,14 +120,6 @@ impl Http {
                 let base = &endpoint.url;
                 match endpoint.protocol {
                     Protocol::TonLiteservers => self.lite.account(base, address).await,
-                    Protocol::TonApi => {
-                        self.ready(&endpoint).await?;
-                        let path = format!("liteserver/get_account_state/{address}");
-                        let reply =
-                            api(self.fetch(base, &path, None).await?)?.ok_or_else(unsupported)?;
-                        let state = proxied_state(&reply).ok_or_else(malformed)?;
-                        proven_account(&state.block, &state, address)
-                    }
                     _ => Err(unsupported()),
                 }
             })
@@ -169,26 +142,6 @@ impl Http {
                 let base = &endpoint.url;
                 match endpoint.protocol {
                     Protocol::TonLiteservers => self.lite.config(base).await,
-                    Protocol::TonApi => {
-                        self.ready(&endpoint).await?;
-                        let head = api(self
-                            .fetch(base, "liteserver/get_masterchain_info", None)
-                            .await?)?
-                        .ok_or_else(unsupported)?;
-                        let last = proxied_block(&head["last"]).ok_or_else(malformed)?;
-                        let path = format!(
-                            "liteserver/get_config_all/({},{:016x},{},{},{})?mode=0",
-                            last.workchain,
-                            u64::from_be_bytes(last.shard.to_be_bytes()),
-                            last.seqno,
-                            hex(&last.root_hash),
-                            hex(&last.file_hash)
-                        );
-                        let reply =
-                            api(self.fetch(base, &path, None).await?)?.ok_or_else(unsupported)?;
-                        let info = proxied_config(&reply).ok_or_else(malformed)?;
-                        proven_config(&last, &info)
-                    }
                     _ => Err(unsupported()),
                 }
             })
@@ -394,35 +347,6 @@ impl Http {
     }
 }
 
-fn proxied_block(value: &Value) -> Option<BlockId> {
-    let shard = u64::from_str_radix(value["shard"].as_str()?, 16).ok()?;
-    Some(BlockId {
-        workchain: i32::try_from(value["workchain"].as_i64()?).ok()?,
-        shard: i64::from_be_bytes(shard.to_be_bytes()),
-        seqno: i32::try_from(value["seqno"].as_i64()?).ok()?,
-        root_hash: unhex(value["root_hash"].as_str()?)?.try_into().ok()?,
-        file_hash: unhex(value["file_hash"].as_str()?)?.try_into().ok()?,
-    })
-}
-
-fn proxied_state(reply: &Value) -> Option<AccountState> {
-    Some(AccountState {
-        block: proxied_block(&reply["id"])?,
-        shard_block: proxied_block(&reply["shardblk"])?,
-        shard_proof: unhex(reply["shard_proof"].as_str()?)?,
-        proof: unhex(reply["proof"].as_str()?)?,
-        state: unhex(reply["state"].as_str()?)?,
-    })
-}
-
-fn proxied_config(reply: &Value) -> Option<ConfigInfo> {
-    Some(ConfigInfo {
-        block: proxied_block(&reply["id"])?,
-        state_proof: unhex(reply["state_proof"].as_str()?)?,
-        config_proof: unhex(reply["config_proof"].as_str()?)?,
-    })
-}
-
 fn center((status, reply): Reply) -> Result<Value, Failure<ChainError>> {
     if matches!(
         status,
@@ -468,16 +392,6 @@ fn refusal(status: StatusCode, error: &Value) -> Failure<ChainError> {
     } else {
         Failure::Fatal(ChainError::Rejected(message))
     }
-}
-
-fn decimal(value: &Value) -> Result<U256, Failure<ChainError>> {
-    value
-        .as_str()
-        .filter(|text| {
-            !text.is_empty() && text.len() <= 78 && text.bytes().all(|byte| byte.is_ascii_digit())
-        })
-        .and_then(|text| U256::from_str_radix(text, 10).ok())
-        .ok_or_else(|| retry("an endpoint sent a malformed balance"))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -597,7 +511,12 @@ mod tests {
     async fn live_contracts_run_here_match_the_network_vm() {
         let registry = bahaa_config::Registry::builtin().unwrap();
         let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
-        let bahaa_config::ChainKind::Ton { zero_state, .. } = ton.kind else {
+        let bahaa_config::ChainKind::Ton {
+            zero_state,
+            checkpoint,
+            ..
+        } = ton.kind
+        else {
             panic!("not TON");
         };
         let endpoints = ton
@@ -606,7 +525,7 @@ mod tests {
             .filter(|endpoint| endpoint.protocol == Protocol::TonLiteservers)
             .cloned()
             .collect();
-        let http = Http::new(endpoints, zero_state).unwrap();
+        let http = Http::new(endpoints, zero_state, crate::chain::block(&checkpoint)).unwrap();
         let client = reqwest::Client::new();
         let tonapi = |path: String| {
             let client = client.clone();

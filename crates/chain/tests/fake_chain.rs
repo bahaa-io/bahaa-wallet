@@ -365,6 +365,12 @@ fn pool_errors_become_chain_errors() {
     let exhausted: ChainError =
         PoolError::Exhausted(ChainError::Network("timeout".to_owned())).into();
     assert!(matches!(exhausted, ChainError::Network(_)));
+    let unserved: ChainError =
+        PoolError::Unserved(ChainError::Network("archive only".to_owned())).into();
+    assert_eq!(
+        unserved,
+        ChainError::Network("network problem: archive only".to_owned())
+    );
     let waiting: ChainError = PoolError::<ChainError>::Unavailable(Duration::from_secs(12)).into();
     assert!(waiting.to_string().contains("12 s"));
 }

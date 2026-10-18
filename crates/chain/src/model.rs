@@ -33,7 +33,7 @@ impl From<PoolError<ChainError>> for ChainError {
     fn from(err: PoolError<ChainError>) -> Self {
         match err {
             PoolError::Fatal(err) => err,
-            PoolError::Exhausted(err) => Self::Network(err.to_string()),
+            PoolError::Exhausted(err) | PoolError::Unserved(err) => Self::Network(err.to_string()),
             PoolError::Unavailable(_) | PoolError::NoEndpoint => Self::Network(err.to_string()),
         }
     }

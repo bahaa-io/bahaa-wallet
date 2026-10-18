@@ -19,6 +19,16 @@ const SENT_ID: &str = "88d7201d27158e7cbaf4cceaef8ce46f460e9dc1e084490b2485eb6e6
 const SENT_LT: u64 = 109_578_663_000_001;
 const SENT_EXPIRES: u64 = 1_791_848_961;
 
+fn on(ton: &bahaa_config::Network, protocol: Option<Protocol>) -> TonChain {
+    let mut network = ton.clone();
+    if let Some(protocol) = protocol {
+        network
+            .endpoints
+            .retain(|endpoint| endpoint.protocol == protocol);
+    }
+    TonChain::new(network).unwrap()
+}
+
 fn unhex(text: &str) -> Vec<u8> {
     (0..text.len())
         .step_by(2)
@@ -28,7 +38,7 @@ fn unhex(text: &str) -> Vec<u8> {
 
 #[tokio::test]
 #[ignore = "talks to the real TON network, run with --test-threads=1"]
-async fn live_gram_and_usdt_through_each_provider() {
+async fn live_gram_and_usdt_come_only_from_authenticated_blocks() {
     let registry = Registry::builtin().unwrap();
     let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
     let holder = Address::parse(ChainFamily::Ton, HOLDER).unwrap();
@@ -36,32 +46,22 @@ async fn live_gram_and_usdt_through_each_provider() {
         .iter()
         .map(|asset| asset.parse().unwrap())
         .collect();
-    let only = |protocol: Option<Protocol>| {
+    let chain = TonChain::new(ton.clone()).unwrap();
+    let balances = chain.balances(&holder, &assets).await.unwrap();
+    assert!(!balances[0].amount.is_zero(), "{balances:?}");
+    assert!(!balances[1].amount.is_zero(), "{balances:?}");
+    assert_eq!(balances[1].amount.decimals(), 6);
+    for protocol in [Protocol::TonCenter, Protocol::TonApi] {
         let mut network = ton.clone();
-        if let Some(protocol) = protocol {
-            network
-                .endpoints
-                .retain(|endpoint| endpoint.protocol == protocol);
-        }
-        TonChain::new(network).unwrap()
-    };
-    let mut seen = Vec::new();
-    for protocol in [Some(Protocol::TonLiteservers), Some(Protocol::TonApi), None] {
-        let balances = only(protocol).balances(&holder, &assets).await.unwrap();
-        assert!(!balances[0].amount.is_zero(), "{protocol:?}: {balances:?}");
-        assert!(!balances[1].amount.is_zero(), "{protocol:?}: {balances:?}");
-        assert_eq!(balances[1].amount.decimals(), 6);
-        seen.push(balances[1].amount);
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        network
+            .endpoints
+            .retain(|endpoint| endpoint.protocol == protocol);
+        let http = TonChain::new(network).unwrap();
+        assert!(
+            http.balances(&holder, &assets[..1]).await.is_err(),
+            "{protocol:?}"
+        );
     }
-    assert!(seen.windows(2).all(|pair| pair[0] == pair[1]), "{seen:?}");
-    let center = only(Some(Protocol::TonCenter));
-    assert!(
-        !center.balances(&holder, &assets[..1]).await.unwrap()[0]
-            .amount
-            .is_zero()
-    );
-    assert!(center.balances(&holder, &assets).await.is_err());
     let remote: serde_json::Value = reqwest::get(
         "https://tonapi.io/v2/blockchain/accounts/0:7f024f7ec0cc57b87eaf017046adaf9f6c521afb809a159cb2a2194f4153356f/methods/get_wallet_data",
     )
@@ -71,12 +71,33 @@ async fn live_gram_and_usdt_through_each_provider() {
     .await
     .unwrap();
     let units = remote["decoded"]["balance"].as_str().unwrap();
-    assert_eq!(seen[0].units().to_string(), units);
+    assert_eq!(balances[1].amount.units().to_string(), units);
 }
 
 #[tokio::test]
 #[ignore = "talks to the real TON network, run with --test-threads=1"]
-async fn live_fresh_accounts_hold_nothing_on_every_source() {
+async fn live_both_networks_prove_their_latest_block_from_the_checkpoint() {
+    let registry = Registry::builtin().unwrap();
+    for id in ["ton", "ton-testnet"] {
+        let network = registry.get(&id.parse().unwrap()).unwrap().clone();
+        let bahaa_config::ChainKind::Ton { checkpoint, .. } = network.kind else {
+            panic!("{id} is not TON");
+        };
+        let chain = TonChain::new(network).unwrap();
+        let nobody = Address::Ton {
+            workchain: 0,
+            hash: [0x5c; 32],
+        };
+        let gram: AssetId = id.parse().unwrap();
+        let balances = chain.balances(&nobody, &[gram]).await.unwrap();
+        assert!(balances[0].amount.is_zero(), "{id}");
+        assert!(chain.checkpoint().seqno >= checkpoint.seqno, "{id}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "talks to the real TON network, run with --test-threads=1"]
+async fn live_fresh_accounts_hold_nothing() {
     let registry = Registry::builtin().unwrap();
     let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
     let fresh = Address::Ton {
@@ -91,29 +112,12 @@ async fn live_fresh_accounts_hold_nothing_on_every_source() {
         .iter()
         .map(|asset| asset.parse().unwrap())
         .collect();
-    for protocol in [
-        Protocol::TonLiteservers,
-        Protocol::TonCenter,
-        Protocol::TonApi,
-    ] {
-        let mut network = ton.clone();
-        network
-            .endpoints
-            .retain(|endpoint| endpoint.protocol == protocol);
-        let chain = TonChain::new(network).unwrap();
-        let readable = if protocol == Protocol::TonCenter {
-            assert!(chain.balances(&fresh, &assets).await.is_err());
-            &assets[..1]
-        } else {
-            &assets[..]
-        };
-        let balances = chain.balances(&fresh, readable).await.unwrap();
-        assert!(
-            balances.iter().all(|balance| balance.amount.is_zero()),
-            "{protocol:?}: {balances:?}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-    }
+    let chain = TonChain::new(ton).unwrap();
+    let balances = chain.balances(&fresh, &assets).await.unwrap();
+    assert!(
+        balances.iter().all(|balance| balance.amount.is_zero()),
+        "{balances:?}"
+    );
 }
 
 #[tokio::test]
@@ -148,12 +152,8 @@ async fn live_v5r1_quote_follows_the_network_fee_settings() {
     };
     let nano = |text: &str| bahaa_types::Amount::parse(text, 9).unwrap();
     let mut seen = Vec::new();
-    for protocol in [Protocol::TonLiteservers, Protocol::TonApi] {
-        let mut network = ton.clone();
-        network
-            .endpoints
-            .retain(|endpoint| endpoint.protocol == protocol);
-        let chain = TonChain::new(network).unwrap();
+    for protocol in [Some(Protocol::TonLiteservers), None] {
+        let chain = on(&ton, protocol);
         let (_, quote) = chain.prepare(&transfer).await.unwrap();
         let lines = quote.lines();
         assert_eq!(lines[0].item, bahaa_chain::FeeItem::Compute { gas: 4_939 });
@@ -227,20 +227,20 @@ async fn live_a_real_transfer_is_tracked_and_its_message_cannot_be_sent_again() 
         id: TxId::new(SENT_ID.to_owned()).unwrap(),
         bytes: unhex(SENT),
     };
-    let only = |protocol: Protocol| {
-        let mut network = ton.clone();
-        network
-            .endpoints
-            .retain(|endpoint| endpoint.protocol == protocol);
-        TonChain::new(network).unwrap()
-    };
-    for protocol in [Protocol::TonLiteservers, Protocol::TonApi] {
+    let only = |protocol: Protocol| on(&ton, Some(protocol));
+    for protocol in [Some(Protocol::TonLiteservers), None] {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        let status = only(protocol)
+        let status = on(&ton, protocol)
             .status(&signed.id, &sender, Some(SENT_EXPIRES))
             .await;
         assert_eq!(status, Ok(confirmed.clone()), "{protocol:?}");
     }
+    assert!(
+        only(Protocol::TonApi)
+            .status(&signed.id, &sender, Some(SENT_EXPIRES))
+            .await
+            .is_err()
+    );
     let named = "the wallet contract refused the message with exit code 133";
     let mut reasons = Vec::new();
     for protocol in [
@@ -345,15 +345,11 @@ async fn live_incoming_gram_and_usdt_match_the_indexer() {
     .unwrap();
     let mut usdt_seen = 0;
     for (protocol, owner, cursor) in [
-        (Protocol::TonLiteservers, busy, Some(since)),
-        (Protocol::TonLiteservers, test_seed, None),
-        (Protocol::TonApi, busy, Some(since)),
+        (Some(Protocol::TonLiteservers), busy, Some(since)),
+        (Some(Protocol::TonLiteservers), test_seed, None),
+        (None, busy, Some(since)),
     ] {
-        let mut network = ton.clone();
-        network
-            .endpoints
-            .retain(|endpoint| endpoint.protocol == protocol);
-        let chain = TonChain::new(network).unwrap();
+        let chain = on(&ton, protocol);
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         let scanned = chain.scan(&owner, &assets, cursor).await.unwrap().unwrap();
         let window = cursor.map_or(scanned.cursor.complete_since, |cursor| cursor.next);
@@ -429,17 +425,9 @@ async fn live_usdt_quotes_match_what_the_network_charged() {
         amount: Amount::parse("1", 6).unwrap(),
     };
     let mut seen = Vec::new();
-    for protocol in [Protocol::TonLiteservers, Protocol::TonApi] {
+    for protocol in [Some(Protocol::TonLiteservers), None] {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        let mut network = ton.clone();
-        network
-            .endpoints
-            .retain(|endpoint| endpoint.protocol == protocol);
-        let (_, quote) = TonChain::new(network)
-            .unwrap()
-            .prepare(&transfer)
-            .await
-            .unwrap();
+        let (_, quote) = on(&ton, protocol).prepare(&transfer).await.unwrap();
         let contracts = quote.lines()[3].clone();
         assert_eq!(contracts.item, bahaa_chain::FeeItem::Contracts);
         let quoted = u64::try_from(contracts.amount.units()).unwrap();

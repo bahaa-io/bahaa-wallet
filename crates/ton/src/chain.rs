@@ -4,7 +4,7 @@ use std::sync::{Mutex, PoisonError};
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus,
 };
-use bahaa_config::{ChainKind, Network};
+use bahaa_config::{ChainKind, Checkpoint, Network};
 use bahaa_crypto::{DerivationPath, Seed};
 use bahaa_types::{Address, Amount, AssetId};
 use ed25519_dalek::SigningKey;
@@ -18,6 +18,7 @@ mod track;
 pub use send::TonPlan;
 
 use crate::http::{Http, Item};
+use crate::tl::BlockId;
 use crate::wallet::{self, read_address};
 
 #[derive(Debug)]
@@ -33,17 +34,31 @@ impl TonChain {
         let ChainKind::Ton {
             global_id,
             zero_state,
+            checkpoint,
         } = network.kind
         else {
             return Err(ChainError::Invalid("not a TON network"));
         };
-        let http = Http::new(network.endpoints.clone(), zero_state)?;
+        let http = Http::new(network.endpoints.clone(), zero_state, block(&checkpoint))?;
         Ok(Self {
             network,
             http,
             wallet_id: wallet::wallet_id(global_id),
             jetton_wallets: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub fn checkpoint(&self) -> Checkpoint {
+        let key = self.http.trusted();
+        Checkpoint {
+            seqno: u32::try_from(key.seqno).unwrap_or(0),
+            root_hash: key.root_hash,
+            file_hash: key.file_hash,
+        }
+    }
+
+    pub fn restore(&self, checkpoint: &Checkpoint) {
+        self.http.trust(block(checkpoint));
     }
 
     async fn jetton_wallet(
@@ -137,7 +152,7 @@ impl Chain for TonChain {
             }
             let amount = match asset.contract() {
                 None => amount(
-                    self.http.balance(address).await?,
+                    self.http.account(address).await?.balance,
                     self.network.native.decimals,
                 )?,
                 Some(master) => {
@@ -206,6 +221,16 @@ fn hex(bytes: &[u8]) -> String {
 
 fn malformed() -> ChainError {
     ChainError::Network("an endpoint sent a malformed reply".to_owned())
+}
+
+pub(crate) fn block(checkpoint: &Checkpoint) -> BlockId {
+    BlockId {
+        workchain: -1,
+        shard: i64::MIN,
+        seqno: i32::try_from(checkpoint.seqno).unwrap_or(i32::MAX),
+        root_hash: checkpoint.root_hash,
+        file_hash: checkpoint.file_hash,
+    }
 }
 
 #[cfg(test)]

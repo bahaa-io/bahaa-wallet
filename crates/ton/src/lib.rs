@@ -1,3 +1,4 @@
+mod blocks;
 mod cells;
 mod chain;
 mod emulate;

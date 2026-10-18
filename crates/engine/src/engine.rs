@@ -10,7 +10,7 @@ use bahaa_chain::ChainError;
 use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString, WordCount};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
-use bahaa_store::{CustomToken, Received, Scan, SentTx, Store, StoreError};
+use bahaa_store::{CustomToken, Received, Scan, SentTx, Store, StoreError, TrustedBlock};
 use bahaa_vault::KdfParams;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -177,6 +177,8 @@ impl Engine {
             None => Registry::builtin()?,
         };
         let chains: Arc<Vec<AnyChain>> = Arc::new(chains::build(&registry));
+        chains::restore(&chains, &store.trusted()?);
+        let trusted = chains::trusted(&chains);
         let keyring = Keyring::new(data_dir.join(VAULT_FILE), kdf);
         let initial = if keyring.exists() {
             State::Locked
@@ -225,6 +227,7 @@ impl Engine {
             history,
             scans,
             received,
+            trusted,
             broadcasting: BTreeSet::new(),
             tracking: None,
             next_track: None,
@@ -408,6 +411,7 @@ struct Worker {
     history: Vec<SentTx>,
     scans: Vec<Scan>,
     received: Vec<Received>,
+    trusted: Vec<TrustedBlock>,
     broadcasting: BTreeSet<String>,
     tracking: Option<JoinHandle<()>>,
     next_track: Option<Instant>,
@@ -680,9 +684,19 @@ impl Worker {
         self.held = fetched.held;
         self.health = fetched.health;
         self.record_scans(fetched.scans);
+        self.record_trusted();
         self.next_refresh = Some(Instant::now() + self.refresh_every);
         self.refresh_prices();
         self.publish_portfolio();
+    }
+
+    fn record_trusted(&mut self) {
+        for block in chains::trusted(&self.chains) {
+            if !self.trusted.contains(&block) && self.store.save_trusted(&block).is_ok() {
+                self.trusted.retain(|known| known.network != block.network);
+                self.trusted.push(block);
+            }
+        }
     }
 
     fn lock(&mut self) {
