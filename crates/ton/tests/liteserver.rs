@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
+use std::fmt::Write;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -13,35 +14,56 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tonlib_core::cell::{BagOfCells, CellBuilder};
+use tonlib_core::cell::{ArcCell, BagOfCells, Cell, CellBuilder};
 use tonlib_core::{TonAddress, TonHash};
 use url::Url;
 
-const MAINNET: [u8; 32] = [0x17; 32];
+const FIXTURE: &str = include_str!("fixtures/account_proofs.json");
+const MAINNET: &str = "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321fb05569";
 const TESTNET: [u8; 32] = [0x82; 32];
-const OWNER: [u8; 32] = [0xab; 32];
+const OWNER: [u8; 32] = [
+    0xf8, 0xb8, 0x63, 0x5d, 0x07, 0x86, 0xb7, 0x7f, 0x9d, 0xa6, 0x60, 0xe6, 0x5f, 0xd3, 0x1d, 0x67,
+    0x0a, 0x67, 0x5d, 0xd4, 0x30, 0x2f, 0xac, 0xba, 0x69, 0x2f, 0x46, 0xb5, 0x71, 0xeb, 0x53, 0x60,
+];
+const FRESH: [u8; 32] = [
+    0x5c, 0x9d, 0x2f, 0x41, 0x66, 0x13, 0x37, 0xa8, 0x0e, 0x71, 0xc4, 0x58, 0x2b, 0x9a, 0xf0, 0x06,
+    0xd3, 0x4e, 0x81, 0x27, 0x5c, 0x9d, 0x2f, 0x41, 0x66, 0x13, 0x37, 0xa8, 0x0e, 0x71, 0xc4, 0x58,
+];
 const MASTER: [u8; 32] = [0xb1; 32];
 const WALLET: [u8; 32] = [0x7f; 32];
 const GET_MASTERCHAIN_INFO: u32 = 0x89b5_e62e;
 const GET_ACCOUNT_STATE: u32 = 0x6b89_0e25;
 const RUN_SMC_METHOD: u32 = 0x5cc6_5dd2;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tamper {
+    Nothing,
+    State,
+    ShardProof,
+    Block,
+    Anchor,
+    Swap,
+    Forge,
+}
+
 #[derive(Clone, Copy)]
 struct Behaviour {
-    zero_state: [u8; 32],
+    foreign: bool,
     refuse: bool,
     deployed: bool,
     holder: [u8; 32],
+    tamper: Tamper,
 }
 
 const GOOD: Behaviour = Behaviour {
-    zero_state: MAINNET,
+    foreign: false,
     refuse: false,
     deployed: true,
     holder: OWNER,
+    tamper: Tamper::Nothing,
 };
 
 #[derive(Default)]
@@ -100,32 +122,98 @@ fn read_bytes(data: &[u8]) -> (&[u8], usize) {
     (&data[start..used], used + (4 - used % 4) % 4)
 }
 
-fn boc(builder: &mut CellBuilder) -> Vec<u8> {
-    BagOfCells::from_root(builder.build().unwrap())
+fn unhex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
+        .collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
+}
+
+fn mainnet() -> [u8; 32] {
+    unhex(MAINNET).try_into().unwrap()
+}
+
+fn recorded_info() -> Vec<u8> {
+    let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+    unhex(fixture["masterchain_info"].as_str().unwrap())
+}
+
+fn recorded_account(hash: &[u8; 32]) -> Vec<u8> {
+    let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+    unhex(fixture["accounts"][hex(hash)].as_str().unwrap())
+}
+
+fn account_answer(answer: &[u8], tamper: Tamper) -> Vec<u8> {
+    let head = &answer[..164];
+    let (shard_proof, first) = read_bytes(&answer[164..]);
+    let (proof, second) = read_bytes(&answer[164 + first..]);
+    let (state, _) = read_bytes(&answer[164 + first + second..]);
+    let (mut shard_proof, mut state) = (shard_proof.to_vec(), state.to_vec());
+    match tamper {
+        Tamper::State => {
+            let middle = state.len() / 2;
+            state[middle] ^= 1;
+        }
+        Tamper::ShardProof => {
+            let middle = shard_proof.len() / 2;
+            shard_proof[middle] ^= 1;
+        }
+        Tamper::Forge => state = forged(&head_hash(answer)),
+        Tamper::Nothing | Tamper::Block | Tamper::Anchor | Tamper::Swap => {}
+    }
+    let mut head = head.to_vec();
+    if tamper == Tamper::Anchor {
+        head[20] ^= 1;
+    }
+    Tl::default()
+        .raw(&head)
+        .bytes(&shard_proof)
+        .bytes(proof)
+        .bytes(&state)
+        .0
+}
+
+fn head_hash(answer: &[u8]) -> [u8; 32] {
+    let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+    let wanted = hex(answer);
+    if fixture["accounts"][hex(&FRESH)] == wanted.as_str() {
+        FRESH
+    } else {
+        OWNER
+    }
+}
+
+fn forged(hash: &[u8; 32]) -> Vec<u8> {
+    let mut cell = CellBuilder::new();
+    cell.store_bit(true).unwrap();
+    cell.store_address(&ton_address(*hash)).unwrap();
+    cell.store_u8(3, 0)
+        .unwrap()
+        .store_u8(3, 0)
+        .unwrap()
+        .store_u8(3, 0)
+        .unwrap();
+    cell.store_u32(32, 0).unwrap().store_bit(false).unwrap();
+    cell.store_u64(64, 0).unwrap();
+    cell.store_u8(4, 5)
+        .unwrap()
+        .store_u64(40, 5_000_000_000)
+        .unwrap();
+    cell.store_bit(false).unwrap().store_bit(false).unwrap();
+    BagOfCells::from_root(cell.build().unwrap())
         .serialize(false)
         .unwrap()
 }
 
 fn ton_address(hash: [u8; 32]) -> TonAddress {
     TonAddress::new(0, TonHash::from(hash))
-}
-
-fn account(hash: &[u8; 32], balance: u64) -> Vec<u8> {
-    let mut cell = CellBuilder::new();
-    cell.store_bit(true).unwrap();
-    cell.store_address(&ton_address(*hash)).unwrap();
-    cell.store_u8(3, 1).unwrap().store_u8(8, 9).unwrap();
-    cell.store_u8(3, 1).unwrap().store_u8(8, 200).unwrap();
-    cell.store_u8(3, 0)
-        .unwrap()
-        .store_u32(32, 1_790_000_000)
-        .unwrap()
-        .store_bit(false)
-        .unwrap();
-    cell.store_u64(64, 77).unwrap();
-    cell.store_u8(4, 8).unwrap().store_u64(64, balance).unwrap();
-    cell.store_bit(false).unwrap().store_bit(false).unwrap();
-    boc(&mut cell)
 }
 
 fn stack(values: Vec<CellBuilder>) -> Vec<u8> {
@@ -140,12 +228,12 @@ fn stack(values: Vec<CellBuilder>) -> Vec<u8> {
         cell.store_cell(&value.build().unwrap()).unwrap();
         rest = cell.build().unwrap().to_arc();
     }
-    BagOfCells::from_root(tonlib_core::cell::Cell::clone(&rest))
+    BagOfCells::from_root(Cell::clone(&rest))
         .serialize(false)
         .unwrap()
 }
 
-fn address_cell(hash: [u8; 32]) -> tonlib_core::cell::ArcCell {
+fn address_cell(hash: [u8; 32]) -> ArcCell {
     let mut inner = CellBuilder::new();
     inner.store_address(&ton_address(hash)).unwrap();
     inner.build().unwrap().to_arc()
@@ -153,21 +241,15 @@ fn address_cell(hash: [u8; 32]) -> tonlib_core::cell::ArcCell {
 
 fn as_cell(hash: [u8; 32]) -> CellBuilder {
     let mut value = CellBuilder::new();
-    value
-        .store_u8(8, 3)
-        .unwrap()
-        .store_reference(&address_cell(hash))
-        .unwrap();
+    value.store_u8(8, 3).unwrap();
+    value.store_reference(&address_cell(hash)).unwrap();
     value
 }
 
 fn as_slice(hash: [u8; 32]) -> CellBuilder {
     let mut value = CellBuilder::new();
-    value
-        .store_u8(8, 4)
-        .unwrap()
-        .store_reference(&address_cell(hash))
-        .unwrap();
+    value.store_u8(8, 4).unwrap();
+    value.store_reference(&address_cell(hash)).unwrap();
     value.store_u16(10, 0).unwrap().store_u16(10, 267).unwrap();
     value.store_u8(3, 0).unwrap().store_u8(3, 0).unwrap();
     value
@@ -175,17 +257,25 @@ fn as_slice(hash: [u8; 32]) -> CellBuilder {
 
 fn as_int(number: u64) -> CellBuilder {
     let mut value = CellBuilder::new();
-    value
-        .store_u8(8, 2)
-        .unwrap()
-        .store_u8(7, 0)
-        .unwrap()
-        .store_bit(false)
-        .unwrap();
+    value.store_u8(8, 2).unwrap().store_u8(7, 0).unwrap();
+    value.store_bit(false).unwrap();
     let mut bits = [0u8; 32];
     bits[24..].copy_from_slice(&number.to_be_bytes());
     value.store_bits(256, &bits).unwrap();
     value
+}
+
+fn method_result(exit: i32, stack: Option<Vec<u8>>) -> Vec<u8> {
+    let tl = Tl::default()
+        .u32(0xa39a_616b)
+        .u32(if stack.is_some() { 4 } else { 0 })
+        .block()
+        .block()
+        .i32(exit);
+    match stack {
+        Some(stack) => tl.bytes(&stack).0,
+        None => tl.0,
+    }
 }
 
 fn reply(behaviour: Behaviour, data: &[u8]) -> Vec<u8> {
@@ -199,51 +289,38 @@ fn reply(behaviour: Behaviour, data: &[u8]) -> Vec<u8> {
     }
     match function {
         GET_MASTERCHAIN_INFO => {
-            Tl::default()
-                .u32(0x8583_2881)
-                .block()
-                .raw(&[3; 32])
-                .i32(-1)
-                .raw(&behaviour.zero_state)
-                .raw(&[4; 32])
-                .0
+            let mut info = recorded_info();
+            if behaviour.foreign {
+                info[120..152].copy_from_slice(&TESTNET);
+            }
+            if matches!(behaviour.tamper, Tamper::Block | Tamper::Anchor) {
+                info[20] ^= 1;
+            }
+            info
         }
         GET_ACCOUNT_STATE => {
             let hash: [u8; 32] = data[88..120].try_into().unwrap();
-            Tl::default()
-                .u32(0x7079_c751)
-                .block()
-                .block()
-                .bytes(b"")
-                .bytes(b"")
-                .bytes(&account(&hash, 2_500_000_000))
-                .0
+            let answer = match (hash, behaviour.tamper) {
+                (OWNER, Tamper::Swap) | (FRESH, _) => recorded_account(&FRESH),
+                (OWNER, _) => recorded_account(&OWNER),
+                _ => {
+                    return Tl::default().u32(0xbba9_e148).i32(-400).bytes(b"unknown").0;
+                }
+            };
+            account_answer(&answer, behaviour.tamper)
         }
         RUN_SMC_METHOD => {
             let hash: [u8; 32] = data[92..124].try_into().unwrap();
             let method = i64::from_le_bytes(data[124..132].try_into().unwrap());
             let (params, _) = read_bytes(&data[132..]);
-            let result = |exit: i32, stack: Option<Vec<u8>>| {
-                let tl = Tl::default()
-                    .u32(0xa39a_616b)
-                    .u32(if stack.is_some() { 4 } else { 0 })
-                    .block()
-                    .block()
-                    .i32(exit);
-                match stack {
-                    Some(stack) => tl.bytes(&stack).0,
-                    None => tl.0,
-                }
-            };
             match (hash, method) {
                 (MASTER, 103_289) => {
                     let root = BagOfCells::parse(params).unwrap().single_root().unwrap();
-                    let slice = root.reference(1).unwrap();
-                    let asked = slice.parser().load_address().unwrap();
+                    let asked = root.reference(1).unwrap().parser().load_address().unwrap();
                     assert_eq!(asked.hash_part.as_slice(), OWNER);
-                    result(0, Some(stack(vec![as_slice(WALLET)])))
+                    method_result(0, Some(stack(vec![as_slice(WALLET)])))
                 }
-                (WALLET, 97_026) if behaviour.deployed => result(
+                (WALLET, 97_026) if behaviour.deployed => method_result(
                     0,
                     Some(stack(vec![
                         as_int(94_631_240_538_000),
@@ -252,8 +329,8 @@ fn reply(behaviour: Behaviour, data: &[u8]) -> Vec<u8> {
                         as_cell([0xc0; 32]),
                     ])),
                 ),
-                (WALLET, 97_026) => result(-256, None),
-                _ => result(11, None),
+                (WALLET, 97_026) => method_result(-256, None),
+                _ => method_result(11, None),
             }
         }
         _ => Tl::default().u32(0xbba9_e148).i32(-400).bytes(b"unknown").0,
@@ -296,22 +373,7 @@ async fn liteserver(
     (address, public)
 }
 
-async fn config(servers: &[(SocketAddr, [u8; 32])], zero_state: [u8; 32]) -> Url {
-    let entries: Vec<_> = servers
-        .iter()
-        .map(|(address, key)| {
-            json!({
-                "ip": 2_130_706_433,
-                "port": address.port(),
-                "id": {"@type": "pub.ed25519", "key": STANDARD.encode(key)}
-            })
-        })
-        .collect();
-    let body = json!({
-        "liteservers": entries,
-        "validator": {"zero_state": {"root_hash": STANDARD.encode(zero_state)}}
-    })
-    .to_string();
+async fn serve(body: String) -> Url {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = Url::parse(&format!(
         "http://{}/global-config.json",
@@ -337,13 +399,30 @@ async fn config(servers: &[(SocketAddr, [u8; 32])], zero_state: [u8; 32]) -> Url
     url
 }
 
+async fn config(servers: &[(SocketAddr, [u8; 32])], zero_state: [u8; 32]) -> Url {
+    let entries: Vec<Value> = servers
+        .iter()
+        .map(|(address, key)| {
+            json!({
+                "ip": 2_130_706_433,
+                "port": address.port(),
+                "id": {"@type": "pub.ed25519", "key": STANDARD.encode(key)}
+            })
+        })
+        .collect();
+    serve(
+        json!({
+            "liteservers": entries,
+            "validator": {"zero_state": {"root_hash": STANDARD.encode(zero_state)}}
+        })
+        .to_string(),
+    )
+    .await
+}
+
 fn network(config: Url) -> Network {
     let registry = Registry::builtin().unwrap();
     let mut network = registry.get(&"ton".parse().unwrap()).unwrap().clone();
-    network.kind = bahaa_config::ChainKind::Ton {
-        global_id: -239,
-        zero_state: MAINNET,
-    };
     network.endpoints = vec![Endpoint {
         protocol: Protocol::TonLiteservers,
         url: config,
@@ -357,9 +436,13 @@ fn network(config: Url) -> Network {
     network
 }
 
+fn gram() -> AssetId {
+    "ton".parse().unwrap()
+}
+
 fn assets() -> Vec<AssetId> {
     vec![
-        "ton".parse().unwrap(),
+        gram(),
         AssetId::Token(
             "ton".parse().unwrap(),
             Address::Ton {
@@ -370,11 +453,8 @@ fn assets() -> Vec<AssetId> {
     ]
 }
 
-fn owner() -> Address {
-    Address::Ton {
-        workchain: 0,
-        hash: OWNER,
-    }
+fn ton(hash: [u8; 32]) -> Address {
+    Address::Ton { workchain: 0, hash }
 }
 
 fn amounts(balances: &[bahaa_chain::Balance]) -> Vec<String> {
@@ -384,17 +464,66 @@ fn amounts(balances: &[bahaa_chain::Balance]) -> Vec<String> {
         .collect()
 }
 
+async fn chain_for(behaviour: Behaviour) -> TonChain {
+    let server = liteserver(1, behaviour, Arc::default()).await;
+    TonChain::new(network(config(&[server], mainnet()).await)).unwrap()
+}
+
+#[test]
+fn the_recording_is_replayed_byte_for_byte() {
+    for hash in [OWNER, FRESH] {
+        let recorded = recorded_account(&hash);
+        assert_eq!(account_answer(&recorded, Tamper::Nothing), recorded);
+    }
+}
+
 #[tokio::test]
-async fn reads_gram_and_usdt_over_adnl_from_the_listed_servers() {
+async fn proven_gram_and_usdt_arrive_over_adnl() {
     let asked = Arc::new(Mutex::new(0));
-    let server = liteserver(1, GOOD, Arc::clone(&asked)).await;
-    let chain = TonChain::new(network(config(&[server], MAINNET).await)).unwrap();
-    let balances = chain.balances(&owner(), &assets()).await.unwrap();
-    assert_eq!(amounts(&balances), ["2.5", "94631240.538"]);
+    let server = liteserver(2, GOOD, Arc::clone(&asked)).await;
+    let chain = TonChain::new(network(config(&[server], mainnet()).await)).unwrap();
+    let balances = chain.balances(&ton(OWNER), &assets()).await.unwrap();
+    assert_eq!(amounts(&balances), ["59570010.146444835", "94631240.538"]);
     assert_eq!(*asked.lock().unwrap(), 6);
-    let again = chain.balances(&owner(), &assets()).await.unwrap();
-    assert_eq!(amounts(&again), ["2.5", "94631240.538"]);
+    let again = chain.balances(&ton(OWNER), &assets()).await.unwrap();
+    assert_eq!(amounts(&again), amounts(&balances));
     assert_eq!(*asked.lock().unwrap(), 10);
+    let fresh = chain.balances(&ton(FRESH), &[gram()]).await.unwrap();
+    assert_eq!(amounts(&fresh), ["0"]);
+}
+
+#[tokio::test]
+async fn answers_their_proofs_do_not_cover_are_refused() {
+    for tamper in [
+        Tamper::State,
+        Tamper::ShardProof,
+        Tamper::Block,
+        Tamper::Anchor,
+        Tamper::Swap,
+    ] {
+        let chain = chain_for(Behaviour { tamper, ..GOOD }).await;
+        let result = chain.balances(&ton(OWNER), &[gram()]).await;
+        assert!(
+            matches!(result, Err(ChainError::Network(_))),
+            "{tamper:?}: {result:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_absence_proof_cannot_carry_an_invented_account() {
+    let honest = chain_for(GOOD).await;
+    assert_eq!(
+        amounts(&honest.balances(&ton(FRESH), &[gram()]).await.unwrap()),
+        ["0"]
+    );
+    let forging = chain_for(Behaviour {
+        tamper: Tamper::Forge,
+        ..GOOD
+    })
+    .await;
+    let result = forging.balances(&ton(FRESH), &[gram()]).await;
+    assert!(matches!(result, Err(ChainError::Network(_))), "{result:?}");
 }
 
 #[tokio::test]
@@ -405,7 +534,7 @@ async fn servers_of_another_network_or_not_ready_are_passed_over() {
         Arc::new(Mutex::new(0)),
     );
     let foreign = Behaviour {
-        zero_state: TESTNET,
+        foreign: true,
         ..GOOD
     };
     let busy = Behaviour {
@@ -413,14 +542,14 @@ async fn servers_of_another_network_or_not_ready_are_passed_over() {
         ..GOOD
     };
     let servers = [
-        liteserver(2, foreign, Arc::clone(&foreign_asked)).await,
-        liteserver(3, busy, Arc::clone(&busy_asked)).await,
-        liteserver(4, GOOD, Arc::clone(&good_asked)).await,
+        liteserver(3, foreign, Arc::clone(&foreign_asked)).await,
+        liteserver(4, busy, Arc::clone(&busy_asked)).await,
+        liteserver(5, GOOD, Arc::clone(&good_asked)).await,
     ];
-    let chain = TonChain::new(network(config(&servers, MAINNET).await)).unwrap();
+    let chain = TonChain::new(network(config(&servers, mainnet()).await)).unwrap();
     for _ in 0..3 {
-        let balances = chain.balances(&owner(), &assets()[..1]).await.unwrap();
-        assert_eq!(amounts(&balances), ["2.5"]);
+        let balances = chain.balances(&ton(OWNER), &[gram()]).await.unwrap();
+        assert_eq!(amounts(&balances), ["59570010.146444835"]);
     }
     assert!(*foreign_asked.lock().unwrap() <= 1);
     assert!(*busy_asked.lock().unwrap() <= 2);
@@ -429,24 +558,22 @@ async fn servers_of_another_network_or_not_ready_are_passed_over() {
 
 #[tokio::test]
 async fn an_undeployed_token_wallet_holds_nothing_and_a_foreign_one_is_refused() {
-    let fresh = Behaviour {
+    let fresh = chain_for(Behaviour {
         deployed: false,
         ..GOOD
-    };
-    let server = liteserver(5, fresh, Arc::default()).await;
-    let chain = TonChain::new(network(config(&[server], MAINNET).await)).unwrap();
+    })
+    .await;
     assert_eq!(
-        amounts(&chain.balances(&owner(), &assets()).await.unwrap()),
-        ["2.5", "0"]
+        amounts(&fresh.balances(&ton(OWNER), &assets()).await.unwrap()),
+        ["59570010.146444835", "0"]
     );
-    let foreign = Behaviour {
+    let foreign = chain_for(Behaviour {
         holder: MASTER,
         ..GOOD
-    };
-    let server = liteserver(6, foreign, Arc::default()).await;
-    let chain = TonChain::new(network(config(&[server], MAINNET).await)).unwrap();
+    })
+    .await;
     assert!(matches!(
-        chain.balances(&owner(), &assets()).await,
+        foreign.balances(&ton(OWNER), &assets()).await,
         Err(ChainError::Network(message)) if message.contains("does not belong")
     ));
 }
@@ -454,10 +581,10 @@ async fn an_undeployed_token_wallet_holds_nothing_and_a_foreign_one_is_refused()
 #[tokio::test]
 async fn a_server_list_for_another_network_is_not_used() {
     let asked = Arc::new(Mutex::new(0));
-    let server = liteserver(7, GOOD, Arc::clone(&asked)).await;
+    let server = liteserver(6, GOOD, Arc::clone(&asked)).await;
     let chain = TonChain::new(network(config(&[server], TESTNET).await)).unwrap();
     assert!(matches!(
-        chain.balances(&owner(), &assets()[..1]).await,
+        chain.balances(&ton(OWNER), &[gram()]).await,
         Err(ChainError::Network(message)) if message.contains("another TON network")
     ));
     assert_eq!(*asked.lock().unwrap(), 0);
@@ -476,9 +603,8 @@ async fn tonapi(asked: Arc<Mutex<Vec<String>>>) -> Url {
                 let request = String::from_utf8_lossy(&buffer[..read]).to_string();
                 let path = request.split(' ').nth(1).unwrap_or_default().to_owned();
                 asked.lock().unwrap().push(path.clone());
-                let hex = "17".repeat(32);
                 let body = if path.ends_with("/liteserver/get_masterchain_info") {
-                    json!({"init": {"root_hash": hex}})
+                    json!({"init": {"root_hash": MAINNET}})
                 } else {
                     json!({"balance": 9_000_000_000_u64, "status": "active"})
                 }
@@ -496,19 +622,25 @@ async fn tonapi(asked: Arc<Mutex<Vec<String>>>) -> Url {
 }
 
 #[tokio::test]
-async fn when_no_liteserver_can_answer_the_http_providers_do() {
-    let foreign = Behaviour {
-        zero_state: TESTNET,
-        ..GOOD
-    };
-    let busy = Behaviour {
-        refuse: true,
-        ..GOOD
-    };
-    for (secret, behaviour) in [(8, foreign), (9, busy)] {
+async fn when_no_liteserver_can_be_trusted_the_http_providers_answer() {
+    let cases = [
+        Behaviour {
+            foreign: true,
+            ..GOOD
+        },
+        Behaviour {
+            refuse: true,
+            ..GOOD
+        },
+        Behaviour {
+            tamper: Tamper::State,
+            ..GOOD
+        },
+    ];
+    for (secret, behaviour) in (7..).zip(cases) {
         let server = liteserver(secret, behaviour, Arc::default()).await;
         let asked = Arc::new(Mutex::new(Vec::new()));
-        let mut network = network(config(&[server], MAINNET).await);
+        let mut network = network(config(&[server], mainnet()).await);
         network.endpoints.push(Endpoint {
             protocol: Protocol::TonApi,
             url: tonapi(Arc::clone(&asked)).await,
@@ -516,7 +648,7 @@ async fn when_no_liteserver_can_answer_the_http_providers_do() {
             min_gap_ms: 0,
         });
         let chain = TonChain::new(network).unwrap();
-        let balances = chain.balances(&owner(), &assets()[..1]).await.unwrap();
+        let balances = chain.balances(&ton(OWNER), &[gram()]).await.unwrap();
         assert_eq!(amounts(&balances), ["9"]);
         assert!(
             asked

@@ -29,6 +29,9 @@ pub(crate) struct MasterchainInfo {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AccountState {
     pub block: BlockId,
+    pub shard_block: BlockId,
+    pub shard_proof: Vec<u8>,
+    pub proof: Vec<u8>,
     pub state: Vec<u8>,
 }
 
@@ -224,12 +227,13 @@ pub(crate) fn masterchain_info(answer: &[u8]) -> Option<Answer<MasterchainInfo>>
 
 pub(crate) fn account_state(answer: &[u8]) -> Option<Answer<AccountState>> {
     read(answer, ACCOUNT_STATE, |reader| {
-        let block = reader.block()?;
-        reader.block()?;
-        reader.bytes()?;
-        reader.bytes()?;
-        let state = reader.bytes()?.to_vec();
-        Some(AccountState { block, state })
+        Some(AccountState {
+            block: reader.block()?,
+            shard_block: reader.block()?,
+            shard_proof: reader.bytes()?.to_vec(),
+            proof: reader.bytes()?.to_vec(),
+            state: reader.bytes()?.to_vec(),
+        })
     })
 }
 
@@ -451,6 +455,9 @@ mod tests {
             account_state(&state.0),
             Some(Answer::Ok(AccountState {
                 block: block(),
+                shard_block: block(),
+                shard_proof: b"p1".to_vec(),
+                proof: b"p2".to_vec(),
                 state: b"boc".to_vec()
             }))
         );

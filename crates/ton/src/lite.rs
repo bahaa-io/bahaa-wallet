@@ -16,11 +16,13 @@ use serde_json::Value;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
+use tonlib_core::cell::BagOfCells;
 use url::Url;
 
 use crate::cells::{account_balance, address_argument, no_arguments, read_stack};
 use crate::http::Item;
-use crate::tl::{self, Answer, BlockId};
+use crate::proof::{self, Proven};
+use crate::tl::{self, AccountState, Answer, BlockId};
 
 const CONNECT: Duration = Duration::from_secs(5);
 const ANSWER: Duration = Duration::from_secs(10);
@@ -78,8 +80,7 @@ impl Lite {
                         let function = tl::get_account_state(&last, workchain, &hash);
                         let state =
                             exchange(open(&mut peer)?, &function, tl::account_state).await?;
-                        account_balance(&state.state, owner)
-                            .ok_or_else(|| retry("a liteserver sent an unreadable account"))
+                        proven_balance(&last, &state, workchain, &hash, owner)
                     }
                     .await;
                     if outcome.is_err() {
@@ -305,6 +306,42 @@ async fn exchange<T>(
         };
     }
     Err(retry("a liteserver kept answering something else"))
+}
+
+fn proven_balance(
+    last: &BlockId,
+    state: &AccountState,
+    workchain: i8,
+    hash: &[u8; 32],
+    owner: &Address,
+) -> Result<U256, Failure<ChainError>> {
+    if state.block != *last {
+        return Err(retry("a liteserver answered for another block"));
+    }
+    let proven = proof::account(
+        last,
+        &state.shard_block,
+        &state.shard_proof,
+        &state.proof,
+        workchain,
+        hash,
+    )
+    .ok_or_else(|| retry("a liteserver sent an account proof that does not hold"))?;
+    let root = (!state.state.is_empty())
+        .then(|| BagOfCells::parse(&state.state).ok()?.single_root().ok())
+        .flatten();
+    let matches = match (proven, &root) {
+        (Proven::Present(expected), Some(root)) => root.cell_hash().as_slice() == expected,
+        (Proven::Absent, None) => true,
+        _ => false,
+    };
+    if !matches {
+        return Err(retry(
+            "a liteserver sent an account that its proof does not cover",
+        ));
+    }
+    account_balance(&state.state, owner)
+        .ok_or_else(|| retry("a liteserver sent an unreadable account"))
 }
 
 fn open(
