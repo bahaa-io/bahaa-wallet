@@ -17,6 +17,7 @@ bahaa-crypto = { path = "crates/crypto" }
 bahaa-evm = { path = "crates/evm" }
 bahaa-market = { path = "crates/market" }
 bahaa-store = { path = "crates/store" }
+bahaa-tron = { path = "crates/tron" }
 bahaa-types = { path = "crates/types" }
 bahaa-vault = { path = "crates/vault" }
 alloy-consensus = { version = "2.5.0", features = ["k256"] }

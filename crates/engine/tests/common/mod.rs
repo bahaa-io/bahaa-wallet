@@ -19,6 +19,9 @@ pub const HARDHAT: &str = "test test test test test test test test test test tes
 pub const HARDHAT_0: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 pub const HARDHAT_1: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 pub const USDT: &str = "0x55d398326f99059ff775485246999027b3197955";
+pub const TRON_0: &str = "TWer2Ygk5TEheHp3TPuYeqxmB6SsGZmaL6";
+pub const TRON_0_HEX: &str = "41e2e1a54926527fbb4e4420de4c6bab82beaee24d";
+pub const TRON_GENESIS: &str = "00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc";
 
 pub struct Scratch(pub PathBuf);
 
@@ -121,6 +124,21 @@ pub fn network(id: &str, url: Url) -> Network {
         protocol: Protocol::JsonRpc,
         url,
         features: vec![Feature::Logs],
+        min_gap_ms: 0,
+    }];
+    network
+}
+
+pub fn tron_network(url: Url) -> Network {
+    let mut network = Registry::builtin()
+        .unwrap()
+        .get(&"tron".parse().unwrap())
+        .unwrap()
+        .clone();
+    network.endpoints = vec![Endpoint {
+        protocol: Protocol::TronHttp,
+        url,
+        features: Vec::new(),
         min_gap_ms: 0,
     }];
     network

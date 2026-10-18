@@ -5,11 +5,13 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bahaa_chain::ChainError;
 use bahaa_config::{Fiat, Registry, Settings};
 use bahaa_crypto::{SecretString, WordCount};
-use bahaa_engine::{Engine, EngineError, KeyringError, NetworkHealth, Portfolio};
+use bahaa_engine::{Engine, EngineError, KeyringError, NetworkHealth, Portfolio, SendRequest};
 use bahaa_market::{MarketConfig, Status};
-use common::{HARDHAT, Scratch, USDT, config, until};
+use bahaa_types::{Address, Amount, ChainFamily};
+use common::{HARDHAT, HARDHAT_0, Scratch, TRON_0, TRON_0_HEX, TRON_GENESIS, USDT, config, until};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -266,4 +268,112 @@ async fn locking_stops_a_refresh_in_flight() {
     let after_lock = *calls.lock().unwrap();
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(*calls.lock().unwrap(), after_lock);
+}
+
+async fn tron_node() -> Url {
+    common::node(|call| {
+        let reply = if call["num"] == 0 {
+            json!({"blockID": TRON_GENESIS})
+        } else if call.get("function_selector").is_some() && call["owner_address"] == TRON_0_HEX {
+            json!({
+                "result": {"result": true},
+                "constant_result": [format!("{:064x}", 4_250_000)],
+                "transaction": {"ret": [{}]}
+            })
+        } else if call["address"] == TRON_0_HEX {
+            json!({"address": TRON_0_HEX, "balance": 12_000_000})
+        } else {
+            json!({})
+        };
+        (reply, Duration::ZERO)
+    })
+    .await
+}
+
+#[tokio::test]
+async fn tron_holdings_join_the_portfolio_under_the_wallets_tron_account() {
+    let scratch = Scratch::new();
+    let registry = Registry::with_networks(vec![
+        common::network("bsc", node(Arc::default(), Duration::ZERO).await),
+        common::tron_network(tron_node().await),
+    ])
+    .unwrap();
+    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
+    let mut portfolio = engine.portfolio();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    let accounts: Vec<(ChainFamily, String)> = engine
+        .accounts()
+        .await
+        .unwrap()
+        .iter()
+        .map(|account| (account.family, account.address.to_string()))
+        .collect();
+    assert_eq!(
+        accounts,
+        [
+            (ChainFamily::Evm, HARDHAT_0.to_owned()),
+            (ChainFamily::Tron, TRON_0.to_owned())
+        ]
+    );
+    let filled = until(&mut portfolio, |p| {
+        p.networks.len() == 2 && p.holdings.iter().any(|holding| holding.symbol == "TRX")
+    })
+    .await;
+    let mut held: Vec<(String, String, String, String)> = filled
+        .holdings
+        .iter()
+        .map(|holding| {
+            (
+                holding.asset.network().to_string(),
+                holding.symbol.clone(),
+                holding.amount.to_string(),
+                holding.address.to_string(),
+            )
+        })
+        .collect();
+    held.retain(|(network, ..)| network == "tron");
+    held.sort();
+    assert_eq!(
+        held,
+        [
+            (
+                "tron".to_owned(),
+                "TRX".to_owned(),
+                "12".to_owned(),
+                TRON_0.to_owned()
+            ),
+            (
+                "tron".to_owned(),
+                "USDT".to_owned(),
+                "4.25".to_owned(),
+                TRON_0.to_owned()
+            ),
+        ]
+    );
+    assert!(
+        filled
+            .holdings
+            .iter()
+            .any(|holding| { holding.symbol == "BNB" && holding.address.to_string() == HARDHAT_0 })
+    );
+    assert!(
+        filled
+            .networks
+            .iter()
+            .all(|network| network.problem.is_none())
+    );
+    let request = SendRequest {
+        wallet,
+        asset: "tron".parse().unwrap(),
+        to: Address::parse(ChainFamily::Tron, TRON_0).unwrap(),
+        amount: Amount::parse("1", 6).unwrap(),
+    };
+    assert_eq!(
+        engine.prepare_send(request).await,
+        Err(EngineError::Chain(ChainError::Unsupported("sending yet")))
+    );
 }

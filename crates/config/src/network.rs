@@ -101,7 +101,7 @@ pub struct Token {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChainKind {
     Evm { chain_id: u64, fee: FeeModel },
-    Tron,
+    Tron { genesis: [u8; 32] },
     Ton,
 }
 
@@ -138,7 +138,7 @@ impl Network {
     pub fn family(&self) -> ChainFamily {
         match self.kind {
             ChainKind::Evm { .. } => ChainFamily::Evm,
-            ChainKind::Tron => ChainFamily::Tron,
+            ChainKind::Tron { .. } => ChainFamily::Tron,
             ChainKind::Ton => ChainFamily::Ton,
         }
     }
@@ -208,6 +208,8 @@ struct Spec {
     chain_id: Option<u64>,
     #[serde(default)]
     fee: Option<FeeModel>,
+    #[serde(default)]
+    genesis: Option<String>,
     testnet: bool,
     native: Coin,
     #[serde(default)]
@@ -236,18 +238,33 @@ impl Spec {
         if !is_plain_text(&self.name, MAX_NAME) {
             return Err(problem("name must be 1 to 40 printable characters"));
         }
-        let kind = match (self.family, self.chain_id, self.fee) {
-            (ChainFamily::Evm, Some(chain_id), Some(fee)) if chain_id > 0 => {
+        let kind = match (
+            self.family,
+            self.chain_id,
+            self.fee,
+            self.genesis.as_deref(),
+        ) {
+            (ChainFamily::Evm, Some(chain_id), Some(fee), None) if chain_id > 0 => {
                 ChainKind::Evm { chain_id, fee }
             }
-            (ChainFamily::Evm, _, _) => {
+            (ChainFamily::Evm, _, _, None) => {
                 return Err(problem(
                     "EVM networks need a non-zero chain_id and a fee model",
                 ));
             }
-            (ChainFamily::Tron, None, None) => ChainKind::Tron,
-            (ChainFamily::Ton, None, None) => ChainKind::Ton,
-            _ => return Err(problem("only EVM networks have chain_id and fee")),
+            (ChainFamily::Tron, None, None, Some(genesis)) => ChainKind::Tron {
+                genesis: block_id(genesis)
+                    .ok_or_else(|| problem("the genesis block id must be 64 hex digits"))?,
+            },
+            (ChainFamily::Tron, None, None, None) => {
+                return Err(problem("Tron networks need their genesis block id"));
+            }
+            (ChainFamily::Ton, None, None, None) => ChainKind::Ton,
+            _ => {
+                return Err(problem(
+                    "only EVM networks have chain_id and fee, only Tron networks have genesis",
+                ));
+            }
         };
         self.native
             .check()
@@ -334,6 +351,17 @@ impl Coin {
     }
 }
 
+fn block_id(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (slot, at) in out.iter_mut().zip((0..text.len()).step_by(2)) {
+        *slot = u8::from_str_radix(&text[at..at + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
 fn check_template(template: &str, placeholder: &str) -> Result<(), &'static str> {
     let url = Url::parse(&template.replace(placeholder, "x"))
         .map_err(|_| "explorer links must be valid URLs")?;
@@ -412,7 +440,13 @@ mod tests {
         for (id, chain_id, fee) in expected {
             assert_eq!(network(id).kind, ChainKind::Evm { chain_id, fee }, "{id}");
         }
-        assert_eq!(network("tron").kind, ChainKind::Tron);
+        for (id, start, end) in [("tron", 0x1e, 0xdc), ("tron-nile", 0xd6, 0xdc)] {
+            let ChainKind::Tron { genesis } = network(id).kind else {
+                panic!("{id} is not a Tron network");
+            };
+            assert_eq!(genesis[..8], [0; 8]);
+            assert_eq!((genesis[8], genesis[31]), (start, end));
+        }
         assert_eq!(network("ton").kind, ChainKind::Ton);
     }
 
@@ -483,6 +517,13 @@ mod tests {
         let cases: Vec<(&str, Edit)> = vec![
             ("bsc", Box::new(|n| n["chain_id"] = Value::Null)),
             ("tron", Box::new(|n| n["chain_id"] = 1.into())),
+            ("tron", Box::new(|n| n["genesis"] = Value::Null)),
+            ("tron", Box::new(|n| n["genesis"] = "00ff".into())),
+            (
+                "tron",
+                Box::new(|n| n["genesis"] = format!("+f{}", "0".repeat(62)).into()),
+            ),
+            ("bsc", Box::new(|n| n["genesis"] = "0".repeat(64).into())),
             (
                 "bsc",
                 Box::new(|n| n["endpoints"][0]["protocol"] = "tron-http".into()),

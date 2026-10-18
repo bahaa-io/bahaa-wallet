@@ -7,6 +7,7 @@ use bahaa_config::{Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmChain, EvmPlan, Incoming, ScanCursor, Scanned};
 use bahaa_store::{CustomToken, Received, Scan};
+use bahaa_tron::TronChain;
 use bahaa_types::{Address, AssetId, ChainFamily, NetworkId};
 use futures_util::future::join_all;
 
@@ -14,6 +15,7 @@ use crate::portfolio::{Account, Held, NetworkHealth};
 
 pub(crate) enum AnyChain {
     Evm(EvmChain),
+    Tron(TronChain),
 }
 
 #[derive(Clone)]
@@ -25,11 +27,19 @@ impl AnyChain {
     pub(crate) fn network(&self) -> &Network {
         match self {
             Self::Evm(chain) => chain.network(),
+            Self::Tron(chain) => chain.network(),
         }
     }
 
     pub(crate) fn family(&self) -> ChainFamily {
         self.network().family()
+    }
+
+    pub(crate) fn derive(&self, seed: &Seed, account: u32) -> Result<Address, ChainError> {
+        match self {
+            Self::Evm(_) => bahaa_evm::derive(seed, account),
+            Self::Tron(_) => bahaa_tron::derive(seed, account),
+        }
     }
 
     async fn balances(
@@ -39,6 +49,7 @@ impl AnyChain {
     ) -> Result<Vec<Balance>, ChainError> {
         match self {
             Self::Evm(chain) => chain.balances(address, assets).await,
+            Self::Tron(chain) => chain.balances(address, assets).await,
         }
     }
 
@@ -50,7 +61,7 @@ impl AnyChain {
     ) -> Result<Option<Scanned>, ChainError> {
         match self {
             Self::Evm(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
-            Self::Evm(_) => Ok(None),
+            Self::Evm(_) | Self::Tron(_) => Ok(None),
         }
     }
 
@@ -63,32 +74,41 @@ impl AnyChain {
                 let (plan, fee) = chain.prepare(transfer).await?;
                 Ok((AnyPlan::Evm(plan), fee))
             }
+            Self::Tron(_) => Err(not_yet()),
         }
     }
 
     pub(crate) fn sign(&self, plan: &AnyPlan, seed: &Seed) -> Result<Signed, ChainError> {
         match (self, plan) {
             (Self::Evm(chain), AnyPlan::Evm(plan)) => chain.sign(plan, seed),
+            (Self::Tron(_), _) => Err(ChainError::Mismatch("the network")),
         }
     }
 
     pub(crate) fn decode(&self, signed: &Signed) -> Result<Decoded, ChainError> {
         match self {
             Self::Evm(chain) => chain.decode(signed),
+            Self::Tron(_) => Err(not_yet()),
         }
     }
 
     pub(crate) async fn broadcast(&self, signed: &Signed) -> Result<TxId, ChainError> {
         match self {
             Self::Evm(chain) => chain.broadcast(signed).await,
+            Self::Tron(_) => Err(not_yet()),
         }
     }
 
     pub(crate) async fn status(&self, id: &TxId) -> Result<TxStatus, ChainError> {
         match self {
             Self::Evm(chain) => chain.status(id).await,
+            Self::Tron(_) => Err(not_yet()),
         }
     }
+}
+
+fn not_yet() -> ChainError {
+    ChainError::Unsupported("sending yet")
 }
 
 pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
@@ -96,9 +116,21 @@ pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
         .networks()
         .filter_map(|network| match network.family() {
             ChainFamily::Evm => EvmChain::new(network.clone()).ok().map(AnyChain::Evm),
-            ChainFamily::Tron | ChainFamily::Ton => None,
+            ChainFamily::Tron => TronChain::new(network.clone()).ok().map(AnyChain::Tron),
+            ChainFamily::Ton => None,
         })
         .collect()
+}
+
+pub(crate) fn per_family(chains: &[AnyChain]) -> Vec<&AnyChain> {
+    let mut picked: Vec<&AnyChain> = Vec::new();
+    for chain in chains {
+        if !picked.iter().any(|known| known.family() == chain.family()) {
+            picked.push(chain);
+        }
+    }
+    picked.sort_by_key(|chain| chain.family());
+    picked
 }
 
 pub(crate) struct Fetched {

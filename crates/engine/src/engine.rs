@@ -11,7 +11,6 @@ use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString, WordCount};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{CustomToken, Received, Scan, SentTx, Store, StoreError};
-use bahaa_types::ChainFamily;
 use bahaa_vault::KdfParams;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -609,17 +608,21 @@ impl Worker {
     }
 
     async fn derive_accounts(&mut self) {
+        let chains = Arc::clone(&self.chains);
         let derived = self
-            .keyring(|keyring| {
+            .keyring(move |keyring| {
+                let families = chains::per_family(&chains);
                 let mut accounts = Vec::new();
                 for wallet in keyring.wallets()? {
-                    let address = bahaa_evm::derive(keyring.seed(wallet.id)?, 0)?;
-                    accounts.push(Account {
-                        wallet: wallet.id,
-                        family: ChainFamily::Evm,
-                        index: 0,
-                        address,
-                    });
+                    let seed = keyring.seed(wallet.id)?;
+                    for chain in &families {
+                        accounts.push(Account {
+                            wallet: wallet.id,
+                            family: chain.family(),
+                            index: 0,
+                            address: chain.derive(seed, 0)?,
+                        });
+                    }
                 }
                 Ok::<_, EngineError>(accounts)
             })
