@@ -388,3 +388,97 @@ async fn a_v4r2_ton_wallet_shows_its_v4r2_address() {
         "0:f0cc9cd9b07dab208f52bf892b006221227d76a448428f82d870a6bc8dd5d377"
     );
 }
+
+#[tokio::test]
+async fn a_ton_phrase_can_be_switched_between_its_two_contracts() {
+    let scratch = Scratch::new();
+    let id = {
+        let mut keyring = bahaa_engine::Keyring::new(
+            scratch.0.join("data").join("vault.bin"),
+            bahaa_vault::KdfParams {
+                memory_kib: 64,
+                iterations: 1,
+                lanes: 1,
+            },
+        );
+        keyring.create(b"pw").unwrap();
+        keyring.import(TON_PHRASE, "").unwrap()
+    };
+    let dead = Url::parse("http://127.0.0.1:9/").unwrap();
+    let registry = || {
+        Registry::with_networks(vec![
+            common::network("bsc", dead.clone()),
+            ton("ton", dead.clone()),
+        ])
+        .unwrap()
+    };
+    let engine = Engine::start(config(&scratch, registry(), None)).unwrap();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    let address = |accounts: &[bahaa_engine::Account]| {
+        accounts
+            .iter()
+            .map(|account| account.address.to_string())
+            .collect::<Vec<_>>()
+    };
+    let w5 = "0:dbb94cc66ee709eb191e2e3af93b9b3b036bbcc69fb70e5c426cef0b9b7930a1";
+    let v4r2 = "0:f0cc9cd9b07dab208f52bf892b006221227d76a448428f82d870a6bc8dd5d377";
+    assert_eq!(address(&engine.accounts().await.unwrap()), [w5]);
+    let mut events = engine.events();
+    engine
+        .set_ton_contract(id, bahaa_types::TonContract::V4R2)
+        .await
+        .unwrap();
+    assert_eq!(address(&engine.accounts().await.unwrap()), [v4r2]);
+    let switched = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut seen = (None, None);
+        while seen.0.is_none() || seen.1.is_none() {
+            match events.recv().await.unwrap() {
+                bahaa_engine::Event::WalletsChanged(wallets) => seen.0 = Some(wallets[0].kind),
+                bahaa_engine::Event::AccountsChanged(accounts) => {
+                    seen.1 = Some(address(&accounts));
+                }
+                _ => {}
+            }
+        }
+        seen
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        switched,
+        (
+            Some(bahaa_engine::WalletKind::Ton(
+                bahaa_types::TonContract::V4R2
+            )),
+            Some(vec![v4r2.to_owned()])
+        )
+    );
+    let bip39 = engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .set_ton_contract(bip39, bahaa_types::TonContract::V4R2)
+            .await,
+        Err(EngineError::Keyring(bahaa_engine::KeyringError::NotTon))
+    );
+    engine.shutdown().await.unwrap();
+    let engine = Engine::start(config(&scratch, registry(), None)).unwrap();
+    assert_eq!(
+        engine
+            .set_ton_contract(id, bahaa_types::TonContract::W5)
+            .await,
+        Err(EngineError::Keyring(bahaa_engine::KeyringError::Locked))
+    );
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    let accounts = engine.accounts().await.unwrap();
+    assert!(address(&accounts).contains(&v4r2.to_owned()));
+    engine
+        .set_ton_contract(id, bahaa_types::TonContract::W5)
+        .await
+        .unwrap();
+    let accounts = engine.accounts().await.unwrap();
+    assert!(address(&accounts).contains(&w5.to_owned()));
+    assert!(!address(&accounts).contains(&v4r2.to_owned()));
+}

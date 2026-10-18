@@ -128,6 +128,7 @@ enum Command {
         Reply<WalletId>,
     ),
     Remove(WalletId, Reply<()>),
+    SetTonContract(WalletId, TonContract, Reply<()>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
     ChangePassword(SecretString, SecretString, Reply<()>),
     Settings(Reply<Settings>),
@@ -357,6 +358,15 @@ impl Engine {
 
     pub async fn remove(&self, id: WalletId) -> Result<(), EngineError> {
         self.ask(|reply| Command::Remove(id, reply)).await
+    }
+
+    pub async fn set_ton_contract(
+        &self,
+        wallet: WalletId,
+        contract: TonContract,
+    ) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetTonContract(wallet, contract, reply))
+            .await
     }
 
     pub async fn reveal(
@@ -607,6 +617,13 @@ impl Worker {
                 self.after_change(result.is_ok()).await;
                 let _ = reply.send(result);
             }
+            Command::SetTonContract(id, contract, reply) => {
+                let result = self
+                    .keyring(move |keyring| keyring.set_ton_contract(id, contract))
+                    .await;
+                self.after_change(result.is_ok()).await;
+                let _ = reply.send(result);
+            }
             Command::Reveal(id, password, reply) => {
                 let result = self
                     .keyring(move |keyring| keyring.reveal(id, password.expose_secret().as_bytes()))
@@ -789,8 +806,11 @@ impl Worker {
             })
             .await;
         if let Ok(accounts) = derived {
-            let wallets: Vec<WalletId> = accounts.iter().map(|account| account.wallet).collect();
-            self.held.retain(|held| wallets.contains(&held.wallet));
+            self.held.retain(|held| {
+                accounts
+                    .iter()
+                    .any(|account| account.wallet == held.wallet && account.address == held.address)
+            });
             self.accounts = accounts;
             let _ = self
                 .events
