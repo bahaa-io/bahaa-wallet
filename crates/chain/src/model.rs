@@ -93,6 +93,7 @@ pub enum FeeItem {
     Storage,
     Forwarding,
     Network,
+    Contracts,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

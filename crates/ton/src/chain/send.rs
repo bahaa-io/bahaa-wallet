@@ -7,6 +7,7 @@ use ed25519_dalek::{Signature, Signer};
 use ruint::aliases::U256;
 use tonlib_core::cell::BagOfCells;
 
+use super::tokens::Contracts;
 use super::{TonChain, amount, hex, key};
 use crate::cells::{Account, Status};
 use crate::fees::{Settings, TRANSFER_GAS, size_without_root};
@@ -41,19 +42,17 @@ impl TonChain {
         &self,
         transfer: &Transfer,
     ) -> Result<(TonPlan, FeeQuote), ChainError> {
-        self.sendable(transfer)?;
+        let token = self.sendable(transfer)?;
         let wallet = self.http.account(&transfer.from).await?;
         let (seqno, deploy) = self.sequence(&wallet)?;
-        let recipient = self.http.account(&transfer.to).await?;
-        let bounce = bounces(&recipient.status);
         let now = now();
-        let settings = self
-            .http
-            .config()
-            .await?
-            .settings(u32::try_from(now).unwrap_or(u32::MAX))
+        let clock =
+            u32::try_from(now).map_err(|_| ChainError::Invalid("the clock is out of range"))?;
+        let config = self.http.config().await?;
+        let settings = config
+            .settings(clock)
             .ok_or_else(|| ChainError::Network("the fee settings cannot be read".to_owned()))?;
-        let order = Order {
+        let mut order = Order {
             wallet: transfer.from,
             wallet_id: self.wallet_id,
             seqno,
@@ -61,15 +60,40 @@ impl TonChain {
                 .map_err(|_| ChainError::Invalid("the clock is out of range"))?,
             to: transfer.to,
             nano: transfer.amount.units(),
-            bounce,
+            bounce: false,
+            token: None,
+        };
+        let contracts = match token {
+            None => {
+                order.bounce = bounces(&self.http.account(&transfer.to).await?.status);
+                None
+            }
+            Some(master) => {
+                let run = Contracts {
+                    config: &config,
+                    settings,
+                    now: clock,
+                };
+                Some(
+                    self.token_order(transfer, &master, &mut order, &wallet, run)
+                        .await?,
+                )
+            }
         };
         let fees = estimate(&order, deploy, &wallet, &settings, now)?;
-        let expected = fees.expected().ok_or_else(overflow)?;
-        let max = expected.checked_mul(2).ok_or_else(overflow)?;
-        let needed = transfer
-            .amount
-            .units()
-            .checked_add(U256::from(max))
+        let own = fees.expected().ok_or_else(overflow)?;
+        let own_max = own.checked_mul(2).ok_or_else(overflow)?;
+        let attached = u64::try_from(order.nano).map_err(|_| overflow())?;
+        let (expected, max) = match contracts {
+            None => (own, own_max),
+            Some(spent) => (
+                own.checked_add(spent).ok_or_else(overflow)?,
+                own_max.checked_add(attached).ok_or_else(overflow)?,
+            ),
+        };
+        let needed = order
+            .nano
+            .checked_add(U256::from(own_max))
             .ok_or_else(overflow)?;
         let decimals = self.network.native.decimals;
         if wallet.balance < needed {
@@ -80,7 +104,7 @@ impl TonChain {
             });
         }
         let gram = |nano: u64| amount(U256::from(nano), decimals);
-        let lines = vec![
+        let mut lines = vec![
             FeeLine {
                 item: FeeItem::Compute { gas: TRANSFER_GAS },
                 amount: gram(fees.compute)?,
@@ -94,6 +118,12 @@ impl TonChain {
                 amount: gram(fees.forwarding)?,
             },
         ];
+        if let Some(spent) = contracts {
+            lines.push(FeeLine {
+                item: FeeItem::Contracts,
+                amount: gram(spent)?,
+            });
+        }
         Ok((
             TonPlan {
                 transfer: transfer.clone(),
@@ -104,17 +134,26 @@ impl TonChain {
         ))
     }
 
-    fn sendable(&self, transfer: &Transfer) -> Result<(), ChainError> {
+    fn sendable(&self, transfer: &Transfer) -> Result<Option<Address>, ChainError> {
         if transfer.asset.network() != &self.network.id {
             return Err(ChainError::Invalid("the asset belongs to another network"));
-        }
-        if transfer.asset.contract().is_some() {
-            return Err(ChainError::Unsupported("sending TON tokens yet"));
         }
         if transfer.amount.is_zero() {
             return Err(ChainError::Invalid("send more than zero"));
         }
-        if transfer.amount.decimals() != self.network.native.decimals {
+        let decimals = match transfer.asset.contract() {
+            None => self.network.native.decimals,
+            Some(master) => {
+                self.network
+                    .tokens
+                    .iter()
+                    .find(|token| token.contract == *master)
+                    .ok_or(ChainError::Unsupported("custom TON tokens yet"))?
+                    .coin
+                    .decimals
+            }
+        };
+        if transfer.amount.decimals() != decimals {
             return Err(ChainError::Invalid(
                 "the amount uses the wrong number of decimals",
             ));
@@ -123,7 +162,7 @@ impl TonChain {
         if !ton(&transfer.from) || !ton(&transfer.to) {
             return Err(ChainError::Invalid("not a TON address"));
         }
-        Ok(())
+        Ok(transfer.asset.contract().copied())
     }
 
     fn sequence(&self, wallet: &Account) -> Result<(u32, bool), ChainError> {
@@ -199,11 +238,35 @@ impl TonChain {
                 return Err(ChainError::Invalid("the deployment is for another wallet"));
             }
         }
+        let (asset, value) = match &parsed.order.token {
+            None => (
+                AssetId::Native(self.network.id.clone()),
+                amount(parsed.order.nano, self.network.native.decimals)?,
+            ),
+            Some(token) => {
+                let master = self
+                    .token_master(&parsed.order.wallet, &token.wallet)
+                    .ok_or(ChainError::Invalid(
+                        "the token wallet of this transfer is not known",
+                    ))?;
+                let decimals = self
+                    .network
+                    .tokens
+                    .iter()
+                    .find(|known| known.contract == master)
+                    .map(|known| known.coin.decimals)
+                    .ok_or(ChainError::Unsupported("custom TON tokens yet"))?;
+                (
+                    AssetId::Token(self.network.id.clone(), master),
+                    amount(token.units, decimals)?,
+                )
+            }
+        };
         Ok(Decoded {
             from: parsed.order.wallet,
             to: parsed.order.to,
-            asset: AssetId::Native(self.network.id.clone()),
-            amount: amount(parsed.order.nano, self.network.native.decimals)?,
+            asset,
+            amount: value,
             sequence: Some(u64::from(parsed.order.seqno)),
             expires_at: Some(u64::from(parsed.order.valid_until)),
         })
@@ -306,6 +369,7 @@ mod tests {
                 to,
                 nano: amount.units(),
                 bounce: !deploy,
+                token: None,
             },
             deploy,
         }
@@ -512,6 +576,115 @@ mod tests {
         ];
         for case in cases {
             assert!(wallet::parse(&with_body(&case, &wallet)).is_err());
+        }
+    }
+
+    fn token_plan(chain: &TonChain) -> TonPlan {
+        let mut plan = plan(chain, false);
+        let master = chain.network.tokens[0].contract;
+        let ours = Address::Ton {
+            workchain: 0,
+            hash: [0x7e; 32],
+        };
+        plan.transfer.asset = AssetId::Token(chain.network.id.clone(), master);
+        plan.transfer.amount = Amount::parse("2.5", 6).unwrap();
+        plan.order.nano = U256::from(3_000_000u32);
+        plan.order.bounce = true;
+        plan.order.token = Some(wallet::Token {
+            wallet: ours,
+            units: U256::from(2_500_000u32),
+            query_id: 77,
+        });
+        plan
+    }
+
+    #[test]
+    fn signed_token_transfers_decode_through_the_proven_token_wallet() {
+        let ton = chain("ton");
+        let plan = token_plan(&ton);
+        let signed = ton.sign(&plan, &seed()).unwrap();
+        assert_eq!(
+            ton.decode(&signed),
+            Err(ChainError::Invalid(
+                "the token wallet of this transfer is not known"
+            ))
+        );
+        ton.jetton_wallets.lock().unwrap().insert(
+            (plan.transfer.from, ton.network.tokens[0].contract),
+            plan.order.token.unwrap().wallet,
+        );
+        let decoded = ton.decode(&signed).unwrap();
+        bahaa_chain::check_signed(&plan.transfer, &decoded).unwrap();
+        assert_eq!(wallet::parse(&signed.bytes).unwrap().order, plan.order);
+        let other = Address::Ton {
+            workchain: 0,
+            hash: [0x6e; 32],
+        };
+        let mut mismatched = plan.clone();
+        mismatched.transfer.to = other;
+        assert!(bahaa_chain::check_signed(&mismatched.transfer, &decoded).is_err());
+    }
+
+    #[test]
+    fn a_token_transfer_must_be_exactly_the_standard_one() {
+        let ton = chain("ton");
+        let wallet = ton.derive(&seed(), 0).unwrap();
+        let mut order = token_plan(&ton).order;
+        order.wallet = wallet;
+        let standard =
+            WalletExtMsgBodyV5::from_cell(&wallet::unsigned(&order).unwrap().to_arc()).unwrap();
+        assert!(wallet::parse(&with_body(&standard, &wallet)).is_ok());
+        let variant = |response: Option<[u8; 32]>, custom: bool, forward: u8, bounce: bool| {
+            let mut body = CellBuilder::new();
+            body.store_u32(32, wallet::TOKEN_TRANSFER).unwrap();
+            body.store_u64(64, 77).unwrap();
+            body.store_coins(&BigUint::from(2_500_000u32)).unwrap();
+            body.store_address(&TonAddress::new(0, TonHash::from([0x5c; 32])))
+                .unwrap();
+            let Address::Ton { hash: ours, .. } = wallet else {
+                panic!("not TON");
+            };
+            let response = response.unwrap_or(ours);
+            body.store_address(&TonAddress::new(0, TonHash::from(response)))
+                .unwrap();
+            body.store_bit(custom).unwrap();
+            if custom {
+                body.store_reference(&CellBuilder::new().build().unwrap().to_arc())
+                    .unwrap();
+            }
+            body.store_coins(&BigUint::from(forward)).unwrap();
+            body.store_bit(false).unwrap();
+            let message = Message::new(
+                CommonMsgInfo::Int(IntMsgInfo {
+                    ihr_disabled: true,
+                    bounce,
+                    bounced: false,
+                    src: MsgAddrNone {}.into(),
+                    dest: TonAddress::new(0, TonHash::from([0x7e; 32]))
+                        .to_msg_address_int()
+                        .into(),
+                    value: CurrencyCollection::new(BigUint::from(3_000_000u32)),
+                    ihr_fee: Grams::new(BigUint::default()),
+                    fwd_fee: Grams::new(BigUint::default()),
+                    created_lt: 0,
+                    created_at: 0,
+                }),
+                body.build().unwrap().to_arc(),
+            );
+            let request = WalletExtMsgBodyV5 {
+                msgs: vec![message.to_cell().unwrap().to_arc()],
+                ..standard.clone()
+            };
+            wallet::parse(&with_body(&request, &wallet)).map(|_| ())
+        };
+        assert_eq!(variant(None, false, wallet::FORWARD_NANO, true), Ok(()));
+        for refused in [
+            variant(Some([0x11; 32]), false, wallet::FORWARD_NANO, true),
+            variant(None, true, wallet::FORWARD_NANO, true),
+            variant(None, false, 50, true),
+            variant(None, false, wallet::FORWARD_NANO, false),
+        ] {
+            assert!(refused.is_err(), "{refused:?}");
         }
     }
 }

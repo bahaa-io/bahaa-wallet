@@ -24,6 +24,7 @@ ruint.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "sync", "time"] }
 tonlib-core.workspace = true
+tycho-executor.workspace = true
 tycho-types.workspace = true
 tycho-vm.workspace = true
 url.workspace = true

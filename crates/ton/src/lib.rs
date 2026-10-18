@@ -1,5 +1,6 @@
 mod cells;
 mod chain;
+mod emulate;
 mod fees;
 mod http;
 mod lite;

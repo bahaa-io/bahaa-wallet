@@ -56,7 +56,7 @@ pub(crate) fn config(
     state_proof: &[u8],
     config_proof: &[u8],
     params: &[i32],
-) -> Option<Vec<ArcCell>> {
+) -> Option<Vec<crate::fees::Param>> {
     let block = opened(&single(state_proof)?, &masterchain.root_hash)?;
     let state = opened(&single(config_proof)?, &state_hash(&block)?)?;
     let mut parser = shard_state(&state)?;

@@ -443,7 +443,7 @@ pub(crate) fn proven_config(
         return Err(retry("a liteserver answered for another block"));
     }
     proof::config(last, &info.state_proof, &info.config_proof, &PARAMS)
-        .map(Config::new)
+        .and_then(Config::new)
         .ok_or_else(|| retry("a liteserver sent a config proof that does not hold"))
 }
 

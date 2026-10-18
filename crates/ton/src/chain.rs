@@ -12,6 +12,7 @@ use ruint::aliases::U256;
 
 mod incoming;
 mod send;
+mod tokens;
 mod track;
 
 pub use send::TonPlan;
@@ -73,6 +74,15 @@ impl TonChain {
             .unwrap_or_else(PoisonError::into_inner)
             .insert((*owner, *master), wallet);
         Ok(wallet)
+    }
+
+    fn token_master(&self, owner: &Address, wallet: &Address) -> Option<Address> {
+        self.jetton_wallets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|((known, _), found)| known == owner && *found == wallet)
+            .map(|((_, master), _)| *master)
     }
 
     async fn jetton_balance(&self, owner: &Address, master: &Address) -> Result<U256, ChainError> {

@@ -1077,3 +1077,89 @@ async fn incoming_usdt_is_read_from_the_token_wallets_proven_history() {
         ]
     );
 }
+
+fn usdt_send(amount: &str, to: [u8; 32]) -> bahaa_chain::Transfer {
+    bahaa_chain::Transfer {
+        account: 0,
+        from: ton(SENDER),
+        to: ton(to),
+        asset: assets()[1].clone(),
+        amount: bahaa_types::Amount::parse(amount, 6).unwrap(),
+    }
+}
+
+fn split(quote: &bahaa_chain::FeeQuote) -> (u64, u64, u64) {
+    let units = |line: &bahaa_chain::FeeLine| u64::try_from(line.amount.units()).unwrap();
+    let lines = quote.lines();
+    assert_eq!(
+        lines
+            .iter()
+            .map(|line| line.item.clone())
+            .collect::<Vec<_>>(),
+        [
+            bahaa_chain::FeeItem::Compute { gas: 4_939 },
+            bahaa_chain::FeeItem::Storage,
+            bahaa_chain::FeeItem::Forwarding,
+            bahaa_chain::FeeItem::Contracts,
+        ]
+    );
+    let own: u64 = lines[..3].iter().map(units).sum();
+    let contracts = units(&lines[3]);
+    let attached = u64::try_from(quote.max().units()).unwrap() - 2 * own;
+    (own, contracts, attached)
+}
+
+#[tokio::test]
+async fn a_usdt_quote_emulates_both_token_wallets() {
+    let chain = tracking_chain(GOOD).await;
+    let (_, existing) = chain.prepare(&usdt_send("1", OWNER)).await.unwrap();
+    let (own, contracts, attached) = split(&existing);
+    assert_eq!(
+        existing.lines()[0].amount.units(),
+        ruint::aliases::U256::from(329_268u32)
+    );
+    assert_eq!(
+        existing.lines()[2].amount.units(),
+        ruint::aliases::U256::from(286_135u32)
+    );
+    assert_eq!((contracts, attached), (543_474, 3_314_944));
+    assert_eq!(
+        u64::try_from(existing.expected().units()).unwrap(),
+        own + contracts
+    );
+    let (_, deploying) = chain.prepare(&usdt_send("1", [0x5c; 32])).await.unwrap();
+    let (_, deploy_contracts, deploy_attached) = split(&deploying);
+    assert_eq!((deploy_contracts, deploy_attached), (1_517_907, 5_263_810));
+    let Err(ChainError::Insufficient {
+        symbol, available, ..
+    }) = chain.prepare(&usdt_send("10000000", OWNER)).await
+    else {
+        panic!("expected a refusal");
+    };
+    assert_eq!(
+        (symbol.as_str(), available.to_string()),
+        ("USDT", "163442.252078".to_owned())
+    );
+    let mut custom = usdt_send("1", OWNER);
+    custom.asset = AssetId::Token(
+        "ton".parse().unwrap(),
+        Address::Ton {
+            workchain: 0,
+            hash: [9; 32],
+        },
+    );
+    assert_eq!(
+        chain.prepare(&custom).await.map(|_| ()),
+        Err(ChainError::Unsupported("custom TON tokens yet"))
+    );
+    assert_eq!(
+        chain.prepare(&usdt_send("1", SENDER)).await.map(|_| ()),
+        Err(ChainError::Invalid("send tokens to another account"))
+    );
+    let mut wrong = usdt_send("1", OWNER);
+    wrong.amount = bahaa_types::Amount::parse("1", 9).unwrap();
+    assert!(matches!(
+        chain.prepare(&wrong).await,
+        Err(ChainError::Invalid(_))
+    ));
+}

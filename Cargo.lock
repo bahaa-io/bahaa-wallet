@@ -1021,6 +1021,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tonlib-core",
+ "tycho-executor",
  "tycho-types",
  "tycho-vm",
  "url",
@@ -4908,6 +4909,20 @@ dependencies = [
  "hex",
  "sha2 0.10.9",
  "tl-proto 0.5.4",
+]
+
+[[package]]
+name = "tycho-executor"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4902127956d274dda9e20a855dd6300b48e6a26810de7ab2a8c653d2f4b2ebea"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "num-bigint",
+ "thiserror 2.0.21",
+ "tycho-types",
+ "tycho-vm",
 ]
 
 [[package]]

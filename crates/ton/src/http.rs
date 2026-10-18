@@ -198,7 +198,7 @@ impl Http {
         Ok(config)
     }
 
-    async fn library(&self, hash: &[u8; 32]) -> Result<Vec<u8>, ChainError> {
+    pub(crate) async fn library(&self, hash: &[u8; 32]) -> Result<Vec<u8>, ChainError> {
         let known = self
             .libraries
             .lock()

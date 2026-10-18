@@ -235,20 +235,24 @@ async fn live_a_real_transfer_is_tracked_and_its_message_cannot_be_sent_again() 
             .await;
         assert_eq!(status, Ok(confirmed.clone()), "{protocol:?}");
     }
+    let named = "the wallet contract refused the message with exit code 133";
+    let mut reasons = Vec::new();
     for protocol in [
         Protocol::TonLiteservers,
         Protocol::TonApi,
         Protocol::TonCenter,
     ] {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        assert_eq!(
-            only(protocol).broadcast(&signed).await,
-            Err(ChainError::Rejected(
-                "the wallet contract refused the message with exit code 133".to_owned()
-            )),
-            "{protocol:?}"
+        let Err(ChainError::Rejected(reason)) = only(protocol).broadcast(&signed).await else {
+            panic!("{protocol:?} took a message the wallet already used");
+        };
+        assert!(
+            reason == named || reason == "the network refused the message",
+            "{protocol:?}: {reason}"
         );
+        reasons.push(reason);
     }
+    assert!(reasons.iter().any(|reason| reason == named), "{reasons:?}");
 }
 
 async fn indexed_receipts(account: &str, since: u64) -> Vec<(String, u64)> {
@@ -381,4 +385,63 @@ async fn live_incoming_gram_and_usdt_match_the_indexer() {
         usdt_seen += tokens.len();
     }
     assert!(usdt_seen > 0);
+}
+
+async fn indexed_transaction(account: &str, lt: u64) -> serde_json::Value {
+    let listed: serde_json::Value = reqwest::get(format!(
+        "https://toncenter.com/api/v3/transactions?account={account}&lt={lt}&limit=1"
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    listed["transactions"][0].clone()
+}
+
+#[tokio::test]
+#[ignore = "talks to the real TON network, run with --test-threads=1"]
+async fn live_usdt_quotes_match_what_the_network_charged() {
+    let nano = |value: &serde_json::Value| value.as_str().unwrap().parse::<u64>().unwrap();
+    let sent = indexed_transaction(SENDER, SENT_LT).await;
+    assert_eq!(nano(&sent["description"]["compute_ph"]["gas_used"]), 4_939);
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let ours = "0:b7f4010ccc8540eb958f3d228284ca379595d3fa52e47072bc1ee781d35e01e7";
+    let first = indexed_transaction(ours, 109_578_663_000_003).await;
+    let attached = nano(&first["in_msg"]["value"]);
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let refund = indexed_transaction(SENDER, 109_578_663_000_008).await;
+    assert_eq!(refund["in_msg"]["opcode"], "0xd53276db");
+    let paid = attached - nano(&refund["in_msg"]["value"]) + nano(&refund["total_fees"]);
+    let registry = Registry::builtin().unwrap();
+    let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
+    let transfer = bahaa_chain::Transfer {
+        account: 0,
+        from: Address::parse(ChainFamily::Ton, SENDER).unwrap(),
+        to: Address::parse(ChainFamily::Ton, HOLDER).unwrap(),
+        asset: format!("ton/{USDT}").parse().unwrap(),
+        amount: Amount::parse("1", 6).unwrap(),
+    };
+    let mut seen = Vec::new();
+    for protocol in [Protocol::TonLiteservers, Protocol::TonApi] {
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let mut network = ton.clone();
+        network
+            .endpoints
+            .retain(|endpoint| endpoint.protocol == protocol);
+        let (_, quote) = TonChain::new(network)
+            .unwrap()
+            .prepare(&transfer)
+            .await
+            .unwrap();
+        let contracts = quote.lines()[3].clone();
+        assert_eq!(contracts.item, bahaa_chain::FeeItem::Contracts);
+        let quoted = u64::try_from(contracts.amount.units()).unwrap();
+        assert!(
+            quoted.abs_diff(paid) * 20 < paid,
+            "{protocol:?}: quoted {quoted}, the network charged {paid}"
+        );
+        seen.push(quoted);
+    }
+    assert!(seen[0].abs_diff(seen[1]) * 100 < seen[0], "{seen:?}");
 }

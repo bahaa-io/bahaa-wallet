@@ -2,7 +2,8 @@ use tonlib_core::cell::{ArcCell, BagOfCells, Cell, CellParser};
 
 use crate::proof::{Found, label, lookup};
 
-pub(crate) const PARAMS: [i32; 7] = [18, 19, 20, 21, 24, 25, 43];
+pub(crate) const PARAMS: [i32; 13] = [0, 5, 8, 12, 18, 19, 20, 21, 24, 25, 31, 43, 45];
+const REQUIRED: [i32; 10] = [0, 8, 12, 18, 19, 20, 21, 24, 25, 31];
 const FEE_PARAMS: [i32; 3] = [18, 21, 25];
 pub(crate) const TRANSFER_GAS: u64 = 4_939;
 const STORAGE_TAG: u8 = 0xcc;
@@ -25,15 +26,30 @@ pub(crate) struct Settings {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Param {
+    Present(ArcCell),
+    Absent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Config {
     params: Vec<(i32, ArcCell)>,
 }
 
 impl Config {
-    pub(crate) fn new(cells: Vec<ArcCell>) -> Self {
-        Self {
-            params: PARAMS.into_iter().zip(cells).collect(),
-        }
+    pub(crate) fn new(found: Vec<Param>) -> Option<Self> {
+        let params: Vec<(i32, ArcCell)> = PARAMS
+            .into_iter()
+            .zip(found)
+            .filter_map(|(id, param)| match param {
+                Param::Present(cell) => Some((id, cell)),
+                Param::Absent => None,
+            })
+            .collect();
+        REQUIRED
+            .iter()
+            .all(|id| params.iter().any(|(known, _)| known == id))
+            .then_some(Self { params })
     }
 
     pub(crate) fn settings(&self, now: u32) -> Option<Settings> {
@@ -192,12 +208,12 @@ fn forward_prices(cell: &ArcCell) -> Option<(u64, u64, u64)> {
     ))
 }
 
-pub(crate) fn param(dict: &ArcCell, id: i32) -> Option<ArcCell> {
+pub(crate) fn param(dict: &ArcCell, id: i32) -> Option<Param> {
     let Found::Leaf(leaf, _) = lookup(dict, &id.to_be_bytes(), 32)? else {
-        return None;
+        return Some(Param::Absent);
     };
     let value = leaf.reference(0).ok()?.clone();
-    ordinary(&value).cloned()
+    ordinary(&value).cloned().map(Param::Present)
 }
 
 #[cfg(test)]

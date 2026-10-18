@@ -220,3 +220,36 @@ async fn incoming_gram_joins_the_wallets_history_from_proven_state() {
         )
     );
 }
+
+#[tokio::test]
+async fn ton_token_sends_wait_for_their_tracking() {
+    let scratch = Scratch::new();
+    let asked = Asked::default();
+    let mut network = ton("ton", tonapi(MAINNET, &asked).await);
+    network.tokens = Registry::builtin()
+        .unwrap()
+        .get(&"ton".parse().unwrap())
+        .unwrap()
+        .tokens
+        .clone();
+    let usdt = network.tokens[0].contract;
+    let registry = Registry::with_networks(vec![network]).unwrap();
+    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    let request = SendRequest {
+        wallet,
+        asset: bahaa_types::AssetId::Token("ton".parse().unwrap(), usdt),
+        to: bahaa_types::Address::parse(ChainFamily::Ton, TON_0).unwrap(),
+        amount: Amount::parse("1", 6).unwrap(),
+    };
+    assert_eq!(
+        engine.prepare_send(request).await,
+        Err(EngineError::Chain(ChainError::Unsupported(
+            "sending TON tokens yet"
+        )))
+    );
+}

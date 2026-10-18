@@ -16,6 +16,15 @@ use tonlib_core::wallet::wallet_version::WalletVersion;
 use tonlib_core::{TonAddress, TonHash};
 
 pub(crate) const SEND_MODE: u8 = 3;
+pub(crate) const TOKEN_TRANSFER: u32 = 0x0f8a_7ea5;
+pub(crate) const FORWARD_NANO: u8 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Token {
+    pub wallet: Address,
+    pub units: U256,
+    pub query_id: u64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Order {
@@ -26,6 +35,7 @@ pub(crate) struct Order {
     pub to: Address,
     pub nano: U256,
     pub bounce: bool,
+    pub token: Option<Token>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,24 +72,7 @@ pub(crate) fn wallet_data(data: &ArcCell) -> Option<WalletDataV5> {
 
 pub(crate) fn unsigned(order: &Order) -> Result<Cell, ChainError> {
     let broken = |_| ChainError::Invalid("cannot build the wallet message");
-    let transfer = Message::new(
-        CommonMsgInfo::Int(IntMsgInfo {
-            ihr_disabled: true,
-            bounce: order.bounce,
-            bounced: false,
-            src: MsgAddrNone {}.into(),
-            dest: to_ton(&order.to)?.to_msg_address_int().into(),
-            value: CurrencyCollection::new(BigUint::from_bytes_be(&order.nano.to_be_bytes::<32>())),
-            ihr_fee: Grams::new(BigUint::default()),
-            fwd_fee: Grams::new(BigUint::default()),
-            created_lt: 0,
-            created_at: 0,
-        }),
-        CellBuilder::new().build().map_err(broken)?.to_arc(),
-    )
-    .to_cell()
-    .map_err(|_| ChainError::Invalid("cannot build the wallet message"))?
-    .to_arc();
+    let transfer = outgoing(order, None)?.to_arc();
     WalletExtMsgBodyV5 {
         wallet_id: order.wallet_id,
         valid_until: order.valid_until,
@@ -89,6 +82,80 @@ pub(crate) fn unsigned(order: &Order) -> Result<Cell, ChainError> {
     }
     .to_cell()
     .map_err(broken)
+}
+
+pub(crate) fn delivered(order: &Order) -> Result<Vec<u8>, ChainError> {
+    BagOfCells::from_root(outgoing(order, Some(&order.wallet))?)
+        .serialize(false)
+        .map_err(|_| ChainError::Invalid("cannot build the wallet message"))
+}
+
+fn outgoing(order: &Order, source: Option<&Address>) -> Result<Cell, ChainError> {
+    let broken = |_| ChainError::Invalid("cannot build the wallet message");
+    let (destination, bounce, body) = match &order.token {
+        None => (
+            order.to,
+            order.bounce,
+            CellBuilder::new().build().map_err(broken)?,
+        ),
+        Some(token) => (token.wallet, true, token_body(order, token)?),
+    };
+    let src = match source {
+        None => MsgAddrNone {}.into(),
+        Some(address) => to_ton(address)?.to_msg_address_int().into(),
+    };
+    Message::new(
+        CommonMsgInfo::Int(IntMsgInfo {
+            ihr_disabled: true,
+            bounce,
+            bounced: false,
+            src,
+            dest: to_ton(&destination)?.to_msg_address_int().into(),
+            value: CurrencyCollection::new(BigUint::from_bytes_be(&order.nano.to_be_bytes::<32>())),
+            ihr_fee: Grams::new(BigUint::default()),
+            fwd_fee: Grams::new(BigUint::default()),
+            created_lt: 0,
+            created_at: 0,
+        }),
+        body.to_arc(),
+    )
+    .to_cell()
+    .map_err(broken)
+}
+
+fn token_body(order: &Order, token: &Token) -> Result<Cell, ChainError> {
+    let broken = |_| ChainError::Invalid("cannot build the token transfer");
+    let mut body = CellBuilder::new();
+    body.store_u32(32, TOKEN_TRANSFER).map_err(broken)?;
+    body.store_u64(64, token.query_id).map_err(broken)?;
+    body.store_coins(&BigUint::from_bytes_be(&token.units.to_be_bytes::<32>()))
+        .map_err(broken)?;
+    body.store_address(&to_ton(&order.to)?).map_err(broken)?;
+    body.store_address(&to_ton(&order.wallet)?)
+        .map_err(broken)?;
+    body.store_bit(false).map_err(broken)?;
+    body.store_coins(&BigUint::from(FORWARD_NANO))
+        .map_err(broken)?;
+    body.store_bit(false).map_err(broken)?;
+    body.build().map_err(broken)
+}
+
+fn token_transfer(body: &Cell, wallet: Address) -> Option<(Address, Token)> {
+    let mut parser = body.parser();
+    if parser.load_u32(32).ok()? != TOKEN_TRANSFER {
+        return None;
+    }
+    let query_id = parser.load_u64(64).ok()?;
+    let units = U256::try_from_be_slice(&parser.load_coins().ok()?.to_bytes_be())?;
+    let to = from_ton(&parser.load_address().ok()?)?;
+    Some((
+        to,
+        Token {
+            wallet,
+            units,
+            query_id,
+        },
+    ))
 }
 
 pub(crate) fn transfer_size(order: &Order) -> Result<(u64, u64), ChainError> {
@@ -165,17 +232,22 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
     let CommonMsgInfo::Int(sent) = &inner.info else {
         return Err(invalid());
     };
-    let plain = inner.init.is_none()
-        && inner.body.value.bit_len() == 0
-        && inner.body.value.references().is_empty()
-        && sent.ihr_disabled
-        && !sent.bounced
-        && sent.value.other.is_none();
-    if !plain {
+    let simple =
+        inner.init.is_none() && sent.ihr_disabled && !sent.bounced && sent.value.other.is_none();
+    if !simple {
         return Err(ChainError::Invalid("not a single plain transfer"));
     }
-    let to = from_ton(&TonAddress::from_msg_address(sent.dest.clone()).map_err(|_| invalid())?)
-        .ok_or_else(invalid)?;
+    let destination =
+        from_ton(&TonAddress::from_msg_address(sent.dest.clone()).map_err(|_| invalid())?)
+            .ok_or_else(invalid)?;
+    let payload = &inner.body.value;
+    let (to, token) = if payload.bit_len() == 0 && payload.references().is_empty() {
+        (destination, None)
+    } else {
+        let (to, token) = token_transfer(payload, destination)
+            .ok_or(ChainError::Invalid("not a single plain transfer"))?;
+        (to, Some(token))
+    };
     let nano =
         U256::try_from_be_slice(&sent.value.grams.amount.to_bytes_be()).ok_or_else(invalid)?;
     let order = Order {
@@ -186,6 +258,7 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
         to,
         nano,
         bounce: sent.bounce,
+        token,
     };
     let unsigned_cell = unsigned(&order)?;
     let resigned = VersionHelper::sign_msg(WalletVersion::V5R1, &unsigned_cell, &signature)
@@ -348,6 +421,7 @@ mod tests {
             },
             nano: U256::from(5u8),
             bounce: false,
+            token: None,
         };
         let plain = external(&order, &[9; 64], None).unwrap();
         let id = normalized(&plain).unwrap();
