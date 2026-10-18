@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use bahaa_chain::ChainError;
 use bahaa_config::{ConfigError, Registry, Settings};
-use bahaa_crypto::{ExposeSecret, SecretString, WordCount};
+use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{CustomToken, Received, Scan, SentTx, Store, StoreError, TrustedBlock};
 use bahaa_vault::KdfParams;
@@ -20,7 +20,7 @@ use tokio::time::{Instant, sleep_until};
 use crate::caution::Arrival;
 use crate::chains::{self, AnyChain, Fetched};
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
-use crate::{Keyring, KeyringError, WalletId, WalletInfo};
+use crate::{Keyring, KeyringError, NewPhrase, WalletId, WalletInfo};
 
 pub use incoming::IncomingHistory;
 use send::{Delivered, Prepared, Quoted};
@@ -108,7 +108,7 @@ enum Command {
     Refresh,
     Wallets(Reply<Vec<WalletInfo>>),
     Accounts(Reply<Vec<Account>>),
-    Generate(WordCount, SecretString, Reply<(WalletId, SecretString)>),
+    Generate(NewPhrase, SecretString, Reply<(WalletId, SecretString)>),
     Import(SecretString, SecretString, Reply<WalletId>),
     Remove(WalletId, Reply<()>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
@@ -295,7 +295,7 @@ impl Engine {
 
     pub async fn generate(
         &self,
-        words: WordCount,
+        words: NewPhrase,
         passphrase: SecretString,
     ) -> Result<(WalletId, SecretString), EngineError> {
         self.ask(|reply| Command::Generate(words, passphrase, reply))

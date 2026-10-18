@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use bahaa_config::{Fiat, Registry, Settings};
-use bahaa_crypto::{ExposeSecret, SecretString, WordCount};
-use bahaa_engine::{Engine, EngineConfig, EngineError, Event, KeyringError, State};
+use bahaa_crypto::{ExposeSecret, SecretString};
+use bahaa_engine::{Engine, EngineConfig, EngineError, Event, KeyringError, NewPhrase, State};
 use bahaa_store::StoreError;
 use bahaa_vault::KdfParams;
 use tokio::sync::watch;
@@ -83,7 +83,7 @@ async fn sets_up_a_new_wallet_and_announces_it() {
         Event::StateChanged(State::Unlocked)
     );
     let (id, phrase) = engine
-        .generate(WordCount::TwentyFour, secret(""))
+        .generate(NewPhrase::TwentyFour, secret(""))
         .await
         .unwrap();
     assert_eq!(phrase.expose_secret().split(' ').count(), 24);

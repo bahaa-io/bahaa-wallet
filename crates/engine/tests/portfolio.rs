@@ -7,8 +7,10 @@ use std::time::Duration;
 
 use bahaa_chain::ChainError;
 use bahaa_config::{Fiat, Registry, Settings};
-use bahaa_crypto::{SecretString, WordCount};
-use bahaa_engine::{Engine, EngineError, KeyringError, NetworkHealth, Portfolio, SendRequest};
+use bahaa_crypto::SecretString;
+use bahaa_engine::{
+    Engine, EngineError, KeyringError, NetworkHealth, NewPhrase, Portfolio, SendRequest,
+};
 use bahaa_market::{MarketConfig, Status};
 use bahaa_types::{Address, Amount, ChainFamily};
 use common::{HARDHAT, HARDHAT_0, Scratch, TRON_0, TRON_0_HEX, TRON_GENESIS, USDT, config, until};
@@ -240,7 +242,7 @@ async fn a_wallet_added_during_a_refresh_shows_up_right_away() {
         .unwrap();
     wait_for(&calls, 2).await;
     engine
-        .generate(WordCount::Twelve, SecretString::from(""))
+        .generate(NewPhrase::default(), SecretString::from(""))
         .await
         .unwrap();
     let both = until(&mut portfolio, |p| {

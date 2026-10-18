@@ -10,5 +10,5 @@ pub use caution::{Arrival, Caution};
 pub use engine::{
     Draft, DraftId, Engine, EngineConfig, EngineError, Event, IncomingHistory, SendRequest, State,
 };
-pub use keyring::{Keyring, KeyringError, WalletId, WalletInfo};
+pub use keyring::{Keyring, KeyringError, NewPhrase, WalletId, WalletInfo};
 pub use portfolio::{Account, Holding, NetworkHealth, Portfolio};

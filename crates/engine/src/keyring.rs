@@ -35,6 +35,22 @@ pub struct WalletInfo {
     pub passphrase: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NewPhrase {
+    #[default]
+    Twelve,
+    TwentyFour,
+}
+
+impl NewPhrase {
+    fn words(self) -> WordCount {
+        match self {
+            Self::Twelve => WordCount::Twelve,
+            Self::TwentyFour => WordCount::TwentyFour,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum KeyringError {
     #[error("no wallet has been set up on this device yet")]
@@ -161,11 +177,11 @@ impl Keyring {
 
     pub fn generate(
         &mut self,
-        words: WordCount,
+        words: NewPhrase,
         passphrase: &str,
     ) -> Result<(WalletId, SecretString), KeyringError> {
         self.session()?;
-        let mnemonic = Mnemonic::generate(words)?;
+        let mnemonic = Mnemonic::generate(words.words())?;
         let phrase = mnemonic.phrase();
         let id = self.add(mnemonic, passphrase)?;
         Ok((id, phrase))

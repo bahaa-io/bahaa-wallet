@@ -4,7 +4,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 use bahaa_crypto::{ExposeSecret, Mnemonic, WordCount};
-use bahaa_engine::{Keyring, KeyringError};
+use bahaa_engine::{Keyring, KeyringError, NewPhrase};
 use bahaa_vault::{KdfParams, Vault};
 
 const FAST: KdfParams = KdfParams {
@@ -73,8 +73,11 @@ fn a_generated_wallet_survives_a_restart_with_the_same_seed() {
     let scratch = Scratch::new();
     let mut keyring = scratch.keyring();
     keyring.create(PASSWORD).unwrap();
-    let (id, phrase) = keyring.generate(WordCount::Twelve, "").unwrap();
+    let (id, phrase) = keyring.generate(NewPhrase::default(), "").unwrap();
     assert_eq!(phrase.expose_secret().split(' ').count(), 12);
+    let (long, longer) = keyring.generate(NewPhrase::TwentyFour, "").unwrap();
+    assert_eq!(longer.expose_secret().split(' ').count(), 24);
+    keyring.remove(long).unwrap();
     let expected = Mnemonic::parse(phrase.expose_secret()).unwrap().to_seed("");
     drop(keyring);
     let keyring = reopened(&scratch);
@@ -85,6 +88,18 @@ fn a_generated_wallet_survives_a_restart_with_the_same_seed() {
         (id, WordCount::Twelve, false)
     );
     assert_eq!(keyring.seed(id).unwrap().expose(), expected.expose());
+}
+
+#[test]
+fn any_standard_length_can_be_imported_even_though_new_phrases_are_12_or_24() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    let eighteen = "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal will";
+    let id = keyring.import(eighteen, "").unwrap();
+    let wallets = keyring.wallets().unwrap();
+    assert_eq!((wallets[0].id, wallets[0].words), (id, WordCount::Eighteen));
+    assert_eq!(NewPhrase::default(), NewPhrase::Twelve);
 }
 
 #[test]
@@ -154,7 +169,7 @@ fn locked_keyrings_refuse_secret_work() {
     keyring.lock();
     assert!(matches!(keyring.seed(id), Err(KeyringError::Locked)));
     assert!(matches!(
-        keyring.generate(WordCount::Twelve, ""),
+        keyring.generate(NewPhrase::Twelve, ""),
         Err(KeyringError::Locked)
     ));
     assert!(matches!(
