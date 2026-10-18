@@ -8,15 +8,18 @@ use bahaa_config::{Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmChain, EvmPlan};
 use bahaa_store::{CustomToken, Received, Scan};
+use bahaa_ton::TonChain;
 use bahaa_tron::{TronChain, TronPlan};
 use bahaa_types::{Address, AssetId, ChainFamily, NetworkId};
 use futures_util::future::join_all;
 
+use crate::WalletId;
 use crate::portfolio::{Account, Held, NetworkHealth};
 
 pub(crate) enum AnyChain {
     Evm(EvmChain),
     Tron(TronChain),
+    Ton(TonChain),
 }
 
 #[derive(Clone)]
@@ -30,6 +33,7 @@ impl AnyChain {
         match self {
             Self::Evm(chain) => chain.network(),
             Self::Tron(chain) => chain.network(),
+            Self::Ton(chain) => chain.network(),
         }
     }
 
@@ -41,6 +45,7 @@ impl AnyChain {
         match self {
             Self::Evm(_) => bahaa_evm::derive(seed, account),
             Self::Tron(_) => bahaa_tron::derive(seed, account),
+            Self::Ton(chain) => chain.derive(seed, account),
         }
     }
 
@@ -52,6 +57,7 @@ impl AnyChain {
         match self {
             Self::Evm(chain) => chain.balances(address, assets).await,
             Self::Tron(chain) => chain.balances(address, assets).await,
+            Self::Ton(chain) => chain.balances(address, assets).await,
         }
     }
 
@@ -64,7 +70,7 @@ impl AnyChain {
         match self {
             Self::Evm(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
             Self::Tron(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
-            Self::Evm(_) | Self::Tron(_) => Ok(None),
+            Self::Evm(_) | Self::Tron(_) | Self::Ton(_) => Ok(None),
         }
     }
 
@@ -81,6 +87,7 @@ impl AnyChain {
                 let (plan, fee) = chain.prepare(transfer).await?;
                 Ok((AnyPlan::Tron(plan), fee))
             }
+            Self::Ton(_) => Err(not_yet()),
         }
     }
 
@@ -96,6 +103,7 @@ impl AnyChain {
         match self {
             Self::Evm(chain) => chain.decode(signed),
             Self::Tron(chain) => chain.decode(signed),
+            Self::Ton(_) => Err(not_yet()),
         }
     }
 
@@ -103,6 +111,7 @@ impl AnyChain {
         match self {
             Self::Evm(chain) => chain.broadcast(signed).await,
             Self::Tron(chain) => chain.broadcast(signed).await,
+            Self::Ton(_) => Err(not_yet()),
         }
     }
 
@@ -110,8 +119,13 @@ impl AnyChain {
         match self {
             Self::Evm(chain) => chain.status(id).await,
             Self::Tron(chain) => chain.status(id).await,
+            Self::Ton(_) => Err(not_yet()),
         }
     }
+}
+
+fn not_yet() -> ChainError {
+    ChainError::Unsupported("sending yet")
 }
 
 pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
@@ -120,20 +134,40 @@ pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
         .filter_map(|network| match network.family() {
             ChainFamily::Evm => EvmChain::new(network.clone()).ok().map(AnyChain::Evm),
             ChainFamily::Tron => TronChain::new(network.clone()).ok().map(AnyChain::Tron),
-            ChainFamily::Ton => None,
+            ChainFamily::Ton => TonChain::new(network.clone()).ok().map(AnyChain::Ton),
         })
         .collect()
 }
 
-pub(crate) fn per_family(chains: &[AnyChain]) -> Vec<&AnyChain> {
-    let mut picked: Vec<&AnyChain> = Vec::new();
-    for chain in chains {
-        if !picked.iter().any(|known| known.family() == chain.family()) {
-            picked.push(chain);
+pub(crate) fn accounts(
+    wallet: WalletId,
+    derived: &[(ChainFamily, NetworkId, Address)],
+) -> Vec<Account> {
+    let mut families: Vec<ChainFamily> = derived.iter().map(|(family, ..)| *family).collect();
+    families.sort();
+    families.dedup();
+    let mut accounts = Vec::new();
+    for family in families {
+        let mine: Vec<&(ChainFamily, NetworkId, Address)> =
+            derived.iter().filter(|(of, ..)| *of == family).collect();
+        let shared = mine.iter().all(|(.., address)| *address == mine[0].2);
+        let account = |network: Option<NetworkId>, address: Address| Account {
+            wallet,
+            family,
+            index: 0,
+            address,
+            network,
+        };
+        if shared {
+            accounts.push(account(None, mine[0].2));
+        } else {
+            accounts.extend(
+                mine.into_iter()
+                    .map(|(_, network, address)| account(Some(network.clone()), *address)),
+            );
         }
     }
-    picked.sort_by_key(|chain| chain.family());
-    picked
+    accounts
 }
 
 pub(crate) struct Fetched {
@@ -204,7 +238,7 @@ async fn fetch_network(
     };
     for account in accounts
         .iter()
-        .filter(|account| account.family == chain.family())
+        .filter(|account| account.serves(&network.id, chain.family()))
     {
         match chain.balances(&account.address, &assets).await {
             Ok(balances) => result.held.extend(balances.into_iter().map(|balance| Held {
@@ -269,4 +303,48 @@ pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_family_shares_one_account_unless_its_networks_disagree() {
+        let wallet = crate::keyring::test_wallet(1);
+        let id = |text: &str| -> NetworkId { text.parse().unwrap() };
+        let evm = Address::Evm([1; 20]);
+        let (main, test) = (
+            Address::Ton {
+                workchain: 0,
+                hash: [2; 32],
+            },
+            Address::Ton {
+                workchain: 0,
+                hash: [3; 32],
+            },
+        );
+        let derived = [
+            (ChainFamily::Ton, id("ton"), main),
+            (ChainFamily::Evm, id("bsc"), evm),
+            (ChainFamily::Ton, id("ton-testnet"), test),
+            (ChainFamily::Evm, id("bsc-testnet"), evm),
+        ];
+        let grouped: Vec<(ChainFamily, Option<NetworkId>, Address)> = accounts(wallet, &derived)
+            .into_iter()
+            .map(|account| (account.family, account.network, account.address))
+            .collect();
+        assert_eq!(
+            grouped,
+            [
+                (ChainFamily::Evm, None, evm),
+                (ChainFamily::Ton, Some(id("ton")), main),
+                (ChainFamily::Ton, Some(id("ton-testnet")), test),
+            ]
+        );
+        let ton = accounts(wallet, &derived)[1].clone();
+        assert!(ton.serves(&id("ton"), ChainFamily::Ton));
+        assert!(!ton.serves(&id("ton-testnet"), ChainFamily::Ton));
+        assert!(!ton.serves(&id("ton"), ChainFamily::Evm));
+    }
 }

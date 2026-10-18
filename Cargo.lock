@@ -879,6 +879,7 @@ dependencies = [
  "bahaa-evm",
  "bahaa-market",
  "bahaa-store",
+ "bahaa-ton",
  "bahaa-tron",
  "bahaa-types",
  "bahaa-vault",
@@ -990,6 +991,19 @@ dependencies = [
 [[package]]
 name = "bahaa-ton"
 version = "0.0.0"
+dependencies = [
+ "bahaa-chain",
+ "bahaa-config",
+ "bahaa-crypto",
+ "bahaa-types",
+ "base64 0.23.1",
+ "reqwest",
+ "ruint",
+ "serde_json",
+ "tokio",
+ "tonlib-core",
+ "url",
+]
 
 [[package]]
 name = "bahaa-tron"

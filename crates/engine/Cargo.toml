@@ -14,6 +14,7 @@ bahaa-crypto.workspace = true
 bahaa-evm.workspace = true
 bahaa-market.workspace = true
 bahaa-store.workspace = true
+bahaa-ton.workspace = true
 bahaa-tron.workspace = true
 bahaa-types.workspace = true
 bahaa-vault.workspace = true

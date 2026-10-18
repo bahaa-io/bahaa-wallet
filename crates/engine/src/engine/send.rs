@@ -105,7 +105,9 @@ impl Worker {
         let from = self
             .accounts
             .iter()
-            .find(|account| account.wallet == request.wallet && account.family == family)
+            .find(|account| {
+                account.wallet == request.wallet && account.serves(request.asset.network(), family)
+            })
             .ok_or(KeyringError::UnknownWallet)?
             .address;
         if request.asset.contract() == Some(&request.to) {

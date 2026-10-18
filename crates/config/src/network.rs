@@ -100,9 +100,17 @@ pub struct Token {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChainKind {
-    Evm { chain_id: u64, fee: FeeModel },
-    Tron { genesis: [u8; 32] },
-    Ton,
+    Evm {
+        chain_id: u64,
+        fee: FeeModel,
+    },
+    Tron {
+        genesis: [u8; 32],
+    },
+    Ton {
+        global_id: i32,
+        zero_state: [u8; 32],
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,7 +147,7 @@ impl Network {
         match self.kind {
             ChainKind::Evm { .. } => ChainFamily::Evm,
             ChainKind::Tron { .. } => ChainFamily::Tron,
-            ChainKind::Ton => ChainFamily::Ton,
+            ChainKind::Ton { .. } => ChainFamily::Ton,
         }
     }
 
@@ -210,6 +218,10 @@ struct Spec {
     fee: Option<FeeModel>,
     #[serde(default)]
     genesis: Option<String>,
+    #[serde(default)]
+    global_id: Option<i32>,
+    #[serde(default)]
+    zero_state: Option<String>,
     testnet: bool,
     native: Coin,
     #[serde(default)]
@@ -238,34 +250,38 @@ impl Spec {
         if !is_plain_text(&self.name, MAX_NAME) {
             return Err(problem("name must be 1 to 40 printable characters"));
         }
-        let kind = match (
-            self.family,
-            self.chain_id,
-            self.fee,
-            self.genesis.as_deref(),
-        ) {
-            (ChainFamily::Evm, Some(chain_id), Some(fee), None) if chain_id > 0 => {
+        let kind = match (self.family, self.chain_id, self.fee) {
+            (ChainFamily::Evm, Some(chain_id), Some(fee)) if chain_id > 0 => {
                 ChainKind::Evm { chain_id, fee }
             }
-            (ChainFamily::Evm, _, _, None) => {
+            (ChainFamily::Evm, _, _) => {
                 return Err(problem(
                     "EVM networks need a non-zero chain_id and a fee model",
                 ));
             }
-            (ChainFamily::Tron, None, None, Some(genesis)) => ChainKind::Tron {
-                genesis: block_id(genesis)
-                    .ok_or_else(|| problem("the genesis block id must be 64 hex digits"))?,
+            (ChainFamily::Tron, None, None) => ChainKind::Tron {
+                genesis: block_id(self.genesis.as_deref())
+                    .ok_or_else(|| problem("Tron networks need a 64 hex digit genesis"))?,
             },
-            (ChainFamily::Tron, None, None, None) => {
-                return Err(problem("Tron networks need their genesis block id"));
-            }
-            (ChainFamily::Ton, None, None, None) => ChainKind::Ton,
-            _ => {
-                return Err(problem(
-                    "only EVM networks have chain_id and fee, only Tron networks have genesis",
-                ));
-            }
+            (ChainFamily::Ton, None, None) => ChainKind::Ton {
+                global_id: self
+                    .global_id
+                    .ok_or_else(|| problem("TON networks need their global_id"))?,
+                zero_state: block_id(self.zero_state.as_deref())
+                    .ok_or_else(|| problem("TON networks need a 64 hex digit zero_state"))?,
+            },
+            _ => return Err(problem("only EVM networks have chain_id and fee")),
         };
+        let foreign = match self.family {
+            ChainFamily::Evm => {
+                self.genesis.is_some() || self.global_id.is_some() || self.zero_state.is_some()
+            }
+            ChainFamily::Tron => self.global_id.is_some() || self.zero_state.is_some(),
+            ChainFamily::Ton => self.genesis.is_some(),
+        };
+        if foreign {
+            return Err(problem("a field belongs to another chain family"));
+        }
         self.native
             .check()
             .map_err(|text| problem(&format!("native coin {text}")))?;
@@ -351,7 +367,8 @@ impl Coin {
     }
 }
 
-fn block_id(text: &str) -> Option<[u8; 32]> {
+fn block_id(text: Option<&str>) -> Option<[u8; 32]> {
+    let text = text?;
     if text.len() != 64 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
@@ -447,7 +464,16 @@ mod tests {
             assert_eq!(genesis[..8], [0; 8]);
             assert_eq!((genesis[8], genesis[31]), (start, end));
         }
-        assert_eq!(network("ton").kind, ChainKind::Ton);
+        for (id, global_id, first) in [("ton", -239, 0x17), ("ton-testnet", -3, 0x82)] {
+            let ChainKind::Ton {
+                global_id: found,
+                zero_state,
+            } = network(id).kind
+            else {
+                panic!("{id} is not a TON network");
+            };
+            assert_eq!((found, zero_state[0]), (global_id, first));
+        }
     }
 
     #[test]
@@ -524,6 +550,10 @@ mod tests {
                 Box::new(|n| n["genesis"] = format!("+f{}", "0".repeat(62)).into()),
             ),
             ("bsc", Box::new(|n| n["genesis"] = "0".repeat(64).into())),
+            ("ton", Box::new(|n| n["global_id"] = Value::Null)),
+            ("ton", Box::new(|n| n["zero_state"] = "17a3".into())),
+            ("ton", Box::new(|n| n["genesis"] = "0".repeat(64).into())),
+            ("tron", Box::new(|n| n["global_id"] = (-239).into())),
             (
                 "bsc",
                 Box::new(|n| n["endpoints"][0]["protocol"] = "tron-http".into()),

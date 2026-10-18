@@ -611,18 +611,18 @@ impl Worker {
         let chains = Arc::clone(&self.chains);
         let derived = self
             .keyring(move |keyring| {
-                let families = chains::per_family(&chains);
                 let mut accounts = Vec::new();
                 for wallet in keyring.wallets()? {
                     let seed = keyring.seed(wallet.id)?;
-                    for chain in &families {
-                        accounts.push(Account {
-                            wallet: wallet.id,
-                            family: chain.family(),
-                            index: 0,
-                            address: chain.derive(seed, 0)?,
-                        });
+                    let mut derived = Vec::with_capacity(chains.len());
+                    for chain in chains.iter() {
+                        derived.push((
+                            chain.family(),
+                            chain.network().id.clone(),
+                            chain.derive(seed, 0)?,
+                        ));
                     }
+                    accounts.extend(chains::accounts(wallet.id, &derived));
                 }
                 Ok::<_, EngineError>(accounts)
             })

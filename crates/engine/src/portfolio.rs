@@ -13,6 +13,13 @@ pub struct Account {
     pub family: ChainFamily,
     pub index: u32,
     pub address: Address,
+    pub network: Option<NetworkId>,
+}
+
+impl Account {
+    pub fn serves(&self, network: &NetworkId, family: ChainFamily) -> bool {
+        self.family == family && self.network.as_ref().is_none_or(|only| only == network)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

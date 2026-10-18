@@ -102,6 +102,7 @@ impl Http {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert(key);
+            tokio::time::sleep(Duration::from_millis(u64::from(endpoint.min_gap_ms))).await;
         }
         self.send(&endpoint.url, path, request).await
     }

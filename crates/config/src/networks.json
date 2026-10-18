@@ -420,6 +420,8 @@
     "id": "ton",
     "name": "TON",
     "family": "ton",
+    "global_id": -239,
+    "zero_state": "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321fb05569",
     "testnet": false,
     "native": {
       "symbol": "GRAM",
@@ -518,6 +520,8 @@
     "id": "ton-testnet",
     "name": "TON Testnet",
     "family": "ton",
+    "global_id": -3,
+    "zero_state": "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879e95a128",
     "testnet": true,
     "native": {
       "symbol": "tGRAM",
