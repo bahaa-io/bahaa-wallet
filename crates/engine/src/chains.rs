@@ -7,7 +7,7 @@ use bahaa_chain::{
 use bahaa_config::{Network, Registry};
 use bahaa_crypto::{Seed, SeedKind};
 use bahaa_evm::{EvmChain, EvmPlan};
-use bahaa_store::{CustomToken, Received, Scan, TrustedBlock};
+use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock};
 use bahaa_ton::{TonChain, TonPlan};
 use bahaa_tron::{TronChain, TronPlan};
 use bahaa_types::{Address, AssetId, ChainFamily, NetworkId, TonContract};
@@ -222,13 +222,13 @@ pub(crate) struct Fetched {
     pub generation: u64,
     pub held: Vec<Held>,
     pub health: Vec<NetworkHealth>,
-    pub scans: Vec<(Scan, Vec<Received>)>,
+    pub scans: Vec<(Scan, Vec<Received>, Vec<Outgoing>)>,
 }
 
 struct NetworkFetch {
     held: Vec<Held>,
     health: NetworkHealth,
-    scans: Vec<(Scan, Vec<Received>)>,
+    scans: Vec<(Scan, Vec<Received>, Vec<Outgoing>)>,
 }
 
 pub(crate) async fn fetch(
@@ -322,7 +322,11 @@ fn cursor_of(scan: &Scan) -> ScanCursor {
     }
 }
 
-fn scan_of(network: &NetworkId, address: &Address, scanned: Scanned) -> (Scan, Vec<Received>) {
+fn scan_of(
+    network: &NetworkId,
+    address: &Address,
+    scanned: Scanned,
+) -> (Scan, Vec<Received>, Vec<Outgoing>) {
     let scan = Scan {
         network: network.clone(),
         address: *address,
@@ -345,7 +349,22 @@ fn scan_of(network: &NetworkId, address: &Address, scanned: Scanned) -> (Scan, V
             time: incoming.time,
         })
         .collect();
-    (scan, found)
+    let sent = scanned
+        .sent
+        .into_iter()
+        .map(|outgoing: bahaa_chain::Outgoing| Outgoing {
+            id: outgoing.id.to_string(),
+            index: outgoing.index,
+            network: network.clone(),
+            from: outgoing.from,
+            to: outgoing.to,
+            asset: outgoing.asset,
+            amount: outgoing.amount,
+            block: outgoing.block,
+            time: outgoing.time,
+        })
+        .collect();
+    (scan, found, sent)
 }
 
 pub(crate) fn now() -> u64 {

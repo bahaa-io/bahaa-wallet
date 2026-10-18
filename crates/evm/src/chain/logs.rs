@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use bahaa_chain::{ChainError, Incoming, ScanCursor, Scanned, TxId};
+use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId};
 use bahaa_config::Feature;
 use bahaa_types::{Address, AssetId};
 use ruint::aliases::U256;
@@ -21,10 +21,16 @@ struct Range {
     reset: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    Received,
+    Sent,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Log {
     contract: [u8; 20],
-    from: [u8; 20],
+    other: [u8; 20],
     units: U256,
     block: u64,
     id: String,
@@ -42,11 +48,11 @@ impl EvmChain {
 
     pub async fn scan(
         &self,
-        to: &Address,
+        owner: &Address,
         tokens: &[AssetId],
         cursor: Option<ScanCursor>,
     ) -> Result<Option<Scanned>, ChainError> {
-        let recipient = bytes(to)?;
+        let ours = bytes(owner)?;
         let head = block_number(&self.logs_call("eth_blockNumber", json!([])).await?)?;
         let Some(range) = plan(cursor, head) else {
             return Ok(None);
@@ -57,33 +63,52 @@ impl EvmChain {
             .filter_map(|asset| Some((asset, bytes(asset.contract()?).ok()?)))
             .collect();
         let mut times = HashMap::new();
-        let mut found = Vec::new();
+        let (mut found, mut sent) = (Vec::new(), Vec::new());
         if !tokens.is_empty() {
             let mut from = range.from;
             while from <= range.until {
                 let until = range.until.min(from.saturating_add(CHUNK - 1));
-                for log in self.logs(&tokens, &recipient, from, until).await? {
-                    let Some((asset, contract)) = tokens
-                        .iter()
-                        .find(|(_, contract)| *contract == log.contract)
-                    else {
-                        continue;
-                    };
-                    let decimals = self.token_decimals(contract).await?;
-                    let time = match log.time {
-                        Some(time) => time,
-                        None => self.block_time(log.block, &mut times).await?,
-                    };
-                    found.push(Incoming {
-                        id: TxId::new(log.id)?,
-                        index: log.index,
-                        from: Address::Evm(log.from),
-                        to: *to,
-                        asset: (*asset).clone(),
-                        amount: amount(log.units, decimals)?,
-                        block: log.block,
-                        time,
-                    });
+                for side in [Side::Received, Side::Sent] {
+                    for log in self.logs(&tokens, &ours, side, from, until).await? {
+                        let Some((asset, contract)) = tokens
+                            .iter()
+                            .find(|(_, contract)| *contract == log.contract)
+                        else {
+                            continue;
+                        };
+                        let decimals = self.token_decimals(contract).await?;
+                        let time = match log.time {
+                            Some(time) => time,
+                            None => self.block_time(log.block, &mut times).await?,
+                        };
+                        let (id, asset, amount) = (
+                            TxId::new(log.id)?,
+                            (*asset).clone(),
+                            amount(log.units, decimals)?,
+                        );
+                        match side {
+                            Side::Received => found.push(Incoming {
+                                id,
+                                index: log.index,
+                                from: Address::Evm(log.other),
+                                to: *owner,
+                                asset,
+                                amount,
+                                block: log.block,
+                                time,
+                            }),
+                            Side::Sent => sent.push(Outgoing {
+                                id,
+                                index: log.index,
+                                from: *owner,
+                                to: Address::Evm(log.other),
+                                asset,
+                                amount,
+                                block: log.block,
+                                time,
+                            }),
+                        }
+                    }
                 }
                 from = until + 1;
             }
@@ -99,28 +124,35 @@ impl EvmChain {
                 complete_since,
             },
             found,
+            sent,
         }))
     }
 
     async fn logs(
         &self,
         tokens: &[(&AssetId, [u8; 20])],
-        recipient: &[u8; 20],
+        owner: &[u8; 20],
+        side: Side,
         from: u64,
         until: u64,
     ) -> Result<Vec<Log>, ChainError> {
         let contracts: Vec<String> = tokens.iter().map(|(_, contract)| hex(contract)).collect();
+        let ours = Value::String(format!("0x{}", word(owner)));
+        let topics = match side {
+            Side::Received => json!([TRANSFER_TOPIC, null, ours]),
+            Side::Sent => json!([TRANSFER_TOPIC, ours]),
+        };
         let filter = json!([{
             "address": contracts,
             "fromBlock": number(from),
             "toBlock": number(until),
-            "topics": [TRANSFER_TOPIC, null, format!("0x{}", word(recipient))],
+            "topics": topics,
         }]);
         let reply = self.logs_call("eth_getLogs", filter).await?;
         let logs = reply.as_array().ok_or_else(malformed)?;
         Ok(logs
             .iter()
-            .filter_map(|log| parse(log, recipient, from, until))
+            .filter_map(|log| parse(log, owner, side, from, until))
             .collect())
     }
 
@@ -165,16 +197,20 @@ fn plan(cursor: Option<ScanCursor>, head: u64) -> Option<Range> {
     }
 }
 
-fn parse(log: &Value, recipient: &[u8; 20], from: u64, until: u64) -> Option<Log> {
+fn parse(log: &Value, owner: &[u8; 20], side: Side, from: u64, until: u64) -> Option<Log> {
     if log["removed"].as_bool() == Some(true) {
         return None;
     }
     let topics = log["topics"].as_array()?;
-    let to_us = format!("0x{}", word(recipient));
-    if topics.len() != 3 || !same(&topics[0], TRANSFER_TOPIC) || !same(&topics[2], &to_us) {
+    let ours = format!("0x{}", word(owner));
+    let (mine, theirs) = match side {
+        Side::Received => (2, 1),
+        Side::Sent => (1, 2),
+    };
+    if topics.len() != 3 || !same(&topics[0], TRANSFER_TOPIC) || !same(&topics[mine], &ours) {
         return None;
     }
-    let sender = padded_address(topics[1].as_str()?)?;
+    let other = padded_address(topics[theirs].as_str()?)?;
     let contract = decode20(digits(log["address"].as_str()?, 40)?)?;
     let units = U256::from_str_radix(digits(log["data"].as_str()?, 64)?, 16).ok()?;
     let block = block_number(&log["blockNumber"]).ok()?;
@@ -185,7 +221,7 @@ fn parse(log: &Value, recipient: &[u8; 20], from: u64, until: u64) -> Option<Log
     digits(&id, 64)?;
     Some(Log {
         contract,
-        from: sender,
+        other,
         units,
         block,
         id,
@@ -287,9 +323,9 @@ mod tests {
 
     #[test]
     fn reads_a_plain_token_transfer_to_us() {
-        let parsed = parse(&log(), &ME, 100, 100).unwrap();
+        let parsed = parse(&log(), &ME, Side::Received, 100, 100).unwrap();
         assert_eq!(parsed.contract, TOKEN);
-        assert_eq!(parsed.from, SENDER);
+        assert_eq!(parsed.other, SENDER);
         assert_eq!(parsed.units, U256::from(1_500_000u64));
         assert_eq!(
             (parsed.block, parsed.index, parsed.time),
@@ -298,7 +334,18 @@ mod tests {
         assert_eq!(parsed.id, format!("0x{}", "ab".repeat(32)));
         let mut untimed = log();
         untimed.as_object_mut().unwrap().remove("blockTimestamp");
-        assert_eq!(parse(&untimed, &ME, 0, 200).unwrap().time, None);
+        assert_eq!(
+            parse(&untimed, &ME, Side::Received, 0, 200).unwrap().time,
+            None
+        );
+    }
+
+    #[test]
+    fn reads_the_same_transfer_as_sent_from_the_senders_side() {
+        let sent = parse(&log(), &SENDER, Side::Sent, 100, 100).unwrap();
+        assert_eq!((sent.other, sent.units), (ME, U256::from(1_500_000u64)));
+        assert_eq!(parse(&log(), &SENDER, Side::Received, 100, 100), None);
+        assert_eq!(parse(&log(), &ME, Side::Sent, 100, 100), None);
     }
 
     #[test]
@@ -342,13 +389,18 @@ mod tests {
         for (field, value) in edits {
             let mut bad = log();
             bad[field] = value;
-            assert_eq!(parse(&bad, &ME, 100, 100), None, "{field}: {}", bad[field]);
+            assert_eq!(
+                parse(&bad, &ME, Side::Received, 100, 100),
+                None,
+                "{field}: {}",
+                bad[field]
+            );
         }
         let mut nft = log();
         nft["topics"]
             .as_array_mut()
             .unwrap()
             .push(json!(format!("0x{:064x}", 1)));
-        assert_eq!(parse(&nft, &ME, 100, 100), None);
+        assert_eq!(parse(&nft, &ME, Side::Received, 100, 100), None);
     }
 }

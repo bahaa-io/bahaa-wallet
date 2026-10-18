@@ -44,6 +44,18 @@ fn usdt_to_us(block: u64) -> Value {
     })
 }
 
+fn usdt_from_us(block: u64) -> Value {
+    json!({
+        "address": USDT,
+        "topics": [TRANSFER, padded(HARDHAT_0), padded(HARDHAT_1)],
+        "data": format!("0x{:064x}", 1_000_000_000_000_000_000u128),
+        "blockNumber": format!("0x{block:x}"),
+        "transactionHash": format!("0x{:064x}", block + 1),
+        "logIndex": "0x1",
+        "removed": false
+    })
+}
+
 async fn bsc(chain: &Arc<FakeChain>) -> Registry {
     let chain = Arc::clone(chain);
     let url = common::node(move |call| {
@@ -55,6 +67,17 @@ async fn bsc(chain: &Arc<FakeChain>) -> Registry {
             "eth_blockNumber" => json!(format!("0x{:x}", chain.head.load(Ordering::SeqCst))),
             "eth_getBlockByNumber" => {
                 json!({"timestamp": format!("0x{:x}", GENESIS + number(&params[0]))})
+            }
+            "eth_getLogs" if params[0]["topics"][1] == json!(padded(HARDHAT_0)) => {
+                let (from, to) = (
+                    number(&params[0]["fromBlock"]),
+                    number(&params[0]["toBlock"]),
+                );
+                json!(if (from..=to).contains(&8_000) {
+                    vec![usdt_from_us(8_000)]
+                } else {
+                    Vec::new()
+                })
             }
             "eth_getLogs" => {
                 let (from, to) = (
@@ -140,6 +163,22 @@ async fn incoming_tokens_are_found_kept_and_scanned_onward() {
     assert_eq!((entry.block, entry.time), (9_000, GENESIS + 9_000));
     let incoming = engine.incoming().await.unwrap();
     assert_eq!(incoming.transfers, fresh);
+    let elsewhere = engine.outgoing().await.unwrap();
+    assert_eq!(elsewhere.len(), 1);
+    assert_eq!(
+        (
+            elsewhere[0].from.to_string(),
+            elsewhere[0].to.to_string(),
+            elsewhere[0].amount.to_string(),
+            elsewhere[0].block
+        ),
+        (
+            HARDHAT_0.to_owned(),
+            HARDHAT_1.to_owned(),
+            "1".to_owned(),
+            8_000
+        )
+    );
     let coverage = &incoming.coverage[0];
     assert_eq!(
         (

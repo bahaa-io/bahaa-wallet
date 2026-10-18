@@ -197,9 +197,22 @@ pub struct Incoming {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outgoing {
+    pub id: TxId,
+    pub index: u64,
+    pub from: Address,
+    pub to: Address,
+    pub asset: AssetId,
+    pub amount: Amount,
+    pub block: u64,
+    pub time: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scanned {
     pub cursor: ScanCursor,
     pub found: Vec<Incoming>,
+    pub sent: Vec<Outgoing>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

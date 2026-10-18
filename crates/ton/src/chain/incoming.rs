@@ -61,6 +61,7 @@ impl TonChain {
         Ok(Some(Scanned {
             cursor: next,
             found,
+            sent: Vec::new(),
         }))
     }
 

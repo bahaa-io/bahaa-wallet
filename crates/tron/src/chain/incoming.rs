@@ -67,6 +67,7 @@ impl TronChain {
                 complete_since: complete_from / 1000,
             },
             found,
+            sent: Vec::new(),
         }))
     }
 

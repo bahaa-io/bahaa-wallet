@@ -11,7 +11,9 @@ use bahaa_chain::ChainError;
 use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
-use bahaa_store::{Contact, CustomToken, Received, Scan, SentTx, Store, StoreError, TrustedBlock};
+use bahaa_store::{
+    Contact, CustomToken, Outgoing, Received, Scan, SentTx, Store, StoreError, TrustedBlock,
+};
 use bahaa_types::{Address, NetworkId, TonContract};
 use bahaa_vault::KdfParams;
 use thiserror::Error;
@@ -102,6 +104,7 @@ pub enum Event {
     TxUpdated(Box<SentTx>),
     Received(Vec<Arrival>),
     ContactsChanged(Vec<Contact>),
+    SentElsewhere(Vec<Outgoing>),
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
@@ -130,6 +133,7 @@ enum Command {
     ConfirmSend(DraftId, SecretString, Reply<SentTx>),
     History(Reply<Vec<SentTx>>),
     Incoming(Reply<IncomingHistory>),
+    Outgoing(Reply<Vec<Outgoing>>),
     Contacts(Reply<Vec<Contact>>),
     SaveContact(Contact, Reply<()>),
     RemoveContact(NetworkId, Address, Reply<bool>),
@@ -153,6 +157,7 @@ impl Command {
                 | Self::Settings(_)
                 | Self::History(_)
                 | Self::Incoming(_)
+                | Self::Outgoing(_)
                 | Self::Contacts(_)
                 | Self::Cautions(..)
                 | Self::Shutdown(_)
@@ -190,6 +195,8 @@ impl Engine {
         let scans = store.scans()?;
         let mut received = store.received()?;
         incoming::sort(&mut received);
+        let mut outgoing = store.outgoing()?;
+        incoming::sort_sent(&mut outgoing);
         let registry = match registry {
             Some(registry) => registry,
             None => Registry::builtin()?,
@@ -245,6 +252,7 @@ impl Engine {
             history,
             scans,
             received,
+            outgoing,
             trusted,
             broadcasting: BTreeSet::new(),
             tracking: None,
@@ -385,6 +393,10 @@ impl Engine {
         self.ask(Command::History).await
     }
 
+    pub async fn outgoing(&self) -> Result<Vec<Outgoing>, EngineError> {
+        self.ask(Command::Outgoing).await
+    }
+
     pub async fn contacts(&self) -> Result<Vec<Contact>, EngineError> {
         self.ask(Command::Contacts).await
     }
@@ -460,6 +472,7 @@ struct Worker {
     history: Vec<SentTx>,
     scans: Vec<Scan>,
     received: Vec<Received>,
+    outgoing: Vec<Outgoing>,
     trusted: Vec<TrustedBlock>,
     broadcasting: BTreeSet<String>,
     tracking: Option<JoinHandle<()>>,
@@ -535,6 +548,7 @@ impl Worker {
             }
             Command::History(reply) => answer(reply, self.history()),
             Command::Incoming(reply) => answer(reply, self.incoming()),
+            Command::Outgoing(reply) => answer(reply, self.outgoing()),
             Command::Contacts(reply) => answer(reply, self.contacts()),
             Command::SaveContact(contact, reply) => answer(reply, self.save_contact(&contact)),
             Command::RemoveContact(network, address, reply) => {

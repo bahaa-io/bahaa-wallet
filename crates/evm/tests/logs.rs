@@ -29,9 +29,13 @@ fn padded(address: &str) -> String {
 }
 
 fn transfer_log(block: u64, value: u128, timestamp: bool) -> Value {
+    moved(block, value, timestamp, (SENDER, common::OWNER))
+}
+
+fn moved(block: u64, value: u128, timestamp: bool, (from, to): (&str, &str)) -> Value {
     let mut log = json!({
         "address": USDT.to_ascii_lowercase(),
-        "topics": [TRANSFER, padded(SENDER), padded(common::OWNER)],
+        "topics": [TRANSFER, padded(from), padded(to)],
         "data": format!("0x{value:064x}"),
         "blockNumber": format!("0x{block:x}"),
         "transactionHash": format!("0x{block:064x}"),
@@ -56,12 +60,21 @@ async fn ledger(log: Log, asked: Asked, head: u64) -> url::Url {
         "eth_getLogs" => {
             let filter = params[0].clone();
             let (from, to) = (number(&filter["fromBlock"]), number(&filter["toBlock"]));
+            let sending = filter["topics"][1] == json!(padded(common::OWNER));
             asked.lock().unwrap().push(filter);
-            let logs: Vec<Value> = [(6_000, true), (9_000, false)]
-                .into_iter()
-                .filter(|(block, _)| (from..=to).contains(block))
-                .map(|(block, timestamp)| transfer_log(block, 2_500_000_000_000_000_000, timestamp))
-                .collect();
+            let logs: Vec<Value> = if sending {
+                [7_000]
+                    .into_iter()
+                    .filter(|block| (from..=to).contains(block))
+                    .map(|block| moved(block, 1_000_000_000_000_000_000, true, (common::OWNER, SENDER)))
+                    .collect()
+            } else {
+                [(6_000, true), (9_000, false)]
+                    .into_iter()
+                    .filter(|(block, _)| (from..=to).contains(block))
+                    .map(|(block, timestamp)| transfer_log(block, 2_500_000_000_000_000_000, timestamp))
+                    .collect()
+            };
             result(&json!(logs))
         }
         _ => (200, json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "no such method"}})),
@@ -117,10 +130,34 @@ async fn a_first_scan_reaches_back_in_chunks_and_fills_missing_times() {
         .iter()
         .map(|filter| (number(&filter["fromBlock"]), number(&filter["toBlock"])))
         .collect();
-    assert_eq!(ranges, [(5_989, 7_988), (7_989, 9_988)]);
+    assert_eq!(
+        ranges,
+        [
+            (5_989, 7_988),
+            (5_989, 7_988),
+            (7_989, 9_988),
+            (7_989, 9_988)
+        ]
+    );
     assert_eq!(asked[0]["address"].as_array().unwrap().len(), 2);
     assert_eq!(asked[0]["topics"][2], json!(padded(common::OWNER)));
     assert_eq!(asked[0]["topics"][1], Value::Null);
+    assert_eq!(asked[1]["topics"][1], json!(padded(common::OWNER)));
+    assert_eq!(asked[1]["topics"].as_array().unwrap().len(), 2);
+    let sent: Vec<(u64, String, Address)> = scanned
+        .sent
+        .iter()
+        .map(|entry| (entry.block, entry.amount.to_string(), entry.to))
+        .collect();
+    assert_eq!(
+        sent,
+        [(
+            7_000,
+            "1".to_owned(),
+            Address::parse(bahaa_types::ChainFamily::Evm, SENDER).unwrap()
+        )]
+    );
+    assert_eq!(scanned.sent[0].from, owner());
 }
 
 #[tokio::test]
@@ -152,13 +189,14 @@ async fn later_scans_continue_from_the_cursor_and_wait_when_caught_up() {
     );
     assert_eq!(scanned.found.len(), 1);
     assert_eq!(scanned.found[0].time, 18_000);
-    assert_eq!(asked.lock().unwrap().len(), 1);
+    assert_eq!(scanned.sent, Vec::new());
+    assert_eq!(asked.lock().unwrap().len(), 2);
     let caught_up = chain
         .scan(&owner(), &assets(&TOKENS), Some(scanned.cursor))
         .await
         .unwrap();
     assert_eq!(caught_up, None);
-    assert_eq!(asked.lock().unwrap().len(), 1);
+    assert_eq!(asked.lock().unwrap().len(), 2);
     let natives_only = chain
         .scan(&owner(), &assets(&["bsc"]), None)
         .await
@@ -166,7 +204,7 @@ async fn later_scans_continue_from_the_cursor_and_wait_when_caught_up() {
         .unwrap();
     assert_eq!(natives_only.found, Vec::<Incoming>::new());
     assert_eq!(natives_only.cursor.next, 9_989);
-    assert_eq!(asked.lock().unwrap().len(), 1);
+    assert_eq!(asked.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -222,6 +260,15 @@ async fn live_bsc_incoming_usdt() {
     );
     for entry in &scanned.found {
         assert_eq!(entry.to, busy);
+        assert!(!entry.amount.is_zero());
+        assert!((scanned.cursor.complete_from..scanned.cursor.next).contains(&entry.block));
+    }
+    assert!(
+        !scanned.sent.is_empty(),
+        "no outgoing USDT or USDC in the last 4000 blocks"
+    );
+    for entry in &scanned.sent {
+        assert_eq!(entry.from, busy);
         assert!(!entry.amount.is_zero());
         assert!((scanned.cursor.complete_from..scanned.cursor.next).contains(&entry.block));
     }

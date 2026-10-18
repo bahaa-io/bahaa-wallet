@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
 use bahaa_store::{
-    Contact, CustomToken, Received, Scan, SentStatus, SentTx, Store, StoreError, TrustedBlock,
+    Contact, CustomToken, Outgoing, Received, Scan, SentStatus, SentTx, Store, StoreError,
+    TrustedBlock,
 };
 use bahaa_types::{Address, Amount, ChainFamily};
 use redb::{Database, TableDefinition};
@@ -259,6 +260,22 @@ fn scan(next: u64) -> Scan {
     }
 }
 
+fn outgoing(index: u64) -> Outgoing {
+    Outgoing {
+        id: format!("0x{}", "aa".repeat(32)),
+        index,
+        network: "bsc".parse().unwrap(),
+        from: evm("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+        to: evm("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+        asset: "bsc/0x55d398326f99059fF775485246999027B3197955"
+            .parse()
+            .unwrap(),
+        amount: Amount::parse("3", 18).unwrap(),
+        block: 160,
+        time: 1_760_000_400,
+    }
+}
+
 fn received(index: u64) -> Received {
     Received {
         id: format!("0x{}", "ef".repeat(32)),
@@ -281,13 +298,16 @@ fn a_scan_and_what_it_found_are_saved_together() {
     {
         let store = Store::open(&scratch.file()).unwrap();
         store
-            .save_scan(&scan(200), &[received(1), received(2)])
+            .save_scan(&scan(200), &[received(1), received(2)], &[outgoing(4)])
             .unwrap();
-        store.save_scan(&scan(300), &[received(2)]).unwrap();
+        store
+            .save_scan(&scan(300), &[received(2)], &[outgoing(4), outgoing(5)])
+            .unwrap();
     }
     let store = Store::open(&scratch.file()).unwrap();
     assert_eq!(store.scans().unwrap(), [scan(300)]);
     assert_eq!(store.received().unwrap(), [received(1), received(2)]);
+    assert_eq!(store.outgoing().unwrap(), [outgoing(4), outgoing(5)]);
 }
 
 #[test]
@@ -300,18 +320,25 @@ fn a_bad_scan_saves_nothing() {
     hidden.id = "0xef\u{202E}".to_owned();
     let mut backwards = scan(200);
     backwards.complete_from = 201;
-    for (scan, found) in [
-        (scan(200), vec![received(3), foreign]),
-        (scan(200), vec![hidden]),
-        (backwards, Vec::new()),
+    let mut stranger = outgoing(1);
+    stranger.from = evm("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
+    let mut odd = outgoing(2);
+    odd.id = "0xef\u{202E}".to_owned();
+    for (scan, found, sent) in [
+        (scan(200), vec![received(3), foreign], Vec::new()),
+        (scan(200), vec![hidden], Vec::new()),
+        (backwards, Vec::new(), Vec::new()),
+        (scan(200), vec![received(3)], vec![stranger]),
+        (scan(200), Vec::new(), vec![odd]),
     ] {
         assert!(matches!(
-            store.save_scan(&scan, &found),
+            store.save_scan(&scan, &found, &sent),
             Err(StoreError::Invalid(_))
         ));
     }
     assert_eq!(store.scans().unwrap(), Vec::<Scan>::new());
     assert_eq!(store.received().unwrap(), Vec::<Received>::new());
+    assert_eq!(store.outgoing().unwrap(), Vec::<Outgoing>::new());
 }
 
 fn trusted(network: &str, seqno: u32) -> TrustedBlock {

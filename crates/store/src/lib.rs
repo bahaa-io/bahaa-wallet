@@ -22,6 +22,7 @@ const TOKENS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("toke
 const SENT: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("sent");
 const RECEIVED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("received");
 const SCANS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("scans");
+const OUTGOING: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("outgoing");
 const TRUSTED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("trusted");
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
@@ -94,6 +95,20 @@ impl SentStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Received {
+    pub id: String,
+    pub index: u64,
+    pub network: NetworkId,
+    pub from: Address,
+    pub to: Address,
+    pub asset: AssetId,
+    pub amount: Amount,
+    pub block: u64,
+    pub time: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Outgoing {
     pub id: String,
     pub index: u64,
     pub network: NetworkId,
@@ -226,7 +241,16 @@ impl Store {
         self.all(SCANS)
     }
 
-    pub fn save_scan(&self, scan: &Scan, found: &[Received]) -> Result<(), StoreError> {
+    pub fn outgoing(&self) -> Result<Vec<Outgoing>, StoreError> {
+        self.all(OUTGOING)
+    }
+
+    pub fn save_scan(
+        &self,
+        scan: &Scan,
+        found: &[Received],
+        sent: &[Outgoing],
+    ) -> Result<(), StoreError> {
         if scan.complete_from > scan.next {
             return Err(StoreError::Invalid(
                 "a scan cannot be complete beyond where it stopped",
@@ -242,12 +266,29 @@ impl Store {
                 ));
             }
         }
+        for entry in sent {
+            if !is_plain_text(&entry.id, MAX_TX_ID) {
+                return Err(StoreError::Invalid("not a transaction id"));
+            }
+            if entry.network != scan.network || entry.from != scan.address {
+                return Err(StoreError::Invalid(
+                    "a transfer must belong to the scan that found it",
+                ));
+            }
+        }
         let txn = self.db.begin_write().map_err(database)?;
         {
             let mut received = txn.open_table(RECEIVED).map_err(database)?;
             for entry in found {
                 let key = format!("{}/{}/{}", entry.network, entry.id, entry.index);
                 received
+                    .insert(key.as_str(), encode(entry)?.as_slice())
+                    .map_err(database)?;
+            }
+            let mut outgoing = txn.open_table(OUTGOING).map_err(database)?;
+            for entry in sent {
+                let key = format!("{}/{}/{}", entry.network, entry.id, entry.index);
+                outgoing
                     .insert(key.as_str(), encode(entry)?.as_slice())
                     .map_err(database)?;
             }
@@ -288,7 +329,9 @@ impl Store {
                     meta.insert(SCHEMA_KEY, SCHEMA).map_err(database)?;
                 }
             }
-            for table in [SETTINGS, CONTACTS, TOKENS, SENT, RECEIVED, SCANS, TRUSTED] {
+            for table in [
+                SETTINGS, CONTACTS, TOKENS, SENT, RECEIVED, SCANS, TRUSTED, OUTGOING,
+            ] {
                 txn.open_table(table).map_err(database)?;
             }
         }
