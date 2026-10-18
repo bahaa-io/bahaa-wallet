@@ -6,7 +6,7 @@ use bahaa_chain::{
 };
 use bahaa_config::{ChainKind, Checkpoint, Network};
 use bahaa_crypto::{DerivationPath, Seed, SeedKind};
-use bahaa_types::{Address, Amount, AssetId};
+use bahaa_types::{Address, Amount, AssetId, TonContract};
 use ed25519_dalek::SigningKey;
 use ruint::aliases::U256;
 
@@ -27,6 +27,7 @@ pub struct TonChain {
     http: Http,
     wallet_id: i32,
     jetton_wallets: Mutex<HashMap<(Address, Address), Address>>,
+    contracts: Mutex<HashMap<Address, TonContract>>,
 }
 
 impl TonChain {
@@ -45,7 +46,39 @@ impl TonChain {
             http,
             wallet_id: wallet::wallet_id(global_id),
             jetton_wallets: Mutex::new(HashMap::new()),
+            contracts: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub fn derive_as(
+        &self,
+        seed: &Seed,
+        account: u32,
+        contract: TonContract,
+    ) -> Result<Address, ChainError> {
+        let public = key(seed, account)?.verifying_key().to_bytes();
+        let address = wallet::address(contract, &public, self.subwallet(contract))?;
+        self.contracts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(address, contract);
+        Ok(address)
+    }
+
+    fn subwallet(&self, contract: TonContract) -> i32 {
+        match contract {
+            TonContract::W5 => self.wallet_id,
+            TonContract::V4R2 => wallet::V4R2_WALLET_ID,
+        }
+    }
+
+    fn contract(&self, address: &Address) -> TonContract {
+        self.contracts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(address)
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn checkpoint(&self) -> Checkpoint {
@@ -131,10 +164,7 @@ impl Chain for TonChain {
     }
 
     fn derive(&self, seed: &Seed, account: u32) -> Result<Address, ChainError> {
-        wallet::v5r1(
-            &key(seed, account)?.verifying_key().to_bytes(),
-            self.wallet_id,
-        )
+        self.derive_as(seed, account, TonContract::W5)
     }
 
     async fn balances(

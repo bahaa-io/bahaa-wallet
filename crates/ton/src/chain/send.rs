@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId};
 use bahaa_crypto::Seed;
-use bahaa_types::{Address, AssetId};
+use bahaa_types::{Address, AssetId, TonContract};
 use ed25519_dalek::{Signature, Signer};
 use ruint::aliases::U256;
 use tonlib_core::cell::BagOfCells;
@@ -10,7 +10,7 @@ use tonlib_core::cell::BagOfCells;
 use super::tokens::Contracts;
 use super::{TonChain, amount, hex, key};
 use crate::cells::{Account, Status};
-use crate::fees::{Settings, TRANSFER_GAS, size_without_root};
+use crate::fees::{Settings, size_without_root};
 use crate::wallet::{self, Order};
 
 pub(super) const LIFETIME: u64 = 300;
@@ -44,7 +44,7 @@ impl TonChain {
     ) -> Result<(TonPlan, FeeQuote), ChainError> {
         let token = self.sendable(transfer)?;
         let wallet = self.http.account(&transfer.from).await?;
-        let (seqno, deploy) = self.sequence(&wallet)?;
+        let (seqno, deploy, contract) = self.sequence(&wallet, &transfer.from)?;
         let now = now();
         let clock =
             u32::try_from(now).map_err(|_| ChainError::Invalid("the clock is out of range"))?;
@@ -54,7 +54,8 @@ impl TonChain {
             .ok_or_else(|| ChainError::Network("the fee settings cannot be read".to_owned()))?;
         let mut order = Order {
             wallet: transfer.from,
-            wallet_id: self.wallet_id,
+            contract,
+            wallet_id: self.subwallet(contract),
             seqno,
             valid_until: u32::try_from(now + LIFETIME)
                 .map_err(|_| ChainError::Invalid("the clock is out of range"))?,
@@ -106,7 +107,9 @@ impl TonChain {
         let gram = |nano: u64| amount(U256::from(nano), decimals);
         let mut lines = vec![
             FeeLine {
-                item: FeeItem::Compute { gas: TRANSFER_GAS },
+                item: FeeItem::Compute {
+                    gas: wallet::transfer_gas(contract),
+                },
                 amount: gram(fees.compute)?,
             },
             FeeLine {
@@ -165,26 +168,20 @@ impl TonChain {
         Ok(transfer.asset.contract().copied())
     }
 
-    fn sequence(&self, wallet: &Account) -> Result<(u32, bool), ChainError> {
+    fn sequence(
+        &self,
+        wallet: &Account,
+        address: &Address,
+    ) -> Result<(u32, bool, TonContract), ChainError> {
         match &wallet.status {
-            Status::Missing | Status::Uninit => Ok((0, true)),
+            Status::Missing | Status::Uninit => Ok((0, true, self.contract(address))),
             Status::Frozen => Err(ChainError::Invalid("this wallet is frozen and cannot send")),
             Status::Active { code, data } => {
-                if Some(*code) != wallet::v5r1_code_hash() {
-                    return Err(ChainError::Unsupported(
-                        "sending from wallets other than V5R1 yet",
-                    ));
-                }
-                let data = data
-                    .as_ref()
-                    .and_then(wallet::wallet_data)
-                    .ok_or(ChainError::Invalid("the wallet's data is unreadable"))?;
-                if data.wallet_id != self.wallet_id || !data.signature_allowed {
-                    return Err(ChainError::Invalid(
-                        "this wallet does not take signed transfers for this network",
-                    ));
-                }
-                Ok((data.seqno, false))
+                let contract = wallet::contract_of(code).ok_or(ChainError::Unsupported(
+                    "sending from wallets other than W5 and V4R2 yet",
+                ))?;
+                let seqno = wallet::seqno(contract, data.as_ref(), self.subwallet(contract))?;
+                Ok((seqno, false, contract))
             }
         }
     }
@@ -192,8 +189,10 @@ impl TonChain {
     pub(super) fn sign_plan(&self, plan: &TonPlan, seed: &Seed) -> Result<Signed, ChainError> {
         let key = key(seed, plan.transfer.account)?;
         let public = key.verifying_key().to_bytes();
-        if wallet::v5r1(&public, self.wallet_id)? != plan.transfer.from
+        let contract = plan.order.contract;
+        if wallet::address(contract, &public, self.subwallet(contract))? != plan.transfer.from
             || plan.order.wallet != plan.transfer.from
+            || plan.order.wallet_id != self.subwallet(contract)
         {
             return Err(ChainError::Invalid(
                 "this seed does not own the sending account",
@@ -226,7 +225,8 @@ impl TonChain {
         if hex(&parsed.id) != signed.id.as_str() {
             return Err(ChainError::Mismatch("the transaction id"));
         }
-        if parsed.order.wallet_id != self.wallet_id {
+        let contract = parsed.order.contract;
+        if parsed.order.wallet_id != self.subwallet(contract) {
             return Err(ChainError::Mismatch("the network"));
         }
         if let Some(public) = parsed.public_key {
@@ -234,7 +234,8 @@ impl TonChain {
                 .map_err(|_| ChainError::Invalid("the deployment has an unusable key"))?;
             key.verify_strict(&parsed.unsigned, &Signature::from_bytes(&parsed.signature))
                 .map_err(|_| ChainError::Invalid("the signature does not match the wallet"))?;
-            if wallet::v5r1(&public, self.wallet_id)? != parsed.order.wallet {
+            if wallet::address(contract, &public, self.subwallet(contract))? != parsed.order.wallet
+            {
                 return Err(ChainError::Invalid("the deployment is for another wallet"));
             }
         }
@@ -298,7 +299,9 @@ pub(crate) fn estimate(
         .and_then(|fee| fee.checked_add(due))
         .ok_or_else(overflow)?;
     Ok(Estimate {
-        compute: settings.gas_fee(TRANSFER_GAS).ok_or_else(overflow)?,
+        compute: settings
+            .gas_fee(wallet::transfer_gas(order.contract))
+            .ok_or_else(overflow)?,
         storage,
         forwarding: import.checked_add(forward).ok_or_else(overflow)?,
     })
@@ -347,7 +350,11 @@ mod tests {
     }
 
     fn plan(chain: &TonChain, deploy: bool) -> TonPlan {
-        let from = chain.derive(&seed(), 0).unwrap();
+        planned(chain, deploy, TonContract::W5)
+    }
+
+    fn planned(chain: &TonChain, deploy: bool, contract: TonContract) -> TonPlan {
+        let from = chain.derive_as(&seed(), 0, contract).unwrap();
         let to = Address::Ton {
             workchain: 0,
             hash: [0x5c; 32],
@@ -363,7 +370,8 @@ mod tests {
             },
             order: Order {
                 wallet: from,
-                wallet_id: chain.wallet_id,
+                contract,
+                wallet_id: chain.subwallet(contract),
                 seqno: if deploy { 0 } else { 7 },
                 valid_until: 1_792_400_000,
                 to,
@@ -378,8 +386,13 @@ mod tests {
     #[test]
     fn signed_transfers_decode_back_to_what_was_planned() {
         let ton = chain("ton");
-        for deploy in [false, true] {
-            let plan = plan(&ton, deploy);
+        for (deploy, contract) in [
+            (false, TonContract::W5),
+            (true, TonContract::W5),
+            (false, TonContract::V4R2),
+            (true, TonContract::V4R2),
+        ] {
+            let plan = planned(&ton, deploy, contract);
             let signed = ton.sign(&plan, &seed()).unwrap();
             let decoded = ton.decode(&signed).unwrap();
             bahaa_chain::check_signed(&plan.transfer, &decoded).unwrap();
@@ -486,28 +499,63 @@ mod tests {
             cell.store_bit(false).unwrap();
             Some(cell.build().unwrap().to_arc())
         };
-        let v5r1 = wallet::v5r1_code_hash().unwrap();
+        let older = |wallet_id: i32, seqno: u32| {
+            let mut cell = CellBuilder::new();
+            cell.store_u32(32, seqno).unwrap();
+            cell.store_i32(32, wallet_id)
+                .unwrap()
+                .store_slice(&[7; 32])
+                .unwrap();
+            cell.store_bit(false).unwrap();
+            Some(cell.build().unwrap().to_arc())
+        };
+        let v5r1 = wallet::code_hash(TonContract::W5).unwrap();
+        let v4r2 = wallet::code_hash(TonContract::V4R2).unwrap();
         let active = |code: [u8; 32], data| account_with(Status::Active { code, data });
-        assert_eq!(ton.sequence(&account_with(Status::Missing)), Ok((0, true)));
-        assert_eq!(ton.sequence(&account_with(Status::Uninit)), Ok((0, true)));
+        let nobody = Address::Ton {
+            workchain: 0,
+            hash: [0x5c; 32],
+        };
+        let derived = ton.derive_as(&seed(), 0, TonContract::V4R2).unwrap();
+        let sequence = |account: &Account| ton.sequence(account, &nobody);
+        assert_eq!(
+            sequence(&account_with(Status::Missing)),
+            Ok((0, true, TonContract::W5))
+        );
+        assert_eq!(
+            ton.sequence(&account_with(Status::Uninit), &derived),
+            Ok((0, true, TonContract::V4R2))
+        );
         assert!(matches!(
-            ton.sequence(&account_with(Status::Frozen)),
+            sequence(&account_with(Status::Frozen)),
             Err(ChainError::Invalid(_))
         ));
         assert_eq!(
-            ton.sequence(&active(v5r1, data(ton.wallet_id, 41))),
-            Ok((41, false))
+            sequence(&active(v5r1, data(ton.wallet_id, 41))),
+            Ok((41, false, TonContract::W5))
+        );
+        assert_eq!(
+            sequence(&active(v4r2, older(wallet::V4R2_WALLET_ID, 19))),
+            Ok((19, false, TonContract::V4R2))
         );
         assert!(matches!(
-            ton.sequence(&active([1; 32], data(ton.wallet_id, 41))),
+            sequence(&active([1; 32], data(ton.wallet_id, 41))),
             Err(ChainError::Unsupported(_))
         ));
         assert!(matches!(
-            ton.sequence(&active(v5r1, data(ton.wallet_id ^ 1, 41))),
+            sequence(&active(v5r1, data(ton.wallet_id ^ 1, 41))),
             Err(ChainError::Invalid(_))
         ));
         assert!(matches!(
-            ton.sequence(&active(v5r1, None)),
+            sequence(&active(v4r2, older(ton.wallet_id, 19))),
+            Err(ChainError::Invalid(_))
+        ));
+        assert!(matches!(
+            sequence(&active(v4r2, data(wallet::V4R2_WALLET_ID, 19))),
+            Err(ChainError::Invalid(_))
+        ));
+        assert!(matches!(
+            sequence(&active(v5r1, None)),
             Err(ChainError::Invalid(_))
         ));
         assert!(!bounces(&Status::Missing));
@@ -522,7 +570,13 @@ mod tests {
     #[test]
     fn a_deployment_must_be_signed_by_the_key_it_deploys() {
         let ton = chain("ton");
-        let mut signed = ton.sign(&plan(&ton, true), &seed()).unwrap();
+        for contract in [TonContract::W5, TonContract::V4R2] {
+            forged_deployment(&ton, contract);
+        }
+    }
+
+    fn forged_deployment(ton: &TonChain, contract: TonContract) {
+        let mut signed = ton.sign(&planned(ton, true, contract), &seed()).unwrap();
         let mut parsed = wallet::parse(&signed.bytes).unwrap();
         parsed.signature[0] ^= 1;
         let message =
@@ -535,7 +589,13 @@ mod tests {
     #[test]
     fn a_deployment_must_be_for_the_wallet_it_is_sent_to() {
         let ton = chain("ton");
-        let ours = plan(&ton, true);
+        for contract in [TonContract::W5, TonContract::V4R2] {
+            foreign_deployment(&ton, contract);
+        }
+    }
+
+    fn foreign_deployment(ton: &TonChain, contract: TonContract) {
+        let ours = planned(ton, true, contract);
         let stranger = key(&Mnemonic::from_entropy(&[9; 16]).unwrap().to_seed(""), 0).unwrap();
         let theirs = stranger.verifying_key().to_bytes();
         let digest = wallet::unsigned(&ours.order).unwrap().cell_hash();

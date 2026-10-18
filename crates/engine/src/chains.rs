@@ -10,7 +10,7 @@ use bahaa_evm::{EvmChain, EvmPlan};
 use bahaa_store::{CustomToken, Received, Scan, TrustedBlock};
 use bahaa_ton::{TonChain, TonPlan};
 use bahaa_tron::{TronChain, TronPlan};
-use bahaa_types::{Address, AssetId, ChainFamily, NetworkId};
+use bahaa_types::{Address, AssetId, ChainFamily, NetworkId, TonContract};
 use futures_util::future::join_all;
 
 use crate::WalletId;
@@ -46,11 +46,16 @@ impl AnyChain {
         matches!(self, Self::Ton(_)) || kind == SeedKind::Bip39
     }
 
-    pub(crate) fn derive(&self, seed: &Seed, account: u32) -> Result<Address, ChainError> {
+    pub(crate) fn derive(
+        &self,
+        seed: &Seed,
+        account: u32,
+        contract: TonContract,
+    ) -> Result<Address, ChainError> {
         match self {
             Self::Evm(_) => bahaa_evm::derive(seed, account),
             Self::Tron(_) => bahaa_tron::derive(seed, account),
-            Self::Ton(chain) => chain.derive(seed, account),
+            Self::Ton(chain) => chain.derive_as(seed, account, contract),
         }
     }
 

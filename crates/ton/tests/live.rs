@@ -439,3 +439,103 @@ async fn live_usdt_quotes_match_what_the_network_charged() {
     }
     assert!(seen[0].abs_diff(seen[1]) * 100 < seen[0], "{seen:?}");
 }
+
+#[tokio::test]
+#[ignore = "talks to the real TON network, run with --test-threads=1"]
+async fn live_v4r2_quotes_charge_the_gas_the_network_charges() {
+    const V4R2: &str = "0:957d7861ef3a4d28f301bf918f255d2bf008b9ebeb7a58c73cd409241ca991a0";
+    let listed: serde_json::Value = reqwest::get(format!(
+        "https://toncenter.com/api/v3/transactions?account={V4R2}&limit=20&sort=desc"
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let charged = listed["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|transaction| transaction["in_msg"]["source"].is_null())
+        .map(|transaction| &transaction["description"]["compute_ph"])
+        .find(|compute| compute["gas_used"] == "3308")
+        .map(|compute| {
+            compute["gas_fees"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+        })
+        .unwrap();
+    let registry = Registry::builtin().unwrap();
+    let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
+    let transfer = bahaa_chain::Transfer {
+        account: 0,
+        from: Address::parse(ChainFamily::Ton, V4R2).unwrap(),
+        to: Address::parse(ChainFamily::Ton, HOLDER).unwrap(),
+        asset: "ton".parse().unwrap(),
+        amount: Amount::parse("0.000000001", 9).unwrap(),
+    };
+    let (_, quote) = on(&ton, Some(Protocol::TonLiteservers))
+        .prepare(&transfer)
+        .await
+        .unwrap();
+    let compute = &quote.lines()[0];
+    assert_eq!(compute.item, bahaa_chain::FeeItem::Compute { gas: 3_308 });
+    assert_eq!(compute.amount.units(), U256::from(charged));
+}
+
+#[tokio::test]
+#[ignore = "talks to the real TON network, run with --test-threads=1"]
+async fn live_v4r2_sends_are_tracked_with_what_they_paid() {
+    const V4R2: &str = "0:9f7535073f66e51ded3947d697cb70ee192d55ecc4e89e6a4699c62a96ef5ffb";
+    let listed: serde_json::Value = reqwest::get(format!(
+        "https://toncenter.com/api/v3/transactions?account={V4R2}&limit=20&sort=desc"
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let nano = |value: &serde_json::Value| value.as_str().unwrap().parse::<u64>().unwrap();
+    let sent = listed["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|transaction| {
+            transaction["in_msg"]["source"].is_null()
+                && transaction["out_msgs"].as_array().map(Vec::len) == Some(1)
+                && transaction["out_msgs"][0]["opcode"] != "0x0f8a7ea5"
+        })
+        .unwrap();
+    let id = sent["in_msg"]["hash_norm"]
+        .as_str()
+        .or_else(|| sent["in_msg"]["hash"].as_str())
+        .unwrap();
+    let id: String = STANDARD
+        .decode(id)
+        .unwrap()
+        .iter()
+        .fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        });
+    let paid = nano(&sent["total_fees"]) + nano(&sent["out_msgs"][0]["fwd_fee"]);
+    let registry = Registry::builtin().unwrap();
+    let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
+    let status = on(&ton, Some(Protocol::TonLiteservers))
+        .status(
+            &TxId::new(id).unwrap(),
+            &Address::parse(ChainFamily::Ton, V4R2).unwrap(),
+            Some(sent["now"].as_u64().unwrap() + 60),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        TxStatus::Confirmed {
+            block: None,
+            fee: Some(Amount::new(U256::from(paid), 9).unwrap())
+        }
+    );
+}

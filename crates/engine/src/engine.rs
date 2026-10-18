@@ -11,6 +11,7 @@ use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{CustomToken, Received, Scan, SentTx, Store, StoreError, TrustedBlock};
+use bahaa_types::TonContract;
 use bahaa_vault::KdfParams;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -20,7 +21,7 @@ use tokio::time::{Instant, sleep_until};
 use crate::caution::Arrival;
 use crate::chains::{self, AnyChain, Fetched};
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
-use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo};
+use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, WalletKind};
 
 pub use incoming::IncomingHistory;
 use send::{Delivered, Prepared, Quoted};
@@ -648,12 +649,16 @@ impl Worker {
                 let mut accounts = Vec::new();
                 for wallet in keyring.wallets()? {
                     let seed = keyring.seed(wallet.id)?;
+                    let contract = match wallet.kind {
+                        WalletKind::Ton(contract) => contract,
+                        WalletKind::Bip39 => TonContract::W5,
+                    };
                     let mut derived = Vec::with_capacity(chains.len());
                     for chain in chains.iter().filter(|chain| chain.holds(seed.kind())) {
                         derived.push((
                             chain.family(),
                             chain.network().id.clone(),
-                            chain.derive(seed, 0)?,
+                            chain.derive(seed, 0, contract)?,
                         ));
                     }
                     accounts.extend(chains::accounts(wallet.id, &derived));

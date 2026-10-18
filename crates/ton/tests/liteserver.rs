@@ -725,14 +725,21 @@ async fn a_v5r1_quote_is_computed_from_proven_state_and_fee_settings() {
 }
 
 #[tokio::test]
-async fn quotes_come_only_from_v5r1_wallets_and_know_when_not_to_bounce() {
+async fn quotes_come_from_w5_and_v4r2_wallets_and_know_when_not_to_bounce() {
     let older = chain_for(GOOD).await;
     let mut from_v4 = send("0.01");
     from_v4.from = ton(OWNER);
-    assert!(matches!(
-        older.prepare(&from_v4).await,
-        Err(ChainError::Unsupported(_))
-    ));
+    from_v4.to = ton(FRESH);
+    let (plan, quote) = older.prepare(&from_v4).await.unwrap();
+    assert_eq!(
+        quote.lines()[0].item,
+        bahaa_chain::FeeItem::Compute { gas: 3_308 }
+    );
+    let shown = format!("{plan:?}");
+    assert!(
+        shown.contains("contract: V4R2") && shown.contains("bounce: false"),
+        "{shown}"
+    );
     let chain = quote_chain_for(Tamper::Nothing).await;
     let (plan, _) = chain.prepare(&send("0.01")).await.unwrap();
     let shown = format!("{plan:?}");

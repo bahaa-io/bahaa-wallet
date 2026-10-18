@@ -360,6 +360,7 @@ pub(crate) mod tests {
     pub(crate) fn order(units: u64, attached: u64) -> Order {
         Order {
             wallet: ton(SENDER),
+            contract: bahaa_types::TonContract::W5,
             wallet_id: wallet::wallet_id(-239),
             seqno: 11,
             valid_until: NOW + 300,
