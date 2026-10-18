@@ -7,7 +7,7 @@ use std::time::Duration;
 use bahaa_chain::ChainError;
 use bahaa_config::{ChainKind, Network, Registry};
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Engine, EngineError, Event, Received, SendRequest};
+use bahaa_engine::{Arrival, Engine, EngineError, Event, Received, SendRequest};
 use bahaa_types::{Amount, ChainFamily, NetworkId};
 use common::{
     Asked, GET_ACCOUNT_STATE, GET_BLOCK_PROOF, HARDHAT, HARDHAT_0, Scratch, config, until,
@@ -113,8 +113,8 @@ async fn ton_accounts_follow_each_networks_wallet_id_and_show_gram() {
     );
 }
 
-fn received(id: &str, from: &str, lt: u64, time: u64) -> Received {
-    Received {
+fn received(id: &str, from: &str, lt: u64, time: u64) -> Arrival {
+    let received = Received {
         id: id.to_owned(),
         index: 0,
         network: "ton".parse().unwrap(),
@@ -124,6 +124,10 @@ fn received(id: &str, from: &str, lt: u64, time: u64) -> Received {
         amount: Amount::parse("0.0001", 9).unwrap(),
         block: lt,
         time,
+    };
+    Arrival {
+        received,
+        cautions: Vec::new(),
     }
 }
 
@@ -143,7 +147,7 @@ async fn incoming_gram_joins_the_wallets_history_from_proven_state() {
         .import(SecretString::from(HARDHAT), SecretString::from(""))
         .await
         .unwrap();
-    let fresh: Vec<Received> = tokio::time::timeout(Duration::from_secs(10), async {
+    let fresh: Vec<Arrival> = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(Event::Received(entries)) = events.recv().await {
                 return entries;

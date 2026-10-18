@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bahaa_config::{Feature, Registry};
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Engine, Event, Received};
+use bahaa_engine::{Arrival, Engine, Event};
 use common::{HARDHAT, Scratch, TRON_0, TRON_0_HEX, TRON_GENESIS, config};
 use serde_json::{Value, json};
 
@@ -72,7 +72,7 @@ async fn incoming_tron_tokens_join_the_wallets_history() {
         .import(SecretString::from(HARDHAT), SecretString::from(""))
         .await
         .unwrap();
-    let fresh: Vec<Received> = tokio::time::timeout(Duration::from_secs(10), async {
+    let fresh: Vec<Arrival> = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(Event::Received(entries)) = events.recv().await {
                 return entries;
@@ -82,7 +82,8 @@ async fn incoming_tron_tokens_join_the_wallets_history() {
     .await
     .unwrap();
     assert_eq!(fresh.len(), 1);
-    let entry = &fresh[0];
+    assert_eq!(fresh[0].cautions, []);
+    let entry = &fresh[0].received;
     assert_eq!(entry.to.to_string(), TRON_0);
     assert_eq!(entry.asset, format!("tron/{USDT}").parse().unwrap());
     assert_eq!(entry.amount.to_string(), "7.5");

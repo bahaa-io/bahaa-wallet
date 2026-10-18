@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Engine, EngineError, Event, IncomingHistory, KeyringError, Received};
+use bahaa_engine::{Arrival, Engine, EngineError, Event, IncomingHistory, KeyringError};
 use common::{HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, USDT, config, result};
 use serde_json::{Value, json};
 
@@ -119,7 +119,7 @@ async fn incoming_tokens_are_found_kept_and_scanned_onward() {
         .import(SecretString::from(HARDHAT), SecretString::from(""))
         .await
         .unwrap();
-    let fresh: Vec<Received> = tokio::time::timeout(Duration::from_secs(10), async {
+    let fresh: Vec<Arrival> = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(Event::Received(entries)) = events.recv().await {
                 return entries;
@@ -129,7 +129,8 @@ async fn incoming_tokens_are_found_kept_and_scanned_onward() {
     .await
     .unwrap();
     assert_eq!(fresh.len(), 1);
-    let entry = &fresh[0];
+    assert_eq!(fresh[0].cautions, []);
+    let entry = &fresh[0].received;
     assert_eq!(
         (entry.from.to_string(), entry.to.to_string()),
         (HARDHAT_1.to_owned(), HARDHAT_0.to_owned())

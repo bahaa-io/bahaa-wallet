@@ -4,12 +4,13 @@ use std::time::Duration;
 
 use bahaa_chain::{ChainError, FeeQuote, Signed, Transfer, TxId, TxStatus, check_signed};
 use bahaa_crypto::{ExposeSecret, SecretString};
-use bahaa_store::{SentStatus, SentTx};
+use bahaa_store::{Received, SentStatus, SentTx};
 use bahaa_types::{Address, Amount, AssetId, NetworkId, to_plain_text};
 use futures_util::future::join_all;
 use tokio::time::Instant;
 
 use super::{EngineError, Event, Notice, Reply, Worker};
+use crate::caution::{self, Caution};
 use crate::chains::{self, AnyChain, AnyPlan};
 use crate::{KeyringError, WalletId};
 
@@ -35,6 +36,7 @@ pub struct Draft {
     pub transfer: Transfer,
     pub fee: FeeQuote,
     pub valid_for: Duration,
+    pub cautions: Vec<Caution>,
 }
 
 pub(super) struct Prepared {
@@ -164,11 +166,19 @@ impl Worker {
             expires: now + self.draft_ttl,
         };
         self.drafts.insert(id, prepared);
+        let senders: Vec<Received> = self
+            .received
+            .iter()
+            .filter(|entry| entry.from == transfer.to)
+            .cloned()
+            .collect();
+        let cautions = caution::recipient(&transfer.to, &self.known(), &self.arrivals(&senders));
         let _ = reply.send(Ok(Draft {
             id,
             transfer,
             fee,
             valid_for: self.draft_ttl,
+            cautions,
         }));
     }
 

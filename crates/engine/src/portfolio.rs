@@ -78,6 +78,27 @@ pub(crate) fn coin<'a>(
     })
 }
 
+pub(crate) fn value(
+    registry: &Registry,
+    custom: &[CustomToken],
+    snapshot: &Snapshot,
+    fiat: Fiat,
+    asset: &AssetId,
+    amount: Amount,
+) -> Option<Amount> {
+    price(coin(registry, custom, asset)?, snapshot, fiat)?
+        .value_of(amount, fiat.places())
+        .ok()
+}
+
+fn price(coin: &Coin, snapshot: &Snapshot, fiat: Fiat) -> Option<Price> {
+    coin.price
+        .as_ref()
+        .filter(|_| snapshot.base == fiat.price_base())
+        .and_then(|id| snapshot.quotes.get(id))
+        .map(|quote| quote.price)
+}
+
 pub(crate) fn wanted(
     registry: &Registry,
     custom: &[CustomToken],
@@ -97,17 +118,11 @@ pub(crate) fn build(
     snapshot: &Snapshot,
     fiat: Fiat,
 ) -> Portfolio {
-    let usable = snapshot.base == fiat.price_base();
     let holdings: Vec<Holding> = held
         .iter()
         .filter_map(|holding| {
             let coin = coin(registry, custom, &holding.asset)?;
-            let price = coin
-                .price
-                .as_ref()
-                .filter(|_| usable)
-                .and_then(|id| snapshot.quotes.get(id))
-                .map(|quote| quote.price);
+            let price = price(coin, snapshot, fiat);
             let value = price.and_then(|price| price.value_of(holding.amount, fiat.places()).ok());
             Some(Holding {
                 wallet: holding.wallet,

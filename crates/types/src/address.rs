@@ -14,6 +14,9 @@ const TON_BOUNCEABLE: u8 = 0x11;
 const TON_NON_BOUNCEABLE: u8 = 0x51;
 const TON_TESTNET: u8 = 0x80;
 pub(crate) const TON_FRIENDLY_LEN: usize = 48;
+const ALIKE_START: usize = 4;
+const ALIKE_END: usize = 4;
+const TON_FLAG_CHARS: usize = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Address {
@@ -63,6 +66,37 @@ impl Address {
             Self::Evm(_) => ChainFamily::Evm,
             Self::Tron(_) => ChainFamily::Tron,
             Self::Ton { .. } => ChainFamily::Ton,
+        }
+    }
+
+    pub fn looks_like(&self, other: &Self) -> bool {
+        self != other
+            && self.family() == other.family()
+            && self
+                .shown()
+                .iter()
+                .zip(other.shown())
+                .any(|(mine, theirs)| same_ends(mine, &theirs))
+    }
+
+    fn shown(&self) -> Vec<String> {
+        match self {
+            Self::Evm(bytes) => vec![hex(bytes)],
+            Self::Tron(bytes) => vec![tron_base58(bytes).chars().skip(1).collect()],
+            Self::Ton { hash, .. } => {
+                let mut forms = vec![hex(hash)];
+                for (bounceable, testnet) in
+                    [(true, false), (false, false), (true, true), (false, true)]
+                {
+                    if let Some(friendly) = self.ton_friendly(TonForm {
+                        bounceable,
+                        testnet,
+                    }) {
+                        forms.push(friendly.chars().skip(TON_FLAG_CHARS).collect());
+                    }
+                }
+                forms
+            }
         }
     }
 
@@ -205,6 +239,13 @@ fn tron_base58(bytes: &[u8; 20]) -> String {
     data.push(TRON_PREFIX);
     data.extend_from_slice(bytes);
     bs58::encode(data).with_check().into_string()
+}
+
+fn same_ends(mine: &str, theirs: &str) -> bool {
+    mine.len() == theirs.len()
+        && mine.len() >= ALIKE_START + ALIKE_END
+        && mine.get(..ALIKE_START) == theirs.get(..ALIKE_START)
+        && mine.get(mine.len() - ALIKE_END..) == theirs.get(theirs.len() - ALIKE_END..)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -455,5 +496,59 @@ mod tests {
         assert!(Address::parse(ChainFamily::Evm, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t").is_err());
         assert_ne!(Address::Evm([7; 20]), Address::Tron([7; 20]));
         assert_eq!(Address::Tron([7; 20]).family(), ChainFamily::Tron);
+    }
+
+    #[test]
+    fn look_alikes_share_how_an_address_starts_and_ends() {
+        let evm = |text: &str| Address::parse(ChainFamily::Evm, text).unwrap();
+        let real = evm("0x55d398326f99059fF775485246999027B3197955");
+        assert!(real.looks_like(&evm("0x55d3000000000000000000000000000000007955")));
+        assert!(!real.looks_like(&real));
+        assert!(!real.looks_like(&evm("0x55d3000000000000000000000000000000007956")));
+        assert!(!real.looks_like(&evm("0x55d4000000000000000000000000000000007955")));
+        assert!(!real.looks_like(&Address::Tron(
+            *b"\x55\xd3\x98\x32\x6f\x99\x05\x9f\xf7\x75\x48\x52\x46\x99\x90\x27\xb3\x19\x79\x55"
+        )));
+    }
+
+    #[test]
+    fn each_family_is_compared_as_people_see_it() {
+        let tron = Address::parse(ChainFamily::Tron, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t").unwrap();
+        assert_eq!(tron.shown(), ["R7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"]);
+        let shown = "R7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+        assert!(same_ends(shown, "R7NHxxxxxxxxxxxxxxxxxxxxxxxxxLj6t"));
+        assert!(!same_ends(shown, "r7NHxxxxxxxxxxxxxxxxxxxxxxxxxLj6t"));
+        assert!(!same_ends(shown, "R7NHxxxxxxxxxxxxxxxxxxxxxxxxLj6t"));
+        assert!(!same_ends("R7NHLj6", "R7NHLj6"));
+        let wallet = Address::parse(
+            ChainFamily::Ton,
+            "EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N",
+        )
+        .unwrap();
+        let forms = wallet.shown();
+        assert_eq!(forms.len(), 5);
+        assert_eq!(forms[0].len(), 64);
+        assert_eq!(forms[1], "CD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N");
+        assert!(
+            forms[2..]
+                .iter()
+                .all(|form| form.len() == TON_FRIENDLY_LEN - TON_FLAG_CHARS)
+        );
+        let Address::Ton { workchain, hash } = wallet else {
+            panic!("not TON");
+        };
+        let mut middle = hash;
+        middle[4..28].fill(0);
+        assert!(wallet.looks_like(&Address::Ton {
+            workchain,
+            hash: middle
+        }));
+        let mut ends = hash;
+        ends[0] ^= 1;
+        ends[31] ^= 1;
+        assert!(!wallet.looks_like(&Address::Ton {
+            workchain,
+            hash: ends
+        }));
     }
 }

@@ -1,13 +1,16 @@
 use std::cmp::Reverse;
 
 use bahaa_store::{Received, Scan};
+use bahaa_types::Address;
 
 use super::{EngineError, Event, Worker};
 use crate::KeyringError;
+use crate::caution::{self, Arrival};
+use crate::portfolio;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IncomingHistory {
-    pub transfers: Vec<Received>,
+    pub transfers: Vec<Arrival>,
     pub coverage: Vec<Scan>,
 }
 
@@ -36,7 +39,7 @@ impl Worker {
         if !fresh.is_empty() {
             sort(&mut self.received);
             sort(&mut fresh);
-            let _ = self.events.send(Event::Received(fresh));
+            let _ = self.events.send(Event::Received(self.arrivals(&fresh)));
         }
     }
 
@@ -49,13 +52,14 @@ impl Worker {
                 .iter()
                 .any(|account| account.address == address)
         };
+        let mine: Vec<Received> = self
+            .received
+            .iter()
+            .filter(|entry| ours(entry.to))
+            .cloned()
+            .collect();
         Ok(IncomingHistory {
-            transfers: self
-                .received
-                .iter()
-                .filter(|entry| ours(entry.to))
-                .cloned()
-                .collect(),
+            transfers: self.arrivals(&mine),
             coverage: self
                 .scans
                 .iter()
@@ -63,6 +67,44 @@ impl Worker {
                 .cloned()
                 .collect(),
         })
+    }
+
+    pub(super) fn known(&self) -> Vec<Address> {
+        let mut known: Vec<Address> = self
+            .accounts
+            .iter()
+            .map(|account| account.address)
+            .chain(self.history.iter().map(|tx| tx.to))
+            .chain(
+                self.store
+                    .contacts()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|contact| contact.address),
+            )
+            .collect();
+        known.sort();
+        known.dedup();
+        known
+    }
+
+    pub(super) fn arrivals(&self, entries: &[Received]) -> Vec<Arrival> {
+        let known = self.known();
+        let snapshot = self.prices.borrow().clone();
+        entries
+            .iter()
+            .map(|entry| {
+                let value = portfolio::value(
+                    &self.registry,
+                    &self.custom,
+                    &snapshot,
+                    self.settings.fiat,
+                    &entry.asset,
+                    entry.amount,
+                );
+                caution::arrival(entry.clone(), &known, value)
+            })
+            .collect()
     }
 }
 

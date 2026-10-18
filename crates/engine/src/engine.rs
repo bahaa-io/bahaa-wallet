@@ -17,6 +17,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
+use crate::caution::Arrival;
 use crate::chains::{self, AnyChain, Fetched};
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
 use crate::{Keyring, KeyringError, WalletId, WalletInfo};
@@ -94,7 +95,7 @@ pub enum Event {
     AccountsChanged(Vec<Account>),
     SettingsChanged(Settings),
     TxUpdated(Box<SentTx>),
-    Received(Vec<Received>),
+    Received(Vec<Arrival>),
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
