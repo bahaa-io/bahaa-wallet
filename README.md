@@ -23,15 +23,17 @@ Rates are provided by [Bahaa](https://bahaa.io).
 
 ## Roadmap
 
+The engine comes first, for every network, and the app is built on top of it.
+
 - [x] 0. Setup and endpoint tests
 - [x] 1. Keys, mnemonics, encrypted vault
-- [ ] 2. Engine and TUI
-- [ ] 3. EVM networks (0.1)
-- [ ] 4. Base and Optimism (0.2)
-- [ ] 5. Tron (0.3)
-- [ ] 6. TON (0.4)
-- [ ] 7. Developer Mode (0.5)
-- [ ] 8. Hardening and public beta (0.6)
+- [x] 2. Engine
+- [x] 3. EVM networks
+- [x] 4. Base and Optimism
+- [x] 5. Tron
+- [x] 6. TON
+- [ ] 7. App interface
+- [ ] 8. Developer Mode, hardening and public beta (0.6)
 - [ ] 1.0: security audit, hardware wallets
 
 ## License
