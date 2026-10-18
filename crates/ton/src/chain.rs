@@ -97,6 +97,11 @@ impl TonChain {
         }
     }
 
+    pub async fn refresh_checkpoint(&self) -> Result<Checkpoint, ChainError> {
+        self.http.config().await?;
+        Ok(self.checkpoint())
+    }
+
     pub fn restore(&self, checkpoint: &Checkpoint) {
         self.http.trust(block(checkpoint));
     }
