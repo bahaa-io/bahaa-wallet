@@ -23,7 +23,7 @@ Rates are provided by [Bahaa](https://bahaa.io).
 
 ## Roadmap
 
-The engine comes first, for every network, and the app is built on top of it.
+The engine comes first, for every network, and the app is built on top of it. The engine is done; the app is next.
 
 - [x] 0. Setup and endpoint tests
 - [x] 1. Keys, mnemonics, encrypted vault
