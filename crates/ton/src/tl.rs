@@ -5,16 +5,16 @@ const GET_MASTERCHAIN_INFO: u32 = 0x89b5_e62e;
 const MASTERCHAIN_INFO: u32 = 0x8583_2881;
 const GET_ACCOUNT_STATE: u32 = 0x6b89_0e25;
 const ACCOUNT_STATE: u32 = 0x7079_c751;
-const RUN_SMC_METHOD: u32 = 0x5cc6_5dd2;
-const RUN_METHOD_RESULT: u32 = 0xa39a_616b;
 const GET_CONFIG_PARAMS: u32 = 0x2a11_1c19;
 const CONFIG_INFO: u32 = 0xae7b_272f;
 const SEND_MESSAGE: u32 = 0x690a_d482;
 const SEND_MSG_STATUS: u32 = 0x3950_e597;
 const GET_TRANSACTIONS: u32 = 0x1c40_e7a1;
 const TRANSACTION_LIST: u32 = 0x6f26_c60b;
+const GET_LIBRARIES: u32 = 0xd122_b662;
+const LIBRARY_RESULT: u32 = 0x117a_b96b;
+const MAX_LIBRARIES: u32 = 16;
 const ERROR: u32 = 0xbba9_e148;
-const RESULT_ONLY: u32 = 4;
 const MAX_ERROR: usize = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,12 +42,6 @@ pub(crate) struct AccountState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MethodResult {
-    pub exit_code: i32,
-    pub stack: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ConfigInfo {
     pub block: BlockId,
     pub state_proof: Vec<u8>,
@@ -59,6 +53,8 @@ pub(crate) struct TransactionList {
     pub ids: Vec<BlockId>,
     pub transactions: Vec<u8>,
 }
+
+pub(crate) type Libraries = Vec<([u8; 32], Vec<u8>)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Answer<T> {
@@ -215,24 +211,6 @@ pub(crate) fn get_account_state(block: &BlockId, workchain: i8, hash: &[u8; 32])
     writer.0
 }
 
-pub(crate) fn run_smc_method(
-    block: &BlockId,
-    workchain: i8,
-    hash: &[u8; 32],
-    method: &str,
-    params: &[u8],
-) -> Vec<u8> {
-    let mut writer = Writer::default();
-    writer
-        .u32(RUN_SMC_METHOD)
-        .u32(RESULT_ONLY)
-        .block(block)
-        .account(workchain, hash)
-        .i64(method_id(method))
-        .bytes(params);
-    writer.0
-}
-
 pub(crate) fn get_config_params(block: &BlockId, params: &[i32]) -> Vec<u8> {
     let mut writer = Writer::default();
     writer
@@ -244,6 +222,29 @@ pub(crate) fn get_config_params(block: &BlockId, params: &[i32]) -> Vec<u8> {
         writer.i32(*param);
     }
     writer.0
+}
+
+pub(crate) fn get_libraries(hashes: &[[u8; 32]]) -> Vec<u8> {
+    let mut writer = Writer::default();
+    writer
+        .u32(GET_LIBRARIES)
+        .u32(u32::try_from(hashes.len()).unwrap_or(u32::MAX));
+    for hash in hashes {
+        writer.int256(hash);
+    }
+    writer.0
+}
+
+pub(crate) fn library_result(answer: &[u8]) -> Option<Answer<Libraries>> {
+    read(answer, LIBRARY_RESULT, |reader| {
+        let count = reader.u32()?;
+        if count > MAX_LIBRARIES {
+            return None;
+        }
+        (0..count)
+            .map(|_| Some((reader.int256()?, reader.bytes()?.to_vec())))
+            .collect()
+    })
 }
 
 pub(crate) fn config_info(answer: &[u8]) -> Option<Answer<ConfigInfo>> {
@@ -323,28 +324,6 @@ pub(crate) fn account_state(answer: &[u8]) -> Option<Answer<AccountState>> {
     })
 }
 
-pub(crate) fn method_result(answer: &[u8]) -> Option<Answer<MethodResult>> {
-    read(answer, RUN_METHOD_RESULT, |reader| {
-        let mode = reader.u32()?;
-        reader.block()?;
-        reader.block()?;
-        for (bit, fields) in [(1, 2), (2, 1), (8, 1), (16, 1)] {
-            if mode & bit != 0 {
-                for _ in 0..fields {
-                    reader.bytes()?;
-                }
-            }
-        }
-        let exit_code = reader.i32()?;
-        let stack = if mode & RESULT_ONLY == 0 {
-            None
-        } else {
-            Some(reader.bytes()?.to_vec())
-        };
-        Some(MethodResult { exit_code, stack })
-    })
-}
-
 fn read<T>(
     answer: &[u8],
     expected: u32,
@@ -365,25 +344,6 @@ fn read<T>(
         return None;
     };
     reader.done().then_some(result)
-}
-
-pub(crate) fn method_id(name: &str) -> i64 {
-    i64::from(crc16(name.as_bytes())) | 0x1_0000
-}
-
-fn crc16(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0;
-    for byte in data {
-        crc ^= u16::from(*byte) << 8;
-        for _ in 0..8 {
-            crc = if crc & 0x8000 == 0 {
-                crc << 1
-            } else {
-                (crc << 1) ^ 0x1021
-            };
-        }
-    }
-    crc
 }
 
 #[cfg(test)]
@@ -434,14 +394,6 @@ mod tests {
                 "liteServer.accountState id:tonNode.blockIdExt shardblk:tonNode.blockIdExt shard_proof:bytes proof:bytes state:bytes = liteServer.AccountState",
             ),
             (
-                RUN_SMC_METHOD,
-                "liteServer.runSmcMethod mode:# id:tonNode.blockIdExt account:liteServer.accountId method_id:long params:bytes = liteServer.RunMethodResult",
-            ),
-            (
-                RUN_METHOD_RESULT,
-                "liteServer.runMethodResult mode:# id:tonNode.blockIdExt shardblk:tonNode.blockIdExt shard_proof:mode.0?bytes proof:mode.0?bytes state_proof:mode.1?bytes init_c7:mode.3?bytes lib_extras:mode.4?bytes exit_code:int result:mode.2?bytes = liteServer.RunMethodResult",
-            ),
-            (
                 ERROR,
                 "liteServer.error code:int message:string = liteServer.Error",
             ),
@@ -468,6 +420,14 @@ mod tests {
             (
                 TRANSACTION_LIST,
                 "liteServer.transactionList ids:(vector tonNode.blockIdExt) transactions:bytes = liteServer.TransactionList",
+            ),
+            (
+                GET_LIBRARIES,
+                "liteServer.getLibraries library_list:(vector int256) = liteServer.LibraryResult",
+            ),
+            (
+                LIBRARY_RESULT,
+                "liteServer.libraryResult result:(vector liteServer.libraryEntry) = liteServer.LibraryResult",
             ),
         ];
         for (id, schema) in schemas {
@@ -575,47 +535,6 @@ mod tests {
     }
 
     #[test]
-    fn method_results_skip_only_the_fields_their_mode_has() {
-        let mut result = Writer::default();
-        result
-            .u32(RUN_METHOD_RESULT)
-            .u32(4 | 1)
-            .block(&block())
-            .block(&block())
-            .bytes(b"shard")
-            .bytes(b"proof")
-            .i32(0)
-            .bytes(b"stack");
-        assert_eq!(
-            method_result(&result.0),
-            Some(Answer::Ok(MethodResult {
-                exit_code: 0,
-                stack: Some(b"stack".to_vec())
-            }))
-        );
-        let mut bare = Writer::default();
-        bare.u32(RUN_METHOD_RESULT)
-            .u32(0)
-            .block(&block())
-            .block(&block())
-            .i32(-13);
-        assert_eq!(
-            method_result(&bare.0),
-            Some(Answer::Ok(MethodResult {
-                exit_code: -13,
-                stack: None
-            }))
-        );
-    }
-
-    #[test]
-    fn method_ids_are_the_standard_ones() {
-        assert_eq!(method_id("seqno"), 85_143);
-        assert_eq!(method_id("get_wallet_address"), 103_289);
-        assert_eq!(method_id("get_wallet_data"), 97_026);
-    }
-
-    #[test]
     fn answers_belong_to_their_query() {
         let mut frame = Writer::default();
         frame.u32(ADNL_ANSWER).int256(&[9; 32]).bytes(b"hello");
@@ -660,5 +579,27 @@ mod tests {
         let mut huge = Writer::default();
         huge.u32(TRANSACTION_LIST).u32(u32::MAX);
         assert_eq!(transaction_list(&huge.0), None);
+    }
+
+    #[test]
+    fn libraries_are_asked_by_hash_and_answered_with_their_cells() {
+        let asked = get_libraries(&[[0x8f; 32], [0x45; 32]]);
+        assert_eq!(asked[..4], GET_LIBRARIES.to_le_bytes());
+        assert_eq!(asked[4..8], 2u32.to_le_bytes());
+        assert_eq!(asked[8..40], [0x8f; 32]);
+        assert_eq!(asked[40..], [0x45; 32]);
+        let mut answer = Writer::default();
+        answer
+            .u32(LIBRARY_RESULT)
+            .u32(1)
+            .int256(&[0x8f; 32])
+            .bytes(b"boc");
+        assert_eq!(
+            library_result(&answer.0),
+            Some(Answer::Ok(vec![([0x8f; 32], b"boc".to_vec())]))
+        );
+        let mut huge = Writer::default();
+        huge.u32(LIBRARY_RESULT).u32(17);
+        assert_eq!(library_result(&huge.0), None);
     }
 }

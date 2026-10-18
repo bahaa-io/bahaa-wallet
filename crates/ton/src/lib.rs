@@ -6,6 +6,7 @@ mod lite;
 mod proof;
 mod tl;
 mod transaction;
+mod vm;
 mod wallet;
 
 pub use chain::{TonChain, TonPlan};

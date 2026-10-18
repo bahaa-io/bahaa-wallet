@@ -19,9 +19,8 @@ use tokio::time::timeout;
 use tonlib_core::cell::BagOfCells;
 use url::Url;
 
-use crate::cells::{Account, account, address_argument, no_arguments, read_stack};
-use crate::fees::{PARAMS, Settings};
-use crate::http::Item;
+use crate::cells::{Account, account};
+use crate::fees::{Config, PARAMS};
 use crate::proof::{self, Proven};
 use crate::tl::{self, AccountState, Answer, BlockId, ConfigInfo};
 use crate::transaction::{self, MAX_LISTED, Transaction};
@@ -31,10 +30,8 @@ const ANSWER: Duration = Duration::from_secs(10);
 const MAX_CONFIG: usize = 1024 * 1024;
 const MAX_SERVERS: usize = 64;
 const MAX_FRAMES: usize = 4;
-const NOT_DEPLOYED: i32 = -13;
 const NOT_APPLIED: &str = "cannot apply external message";
 const EXIT_CODE: &str = "exitcode=";
-const INACTIVE: i32 = -256;
 
 type Session = Arc<Mutex<Option<AdnlPeer<TcpStream>>>>;
 
@@ -88,12 +85,33 @@ impl Lite {
         .await
     }
 
-    pub(crate) async fn settings(&self, config: &Url) -> Result<Settings, Failure<ChainError>> {
+    pub(crate) async fn config(&self, config: &Url) -> Result<Config, Failure<ChainError>> {
         self.ask(
             config,
             |last| tl::get_config_params(last, &PARAMS),
             tl::config_info,
-            |last, info| proven_settings(last, &info),
+            |last, info| proven_config(last, &info),
+        )
+        .await
+    }
+
+    pub(crate) async fn library(
+        &self,
+        config: &Url,
+        hash: &[u8; 32],
+    ) -> Result<Vec<u8>, Failure<ChainError>> {
+        self.ask(
+            config,
+            |_| tl::get_libraries(&[*hash]),
+            tl::library_result,
+            |_, entries| {
+                entries
+                    .into_iter()
+                    .find(|(listed, _)| listed == hash)
+                    .map(|(_, data)| data)
+                    .ok_or_else(|| retry("a liteserver does not have a library"))
+                    .and_then(|data| proven_library(data, hash))
+            },
         )
         .await
     }
@@ -120,44 +138,6 @@ impl Lite {
             |_| tl::get_transactions(MAX_LISTED, workchain, &hash, from.1, &from.0),
             tl::transaction_list,
             |_, list| proven_transactions(&list.transactions, owner, from),
-        )
-        .await
-    }
-
-    pub(crate) async fn run(
-        &self,
-        config: &Url,
-        address: &Address,
-        method: &str,
-        arg: Option<&Address>,
-    ) -> Result<Option<Vec<Item>>, Failure<ChainError>> {
-        let (workchain, hash) = parts(address)?;
-        let params = match arg {
-            Some(arg) => address_argument(arg),
-            None => no_arguments(),
-        }
-        .map_err(|_| Failure::Fatal(ChainError::Invalid("cannot encode the method arguments")))?;
-        self.ask(
-            config,
-            |last| tl::run_smc_method(last, workchain, &hash, method, &params),
-            tl::method_result,
-            |_, result| {
-                match result.exit_code {
-                    0 | 1 => {}
-                    NOT_DEPLOYED | INACTIVE => return Ok(None),
-                    code => {
-                        return Err(Failure::Fatal(ChainError::Rejected(format!(
-                            "the contract method {method} stopped with exit code {code}"
-                        ))));
-                    }
-                }
-                result
-                    .stack
-                    .as_deref()
-                    .and_then(read_stack)
-                    .map(Some)
-                    .ok_or_else(|| retry("a liteserver sent an unreadable stack"))
-            },
         )
         .await
     }
@@ -442,22 +422,29 @@ pub(crate) fn refused(error: &str) -> Option<ChainError> {
     }))
 }
 
-pub(crate) fn proven_settings(
+pub(crate) fn proven_library(
+    data: Vec<u8>,
+    hash: &[u8; 32],
+) -> Result<Vec<u8>, Failure<ChainError>> {
+    if crate::vm::library_hash(&data).as_ref() == Some(hash) {
+        Ok(data)
+    } else {
+        Err(retry(
+            "a server sent a library that does not match its hash",
+        ))
+    }
+}
+
+pub(crate) fn proven_config(
     last: &BlockId,
     info: &ConfigInfo,
-) -> Result<Settings, Failure<ChainError>> {
+) -> Result<Config, Failure<ChainError>> {
     if info.block != *last {
         return Err(retry("a liteserver answered for another block"));
     }
-    let params = proof::config(last, &info.state_proof, &info.config_proof, &PARAMS)
-        .ok_or_else(|| retry("a liteserver sent a config proof that does not hold"))?;
-    let now = u32::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs()),
-    )
-    .unwrap_or(u32::MAX);
-    Settings::read(&params, now).ok_or_else(|| retry("a liteserver sent unreadable fee settings"))
+    proof::config(last, &info.state_proof, &info.config_proof, &PARAMS)
+        .map(Config::new)
+        .ok_or_else(|| retry("a liteserver sent a config proof that does not hold"))
 }
 
 fn open(
@@ -556,5 +543,17 @@ mod tests {
         );
         assert_eq!(refused("LITE_SERVER_NOTREADY: timeout"), None);
         assert_eq!(refused("state not ready"), None);
+    }
+
+    #[test]
+    fn a_library_must_hash_to_what_was_asked() {
+        let cell = tonlib_core::cell::CellBuilder::new().build().unwrap();
+        let boc = BagOfCells::from_root(cell).serialize(false).unwrap();
+        let hash = crate::vm::library_hash(&boc).unwrap();
+        assert_eq!(proven_library(boc.clone(), &hash), Ok(boc.clone()));
+        assert!(matches!(
+            proven_library(boc, &[0; 32]),
+            Err(Failure::Retry(ChainError::Network(_)))
+        ));
     }
 }

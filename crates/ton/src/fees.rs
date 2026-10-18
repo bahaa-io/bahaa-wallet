@@ -1,8 +1,9 @@
-use tonlib_core::cell::{ArcCell, Cell, CellParser};
+use tonlib_core::cell::{ArcCell, BagOfCells, Cell, CellParser};
 
 use crate::proof::{Found, label, lookup};
 
-pub(crate) const PARAMS: [i32; 3] = [18, 21, 25];
+pub(crate) const PARAMS: [i32; 7] = [18, 19, 20, 21, 24, 25, 43];
+const FEE_PARAMS: [i32; 3] = [18, 21, 25];
 pub(crate) const TRANSFER_GAS: u64 = 4_939;
 const STORAGE_TAG: u8 = 0xcc;
 const FLAT_TAG: u8 = 0xd1;
@@ -21,6 +22,46 @@ pub(crate) struct Settings {
     pub lump_price: u64,
     pub bit_price: u64,
     pub cell_price: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Config {
+    params: Vec<(i32, ArcCell)>,
+}
+
+impl Config {
+    pub(crate) fn new(cells: Vec<ArcCell>) -> Self {
+        Self {
+            params: PARAMS.into_iter().zip(cells).collect(),
+        }
+    }
+
+    pub(crate) fn settings(&self, now: u32) -> Option<Settings> {
+        let cells = FEE_PARAMS
+            .iter()
+            .map(|id| self.get(*id).cloned())
+            .collect::<Option<Vec<_>>>()?;
+        Settings::read(&cells, now)
+    }
+
+    pub(crate) fn encoded(&self) -> Option<Vec<(i32, Vec<u8>)>> {
+        self.params
+            .iter()
+            .map(|(id, cell)| {
+                let boc = BagOfCells::from_root(Cell::clone(cell))
+                    .serialize(false)
+                    .ok()?;
+                Some((*id, boc))
+            })
+            .collect()
+    }
+
+    fn get(&self, id: i32) -> Option<&ArcCell> {
+        self.params
+            .iter()
+            .find(|(known, _)| *known == id)
+            .map(|(_, cell)| cell)
+    }
 }
 
 impl Settings {

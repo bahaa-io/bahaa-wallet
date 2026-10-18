@@ -13,7 +13,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use url::Url;
 
-use common::{Log, hex, node, unhex};
+use common::{Log, hex, node, proxied_account, read_bytes, recorded, unhex};
 
 const TRACK: &str = include_str!("fixtures/track.json");
 const ZERO_STATE: &str = "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321fb05569";
@@ -119,57 +119,12 @@ async fn tonapi_and_ton_center_hand_transfers_over_and_name_refusals() {
     assert!(log.lock().unwrap().contains(&"/v2/sendBoc".to_owned()));
 }
 
-fn read_bytes(data: &[u8]) -> (&[u8], usize) {
-    let (length, start) = if data[0] < 254 {
-        (usize::from(data[0]), 1)
-    } else {
-        (
-            usize::from(data[1]) | usize::from(data[2]) << 8 | usize::from(data[3]) << 16,
-            4,
-        )
-    };
-    let used = start + length;
-    (&data[start..used], used + (4 - used % 4) % 4)
-}
-
-fn block_json(block: &[u8]) -> Value {
-    let int = |at: usize| i32::from_le_bytes(block[at..at + 4].try_into().unwrap());
-    let shard = u64::from_le_bytes(block[4..12].try_into().unwrap());
-    json!({
-        "workchain": int(0),
-        "shard": format!("{shard:016x}"),
-        "seqno": int(12),
-        "root_hash": hex(&block[16..48]),
-        "file_hash": hex(&block[48..80]),
-    })
-}
-
-fn recorded(path: &[&str]) -> Vec<u8> {
-    let fixture: Value = serde_json::from_str(TRACK).unwrap();
-    unhex(
-        path.iter()
-            .fold(&fixture, |value, key| &value[*key])
-            .as_str()
-            .unwrap(),
-    )
-}
-
 fn account_json() -> Value {
-    let answer = recorded(&["accounts", &SENDER[2..]]);
-    let (shard_proof, first) = read_bytes(&answer[164..]);
-    let (proof, second) = read_bytes(&answer[164 + first..]);
-    let (state, _) = read_bytes(&answer[164 + first + second..]);
-    json!({
-        "id": block_json(&answer[4..84]),
-        "shardblk": block_json(&answer[84..164]),
-        "shard_proof": hex(shard_proof),
-        "proof": hex(proof),
-        "state": hex(state),
-    })
+    proxied_account(&recorded(TRACK, &["accounts", &SENDER[2..]]).unwrap())
 }
 
 fn list_json(lt: &str, tampered: bool) -> Value {
-    let answer = recorded(&["transactions", lt]);
+    let answer = recorded(TRACK, &["transactions", lt]).unwrap();
     let count = usize::try_from(u32::from_le_bytes(answer[4..8].try_into().unwrap())).unwrap();
     let (transactions, _) = read_bytes(&answer[8 + 80 * count..]);
     let mut transactions = transactions.to_vec();

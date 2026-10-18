@@ -46,8 +46,13 @@ impl TonChain {
         let (seqno, deploy) = self.sequence(&wallet)?;
         let recipient = self.http.account(&transfer.to).await?;
         let bounce = bounces(&recipient.status);
-        let settings = self.http.settings().await?;
         let now = now();
+        let settings = self
+            .http
+            .config()
+            .await?
+            .settings(u32::try_from(now).unwrap_or(u32::MAX))
+            .ok_or_else(|| ChainError::Network("the fee settings cannot be read".to_owned()))?;
         let order = Order {
             wallet: transfer.from,
             wallet_id: self.wallet_id,
@@ -400,6 +405,7 @@ mod tests {
             due: U256::ZERO,
             status,
             last: None,
+            boc: Vec::new(),
         }
     }
 

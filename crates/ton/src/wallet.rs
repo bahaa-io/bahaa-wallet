@@ -251,14 +251,6 @@ fn hash_of(cell: &ArcCell) -> Result<[u8; 32], ChainError> {
         .map_err(|_| ChainError::Invalid("not a signed V5R1 transfer"))
 }
 
-pub(crate) fn address_boc(address: &Address) -> Result<Vec<u8>, ChainError> {
-    let broken = |_| ChainError::Invalid("cannot encode the address");
-    let mut builder = CellBuilder::new();
-    builder.store_address(&to_ton(address)?).map_err(broken)?;
-    let cell = builder.build().map_err(broken)?;
-    BagOfCells::from_root(cell).serialize(false).map_err(broken)
-}
-
 pub(crate) fn read_address(boc: &[u8]) -> Option<Address> {
     let root = BagOfCells::parse(boc).ok()?.single_root().ok()?;
     let mut parser = root.parser();
@@ -329,17 +321,11 @@ mod tests {
             workchain: 0,
             hash: bytes32("f8b8635d0786b77f9da660e65fd31d670a675dd4302facba692f46b571eb5360"),
         };
-        let boc = address_boc(&owner).unwrap();
-        assert_eq!(read_address(&boc), Some(owner));
         let from_node = bytes32_vec(
             "b5ee9c72010101010024000043801f170c6ba0f0d6eff3b4cc1ccbfa63ace14cebba8605f5974d25e8d6ae3d6a6c10",
         );
         assert_eq!(read_address(&from_node), Some(owner));
         assert_eq!(read_address(&[0xb5, 0xee]), None);
-        assert!(matches!(
-            address_boc(&Address::Evm([1; 20])),
-            Err(ChainError::Invalid(_))
-        ));
     }
 
     fn bytes32_vec(hex: &str) -> Vec<u8> {

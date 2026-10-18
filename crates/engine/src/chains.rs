@@ -19,7 +19,7 @@ use crate::portfolio::{Account, Held, NetworkHealth};
 pub(crate) enum AnyChain {
     Evm(EvmChain),
     Tron(TronChain),
-    Ton(TonChain),
+    Ton(Box<TonChain>),
 }
 
 #[derive(Clone)]
@@ -141,7 +141,9 @@ pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
         .filter_map(|network| match network.family() {
             ChainFamily::Evm => EvmChain::new(network.clone()).ok().map(AnyChain::Evm),
             ChainFamily::Tron => TronChain::new(network.clone()).ok().map(AnyChain::Tron),
-            ChainFamily::Ton => TonChain::new(network.clone()).ok().map(AnyChain::Ton),
+            ChainFamily::Ton => TonChain::new(network.clone())
+                .ok()
+                .map(|chain| AnyChain::Ton(Box::new(chain))),
         })
         .collect()
 }

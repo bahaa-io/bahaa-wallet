@@ -1,7 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{ChainError, Failure, Pool};
 use bahaa_config::{Endpoint, Protocol};
@@ -14,17 +14,20 @@ use ruint::aliases::U256;
 use serde_json::{Value, json};
 use url::Url;
 
-use crate::cells::Account;
-use crate::fees::Settings;
-use crate::lite::{Lite, proven_account, proven_settings, proven_transactions, refused};
+use crate::cells::{Account, Status};
+use crate::fees::Config;
+use crate::lite::{
+    Lite, proven_account, proven_config, proven_library, proven_transactions, refused,
+};
 use crate::tl::{AccountState, BlockId, ConfigInfo};
 use crate::transaction::{MAX_LISTED, Transaction};
-use crate::wallet::address_boc;
+use crate::vm::{self, Ran};
 
 const MAX_REPLY: usize = 4 * 1024 * 1024;
 const MAX_MESSAGE: usize = 200;
 const TIMEOUT: Duration = Duration::from_secs(20);
-const NOT_DEPLOYED: i64 = -13;
+const CONFIG_FOR: Duration = Duration::from_secs(600);
+const MAX_LIBRARIES: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Item {
@@ -46,6 +49,8 @@ pub(crate) struct Http {
     client: reqwest::Client,
     zero_state: [u8; 32],
     verified: Mutex<BTreeSet<String>>,
+    config: Mutex<Option<(Instant, Config)>>,
+    libraries: Mutex<HashMap<[u8; 32], Vec<u8>>>,
     lite: Lite,
 }
 
@@ -62,6 +67,8 @@ impl Http {
             client,
             zero_state,
             verified: Mutex::new(BTreeSet::new()),
+            config: Mutex::new(None),
+            libraries: Mutex::new(HashMap::new()),
         })
     }
 
@@ -100,43 +107,29 @@ impl Http {
         method: &str,
         arg: Option<&Address>,
     ) -> Result<Option<Vec<Item>>, ChainError> {
-        Ok(self
-            .pool
-            .call(None, |endpoint| async move {
-                let base = &endpoint.url;
-                if endpoint.protocol == Protocol::TonLiteservers {
-                    return self.lite.run(base, address, method, arg).await;
-                }
-                match self.ready(&endpoint).await? {
-                    Provider::Center => {
-                        let stack = match arg {
-                            Some(arg) => {
-                                let boc = address_boc(arg).map_err(Failure::Fatal)?;
-                                json!([["tvm.Slice", STANDARD.encode(boc)]])
-                            }
-                            None => json!([]),
-                        };
-                        let body = json!({"address": address.to_string(), "method": method, "stack": stack});
-                        let result = center(self.fetch(base, "v2/runGetMethod", Some(&body)).await?)?;
-                        executed(method, &result["exit_code"], &result["stack"], center_item)
-                    }
-                    Provider::Api => {
-                        let path = match arg {
-                            Some(arg) => {
-                                format!("blockchain/accounts/{address}/methods/{method}?args={arg}")
-                            }
-                            None => format!("blockchain/accounts/{address}/methods/{method}"),
-                        };
-                        match api(self.fetch(base, &path, None).await?)? {
-                            None => Ok(None),
-                            Some(reply) => {
-                                executed(method, &reply["exit_code"], &reply["stack"], api_item)
-                            }
-                        }
-                    }
-                }
-            })
-            .await?)
+        let account = self.account(address).await?;
+        if !matches!(account.status, Status::Active { .. }) {
+            return Ok(None);
+        }
+        let params = self.config().await?.encoded().ok_or_else(|| {
+            ChainError::Network("the network config cannot be encoded".to_owned())
+        })?;
+        let now = u32::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs()),
+        )
+        .unwrap_or(u32::MAX);
+        let mut libraries = Vec::new();
+        for _ in 0..=MAX_LIBRARIES {
+            match vm::run(&account.boc, method, arg, &params, &libraries, now)? {
+                Ran::Done(items) => return Ok(Some(items)),
+                Ran::Missing(hash) => libraries.push(self.library(&hash).await?),
+            }
+        }
+        Err(ChainError::Network(
+            "a contract needs too many libraries".to_owned(),
+        ))
     }
 
     pub(crate) async fn account(&self, address: &Address) -> Result<Account, ChainError> {
@@ -160,13 +153,22 @@ impl Http {
             .await?)
     }
 
-    pub(crate) async fn settings(&self) -> Result<Settings, ChainError> {
-        Ok(self
+    pub(crate) async fn config(&self) -> Result<Config, ChainError> {
+        let cached = self
+            .config
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .filter(|(at, _)| at.elapsed() < CONFIG_FOR);
+        if let Some((_, config)) = cached {
+            return Ok(config);
+        }
+        let config = self
             .pool
             .call(None, |endpoint| async move {
                 let base = &endpoint.url;
                 match endpoint.protocol {
-                    Protocol::TonLiteservers => self.lite.settings(base).await,
+                    Protocol::TonLiteservers => self.lite.config(base).await,
                     Protocol::TonApi => {
                         self.ready(&endpoint).await?;
                         let head = api(self
@@ -185,12 +187,53 @@ impl Http {
                         let reply =
                             api(self.fetch(base, &path, None).await?)?.ok_or_else(unsupported)?;
                         let info = proxied_config(&reply).ok_or_else(malformed)?;
-                        proven_settings(&last, &info)
+                        proven_config(&last, &info)
                     }
                     _ => Err(unsupported()),
                 }
             })
-            .await?)
+            .await?;
+        *self.config.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((Instant::now(), config.clone()));
+        Ok(config)
+    }
+
+    async fn library(&self, hash: &[u8; 32]) -> Result<Vec<u8>, ChainError> {
+        let known = self
+            .libraries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(hash)
+            .cloned();
+        if let Some(library) = known {
+            return Ok(library);
+        }
+        let library = self
+            .pool
+            .call(None, |endpoint| async move {
+                let base = &endpoint.url;
+                match endpoint.protocol {
+                    Protocol::TonLiteservers => self.lite.library(base, hash).await,
+                    Protocol::TonApi => {
+                        self.ready(&endpoint).await?;
+                        let path = format!("blockchain/libraries/{}", hex(hash));
+                        let reply =
+                            api(self.fetch(base, &path, None).await?)?.ok_or_else(unsupported)?;
+                        let data = reply["boc"]
+                            .as_str()
+                            .and_then(unhex)
+                            .ok_or_else(malformed)?;
+                        proven_library(data, hash)
+                    }
+                    _ => Err(unsupported()),
+                }
+            })
+            .await?;
+        self.libraries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*hash, library.clone());
+        Ok(library)
     }
 
     pub(crate) async fn send(&self, boc: &[u8]) -> Result<(), ChainError> {
@@ -427,57 +470,6 @@ fn refusal(status: StatusCode, error: &Value) -> Failure<ChainError> {
     }
 }
 
-fn executed(
-    method: &str,
-    exit_code: &Value,
-    stack: &Value,
-    read: fn(&Value) -> Option<Item>,
-) -> Result<Option<Vec<Item>>, Failure<ChainError>> {
-    match exit_code.as_i64() {
-        Some(0) => {}
-        Some(NOT_DEPLOYED) => return Ok(None),
-        Some(code) => {
-            return Err(Failure::Fatal(ChainError::Rejected(format!(
-                "the contract method {method} stopped with exit code {code}"
-            ))));
-        }
-        None => return Err(retry("a get-method reply has no exit code")),
-    }
-    stack
-        .as_array()
-        .ok_or_else(|| retry("a get-method reply has no stack"))?
-        .iter()
-        .map(|item| read(item).ok_or_else(|| retry("a get-method reply has an unreadable value")))
-        .collect::<Result<Vec<_>, _>>()
-        .map(Some)
-}
-
-fn center_item(item: &Value) -> Option<Item> {
-    match item[0].as_str()? {
-        "num" => number(item[1].as_str()?).map(Item::Num),
-        "cell" => STANDARD
-            .decode(item[1]["bytes"].as_str()?)
-            .ok()
-            .map(Item::Cell),
-        _ => None,
-    }
-}
-
-fn api_item(item: &Value) -> Option<Item> {
-    match item["type"].as_str()? {
-        "num" => number(item["num"].as_str()?).map(Item::Num),
-        "cell" => unhex(item["cell"].as_str()?).map(Item::Cell),
-        _ => None,
-    }
-}
-
-fn number(text: &str) -> Option<U256> {
-    let digits = text.strip_prefix("0x")?;
-    (!digits.is_empty() && digits.len() <= 64)
-        .then(|| U256::from_str_radix(digits, 16).ok())
-        .flatten()
-}
-
 fn decimal(value: &Value) -> Result<U256, Failure<ChainError>> {
     value
         .as_str()
@@ -570,48 +562,6 @@ mod tests {
     }
 
     #[test]
-    fn stack_values_are_read_strictly() {
-        assert_eq!(
-            center_item(&json!(["num", "0x56110d7a1790"])),
-            Some(Item::Num(U256::from(94_631_240_538_000u64)))
-        );
-        assert_eq!(
-            api_item(&json!({"type": "cell", "cell": "b5ee"})),
-            Some(Item::Cell(vec![0xb5, 0xee]))
-        );
-        for bad in [
-            json!(["num", "-0x5"]),
-            json!(["num", "12"]),
-            json!(["tuple", []]),
-            json!(["cell", {"bytes": "%%"}]),
-        ] {
-            assert_eq!(center_item(&bad), None, "{bad}");
-        }
-        assert_eq!(api_item(&json!({"type": "cell", "cell": "b5e"})), None);
-    }
-
-    #[test]
-    fn exit_codes_tell_missing_contracts_from_failures() {
-        let stack = json!([["num", "0x1"]]);
-        assert_eq!(
-            executed("seqno", &json!(0), &stack, center_item).ok(),
-            Some(Some(vec![Item::Num(U256::from(1u8))]))
-        );
-        assert_eq!(
-            executed("seqno", &json!(-13), &stack, center_item).ok(),
-            Some(None)
-        );
-        assert!(matches!(
-            executed("seqno", &json!(11), &stack, center_item),
-            Err(Failure::Fatal(ChainError::Rejected(_)))
-        ));
-        assert!(matches!(
-            executed("seqno", &json!(0), &json!([["list", []]]), center_item),
-            Err(Failure::Retry(_))
-        ));
-    }
-
-    #[test]
     fn provider_errors_are_classified() {
         assert!(matches!(
             refusal(
@@ -640,5 +590,89 @@ mod tests {
             api((StatusCode::NOT_FOUND, None)),
             Err(Failure::Unsupported(_))
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "talks to the real TON network, run with --test-threads=1"]
+    async fn live_contracts_run_here_match_the_network_vm() {
+        let registry = bahaa_config::Registry::builtin().unwrap();
+        let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
+        let bahaa_config::ChainKind::Ton { zero_state, .. } = ton.kind else {
+            panic!("not TON");
+        };
+        let endpoints = ton
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.protocol == Protocol::TonLiteservers)
+            .cloned()
+            .collect();
+        let http = Http::new(endpoints, zero_state).unwrap();
+        let client = reqwest::Client::new();
+        let tonapi = |path: String| {
+            let client = client.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                client
+                    .get(format!("https://tonapi.io/v2/{path}"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .json::<Value>()
+                    .await
+                    .unwrap()
+            }
+        };
+        let raw = |text: &str| Address::parse(bahaa_types::ChainFamily::Ton, text).unwrap();
+        for master in [
+            "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+            "EQAvlWFDxGF2lXm67y4yzC17wYKD9A0guwPkMs1gOsM__NOT",
+            "EQCvxJy4eG8hyHBFsZ7eePxrRsUQSFE_jpptRAYBmcG_DOGS",
+            "EQA2kCVNwVsil2EM2mB0SkXytxCqQjS4mttjDpnXmwG9T6bO",
+            "EQC98_qAmNEptUtPc7W6xdHh_ZHrBUFpw5Ft_IzNU20QAJav",
+        ] {
+            let master = raw(master);
+            let holders = tonapi(format!("jettons/{master}/holders?limit=1")).await;
+            let top = &holders["addresses"][0];
+            let owner = raw(top["owner"]["address"].as_str().unwrap());
+            let wallet = raw(top["address"].as_str().unwrap());
+            let found = http
+                .run(&master, "get_wallet_address", Some(&owner))
+                .await
+                .unwrap()
+                .unwrap();
+            let [Item::Cell(boc)] = found.as_slice() else {
+                panic!("{master}: {found:?}");
+            };
+            assert_eq!(crate::wallet::read_address(boc), Some(wallet), "{master}");
+            let data = http
+                .run(&wallet, "get_wallet_data", None)
+                .await
+                .unwrap()
+                .unwrap();
+            let [
+                Item::Num(balance),
+                Item::Cell(holder),
+                Item::Cell(minter),
+                _,
+            ] = data.as_slice()
+            else {
+                panic!("{master}: {data:?}");
+            };
+            assert_eq!(crate::wallet::read_address(holder), Some(owner), "{master}");
+            assert_eq!(
+                crate::wallet::read_address(minter),
+                Some(master),
+                "{master}"
+            );
+            let remote = tonapi(format!(
+                "blockchain/accounts/{wallet}/methods/get_wallet_data"
+            ))
+            .await;
+            assert_eq!(
+                balance.to_string(),
+                remote["decoded"]["balance"].as_str().unwrap(),
+                "{master}"
+            );
+        }
     }
 }

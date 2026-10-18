@@ -35,21 +35,18 @@ async fn live_gram_and_usdt_through_each_provider() {
         .iter()
         .map(|asset| asset.parse().unwrap())
         .collect();
-    let mut seen = Vec::new();
-    for protocol in [
-        Some(Protocol::TonLiteservers),
-        Some(Protocol::TonCenter),
-        Some(Protocol::TonApi),
-        None,
-    ] {
+    let only = |protocol: Option<Protocol>| {
         let mut network = ton.clone();
         if let Some(protocol) = protocol {
             network
                 .endpoints
                 .retain(|endpoint| endpoint.protocol == protocol);
         }
-        let chain = TonChain::new(network).unwrap();
-        let balances = chain.balances(&holder, &assets).await.unwrap();
+        TonChain::new(network).unwrap()
+    };
+    let mut seen = Vec::new();
+    for protocol in [Some(Protocol::TonLiteservers), Some(Protocol::TonApi), None] {
+        let balances = only(protocol).balances(&holder, &assets).await.unwrap();
         assert!(!balances[0].amount.is_zero(), "{protocol:?}: {balances:?}");
         assert!(!balances[1].amount.is_zero(), "{protocol:?}: {balances:?}");
         assert_eq!(balances[1].amount.decimals(), 6);
@@ -57,6 +54,23 @@ async fn live_gram_and_usdt_through_each_provider() {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     }
     assert!(seen.windows(2).all(|pair| pair[0] == pair[1]), "{seen:?}");
+    let center = only(Some(Protocol::TonCenter));
+    assert!(
+        !center.balances(&holder, &assets[..1]).await.unwrap()[0]
+            .amount
+            .is_zero()
+    );
+    assert!(center.balances(&holder, &assets).await.is_err());
+    let remote: serde_json::Value = reqwest::get(
+        "https://tonapi.io/v2/blockchain/accounts/0:7f024f7ec0cc57b87eaf017046adaf9f6c521afb809a159cb2a2194f4153356f/methods/get_wallet_data",
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let units = remote["decoded"]["balance"].as_str().unwrap();
+    assert_eq!(seen[0].units().to_string(), units);
 }
 
 #[tokio::test]
@@ -86,7 +100,13 @@ async fn live_fresh_accounts_hold_nothing_on_every_source() {
             .endpoints
             .retain(|endpoint| endpoint.protocol == protocol);
         let chain = TonChain::new(network).unwrap();
-        let balances = chain.balances(&fresh, &assets).await.unwrap();
+        let readable = if protocol == Protocol::TonCenter {
+            assert!(chain.balances(&fresh, &assets).await.is_err());
+            &assets[..1]
+        } else {
+            &assets[..]
+        };
+        let balances = chain.balances(&fresh, readable).await.unwrap();
         assert!(
             balances.iter().all(|balance| balance.amount.is_zero()),
             "{protocol:?}: {balances:?}"
