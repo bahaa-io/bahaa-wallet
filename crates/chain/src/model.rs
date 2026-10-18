@@ -85,6 +85,7 @@ pub struct Transfer {
 pub enum FeeItem {
     Gas { units: u64, price: Amount },
     L1Data,
+    Operator,
     Bandwidth { bytes: u64 },
     Energy { units: u64 },
     Activation,

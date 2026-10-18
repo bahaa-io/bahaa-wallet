@@ -78,8 +78,12 @@ pub fn result(value: &Value) -> (u16, Value) {
 }
 
 pub fn bsc_on(urls: &[Url]) -> Network {
+    network_on("bsc", urls)
+}
+
+pub fn network_on(id: &str, urls: &[Url]) -> Network {
     let registry = Registry::builtin().unwrap();
-    let mut network = registry.get(&"bsc".parse().unwrap()).unwrap().clone();
+    let mut network = registry.get(&id.parse().unwrap()).unwrap().clone();
     network.endpoints = urls
         .iter()
         .map(|url| Endpoint {

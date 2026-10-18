@@ -8,7 +8,7 @@ use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId,
     TxStatus,
 };
-use bahaa_config::{ChainKind, FeeModel, Network};
+use bahaa_config::{ChainKind, Network};
 use bahaa_crypto::{DerivationPath, Seed};
 use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
@@ -17,6 +17,7 @@ use serde_json::json;
 use sha3::{Digest, Keccak256};
 
 mod logs;
+mod rollup;
 
 pub use logs::{Incoming, ScanCursor, Scanned};
 
@@ -156,15 +157,6 @@ impl EvmChain {
 
 impl EvmChain {
     fn sendable(&self, transfer: &Transfer) -> Result<(), ChainError> {
-        if let ChainKind::Evm {
-            fee: FeeModel::OpStack,
-            ..
-        } = self.network.kind
-        {
-            return Err(ChainError::Unsupported(
-                "sending yet, Base and OP Mainnet fees arrive in 0.2",
-            ));
-        }
         if transfer.asset.network() != &self.network.id {
             return Err(ChainError::Invalid("the asset belongs to another network"));
         }
@@ -225,23 +217,33 @@ impl EvmChain {
         let expected = U256::from(estimate)
             .checked_mul(price)
             .ok_or_else(overflow)?;
-        let quote = FeeQuote::new(
-            self.native(max)?,
-            self.native(expected)?,
-            vec![FeeLine {
-                item: FeeItem::Gas {
+        Ok(Fees {
+            max_fee,
+            tip,
+            max,
+            expected,
+            lines: vec![(
+                FeeItem::Gas {
                     units: estimate,
                     price: self.native(price)?,
                 },
-                amount: self.native(expected)?,
-            }],
-        )?;
-        Ok(Fees {
-            quote,
-            max,
-            max_fee,
-            tip,
+                expected,
+            )],
         })
+    }
+
+    fn fee_quote(&self, fees: Fees) -> Result<FeeQuote, ChainError> {
+        let lines = fees
+            .lines
+            .into_iter()
+            .map(|(item, units)| {
+                Ok(FeeLine {
+                    item,
+                    amount: self.native(units)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ChainError>>()?;
+        FeeQuote::new(self.native(fees.max)?, self.native(fees.expected)?, lines)
     }
 
     async fn funds(
@@ -295,10 +297,20 @@ struct Route {
 }
 
 struct Fees {
-    quote: FeeQuote,
-    max: U256,
     max_fee: U256,
     tip: U256,
+    max: U256,
+    expected: U256,
+    lines: Vec<(FeeItem, U256)>,
+}
+
+impl Fees {
+    fn add(&mut self, item: FeeItem, expected: U256, max: U256) -> Result<(), ChainError> {
+        self.expected = self.expected.checked_add(expected).ok_or_else(overflow)?;
+        self.max = self.max.checked_add(max).ok_or_else(overflow)?;
+        self.lines.push((item, expected));
+        Ok(())
+    }
 }
 
 impl Chain for EvmChain {
@@ -357,8 +369,7 @@ impl Chain for EvmChain {
         } else {
             estimate.saturating_add(estimate / 5)
         };
-        let fees = self.quote(estimate, gas_limit).await?;
-        self.funds(&from, transfer, &route, fees.max).await?;
+        let mut fees = self.quote(estimate, gas_limit).await?;
         let tx = TxEip1559 {
             chain_id: self.chain_id,
             nonce,
@@ -367,15 +378,19 @@ impl Chain for EvmChain {
             max_priority_fee_per_gas: u128::try_from(fees.tip).map_err(|_| overflow())?,
             to: TxKind::Call(route.call_to.into()),
             value: route.value,
-            input: route.data.into(),
+            input: route.data.clone().into(),
             ..TxEip1559::default()
         };
+        if self.is_rollup() {
+            self.add_rollup_fees(&tx, estimate, &mut fees).await?;
+        }
+        self.funds(&from, transfer, &route, fees.max).await?;
         Ok((
             EvmPlan {
                 transfer: transfer.clone(),
                 tx,
             },
-            fees.quote,
+            self.fee_quote(fees)?,
         ))
     }
 
@@ -474,16 +489,23 @@ impl Chain for EvmChain {
         }
         let field = |name: &str| quantity(&receipt[name]);
         let block = u64::try_from(field("blockNumber")?).ok();
-        let fee = field("gasUsed")?
+        let gas_used = field("gasUsed")?;
+        let gas_fee = gas_used
             .checked_mul(field("effectiveGasPrice")?)
-            .ok_or(ChainError::Invalid("fee overflow"))?;
-        Ok(if receipt["status"] == "0x1" {
-            TxStatus::Confirmed {
-                block,
-                fee: Some(self.native(fee)?),
-            }
+            .ok_or_else(overflow)?;
+        if receipt["status"] != "0x1" {
+            return Ok(TxStatus::Failed("the transaction reverted".to_owned()));
+        }
+        let fee = if self.is_rollup() {
+            self.rollup_paid(&receipt, gas_used)
+                .await
+                .and_then(|extra| gas_fee.checked_add(extra))
         } else {
-            TxStatus::Failed("the transaction reverted".to_owned())
+            Some(gas_fee)
+        };
+        Ok(TxStatus::Confirmed {
+            block,
+            fee: fee.map(|fee| self.native(fee)).transpose()?,
         })
     }
 }

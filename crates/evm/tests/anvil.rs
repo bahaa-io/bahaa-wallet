@@ -5,8 +5,10 @@ use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use bahaa_chain::{Chain, ChainError, Transfer, TxId, TxStatus, check_signed};
-use bahaa_config::{Endpoint, Feature, Protocol, Registry};
+use alloy_consensus::{SignableTransaction, TxEnvelope};
+use alloy_eips::eip2718::Decodable2718;
+use bahaa_chain::{Chain, ChainError, FeeItem, Transfer, TxId, TxStatus, check_signed};
+use bahaa_config::{ChainKind, Endpoint, Feature, Protocol, Registry};
 use bahaa_crypto::{Mnemonic, Seed};
 use bahaa_evm::{EvmChain, ScanCursor};
 use bahaa_types::{Address, Amount, AssetId};
@@ -20,11 +22,17 @@ const USDT: &str = "0x55d398326f99059fF775485246999027B3197955";
 struct Anvil {
     child: Child,
     url: Url,
+    network: String,
 }
 
 impl Anvil {
-    fn start(fork: Option<&str>) -> Self {
+    fn start(network: &str, extra: &[&str]) -> Self {
         let binary = std::env::var("BAHAA_ANVIL").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let ChainKind::Evm { chain_id, .. } = registry.get(&network.parse().unwrap()).unwrap().kind
+        else {
+            panic!("not evm")
+        };
         let port = TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -32,15 +40,15 @@ impl Anvil {
             .port();
         let mut command = Command::new(binary);
         command
-            .args(["--chain-id", "56", "--port", &port.to_string(), "--silent"])
+            .args(["--chain-id", &chain_id.to_string()])
+            .args(["--port", &port.to_string(), "--silent"])
+            .args(extra)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        if let Some(fork) = fork {
-            command.args(["--fork-url", fork]);
-        }
         Self {
             child: command.spawn().unwrap(),
             url: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+            network: network.to_owned(),
         }
     }
 
@@ -71,7 +79,10 @@ impl Anvil {
 
     fn chain(&self) -> EvmChain {
         let registry = Registry::builtin().unwrap();
-        let mut network = registry.get(&"bsc".parse().unwrap()).unwrap().clone();
+        let mut network = registry
+            .get(&self.network.parse().unwrap())
+            .unwrap()
+            .clone();
         network.endpoints = vec![Endpoint {
             protocol: Protocol::JsonRpc,
             url: self.url.clone(),
@@ -112,15 +123,19 @@ async fn send(chain: &EvmChain, transfer: &Transfer) -> (TxId, Amount, Amount) {
     (id, quote.expected(), quote.max())
 }
 
-async fn confirmed(chain: &EvmChain, id: &TxId) -> Amount {
+async fn settled(chain: &EvmChain, id: &TxId) -> Option<Amount> {
     for _ in 0..50 {
         match chain.status(id).await.unwrap() {
-            TxStatus::Confirmed { fee: Some(fee), .. } => return fee,
+            TxStatus::Confirmed { fee, .. } => return fee,
             TxStatus::Failed(reason) => panic!("failed: {reason}"),
             _ => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
     panic!("not confirmed");
+}
+
+async fn confirmed(chain: &EvmChain, id: &TxId) -> Amount {
+    settled(chain, id).await.unwrap()
 }
 
 async fn balance(chain: &EvmChain, address: &Address, asset: &AssetId) -> Amount {
@@ -134,7 +149,7 @@ async fn balance(chain: &EvmChain, address: &Address, asset: &AssetId) -> Amount
 #[tokio::test]
 #[ignore = "needs a local anvil: BAHAA_ANVIL=/path/to/anvil"]
 async fn sends_native_coins_end_to_end() {
-    let anvil = Anvil::start(None);
+    let anvil = Anvil::start("bsc", &[]);
     anvil.ready().await;
     let chain = anvil.chain();
     let bnb: AssetId = "bsc".parse().unwrap();
@@ -162,7 +177,7 @@ async fn sends_native_coins_end_to_end() {
 #[tokio::test]
 #[ignore = "needs a local anvil: BAHAA_ANVIL=/path/to/anvil"]
 async fn refuses_to_overspend_and_knows_unknown_ids() {
-    let anvil = Anvil::start(None);
+    let anvil = Anvil::start("bsc", &[]);
     anvil.ready().await;
     let chain = anvil.chain();
     let empty = Mnemonic::from_entropy(&[3; 16]).unwrap().to_seed("");
@@ -183,7 +198,7 @@ async fn refuses_to_overspend_and_knows_unknown_ids() {
 #[tokio::test]
 #[ignore = "needs a local anvil and internet: BAHAA_ANVIL=/path/to/anvil"]
 async fn sends_real_bsc_usdt_on_a_forked_chain() {
-    let anvil = Anvil::start(Some("https://bsc-dataseed.bnbchain.org"));
+    let anvil = Anvil::start("bsc", &["--fork-url", "https://bsc-dataseed.bnbchain.org"]);
     anvil.ready().await;
     let chain = anvil.chain();
     let http = reqwest::Client::new();
@@ -255,4 +270,63 @@ async fn sends_real_bsc_usdt_on_a_forked_chain() {
     );
     assert_eq!(seen.asset, usdt);
     assert!(seen.time > 1_700_000_000);
+}
+
+#[tokio::test]
+#[ignore = "needs a local anvil and internet: BAHAA_ANVIL=/path/to/anvil"]
+async fn sends_on_a_forked_base_priced_by_the_real_fee_oracle() {
+    let anvil = Anvil::start(
+        "base",
+        &[
+            "--network",
+            "base",
+            "--fork-url",
+            "https://mainnet.base.org",
+        ],
+    );
+    anvil.ready().await;
+    let chain = anvil.chain();
+    let eth: AssetId = "base".parse().unwrap();
+    let amount = Amount::parse("0.25", 18).unwrap();
+    let mut transfer = transfer(&chain, eth.clone(), amount);
+    let stranger = Mnemonic::from_entropy(&[7; 16]).unwrap().to_seed("");
+    transfer.to = chain.derive(&stranger, 0).unwrap();
+    let before_from = balance(&chain, &transfer.from, &eth).await;
+    let (plan, quote) = chain.prepare(&transfer).await.unwrap();
+    let [gas, l1] = quote.lines() else {
+        panic!("unexpected fee lines: {quote:?}");
+    };
+    assert!(matches!(gas.item, FeeItem::Gas { units: 21_000, .. }));
+    assert_eq!(l1.item, FeeItem::L1Data);
+    assert!(!l1.amount.is_zero());
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    check_signed(&transfer, &chain.decode(&signed).unwrap()).unwrap();
+    let envelope = TxEnvelope::decode_2718(&mut &signed.bytes[..]).unwrap();
+    let size = envelope
+        .as_eip1559()
+        .unwrap()
+        .tx()
+        .encoded_for_signing()
+        .len();
+    let http = reqwest::Client::new();
+    let bound = anvil
+        .rpc(
+            &http,
+            "eth_call",
+            json!([{
+                "to": "0x420000000000000000000000000000000000000F",
+                "data": format!("0xf1c7a58b{size:064x}")
+            }, "latest"]),
+        )
+        .await
+        .unwrap();
+    let bound = u128::from_str_radix(bound.as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
+    assert!(l1.amount <= Amount::new(bound.try_into().unwrap(), 18).unwrap());
+    let id = chain.broadcast(&signed).await.unwrap();
+    assert_eq!(settled(&chain, &id).await, None);
+    assert_eq!(balance(&chain, &transfer.to, &eth).await, amount);
+    let spent = before_from
+        .checked_sub(balance(&chain, &transfer.from, &eth).await)
+        .unwrap();
+    assert!(spent > amount && spent <= amount.checked_add(quote.max()).unwrap());
 }
