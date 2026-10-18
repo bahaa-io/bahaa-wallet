@@ -4,7 +4,8 @@ use crate::proof::{Found, label, lookup};
 
 pub(crate) const PARAMS: [i32; 13] = [0, 5, 8, 12, 18, 19, 20, 21, 24, 25, 31, 43, 45];
 const REQUIRED: [i32; 10] = [0, 8, 12, 18, 19, 20, 21, 24, 25, 31];
-const FEE_PARAMS: [i32; 3] = [18, 21, 25];
+const STORAGE_PRICES: i32 = 18;
+const FEE_PARAMS: [i32; 2] = [21, 25];
 pub(crate) const TRANSFER_GAS: u64 = 4_939;
 const STORAGE_TAG: u8 = 0xcc;
 const FLAT_TAG: u8 = 0xd1;
@@ -15,14 +16,24 @@ const SHIFT: u128 = 1 << 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Settings {
-    pub bit_price_ps: u64,
-    pub cell_price_ps: u64,
     pub flat_gas_limit: u64,
     pub flat_gas_price: u64,
     pub gas_price: u64,
     pub lump_price: u64,
     pub bit_price: u64,
     pub cell_price: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Storage {
+    periods: Vec<Period>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Period {
+    since: u32,
+    bit: u64,
+    cell: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,12 +63,16 @@ impl Config {
             .then_some(Self { params })
     }
 
-    pub(crate) fn settings(&self, now: u32) -> Option<Settings> {
+    pub(crate) fn settings(&self) -> Option<Settings> {
         let cells = FEE_PARAMS
             .iter()
             .map(|id| self.get(*id).cloned())
             .collect::<Option<Vec<_>>>()?;
-        Settings::read(&cells, now)
+        Settings::read(&cells)
+    }
+
+    pub(crate) fn storage(&self) -> Option<Storage> {
+        Storage::read(self.get(STORAGE_PRICES)?)
     }
 
     pub(crate) fn encoded(&self) -> Option<Vec<(i32, Vec<u8>)>> {
@@ -81,16 +96,13 @@ impl Config {
 }
 
 impl Settings {
-    pub(crate) fn read(params: &[ArcCell], now: u32) -> Option<Self> {
-        let [storage, gas, forward] = params else {
+    pub(crate) fn read(params: &[ArcCell]) -> Option<Self> {
+        let [gas, forward] = params else {
             return None;
         };
-        let (bit_price_ps, cell_price_ps) = storage_prices(storage, now)?;
         let (flat_gas_limit, flat_gas_price, gas_price) = gas_prices(gas)?;
         let (lump_price, bit_price, cell_price) = forward_prices(forward)?;
         Some(Self {
-            bit_price_ps,
-            cell_price_ps,
             flat_gas_limit,
             flat_gas_price,
             gas_price,
@@ -115,11 +127,47 @@ impl Settings {
         self.lump_price
             .checked_add(u64::try_from(size.div_ceil(SHIFT)).ok()?)
     }
+}
 
-    pub(crate) fn storage_fee(&self, (bits, cells): (u64, u64), seconds: u64) -> Option<u64> {
-        let rate = u128::from(bits) * u128::from(self.bit_price_ps)
-            + u128::from(cells) * u128::from(self.cell_price_ps);
-        u64::try_from((rate * u128::from(seconds)).div_ceil(SHIFT)).ok()
+impl Storage {
+    fn read(root: &ArcCell) -> Option<Self> {
+        let mut periods = Vec::new();
+        for leaf in leaves(root, 32)? {
+            let mut parser = leaf.0.parser();
+            parser.skip_bits(leaf.1).ok()?;
+            if parser.load_u8(8).ok()? != STORAGE_TAG {
+                return None;
+            }
+            periods.push(Period {
+                since: parser.load_u32(32).ok()?,
+                bit: parser.load_u64(64).ok()?,
+                cell: parser.load_u64(64).ok()?,
+            });
+        }
+        periods.sort_by_key(|period| period.since);
+        (!periods.is_empty()).then_some(Self { periods })
+    }
+
+    pub(crate) fn fee(&self, (bits, cells): (u64, u64), last_paid: u32, now: u32) -> Option<u64> {
+        let first = self.periods.first()?;
+        if last_paid == 0 || now <= last_paid || now <= first.since {
+            return Some(0);
+        }
+        let mut upto = last_paid.max(first.since);
+        let mut total: u128 = 0;
+        for (at, period) in self.periods.iter().enumerate() {
+            let until = self
+                .periods
+                .get(at + 1)
+                .map_or(now, |next| next.since.min(now));
+            if upto < until {
+                let rate = u128::from(bits) * u128::from(period.bit)
+                    + u128::from(cells) * u128::from(period.cell);
+                total = total.checked_add(rate.checked_mul(u128::from(until - upto))?)?;
+                upto = until;
+            }
+        }
+        u64::try_from(total.div_ceil(SHIFT)).ok()
     }
 }
 
@@ -140,24 +188,6 @@ pub(crate) fn size_without_root(root: &Cell) -> (u64, u64) {
 
 fn ordinary(cell: &ArcCell) -> Option<&ArcCell> {
     (!cell.is_exotic()).then_some(cell)
-}
-
-fn storage_prices(root: &ArcCell, now: u32) -> Option<(u64, u64)> {
-    let mut best: Option<(u32, u64, u64)> = None;
-    for leaf in leaves(root, 32)? {
-        let mut parser = leaf.0.parser();
-        parser.skip_bits(leaf.1).ok()?;
-        if parser.load_u8(8).ok()? != STORAGE_TAG {
-            return None;
-        }
-        let since = parser.load_u32(32).ok()?;
-        let bit = parser.load_u64(64).ok()?;
-        let cell = parser.load_u64(64).ok()?;
-        if since <= now && best.is_none_or(|(known, ..)| since >= known) {
-            best = Some((since, bit, cell));
-        }
-    }
-    best.map(|(_, bit, cell)| (bit, cell))
 }
 
 pub(crate) fn leaves(root: &ArcCell, bits: usize) -> Option<Vec<(ArcCell, usize)>> {
@@ -224,8 +254,6 @@ mod tests {
 
     pub(crate) fn mainnet() -> Settings {
         Settings {
-            bit_price_ps: 0,
-            cell_price_ps: 135,
             flat_gas_limit: 100,
             flat_gas_price: 6_667,
             gas_price: 4_369_067,
@@ -241,7 +269,17 @@ mod tests {
         assert_eq!(settings.gas_fee(TRANSFER_GAS), Some(329_268));
         assert_eq!(settings.gas_fee(50), Some(6_667));
         assert_eq!(settings.forward_fee((0, 0)), Some(66_667));
-        assert_eq!(settings.storage_fee((1_000, 10), 65_536), Some(1_350));
+        let storage = Storage {
+            periods: vec![Period {
+                since: 0,
+                bit: 0,
+                cell: 135,
+            }],
+        };
+        assert_eq!(
+            storage.fee((1_000, 10), 1_000_000, 1_000_000 + 65_536),
+            Some(1_350)
+        );
     }
 
     fn storage_entry(since: u32, cell_price: u64) -> CellBuilder {
@@ -264,26 +302,28 @@ mod tests {
         entry
     }
 
-    #[test]
-    fn reads_the_three_fee_params() {
-        let leaf = |key_bit: bool, entry: CellBuilder| {
-            let mut cell = CellBuilder::new();
-            cell.store_u8(2, 0b11)
-                .unwrap()
-                .store_bit(key_bit)
-                .unwrap()
-                .store_u8(5, 31)
-                .unwrap();
-            cell.store_cell(&{ entry }.build().unwrap()).unwrap();
-            cell.build().unwrap().to_arc()
-        };
+    fn leaf(key_bit: bool, entry: CellBuilder) -> ArcCell {
+        let mut cell = CellBuilder::new();
+        cell.store_u8(2, 0b11)
+            .unwrap()
+            .store_bit(key_bit)
+            .unwrap()
+            .store_u8(5, 31)
+            .unwrap();
+        cell.store_cell(&{ entry }.build().unwrap()).unwrap();
+        cell.build().unwrap().to_arc()
+    }
+
+    fn prices(first: CellBuilder, second: CellBuilder) -> ArcCell {
         let mut root = CellBuilder::new();
         root.store_u8(2, 0b00).unwrap();
-        root.store_reference(&leaf(false, storage_entry(0, 500)))
-            .unwrap();
-        root.store_reference(&leaf(true, storage_entry(1_777_500_000, 135)))
-            .unwrap();
-        let storage = root.build().unwrap().to_arc();
+        root.store_reference(&leaf(false, first)).unwrap();
+        root.store_reference(&leaf(true, second)).unwrap();
+        root.build().unwrap().to_arc()
+    }
+
+    #[test]
+    fn reads_the_gas_and_forwarding_params() {
         let mut gas = CellBuilder::new();
         gas.store_u8(8, FLAT_TAG)
             .unwrap()
@@ -318,51 +358,47 @@ mod tests {
             .store_u16(16, 21_845)
             .unwrap();
         let forward = forward.build().unwrap().to_arc();
-        let params = [storage, gas, forward];
-        let mut expected = mainnet();
-        expected.bit_price_ps = 1;
-        assert_eq!(Settings::read(&params, 1_792_000_000), Some(expected));
-        let older = Settings::read(&params, 1_700_000_000).unwrap();
-        assert_eq!(older.cell_price_ps, 500);
-        assert_eq!(Settings::read(&params[..2], 1_792_000_000), None);
-        let mut swapped = CellBuilder::new();
-        swapped.store_u8(2, 0b00).unwrap();
-        swapped
-            .store_reference(&leaf(false, storage_entry(1_777_500_000, 135)))
-            .unwrap();
-        swapped
-            .store_reference(&leaf(true, storage_entry(0, 500)))
-            .unwrap();
-        let swapped = [
-            swapped.build().unwrap().to_arc(),
-            params[1].clone(),
-            params[2].clone(),
-        ];
         assert_eq!(
-            Settings::read(&swapped, 1_792_000_000)
-                .unwrap()
-                .cell_price_ps,
-            135
+            Settings::read(&[gas.clone(), forward.clone()]),
+            Some(mainnet())
         );
-        let mut future = CellBuilder::new();
-        future.store_u8(2, 0b00).unwrap();
-        future
-            .store_reference(&leaf(false, storage_entry(1_777_500_000, 135)))
-            .unwrap();
-        future
-            .store_reference(&leaf(true, storage_entry(1_900_000_000, 9)))
-            .unwrap();
-        let future = [
-            future.build().unwrap().to_arc(),
-            params[1].clone(),
-            params[2].clone(),
-        ];
+        assert_eq!(Settings::read(std::slice::from_ref(&gas)), None);
+        assert_eq!(Settings::read(&[forward, gas]), None);
+    }
+
+    #[test]
+    fn storage_is_charged_at_each_periods_own_price() {
+        let change = 1_777_500_000;
+        let storage =
+            Storage::read(&prices(storage_entry(change, 135), storage_entry(0, 500))).unwrap();
         assert_eq!(
-            Settings::read(&future, 1_792_000_000)
-                .unwrap()
-                .cell_price_ps,
-            135
+            storage
+                .periods
+                .iter()
+                .map(|period| period.since)
+                .collect::<Vec<_>>(),
+            [0, change]
         );
+        let size = (1_000, 10);
+        assert_eq!(storage.fee(size, change - 1_000, change + 3_000), Some(200));
+        assert_eq!(storage.fee(size, change + 1_000, change + 4_000), Some(108));
+        assert_eq!(storage.fee(size, change - 4_000, change), Some(367));
+        assert_eq!(storage.fee(size, 0, change), Some(0));
+        assert_eq!(storage.fee(size, change, change), Some(0));
+        assert_eq!(storage.fee(size, change + 5, change), Some(0));
+        let future = Storage::read(&prices(
+            storage_entry(change, 135),
+            storage_entry(1_900_000_000, 9),
+        ))
+        .unwrap();
+        assert_eq!(future.fee(size, change - 9, change), Some(0));
+        assert_eq!(
+            future.fee(size, 1_792_000_000, 1_792_000_000 + 65_536),
+            Some(2_350)
+        );
+        let mut broken = CellBuilder::new();
+        broken.store_u8(8, FLAT_TAG).unwrap();
+        assert_eq!(Storage::read(&prices(storage_entry(0, 500), broken)), None);
     }
 
     #[test]

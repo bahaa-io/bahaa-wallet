@@ -10,7 +10,7 @@ use tonlib_core::cell::BagOfCells;
 use super::tokens::Contracts;
 use super::{TonChain, amount, hex, key};
 use crate::cells::{Account, Status};
-use crate::fees::{Settings, size_without_root};
+use crate::fees::{Config, Settings, Storage, size_without_root};
 use crate::wallet::{self, Order};
 
 pub(super) const LIFETIME: u64 = 300;
@@ -54,9 +54,7 @@ impl TonChain {
         let clock =
             u32::try_from(now).map_err(|_| ChainError::Invalid("the clock is out of range"))?;
         let config = self.http.config().await?;
-        let settings = config
-            .settings(clock)
-            .ok_or_else(|| ChainError::Network("the fee settings cannot be read".to_owned()))?;
+        let (settings, storage) = prices(&config)?;
         let mut order = Order {
             wallet: transfer.from,
             contract,
@@ -86,7 +84,7 @@ impl TonChain {
                 )
             }
         };
-        let fees = estimate(&order, deploy, &wallet, &settings, now)?;
+        let fees = estimate(&order, deploy, &wallet, (&settings, &storage), clock)?;
         let own = fees.expected().ok_or_else(overflow)?;
         let own_max = own.checked_mul(2).ok_or_else(overflow)?;
         let attached = u64::try_from(order.nano).map_err(|_| overflow())?;
@@ -277,8 +275,8 @@ pub(crate) fn estimate(
     order: &Order,
     deploy: bool,
     wallet: &Account,
-    settings: &Settings,
-    now: u64,
+    (settings, prices): (&Settings, &Storage),
+    now: u32,
 ) -> Result<Estimate, ChainError> {
     let external = wallet::external(order, &[0; 64], deploy.then_some(&[0; 32]))?;
     let import = settings
@@ -287,10 +285,9 @@ pub(crate) fn estimate(
     let forward = settings
         .forward_fee(wallet::transfer_size(order)?)
         .ok_or_else(overflow)?;
-    let elapsed = now.saturating_sub(u64::from(wallet.last_paid));
     let due = u64::try_from(wallet.due).map_err(|_| overflow())?;
-    let storage = settings
-        .storage_fee((wallet.bits, wallet.cells), elapsed)
+    let storage = prices
+        .fee((wallet.bits, wallet.cells), wallet.last_paid, now)
         .and_then(|fee| fee.checked_add(due))
         .ok_or_else(overflow)?;
     Ok(Estimate {
@@ -300,6 +297,14 @@ pub(crate) fn estimate(
         storage,
         forwarding: import.checked_add(forward).ok_or_else(overflow)?,
     })
+}
+
+fn prices(config: &Config) -> Result<(Settings, Storage), ChainError> {
+    let unreadable = || ChainError::Network("the fee settings cannot be read".to_owned());
+    Ok((
+        config.settings().ok_or_else(unreadable)?,
+        config.storage().ok_or_else(unreadable)?,
+    ))
 }
 
 fn now() -> u64 {

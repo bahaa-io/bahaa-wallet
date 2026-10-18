@@ -351,7 +351,7 @@ pub(crate) mod tests {
         Emulator::new(
             &config.encoded().unwrap(),
             &libraries,
-            config.settings(NOW).unwrap(),
+            config.settings().unwrap(),
             NOW,
         )
         .unwrap()
