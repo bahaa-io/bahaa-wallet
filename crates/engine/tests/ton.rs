@@ -214,8 +214,8 @@ async fn incoming_gram_joins_the_wallets_history_from_proven_state() {
         (
             "ton",
             TON_0.to_owned(),
-            88_210_222_000_008,
-            88_206_230_000_005,
+            1_783_275_694,
+            1_783_274_391,
             1_783_274_391
         )
     );

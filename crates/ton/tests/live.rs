@@ -13,6 +13,7 @@ use ruint::aliases::U256;
 const USDT: &str = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs";
 const HOLDER: &str = "0:f8b8635d0786b77f9da660e65fd31d670a675dd4302facba692f46b571eb5360";
 const SENDER: &str = "0:13fd9907ed89660d9b90f925bd54a6b029cafb368a172888f1ffc6fd690624e5";
+const USDT_RAW: &str = "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe";
 const SENT: &str = "b5ee9c72410205010001100001e5880027fb320fdb12cc1b3721f24b7aa94d605395f66d142e5111e3ff8dfad20c49ca039b4b3b73fffff88b566b9008000000559e4f7c61649cead47b81fc559961f1397ad6d17bf54953722f26dc0e635781c76df6d6f81c372949e1c8cb6a2cd85973bdab865f605980a59459cdf5e17aca0701020a0ec3c86d0302030000016862005bfa00866642a075cac79e914142651bcacae9fd297238395e0f73c0e9af00f3a018685d68000000000000000000000000010400ac0f8a7ea5000000006acd70d7506cc74a400801bca4e3e99d4b7eeed43fa097305639a10a68520be36b0b239c7ece42e7159acf0004ff6641fb62598366e43e496f5529ac0a72becda285ca223c7ff1bf5a41893942027a92ffc8";
 const SENT_ID: &str = "88d7201d27158e7cbaf4cceaef8ce46f460e9dc1e084490b2485eb6e6112bd54";
 const SENT_LT: u64 = 109_578_663_000_001;
@@ -250,9 +251,9 @@ async fn live_a_real_transfer_is_tracked_and_its_message_cannot_be_sent_again() 
     }
 }
 
-async fn indexed_receipts(account: &str, from_lt: u64, until_lt: u64) -> Vec<(String, u64)> {
+async fn indexed_receipts(account: &str, since: u64) -> Vec<(String, u64)> {
     let listed: serde_json::Value = reqwest::get(format!(
-        "https://toncenter.com/api/v3/transactions?account={account}&start_lt={from_lt}&end_lt={until_lt}&limit=100&sort=desc"
+        "https://toncenter.com/api/v3/transactions?account={account}&start_utime={since}&limit=100&sort=desc"
     ))
     .await
     .unwrap()
@@ -289,52 +290,95 @@ async fn indexed_receipts(account: &str, from_lt: u64, until_lt: u64) -> Vec<(St
     receipts
 }
 
+async fn indexed_tokens(owner: &str, since: u64) -> Vec<(u64, u64, String)> {
+    let listed: serde_json::Value = reqwest::get(format!(
+        "https://toncenter.com/api/v3/jetton/transfers?owner_address={owner}&jetton_master={USDT_RAW}&direction=in&start_utime={since}&limit=100&sort=desc"
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    listed["jetton_transfers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|transfer| transfer["transaction_aborted"] == false)
+        .map(|transfer| {
+            (
+                transfer["transaction_now"].as_u64().unwrap(),
+                transfer["amount"].as_str().unwrap().parse().unwrap(),
+                transfer["source"].as_str().unwrap().to_ascii_lowercase(),
+            )
+        })
+        .filter(|(_, units, _)| *units > 0)
+        .collect()
+}
+
 #[tokio::test]
 #[ignore = "talks to the real TON network, run with --test-threads=1"]
-async fn live_incoming_gram_matches_the_indexer() {
+async fn live_incoming_gram_and_usdt_match_the_indexer() {
     let registry = Registry::builtin().unwrap();
     let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
     let gram: AssetId = "ton".parse().unwrap();
+    let assets = [gram.clone(), format!("ton/{USDT}").parse().unwrap()];
     let busy = Address::parse(ChainFamily::Ton, SENDER).unwrap();
     let since = ScanCursor {
-        next: SENT_LT,
-        complete_from: SENT_LT,
-        complete_since: SENT_EXPIRES,
+        next: 1_791_848_664,
+        complete_from: 1_791_848_664,
+        complete_since: 1_791_848_664,
     };
     let test_seed = Address::parse(
         ChainFamily::Ton,
         "0:c73162b34cf19667210af3180d6fcfb88df1678cbbbe731f38642534cc6951e4",
     )
     .unwrap();
-    for protocol in [Protocol::TonLiteservers, Protocol::TonApi] {
+    let mut usdt_seen = 0;
+    for (protocol, owner, cursor) in [
+        (Protocol::TonLiteservers, busy, Some(since)),
+        (Protocol::TonLiteservers, test_seed, None),
+        (Protocol::TonApi, busy, Some(since)),
+    ] {
         let mut network = ton.clone();
         network
             .endpoints
             .retain(|endpoint| endpoint.protocol == protocol);
         let chain = TonChain::new(network).unwrap();
-        for (owner, cursor) in [(busy, Some(since)), (test_seed, None)] {
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            let scanned = chain
-                .scan(&owner, std::slice::from_ref(&gram), cursor)
-                .await
-                .unwrap()
-                .unwrap();
-            let start = cursor.map_or(scanned.cursor.complete_from, |cursor| cursor.next);
-            let found: Vec<(String, u64)> = scanned
-                .found
-                .iter()
-                .map(|incoming| {
-                    (
-                        incoming.id.as_str().to_owned(),
-                        u64::try_from(incoming.amount.units()).unwrap(),
-                    )
-                })
-                .collect();
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            let indexed =
-                indexed_receipts(&owner.to_string(), start, scanned.cursor.next - 1).await;
-            assert!(!found.is_empty(), "{protocol:?} {owner}");
-            assert_eq!(found, indexed, "{protocol:?} {owner}");
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let scanned = chain.scan(&owner, &assets, cursor).await.unwrap().unwrap();
+        let window = cursor.map_or(scanned.cursor.complete_since, |cursor| cursor.next);
+        let recent = scanned
+            .found
+            .iter()
+            .filter(|incoming| incoming.time >= window);
+        let (grams, tokens): (Vec<_>, Vec<_>) = recent.partition(|incoming| incoming.asset == gram);
+        let found: Vec<(String, u64)> = grams
+            .iter()
+            .map(|incoming| {
+                (
+                    incoming.id.as_str().to_owned(),
+                    u64::try_from(incoming.amount.units()).unwrap(),
+                )
+            })
+            .collect();
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let indexed = indexed_receipts(&owner.to_string(), window).await;
+        assert_eq!(found, indexed, "{protocol:?} {owner}");
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let indexed = indexed_tokens(&owner.to_string(), window).await;
+        assert_eq!(tokens.len(), indexed.len(), "{protocol:?} {owner}");
+        for (incoming, (time, units, source)) in tokens.iter().zip(&indexed) {
+            assert_eq!(
+                (
+                    u64::try_from(incoming.amount.units()).unwrap(),
+                    incoming.from.to_string()
+                ),
+                (*units, source.clone()),
+                "{protocol:?} {owner}"
+            );
+            assert!(incoming.time.abs_diff(*time) < 60, "{protocol:?} {owner}");
         }
+        usdt_seen += tokens.len();
     }
+    assert!(usdt_seen > 0);
 }

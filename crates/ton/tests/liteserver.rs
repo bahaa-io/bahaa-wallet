@@ -876,8 +876,8 @@ async fn a_first_scan_reads_back_to_the_cap_or_the_first_transaction() {
     assert_eq!(
         busy.cursor,
         ScanCursor {
-            next: 110_383_004_000_041,
-            complete_from: 67_288_602_000_008,
+            next: 1_792_169_973,
+            complete_from: 1_771_939_107,
             complete_since: 1_771_939_107
         }
     );
@@ -908,9 +908,9 @@ async fn a_first_scan_reads_back_to_the_cap_or_the_first_transaction() {
     assert_eq!(
         young.cursor,
         ScanCursor {
-            next: 109_677_718_000_019,
-            complete_from: 109_677_195_000_019,
-            complete_since: 1_791_888_066
+            next: 1_791_887_974,
+            complete_from: 1_791_887_974,
+            complete_since: 1_791_887_974
         }
     );
     assert_eq!(
@@ -944,14 +944,16 @@ async fn a_first_scan_reads_back_to_the_cap_or_the_first_transaction() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    assert_eq!((nothing.cursor.next, nothing.cursor.complete_from), (0, 0));
-    assert!(nothing.cursor.complete_since.abs_diff(checked) < 60);
+    assert!(nothing.cursor.next.abs_diff(checked - 300) < 60);
+    assert_eq!(nothing.cursor.complete_since, nothing.cursor.next);
     assert_eq!(nothing.found, []);
-    assert_eq!(
-        fresh
-            .scan(&ton([0x5c; 32]), &[gram()], Some(nothing.cursor))
-            .await,
-        Ok(None)
+    let again = fresh
+        .scan(&ton([0x5c; 32]), &[gram()], Some(nothing.cursor))
+        .await
+        .unwrap();
+    assert!(
+        again
+            .is_none_or(|again| again.found.is_empty() && again.cursor.next >= nothing.cursor.next)
     );
 }
 
@@ -965,8 +967,8 @@ async fn later_scans_read_only_what_is_new() {
     let server = liteserver(31, behaviour, Arc::clone(&asked)).await;
     let chain = TonChain::new(network(config(&[server], mainnet()).await)).unwrap();
     let earlier = ScanCursor {
-        next: 109_579_107_000_018,
-        complete_from: 5,
+        next: 1_791_848_841,
+        complete_from: 7,
         complete_since: 7,
     };
     let later = chain
@@ -977,7 +979,7 @@ async fn later_scans_read_only_what_is_new() {
     assert_eq!(
         later.cursor,
         ScanCursor {
-            next: 110_383_004_000_041,
+            next: 1_792_169_973,
             ..earlier
         }
     );
@@ -992,10 +994,16 @@ async fn later_scans_read_only_what_is_new() {
             .await,
         Ok(None)
     );
-    assert_eq!(*asked.lock().unwrap(), 6);
-    let tokens_only = &assets()[1..];
-    assert_eq!(chain.scan(&ton(SENDER), tokens_only, None).await, Ok(None));
-    assert_eq!(*asked.lock().unwrap(), 6);
+    assert_eq!(*asked.lock().unwrap(), 8);
+    let custom = AssetId::Token(
+        "ton".parse().unwrap(),
+        Address::Ton {
+            workchain: 0,
+            hash: [9; 32],
+        },
+    );
+    assert_eq!(chain.scan(&ton(SENDER), &[custom], None).await, Ok(None));
+    assert_eq!(*asked.lock().unwrap(), 8);
     let lying = tracking_chain(Behaviour {
         tamper: Tamper::History,
         ..GOOD
@@ -1005,4 +1013,67 @@ async fn later_scans_read_only_what_is_new() {
         lying.scan(&ton(SENDER), &[gram()], Some(earlier)).await,
         Err(ChainError::Network(_))
     ));
+}
+
+#[tokio::test]
+async fn incoming_usdt_is_read_from_the_token_wallets_proven_history() {
+    let chain = tracking_chain(GOOD).await;
+    let scanned = chain
+        .scan(&ton(SENDER), &assets(), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        scanned.cursor,
+        ScanCursor {
+            next: 1_792_169_973,
+            complete_from: 1_789_882_394,
+            complete_since: 1_789_882_394
+        }
+    );
+    let (gram, usdt): (Vec<Incoming>, Vec<Incoming>) = scanned
+        .found
+        .into_iter()
+        .partition(|incoming| incoming.asset == gram());
+    assert_eq!(summed(&gram).0, 34);
+    let usdt: Vec<(u64, u64, String, String)> = usdt
+        .iter()
+        .map(|incoming| {
+            (
+                incoming.time,
+                incoming.block,
+                incoming.amount.to_string(),
+                incoming.from.to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        usdt,
+        [
+            (
+                1_792_170_273,
+                110_383_004_000_038,
+                "90441.434288".to_owned(),
+                "0:c9959a997e1d4e4383d8db37b86d2101ce78dcf1f1b3904d9888fe572ef0efd4".to_owned()
+            ),
+            (
+                1_792_169_822,
+                110_381_879_000_026,
+                "23000".to_owned(),
+                "0:c9959a997e1d4e4383d8db37b86d2101ce78dcf1f1b3904d9888fe572ef0efd4".to_owned()
+            ),
+            (
+                1_790_509_841,
+                106_230_678_000_050,
+                "40320.81779".to_owned(),
+                "0:bcad466a47fa565750729565253cd073ca24d856804499090c2100d95c809f9e".to_owned()
+            ),
+            (
+                1_789_882_393,
+                104_661_482_000_027,
+                "0.1".to_owned(),
+                "0:e03e9ca8ffc417f905e7ba616e236b14bfb59bfc53d95190c890d513f712326e".to_owned()
+            ),
+        ]
+    );
 }
