@@ -96,6 +96,8 @@ pub enum KeyringError {
     Ambiguous,
     #[error("TON recovery phrases with a password are not supported yet")]
     TonPassphrase,
+    #[error("this wallet does not come from a TON recovery phrase")]
+    NotTon,
     #[error(transparent)]
     TonPhrase(#[from] TonPhraseError),
     #[error(transparent)]
@@ -261,6 +263,30 @@ impl Keyring {
         }
     }
 
+    pub fn set_ton_contract(
+        &mut self,
+        id: WalletId,
+        contract: TonContract,
+    ) -> Result<(), KeyringError> {
+        let path = self.path.clone();
+        let session = self.session_mut()?;
+        let index = session.index(id)?;
+        let Phrase::Ton {
+            contract: current, ..
+        } = &mut session.contents.entries[index].phrase
+        else {
+            return Err(KeyringError::NotTon);
+        };
+        let previous = std::mem::replace(current, contract);
+        if let Err(err) = persist(&path, session) {
+            if let Phrase::Ton { contract, .. } = &mut session.contents.entries[index].phrase {
+                *contract = previous;
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
+
     pub fn remove(&mut self, id: WalletId) -> Result<(), KeyringError> {
         let path = self.path.clone();
         let session = self.session_mut()?;
@@ -373,6 +399,14 @@ impl fmt::Debug for Keyring {
     }
 }
 
+pub(crate) fn used_contract(w5: Option<u64>, v4r2: Option<u64>) -> TonContract {
+    if v4r2 > w5 {
+        TonContract::V4R2
+    } else {
+        TonContract::W5
+    }
+}
+
 fn bip39(mnemonic: Mnemonic, passphrase: &str) -> Result<Phrase, KeyringError> {
     payload::check_passphrase(passphrase)?;
     let mut owned = String::with_capacity(passphrase.len());
@@ -411,4 +445,19 @@ pub(crate) fn private_dir(dir: &Path) -> Result<(), KeyringError> {
     builder
         .create(dir)
         .map_err(|err| KeyringError::Vault(VaultError::Io(err.kind())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_most_recently_used_contract_wins_and_w5_breaks_ties() {
+        assert_eq!(used_contract(None, None), TonContract::W5);
+        assert_eq!(used_contract(None, Some(1)), TonContract::V4R2);
+        assert_eq!(used_contract(Some(1), None), TonContract::W5);
+        assert_eq!(used_contract(Some(5), Some(9)), TonContract::V4R2);
+        assert_eq!(used_contract(Some(9), Some(5)), TonContract::W5);
+        assert_eq!(used_contract(Some(7), Some(7)), TonContract::W5);
+    }
 }

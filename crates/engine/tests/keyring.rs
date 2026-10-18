@@ -351,3 +351,25 @@ fn words_that_fit_both_standards_wait_for_the_users_choice() {
         SeedKind::Bip39
     );
 }
+
+#[test]
+fn a_ton_wallet_keeps_the_contract_it_was_found_on() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    let ton = keyring.import(TON, "").unwrap();
+    let multi = keyring.import(HARDHAT, "").unwrap();
+    keyring.set_ton_contract(ton, TonContract::V4R2).unwrap();
+    assert_eq!(
+        keyring
+            .set_ton_contract(multi, TonContract::V4R2)
+            .unwrap_err(),
+        KeyringError::NotTon
+    );
+    let keyring = reopened(&scratch);
+    let kinds: Vec<WalletKind> = keyring.wallets().unwrap().iter().map(|w| w.kind).collect();
+    assert_eq!(
+        kinds,
+        [WalletKind::Ton(TonContract::V4R2), WalletKind::Bip39]
+    );
+}

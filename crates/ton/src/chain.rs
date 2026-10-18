@@ -65,6 +65,10 @@ impl TonChain {
         Ok(address)
     }
 
+    pub async fn last_used(&self, address: &Address) -> Result<Option<u64>, ChainError> {
+        Ok(self.http.account(address).await?.last.map(|(_, lt)| lt))
+    }
+
     fn subwallet(&self, contract: TonContract) -> i32 {
         match contract {
             TonContract::W5 => self.wallet_id,

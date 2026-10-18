@@ -157,6 +157,13 @@ pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
         .collect()
 }
 
+pub(crate) fn ton_mainnet(chains: &[AnyChain]) -> Option<&TonChain> {
+    chains.iter().find_map(|chain| match chain {
+        AnyChain::Ton(ton) if !ton.network().testnet => Some(&**ton),
+        _ => None,
+    })
+}
+
 pub(crate) fn restore(chains: &[AnyChain], saved: &[TrustedBlock]) {
     for chain in chains {
         if let AnyChain::Ton(ton) = chain

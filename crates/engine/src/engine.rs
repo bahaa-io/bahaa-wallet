@@ -11,7 +11,7 @@ use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{CustomToken, Received, Scan, SentTx, Store, StoreError, TrustedBlock};
-use bahaa_types::TonContract;
+use bahaa_types::{Address, TonContract};
 use bahaa_vault::KdfParams;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -20,6 +20,7 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::caution::Arrival;
 use crate::chains::{self, AnyChain, Fetched};
+use crate::keyring;
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
 use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, WalletKind};
 
@@ -619,17 +620,65 @@ impl Worker {
         kind: Option<PhraseKind>,
         reply: Reply<WalletId>,
     ) {
-        let result = self
+        let chains = Arc::clone(&self.chains);
+        let imported = self
             .keyring(move |keyring| {
                 let (phrase, passphrase) = (phrase.expose_secret(), passphrase.expose_secret());
-                match kind {
+                let id = match kind {
                     Some(kind) => keyring.import_as(phrase, passphrase, kind),
                     None => keyring.import(phrase, passphrase),
-                }
+                }?;
+                let ton = keyring
+                    .wallets()?
+                    .iter()
+                    .any(|wallet| wallet.id == id && matches!(wallet.kind, WalletKind::Ton(_)));
+                let addresses = match chains::ton_mainnet(&chains).filter(|_| ton) {
+                    Some(chain) => {
+                        let seed = keyring.seed(id)?;
+                        Some((
+                            chain.derive_as(seed, 0, TonContract::W5)?,
+                            chain.derive_as(seed, 0, TonContract::V4R2)?,
+                        ))
+                    }
+                    None => None,
+                };
+                Ok::<_, EngineError>((id, addresses))
             })
             .await;
+        let result = match imported {
+            Ok((id, Some(addresses))) => self.settle_contract(id, addresses).await,
+            Ok((id, None)) => Ok(id),
+            Err(err) => Err(err),
+        };
         self.after_change(result.is_ok()).await;
         let _ = reply.send(result);
+    }
+
+    async fn settle_contract(
+        &mut self,
+        id: WalletId,
+        (w5, v4r2): (Address, Address),
+    ) -> Result<WalletId, EngineError> {
+        let chains = Arc::clone(&self.chains);
+        let used = match chains::ton_mainnet(&chains) {
+            Some(chain) => match (chain.last_used(&w5).await, chain.last_used(&v4r2).await) {
+                (Ok(w5), Ok(v4r2)) => Ok(keyring::used_contract(w5, v4r2)),
+                (Err(err), _) | (_, Err(err)) => Err(err),
+            },
+            None => Ok(TonContract::W5),
+        };
+        match used {
+            Ok(TonContract::W5) => Ok(id),
+            Ok(contract) => {
+                self.keyring(move |keyring| keyring.set_ton_contract(id, contract))
+                    .await?;
+                Ok(id)
+            }
+            Err(err) => {
+                let _ = self.keyring(move |keyring| keyring.remove(id)).await;
+                Err(EngineError::Chain(err))
+            }
+        }
     }
 
     async fn after_change(&mut self, ok: bool) {
