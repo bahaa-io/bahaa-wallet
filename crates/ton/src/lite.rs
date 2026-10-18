@@ -336,6 +336,7 @@ impl Lite {
                 url,
                 features: Vec::new(),
                 min_gap_ms: 0,
+                history_gap_ms: 0,
             });
         }
         if endpoints.is_empty() {
@@ -711,6 +712,7 @@ mod tests {
                 url: Url::parse(url).unwrap(),
                 features: Vec::new(),
                 min_gap_ms: 0,
+                history_gap_ms: 0,
             };
             let mut peer = None;
             let Ok(last) = lite.connect(&mut peer, &servers, &endpoint).await else {

@@ -74,6 +74,8 @@ pub struct Endpoint {
     pub features: Vec<Feature>,
     #[serde(default)]
     pub min_gap_ms: u32,
+    #[serde(default)]
+    pub history_gap_ms: u32,
 }
 
 impl Endpoint {
@@ -348,6 +350,9 @@ impl Spec {
             if endpoint.min_gap_ms > MAX_GAP_MS {
                 return Err(problem("an endpoint's min_gap_ms is over one minute"));
             }
+            if endpoint.history_gap_ms > MAX_GAP_MS {
+                return Err(problem("an endpoint's history_gap_ms is over one minute"));
+            }
             if !urls.insert(endpoint.url.as_str()) {
                 return Err(problem("an endpoint is listed twice"));
             }
@@ -562,6 +567,7 @@ mod tests {
         assert!(tron.endpoints[0].has(Feature::History));
         assert!(!tron.endpoints[1].has(Feature::History));
         assert_eq!(tron.endpoints[0].min_gap_ms, 400);
+        assert_eq!(tron.endpoints[0].history_gap_ms, 1000);
         assert_eq!(network("ton").endpoints[1].min_gap_ms, 1100);
         assert_eq!(bsc.endpoints[0].min_gap_ms, 0);
     }
@@ -657,6 +663,10 @@ mod tests {
             (
                 "bsc",
                 Box::new(|n| n["endpoints"][0]["min_gap_ms"] = 60_001.into()),
+            ),
+            (
+                "bsc",
+                Box::new(|n| n["endpoints"][0]["history_gap_ms"] = 60_001.into()),
             ),
         ];
         for (index, (id, edit)) in cases.into_iter().enumerate() {

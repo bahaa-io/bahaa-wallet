@@ -70,8 +70,12 @@ fn bytes(tag: u64, data: &[u8], out: &mut Vec<u8>) {
 }
 
 fn raw_transfer(to: &str, sun: u64, memo: Option<&[u8]>) -> Vec<u8> {
+    raw_between(SENDER_HEX, to, sun, memo)
+}
+
+fn raw_between(from: &str, to: &str, sun: u64, memo: Option<&[u8]>) -> Vec<u8> {
     let mut transfer = Vec::new();
-    bytes(1, &unhex(SENDER_HEX), &mut transfer);
+    bytes(1, &unhex(from), &mut transfer);
     bytes(2, &unhex(to), &mut transfer);
     number(3, sun, &mut transfer);
     let mut any = Vec::new();
@@ -112,9 +116,13 @@ fn word(hex41: &str) -> String {
 }
 
 fn transfer_log(token: &str, to: &str, units: u64) -> Value {
+    log_between(token, SENDER_HEX, to, units)
+}
+
+fn log_between(token: &str, from: &str, to: &str, units: u64) -> Value {
     json!({
         "address": &token[2..],
-        "topics": [TRANSFER, word(SENDER_HEX), word(to)],
+        "topics": [TRANSFER, word(from), word(to)],
         "data": format!("{units:064x}")
     })
 }
@@ -193,12 +201,14 @@ fn history() -> History {
     tampered["raw_data_hex"] = json!(hex(&raw_transfer(US_HEX, 50_000_000, None)));
     let mut delegation = coin_entry(&raw_transfer(US_HEX, 1, None), start + 5, 105);
     delegation["raw_data"]["contract"][0]["type"] = json!("DelegateResourceContract");
+    let paying = raw_between(US_HEX, OTHER_HEX, 4_000_000, None);
     let coins = vec![
         coin_entry(&paid, start + 1, 101),
         coin_entry(&memo, start + 2, 102),
         coin_entry(&elsewhere, start + 3, 103),
         tampered,
         delegation,
+        coin_entry(&paying, start + 6, 106),
     ];
     let (single, double, reverted) = ("a1".repeat(32), "b2".repeat(32), "c3".repeat(32));
     let listed = |id: &str, time: u64| json!({"transaction_id": id, "block_timestamp": time, "to": US, "type": "Transfer", "value": "1"});
@@ -234,6 +244,7 @@ fn history() -> History {
                     transfer_log(USDT_HEX, US_HEX, 1_000_000),
                     transfer_log(USDT_HEX, OTHER_HEX, 7),
                     transfer_log(USDT_HEX, US_HEX, 3_000_000),
+                    log_between(USDT_HEX, US_HEX, OTHER_HEX, 600_000),
                 ],
             ),
         ),
@@ -306,6 +317,30 @@ async fn the_first_scan_reads_verified_trx_and_known_token_transfers_to_us() {
         ]
     );
     assert!(scanned.found.iter().all(|entry| entry.to == tron(US)));
+    let sent: Vec<(String, u64, String, u64)> = scanned
+        .sent
+        .iter()
+        .map(|entry| {
+            (
+                entry.asset.to_string(),
+                entry.index,
+                entry.amount.to_string(),
+                entry.block,
+            )
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            ("tron".to_owned(), 0, "4".to_owned(), 106),
+            (format!("tron/{USDT}"), 3, "0.6".to_owned(), 120),
+        ]
+    );
+    assert!(scanned.sent.iter().all(|entry| entry.from == tron(US)));
+    assert_eq!(
+        scanned.sent[0].to,
+        bahaa_types::Address::Tron(unhex(&OTHER_HEX[2..]).try_into().unwrap())
+    );
     assert_eq!(
         scanned.found[0].from,
         bahaa_types::Address::Tron(unhex(&SENDER_HEX[2..]).try_into().unwrap())
@@ -325,15 +360,24 @@ async fn the_first_scan_reads_verified_trx_and_known_token_transfers_to_us() {
     assert!(cursor.complete_from.abs_diff(reach) < 60_000, "{cursor:?}");
     assert_eq!(cursor.complete_since, cursor.complete_from / 1000);
     let queries = history.queries.lock().unwrap().clone();
-    assert_eq!(queries.len(), 3);
+    assert_eq!(queries.len(), 6);
+    let sides: Vec<(Option<&str>, Option<&str>)> = queries
+        .iter()
+        .map(|asked| {
+            (
+                asked.get("only_to").map(String::as_str),
+                asked.get("only_from").map(String::as_str),
+            )
+        })
+        .collect();
+    let (to, from) = ((Some("true"), None), (None, Some("true")));
+    assert_eq!(sides, [to, to, from, from, to, from]);
     for asked in &queries {
         assert_eq!(asked["min_timestamp"], cursor.complete_from.to_string());
-        assert_eq!(
-            (asked["only_to"].as_str(), asked["only_confirmed"].as_str()),
-            ("true", "true")
-        );
+        assert_eq!(asked["only_confirmed"], "true");
     }
     assert_eq!(queries[1]["fingerprint"], "Second");
+    assert_eq!(queries[3]["fingerprint"], "Second");
     assert_eq!(*plain.lock().unwrap(), Vec::<String>::new());
     let again = chain
         .scan(&tron(US), &wanted, Some(cursor))
@@ -344,9 +388,9 @@ async fn the_first_scan_reads_verified_trx_and_known_token_transfers_to_us() {
     assert!(again.cursor.next >= cursor.next);
     assert_eq!(again.cursor.complete_from, cursor.complete_from);
     let latest = history.queries.lock().unwrap().clone();
-    assert_eq!(latest.len(), 5);
+    assert_eq!(latest.len(), 10);
     assert!(
-        latest[3..]
+        latest[6..]
             .iter()
             .all(|asked| asked["min_timestamp"] == cursor.next.to_string())
     );
@@ -383,8 +427,9 @@ async fn a_long_history_is_read_a_few_pages_per_refresh() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(*pages.lock().unwrap(), 5);
+    assert_eq!(*pages.lock().unwrap(), 10);
     assert_eq!(scanned.found.len(), 5);
+    assert_eq!(scanned.sent, Vec::new());
     assert_eq!(
         scanned.cursor,
         ScanCursor {
@@ -445,5 +490,12 @@ async fn live_tron_incoming_trx_and_usdt() {
         assert!(!entry.amount.is_zero());
         assert!(entry.time * 1000 >= from - 1000, "{entry:?}");
         assert!(entry.block > 87_000_000);
+    }
+    assert!(!scanned.sent.is_empty(), "nothing was sent in six hours");
+    for entry in &scanned.sent {
+        assert_eq!(entry.from, busy);
+        assert_ne!(entry.to, busy);
+        assert!(!entry.amount.is_zero());
+        assert!(entry.time * 1000 >= from - 1000, "{entry:?}");
     }
 }

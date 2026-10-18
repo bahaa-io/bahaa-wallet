@@ -403,7 +403,8 @@
         "features": [
           "history"
         ],
-        "min_gap_ms": 400
+        "min_gap_ms": 400,
+        "history_gap_ms": 1000
       },
       {
         "protocol": "tron-http",

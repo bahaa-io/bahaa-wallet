@@ -91,6 +91,7 @@ pub fn network_on(id: &str, urls: &[Url]) -> Network {
             url: url.clone(),
             features: vec![Feature::Logs],
             min_gap_ms: 0,
+            history_gap_ms: 0,
         })
         .collect();
     network

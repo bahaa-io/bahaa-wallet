@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bahaa_chain::{ChainError, Incoming, ScanCursor, Scanned, TxId};
+use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId};
 use bahaa_config::Protocol;
 use bahaa_types::{Address, AssetId};
 
@@ -25,6 +25,11 @@ struct History {
     tokens: bool,
 }
 
+struct Found {
+    received: Vec<Incoming>,
+    sent: Vec<Outgoing>,
+}
+
 impl TonChain {
     pub fn can_scan(&self) -> bool {
         self.network.endpoints.iter().any(|endpoint| {
@@ -46,22 +51,35 @@ impl TonChain {
             return Ok(None);
         }
         let stop = cursor.map_or(0, |cursor| cursor.next);
-        let mut found = Vec::new();
+        let mut found = Found {
+            received: Vec::new(),
+            sent: Vec::new(),
+        };
         let mut walked = Vec::with_capacity(histories.len());
         for history in &histories {
-            walked.push(self.walk(owner, history, stop, &mut found).await?);
+            walked.push(
+                self.walk(owner, history, &histories, stop, &mut found)
+                    .await?,
+            );
         }
+        let Found {
+            received: found,
+            sent,
+        } = found;
         let checked = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
         let next = covered(cursor, &walked, checked);
-        if cursor.is_some_and(|cursor| cursor.next == next.next) && found.is_empty() {
+        if cursor.is_some_and(|cursor| cursor.next == next.next)
+            && found.is_empty()
+            && sent.is_empty()
+        {
             return Ok(None);
         }
         Ok(Some(Scanned {
             cursor: next,
             found,
-            sent: Vec::new(),
+            sent,
         }))
     }
 
@@ -107,8 +125,9 @@ impl TonChain {
         &self,
         owner: &Address,
         history: &History,
+        histories: &[History],
         stop: u64,
-        found: &mut Vec<Incoming>,
+        found: &mut Found,
     ) -> Result<(Option<u32>, End), ChainError> {
         let Some(mut next) = self.http.account(&history.address).await?.last else {
             return Ok((None, End::Missing));
@@ -132,7 +151,12 @@ impl TonChain {
                     return Ok((newest, End::Connected));
                 }
                 if let Some(entry) = receipt(owner, history, &transaction)? {
-                    found.push(entry);
+                    found.received.push(entry);
+                }
+                if !history.tokens {
+                    found
+                        .sent
+                        .extend(departures(owner, history, histories, &transaction)?);
                 }
                 scanned += 1;
                 oldest = Some(transaction.now);
@@ -181,6 +205,49 @@ fn receipt(
         block: transaction.lt,
         time: u64::from(transaction.now),
     }))
+}
+
+fn departures(
+    owner: &Address,
+    history: &History,
+    histories: &[History],
+    transaction: &Transaction,
+) -> Result<Vec<Outgoing>, ChainError> {
+    let (Some(external), Some(true)) = (transaction.external, transaction.succeeded()) else {
+        return Ok(Vec::new());
+    };
+    let id = TxId::new(hex(&external))?;
+    let mut sent = Vec::new();
+    for (index, message) in transaction.sent.iter().enumerate() {
+        let index = u64::try_from(index).map_err(|_| ChainError::Invalid("too many messages"))?;
+        let moved = match message.token {
+            Some((units, to)) => histories
+                .iter()
+                .find(|known| known.tokens && known.address == message.to)
+                .map(|wallet| (to, wallet.asset.clone(), units, wallet.decimals)),
+            None => (message.plain && !message.value.is_zero()).then(|| {
+                (
+                    message.to,
+                    history.asset.clone(),
+                    message.value,
+                    history.decimals,
+                )
+            }),
+        };
+        if let Some((to, asset, units, decimals)) = moved {
+            sent.push(Outgoing {
+                id: id.clone(),
+                index,
+                from: *owner,
+                to,
+                asset,
+                amount: amount(units, decimals)?,
+                block: transaction.lt,
+                time: u64::from(transaction.now),
+            });
+        }
+    }
+    Ok(sent)
 }
 
 fn covered(cursor: Option<ScanCursor>, walked: &[(Option<u32>, End)], checked: u64) -> ScanCursor {

@@ -165,6 +165,7 @@ pub fn network(id: &str, url: Url) -> Network {
         url,
         features: vec![Feature::Logs],
         min_gap_ms: 0,
+        history_gap_ms: 0,
     }];
     network
 }
@@ -180,6 +181,7 @@ pub fn tron_network(url: Url) -> Network {
         url,
         features: Vec::new(),
         min_gap_ms: 0,
+        history_gap_ms: 0,
     }];
     network
 }
@@ -260,6 +262,7 @@ pub fn ton_network(id: &str, config: Url) -> Network {
         url: config,
         features: Vec::new(),
         min_gap_ms: 0,
+        history_gap_ms: 0,
     }];
     if let ChainKind::Ton { checkpoint, .. } = &mut network.kind
         && id == "ton"

@@ -1,4 +1,4 @@
-use bahaa_chain::{ChainError, Incoming, ScanCursor, Scanned, TxId};
+use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId};
 use bahaa_config::Feature;
 use bahaa_types::{Address, AssetId};
 use ruint::aliases::U256;
@@ -14,10 +14,56 @@ const PAGE: u32 = 200;
 const PAGES: usize = 5;
 const SETTLE_MS: u64 = 5 * 60 * 1000;
 const MAX_FINGERPRINT: usize = 2048;
+const MAX_LOOKUPS: usize = 40;
+
+type Moved = (u64, [u8; 20], [u8; 20], U256);
 
 struct Listing {
     entries: Vec<Value>,
     next: u64,
+}
+
+enum Seen {
+    Received(Incoming),
+    Sent(Outgoing),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    Received,
+    Sent,
+}
+
+impl Side {
+    fn query(self) -> (&'static str, String) {
+        let key = match self {
+            Self::Received => "only_to",
+            Self::Sent => "only_from",
+        };
+        (key, "true".to_owned())
+    }
+
+    fn ours(self, from: &[u8; 20], to: &[u8; 20], owner: &[u8; 20]) -> bool {
+        match self {
+            Self::Received => to == owner,
+            Self::Sent => from == owner,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Moves {
+    found: Vec<Incoming>,
+    sent: Vec<Outgoing>,
+}
+
+impl Moves {
+    fn add(&mut self, seen: Seen) {
+        match seen {
+            Seen::Received(incoming) => self.found.push(incoming),
+            Seen::Sent(outgoing) => self.sent.push(outgoing),
+        }
+    }
 }
 
 impl TronChain {
@@ -30,33 +76,36 @@ impl TronChain {
 
     pub async fn scan(
         &self,
-        to: &Address,
+        owner: &Address,
         assets: &[AssetId],
         cursor: Option<ScanCursor>,
     ) -> Result<Option<Scanned>, ChainError> {
-        let owner = bytes(to)?;
+        let owner = bytes(owner)?;
         let now = u64::try_from(now_ms()).unwrap_or(0);
         let start = cursor.map_or(now.saturating_sub(REACH_MS), |cursor| cursor.next);
-        let mut found = Vec::new();
+        let mut moves = Moves::default();
         let mut next: Option<u64> = None;
         for asset in assets
             .iter()
             .filter(|asset| asset.network() == &self.network.id)
         {
-            let (entries, reached) = match asset.contract() {
-                None => self.coins_to(&owner, start).await?,
-                Some(contract) => {
-                    self.tokens_to(&owner, asset, &bytes(contract)?, start)
-                        .await?
-                }
-            };
-            found.extend(entries);
-            next = Some(next.map_or(reached, |next| next.min(reached)));
+            for side in [Side::Received, Side::Sent] {
+                let reached = match asset.contract() {
+                    None => self.coins(&owner, side, start, &mut moves).await?,
+                    Some(contract) => {
+                        let contract = bytes(contract)?;
+                        self.tokens(&owner, asset, &contract, (side, start), &mut moves)
+                            .await?
+                    }
+                };
+                next = Some(next.map_or(reached, |next| next.min(reached)));
+            }
         }
         let Some(next) = next else {
             return Ok(None);
         };
-        if cursor.is_some_and(|cursor| cursor.next == next) && found.is_empty() {
+        let Moves { found, sent } = moves;
+        if cursor.is_some_and(|cursor| cursor.next == next) && found.is_empty() && sent.is_empty() {
             return Ok(None);
         }
         let complete_from = cursor.map_or(start, |cursor| cursor.complete_from);
@@ -67,26 +116,28 @@ impl TronChain {
                 complete_since: complete_from / 1000,
             },
             found,
-            sent: Vec::new(),
+            sent,
         }))
     }
 
-    async fn coins_to(
+    async fn coins(
         &self,
         owner: &[u8; 20],
+        side: Side,
         start: u64,
-    ) -> Result<(Vec<Incoming>, u64), ChainError> {
+        moves: &mut Moves,
+    ) -> Result<u64, ChainError> {
         let path = format!("v1/accounts/{}/transactions", Address::Tron(*owner));
-        let listing = self.listing(&path, None, start).await?;
-        let found = listing
-            .entries
-            .iter()
-            .filter_map(|entry| self.coin_entry(entry, owner))
-            .collect();
-        Ok((found, listing.next))
+        let listing = self.listing(&path, vec![side.query()], start).await?;
+        for entry in &listing.entries {
+            if let Some(seen) = self.coin_entry(entry, owner, side) {
+                moves.add(seen);
+            }
+        }
+        Ok(listing.next)
     }
 
-    fn coin_entry(&self, entry: &Value, owner: &[u8; 20]) -> Option<Incoming> {
+    fn coin_entry(&self, entry: &Value, owner: &[u8; 20], side: Side) -> Option<Seen> {
         if entry["raw_data"]["contract"][0]["type"] != "TransferContract"
             || entry["ret"][0]["contractRet"] != "SUCCESS"
         {
@@ -97,45 +148,70 @@ impl TronChain {
         let listed = entry["txID"]
             .as_str()
             .is_some_and(|text| text.eq_ignore_ascii_case(&hex(&coins.id)));
-        if coins.to != *owner || !listed {
+        if !listed || !side.ours(&coins.from, &coins.to, owner) {
             return None;
         }
-        Some(Incoming {
-            id: TxId::new(hex(&coins.id)).ok()?,
-            index: 0,
-            from: Address::Tron(coins.from),
-            to: Address::Tron(coins.to),
-            asset: AssetId::Native(self.network.id.clone()),
-            amount: amount(U256::from(coins.sun), self.network.native.decimals).ok()?,
-            block: entry["blockNumber"].as_u64()?,
-            time: entry["block_timestamp"].as_u64()? / 1000,
+        let id = TxId::new(hex(&coins.id)).ok()?;
+        let (from, to) = (Address::Tron(coins.from), Address::Tron(coins.to));
+        let asset = AssetId::Native(self.network.id.clone());
+        let amount = amount(U256::from(coins.sun), self.network.native.decimals).ok()?;
+        let block = entry["blockNumber"].as_u64()?;
+        let time = entry["block_timestamp"].as_u64()? / 1000;
+        Some(if side == Side::Received {
+            Seen::Received(Incoming {
+                id,
+                index: 0,
+                from,
+                to,
+                asset,
+                amount,
+                block,
+                time,
+            })
+        } else {
+            Seen::Sent(Outgoing {
+                id,
+                index: 0,
+                from,
+                to,
+                asset,
+                amount,
+                block,
+                time,
+            })
         })
     }
 
-    async fn tokens_to(
+    async fn tokens(
         &self,
         owner: &[u8; 20],
         asset: &AssetId,
         contract: &[u8; 20],
-        start: u64,
-    ) -> Result<(Vec<Incoming>, u64), ChainError> {
+        (side, start): (Side, u64),
+        moves: &mut Moves,
+    ) -> Result<u64, ChainError> {
         let path = format!("v1/accounts/{}/transactions/trc20", Address::Tron(*owner));
-        let filter = ("contract_address", Address::Tron(*contract).to_string());
-        let listing = self.listing(&path, Some(filter), start).await?;
-        let mut ids: Vec<String> = Vec::new();
+        let filters = vec![
+            ("contract_address", Address::Tron(*contract).to_string()),
+            side.query(),
+        ];
+        let listing = self.listing(&path, filters, start).await?;
+        let mut listed: Vec<(String, u64)> = Vec::new();
         for entry in &listing.entries {
             let id = entry["transaction_id"]
                 .as_str()
                 .filter(|id| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
                 .ok_or_else(malformed)?
                 .to_ascii_lowercase();
-            if !ids.contains(&id) {
-                ids.push(id);
+            let time = entry["block_timestamp"].as_u64().ok_or_else(malformed)?;
+            if !listed.iter().any(|(known, _)| *known == id) {
+                listed.push((id, time));
             }
         }
-        let mut found = Vec::new();
+        let (ids, resume) = capped(listed);
+        let reached = resume.unwrap_or(listing.next);
         if ids.is_empty() {
-            return Ok((found, listing.next));
+            return Ok(reached);
         }
         let decimals = self.token_decimals(owner, contract).await?;
         for id in ids {
@@ -143,39 +219,62 @@ impl TronChain {
                 .http
                 .post("wallet/gettransactioninfobyid", json!({"value": id}))
                 .await?;
-            for (index, from, units) in transfers_to(&info, &id, contract, owner)? {
-                found.push(Incoming {
-                    id: TxId::new(id.clone())?,
-                    index,
-                    from: Address::Tron(from),
-                    to: Address::Tron(*owner),
-                    asset: asset.clone(),
-                    amount: amount(units, decimals)?,
-                    block: info["blockNumber"].as_u64().ok_or_else(malformed)?,
-                    time: info["blockTimeStamp"].as_u64().ok_or_else(malformed)? / 1000,
+            let block = info["blockNumber"].as_u64().ok_or_else(malformed)?;
+            let time = info["blockTimeStamp"].as_u64().ok_or_else(malformed)? / 1000;
+            for (index, from, to, units) in transfers(&info, &id, contract, owner)?
+                .into_iter()
+                .filter(|(_, from, to, _)| side.ours(from, to, owner))
+            {
+                let (id, asset, amount) = (
+                    TxId::new(id.clone())?,
+                    asset.clone(),
+                    amount(units, decimals)?,
+                );
+                let (from, to) = (Address::Tron(from), Address::Tron(to));
+                moves.add(if side == Side::Received {
+                    Seen::Received(Incoming {
+                        id,
+                        index,
+                        from,
+                        to,
+                        asset,
+                        amount,
+                        block,
+                        time,
+                    })
+                } else {
+                    Seen::Sent(Outgoing {
+                        id,
+                        index,
+                        from,
+                        to,
+                        asset,
+                        amount,
+                        block,
+                        time,
+                    })
                 });
             }
         }
-        Ok((found, listing.next))
+        Ok(reached)
     }
 
     async fn listing(
         &self,
         path: &str,
-        filter: Option<(&str, String)>,
+        filters: Vec<(&str, String)>,
         start: u64,
     ) -> Result<Listing, ChainError> {
         let mut entries = Vec::new();
         let mut fingerprint: Option<String> = None;
         for _ in 0..PAGES {
             let mut query = vec![
-                ("only_to", "true".to_owned()),
                 ("only_confirmed", "true".to_owned()),
                 ("order_by", "block_timestamp,asc".to_owned()),
                 ("min_timestamp", start.to_string()),
                 ("limit", PAGE.to_string()),
             ];
-            query.extend(filter.clone());
+            query.extend(filters.iter().cloned());
             query.extend(fingerprint.take().map(|value| ("fingerprint", value)));
             let reply = self.http.history(path, &query).await?;
             if reply["success"] != true {
@@ -211,6 +310,19 @@ impl TronChain {
     }
 }
 
+fn capped(listed: Vec<(String, u64)>) -> (Vec<String>, Option<u64>) {
+    let mut ids = Vec::new();
+    let mut last = None;
+    for (id, time) in listed {
+        if ids.len() >= MAX_LOOKUPS && last != Some(time) {
+            return (ids, Some(time));
+        }
+        last = Some(time);
+        ids.push(id);
+    }
+    (ids, None)
+}
+
 fn latest(entries: &[Value]) -> Result<Option<u64>, ChainError> {
     entries.iter().try_fold(None, |latest: Option<u64>, entry| {
         let time = entry["block_timestamp"].as_u64().ok_or_else(malformed)?;
@@ -223,12 +335,12 @@ fn fingerprint_ok(value: &str) -> bool {
         && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
-fn transfers_to(
+fn transfers(
     info: &Value,
     id: &str,
     contract: &[u8; 20],
     owner: &[u8; 20],
-) -> Result<Vec<(u64, [u8; 20], U256)>, ChainError> {
+) -> Result<Vec<Moved>, ChainError> {
     let known = info.as_object().is_some_and(|info| !info.is_empty());
     if !known {
         return Err(ChainError::Network(
@@ -252,14 +364,23 @@ fn transfers_to(
     let logs = logs.as_array().ok_or_else(malformed)?;
     let mut found = Vec::new();
     for (index, log) in logs.iter().enumerate() {
-        if let Some((from, units)) = transfer_log(log, contract, owner) {
-            found.push((u64::try_from(index).map_err(|_| malformed())?, from, units));
+        if let Some((from, to, units)) = transfer_log(log, contract, owner) {
+            found.push((
+                u64::try_from(index).map_err(|_| malformed())?,
+                from,
+                to,
+                units,
+            ));
         }
     }
     Ok(found)
 }
 
-fn transfer_log(log: &Value, contract: &[u8; 20], owner: &[u8; 20]) -> Option<([u8; 20], U256)> {
+fn transfer_log(
+    log: &Value,
+    contract: &[u8; 20],
+    owner: &[u8; 20],
+) -> Option<([u8; 20], [u8; 20], U256)> {
     let emitter = log["address"].as_str()?;
     let emitter = if emitter.len() == 42 {
         emitter.strip_prefix("41")?
@@ -270,17 +391,22 @@ fn transfer_log(log: &Value, contract: &[u8; 20], owner: &[u8; 20]) -> Option<([
         return None;
     }
     let topics = log["topics"].as_array()?;
-    let to_us = format!("{:0>64}", hex(owner));
     let [kind, from, to] = topics.as_slice() else {
         return None;
     };
-    if !same(kind, TRANSFER_TOPIC) || !same(to, &to_us) {
+    if !same(kind, TRANSFER_TOPIC) {
         return None;
     }
-    let from = padded_address(from.as_str()?)?;
+    let (from, to) = (
+        padded_address(from.as_str()?)?,
+        padded_address(to.as_str()?)?,
+    );
+    if from != *owner && to != *owner {
+        return None;
+    }
     let data = log["data"].as_str().filter(|data| digits(data, 64))?;
     let units = U256::from_str_radix(data, 16).ok()?;
-    (!units.is_zero()).then_some((from, units))
+    (!units.is_zero()).then_some((from, to, units))
 }
 
 fn same(value: &Value, expected: &str) -> bool {
@@ -328,23 +454,28 @@ mod tests {
     }
 
     #[test]
-    fn reads_transfers_to_us_from_the_node_receipt() {
+    fn reads_transfers_to_and_from_us_from_the_node_receipt() {
         let mut other = log();
         other["topics"][2] = json!(format!("{:0>64}", hex(&SENDER)));
         let mut prefixed = log();
         prefixed["address"] = json!(format!("41{}", hex(&TOKEN)));
-        let found = transfers_to(
-            &info(&[other, log(), prefixed]),
+        let mut ours = log();
+        ours["topics"][1] = json!(format!("{:0>64}", hex(&US)));
+        ours["topics"][2] = json!(format!("{:0>64}", hex(&SENDER)));
+        let found = transfers(
+            &info(&[other, log(), prefixed, ours]),
             &"AB".repeat(32),
             &TOKEN,
             &US,
         )
         .unwrap();
+        let units = U256::from(8_509_335u32);
         assert_eq!(
             found,
             [
-                (1, SENDER, U256::from(8_509_335u32)),
-                (2, SENDER, U256::from(8_509_335u32))
+                (1, SENDER, US, units),
+                (2, SENDER, US, units),
+                (3, US, SENDER, units)
             ]
         );
     }
@@ -391,19 +522,41 @@ mod tests {
     #[test]
     fn a_receipt_must_be_known_successful_and_about_this_transaction() {
         assert!(matches!(
-            transfers_to(&json!({}), &"ab".repeat(32), &TOKEN, &US),
+            transfers(&json!({}), &"ab".repeat(32), &TOKEN, &US),
             Err(ChainError::Network(_))
         ));
         assert!(matches!(
-            transfers_to(&info(&[log()]), &"cd".repeat(32), &TOKEN, &US),
+            transfers(&info(&[log()]), &"cd".repeat(32), &TOKEN, &US),
             Err(ChainError::Network(_))
         ));
         let mut failed = info(&[log()]);
         failed["receipt"]["result"] = json!("REVERT");
         assert_eq!(
-            transfers_to(&failed, &"ab".repeat(32), &TOKEN, &US),
+            transfers(&failed, &"ab".repeat(32), &TOKEN, &US),
             Ok(Vec::new())
         );
+    }
+
+    #[test]
+    fn lookups_stop_at_a_new_block_time_once_enough_are_taken() {
+        let listed = |times: &[u64]| -> Vec<(String, u64)> {
+            times
+                .iter()
+                .enumerate()
+                .map(|(at, time)| (format!("{at:064x}"), *time))
+                .collect()
+        };
+        let few = listed(&[1, 2, 3]);
+        assert_eq!(
+            capped(few.clone()),
+            (few.iter().map(|(id, _)| id.clone()).collect(), None)
+        );
+        let mut times: Vec<u64> = (0..u64::try_from(MAX_LOOKUPS).unwrap()).collect();
+        times.extend([39, 39, 50, 51]);
+        let (ids, resume) = capped(listed(&times));
+        assert_eq!((ids.len(), resume), (MAX_LOOKUPS + 2, Some(50)));
+        let same = vec![7; MAX_LOOKUPS + 10];
+        assert_eq!(capped(listed(&same)).0.len(), MAX_LOOKUPS + 10);
     }
 
     #[test]

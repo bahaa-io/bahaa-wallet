@@ -218,6 +218,7 @@ async fn only_endpoints_that_serve_logs_are_asked() {
         url: network.endpoints[0].url.clone(),
         features: Vec::new(),
         min_gap_ms: 0,
+        history_gap_ms: 0,
     };
     let chain = EvmChain::new(network.clone()).unwrap();
     assert!(chain.can_scan());

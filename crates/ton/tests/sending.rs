@@ -29,6 +29,7 @@ fn network(endpoints: &[(Protocol, &Url)]) -> Network {
             url: (*url).clone(),
             features: Vec::new(),
             min_gap_ms: 0,
+            history_gap_ms: 0,
         })
         .collect();
     network

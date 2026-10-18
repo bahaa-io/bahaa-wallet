@@ -35,6 +35,8 @@ pub(crate) struct Outgoing {
     pub to: Address,
     pub value: U256,
     pub op: Option<u32>,
+    pub plain: bool,
+    pub token: Option<(U256, Address)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -252,7 +254,20 @@ fn outgoing(message: &ArcCell) -> Option<Outgoing> {
         to,
         value,
         op: body.parser().load_u32(32).ok(),
+        plain: plain(&body),
+        token: token_transfer(&body),
     })
+}
+
+fn token_transfer(body: &Cell) -> Option<(U256, Address)> {
+    let mut parser = body.parser();
+    if parser.load_u32(32).ok()? != wallet::TOKEN_TRANSFER {
+        return None;
+    }
+    parser.skip_bits(64).ok()?;
+    let units = var_uint(&mut parser, 4)?;
+    let to = from_ton(&parser.load_address().ok()?)?;
+    Some((units, to))
 }
 
 fn internal(parser: &mut CellParser<'_>, account: &[u8; 32]) -> Option<(Address, U256)> {
@@ -435,6 +450,16 @@ mod tests {
                 },
                 value: U256::from(51_186_605u32),
                 op: Some(0x0f8a_7ea5),
+                plain: false,
+                token: Some((
+                    U256::from(29_200_000_000u64),
+                    Address::Ton {
+                        workchain: 0,
+                        hash: bytes32(
+                            "de5271f4cea5bf776a1fd04b982b1cd085342905f1b58591ce3f6721738acd67"
+                        ),
+                    }
+                )),
             }]
         );
         assert_eq!(transaction.succeeded(), Some(true));

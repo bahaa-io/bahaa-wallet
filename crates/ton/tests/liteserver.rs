@@ -451,6 +451,7 @@ fn network(config: Url) -> Network {
         url: config,
         features: Vec::new(),
         min_gap_ms: 0,
+        history_gap_ms: 0,
     }];
     network
 }
@@ -657,6 +658,7 @@ async fn when_no_liteserver_can_be_trusted_balances_are_not_taken_from_http_prov
             url: tonapi(Arc::clone(&asked)).await,
             features: Vec::new(),
             min_gap_ms: 0,
+            history_gap_ms: 0,
         });
         let chain = TonChain::new(network).unwrap();
         assert!(matches!(
@@ -816,6 +818,7 @@ async fn with_tonapi(behaviour: Behaviour, tampered: bool) -> (TonChain, common:
         url: tonapi,
         features: Vec::new(),
         min_gap_ms: 0,
+        history_gap_ms: 0,
     });
     (TonChain::new(network).unwrap(), log)
 }
@@ -1184,6 +1187,37 @@ async fn incoming_usdt_is_read_from_the_token_wallets_proven_history() {
             complete_since: 1_789_882_394
         }
     );
+    let sent: Vec<(String, String)> = scanned
+        .sent
+        .iter()
+        .map(|sent| {
+            (
+                sent.amount.to_string(),
+                sent.to.to_string()[2..10].to_owned(),
+            )
+        })
+        .collect();
+    let indexed = [
+        ("29200", "de5271f4"),
+        ("100", "13b51dd1"),
+        ("20", "13b51dd1"),
+        ("1000", "97d855f1"),
+        ("10000", "bcad466a"),
+        ("20000", "de5271f4"),
+        ("10000", "bcad466a"),
+        ("10000", "bcad466a"),
+        ("10000", "bcad466a"),
+    ];
+    assert_eq!(
+        sent,
+        indexed.map(|(amount, to)| (amount.to_owned(), to.to_owned()))
+    );
+    let first = &scanned.sent[0];
+    assert_eq!(
+        (first.id.as_str(), first.block, first.from),
+        (SENT_ID, 109_578_663_000_001, ton(SENDER))
+    );
+    assert!(scanned.sent.iter().all(|sent| sent.asset == assets()[1]));
     let (gram, usdt): (Vec<Incoming>, Vec<Incoming>) = scanned
         .found
         .into_iter()
@@ -1315,4 +1349,41 @@ async fn a_usdt_quote_emulates_both_token_wallets() {
         chain.prepare(&wrong).await,
         Err(ChainError::Invalid(_))
     ));
+}
+
+#[tokio::test]
+async fn a_plain_gram_send_is_listed_under_the_id_tracking_uses() {
+    let chain = tracking_chain(GOOD).await;
+    let scanned = chain
+        .scan(&ton(YOUNG), &[gram()], None)
+        .await
+        .unwrap()
+        .unwrap();
+    let sent: Vec<(&str, u64, String, String, u64)> = scanned
+        .sent
+        .iter()
+        .map(|sent| {
+            (
+                sent.id.as_str(),
+                sent.index,
+                sent.asset.to_string(),
+                sent.amount.to_string(),
+                sent.block,
+            )
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [(
+            DEPLOYED_ID,
+            0,
+            "ton".to_owned(),
+            "0.0001".to_owned(),
+            109_677_210_000_029
+        )]
+    );
+    assert_eq!(
+        (scanned.sent[0].from, scanned.sent[0].to),
+        (ton(YOUNG), ton(SENDER))
+    );
 }

@@ -55,6 +55,7 @@ struct Health {
     failures: u32,
     cooldown_until: Option<Instant>,
     next_start: Option<Instant>,
+    next_history: Option<Instant>,
     latency: Option<Duration>,
 }
 
@@ -84,6 +85,7 @@ impl Pool {
         if candidates.is_empty() {
             return Err(PoolError::NoEndpoint);
         }
+        let history = need == Some(Feature::History);
         let now = Instant::now();
         let ready: Vec<&Slot> = candidates
             .iter()
@@ -93,29 +95,29 @@ impl Pool {
         let mut last = None;
         let mut failed = false;
         for slot in ready {
-            sleep_until(slot.reserve()).await;
+            sleep_until(slot.reserve(history)).await;
             let started = Instant::now();
             match op(slot.endpoint.clone()).await {
                 Ok(value) => {
-                    slot.succeeded(started.elapsed());
+                    slot.succeeded(started.elapsed(), history);
                     return Ok(value);
                 }
                 Err(Failure::Fatal(err)) => {
-                    slot.succeeded(started.elapsed());
+                    slot.succeeded(started.elapsed(), history);
                     return Err(PoolError::Fatal(err));
                 }
                 Err(Failure::Retry(err)) => {
-                    slot.failed(None);
+                    slot.failed(None, history);
                     failed = true;
                     last = Some(err);
                 }
                 Err(Failure::RateLimited(err, wait)) => {
-                    slot.failed(Some(wait.unwrap_or(COOLDOWN_BASE)));
+                    slot.failed(Some(wait.unwrap_or(COOLDOWN_BASE)), history);
                     failed = true;
                     last = Some(err);
                 }
                 Err(Failure::Unsupported(err)) => {
-                    slot.answered();
+                    slot.answered(history);
                     last = Some(err);
                 }
             }
@@ -170,42 +172,55 @@ impl Slot {
             .is_none_or(|until| until <= now)
     }
 
-    fn reserve(&self) -> Instant {
+    fn history_gap(&self) -> Duration {
+        Duration::from_millis(u64::from(self.endpoint.history_gap_ms))
+    }
+
+    fn reserve(&self, history: bool) -> Instant {
         let gap = self.gap();
         let mut health = self.health();
-        let start = health
+        let mut start = health
             .next_start
             .map_or_else(Instant::now, |next| next.max(Instant::now()));
+        if history {
+            start = health.next_history.map_or(start, |next| next.max(start));
+            health.next_history = Some(start + self.history_gap());
+        }
         health.next_start = Some(start + gap);
         start
     }
 
-    fn finished(&self, health: &mut Health) {
-        let after = Instant::now() + self.gap();
+    fn finished(&self, health: &mut Health, history: bool) {
+        let now = Instant::now();
+        let after = now + self.gap();
         health.next_start = Some(health.next_start.map_or(after, |next| next.max(after)));
+        if history {
+            let after = now + self.history_gap();
+            health.next_history = Some(health.next_history.map_or(after, |next| next.max(after)));
+        }
     }
 
-    fn succeeded(&self, took: Duration) {
+    fn succeeded(&self, took: Duration, history: bool) {
         let mut health = self.health();
         health.failures = 0;
         health.cooldown_until = None;
         health.latency = Some(health.latency.map_or(took, |old| old * 3 / 4 + took / 4));
-        self.finished(&mut health);
+        self.finished(&mut health, history);
     }
 
-    fn answered(&self) {
+    fn answered(&self, history: bool) {
         let mut health = self.health();
-        self.finished(&mut health);
+        self.finished(&mut health, history);
     }
 
-    fn failed(&self, wait: Option<Duration>) {
+    fn failed(&self, wait: Option<Duration>, history: bool) {
         let mut health = self.health();
         health.failures = health.failures.saturating_add(1);
         let backoff = COOLDOWN_BASE
             .saturating_mul(1 << (health.failures - 1).min(MAX_DOUBLINGS))
             .min(COOLDOWN_MAX);
         health.cooldown_until = Some(Instant::now() + wait.unwrap_or(backoff).min(COOLDOWN_MAX));
-        self.finished(&mut health);
+        self.finished(&mut health, history);
     }
 }
 
@@ -226,6 +241,7 @@ mod tests {
             url: Url::parse(&format!("https://{host}/")).unwrap(),
             features,
             min_gap_ms,
+            history_gap_ms: 0,
         }
     }
 
@@ -427,6 +443,33 @@ mod tests {
             times.push(at.as_millis());
         }
         assert_eq!(times, [0, 1100, 2200]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn history_requests_keep_their_own_wider_gap() {
+        let pool = Pool::new(vec![Endpoint {
+            history_gap_ms: 1000,
+            ..endpoint("a", vec![Feature::History], 400)
+        }]);
+        let started = Instant::now();
+        let mut times = Vec::new();
+        for need in [
+            Some(Feature::History),
+            None,
+            Some(Feature::History),
+            Some(Feature::History),
+            None,
+        ] {
+            let at = pool
+                .call(need, |_| async {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Ok::<_, Failure<()>>(started.elapsed())
+                })
+                .await
+                .unwrap();
+            times.push(at.as_millis() - 100);
+        }
+        assert_eq!(times, [0, 500, 1100, 2200, 2700]);
     }
 
     #[tokio::test(start_paused = true)]

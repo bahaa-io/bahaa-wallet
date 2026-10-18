@@ -301,8 +301,17 @@ async fn indexed_receipts(account: &str, since: u64) -> Vec<(String, u64)> {
 }
 
 async fn indexed_tokens(owner: &str, since: u64) -> Vec<(u64, u64, String)> {
+    indexed_moves(owner, since, "in").await
+}
+
+async fn indexed_moves(owner: &str, since: u64, direction: &str) -> Vec<(u64, u64, String)> {
+    let party = if direction == "in" {
+        "source"
+    } else {
+        "destination"
+    };
     let listed: serde_json::Value = reqwest::get(format!(
-        "https://toncenter.com/api/v3/jetton/transfers?owner_address={owner}&jetton_master={USDT_RAW}&direction=in&start_utime={since}&limit=100&sort=desc"
+        "https://toncenter.com/api/v3/jetton/transfers?owner_address={owner}&jetton_master={USDT_RAW}&direction={direction}&start_utime={since}&limit=100&sort=desc"
     ))
     .await
     .unwrap()
@@ -318,7 +327,7 @@ async fn indexed_tokens(owner: &str, since: u64) -> Vec<(u64, u64, String)> {
             (
                 transfer["transaction_now"].as_u64().unwrap(),
                 transfer["amount"].as_str().unwrap().parse().unwrap(),
-                transfer["source"].as_str().unwrap().to_ascii_lowercase(),
+                transfer[party].as_str().unwrap().to_ascii_lowercase(),
             )
         })
         .filter(|(_, units, _)| *units > 0)
@@ -385,6 +394,28 @@ async fn live_incoming_gram_and_usdt_match_the_indexer() {
             assert!(incoming.time.abs_diff(*time) < 60, "{protocol:?} {owner}");
         }
         usdt_seen += tokens.len();
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let indexed = indexed_moves(&owner.to_string(), window.saturating_sub(60), "out").await;
+        let near = |(time, units, party): &(u64, u64, String), sent: &bahaa_chain::Outgoing| {
+            u64::try_from(sent.amount.units()).unwrap() == *units
+                && sent.to.to_string() == *party
+                && sent.time.abs_diff(*time) < 60
+        };
+        for sent in scanned.sent.iter().filter(|sent| sent.time >= window) {
+            assert_eq!(sent.from, owner);
+            if sent.asset != gram {
+                assert!(
+                    indexed.iter().any(|entry| near(entry, sent)),
+                    "{protocol:?} {owner}: {sent:?}"
+                );
+            }
+        }
+        for entry in indexed.iter().filter(|(time, ..)| *time >= window + 60) {
+            assert!(
+                scanned.sent.iter().any(|sent| near(entry, sent)),
+                "{protocol:?} {owner}: {entry:?}"
+            );
+        }
     }
     assert!(usdt_seen > 0);
 }
