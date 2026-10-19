@@ -11,6 +11,7 @@ publish.workspace = true
 bahaa-config.workspace = true
 bahaa-crypto.workspace = true
 bahaa-types.workspace = true
+futures-util.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 

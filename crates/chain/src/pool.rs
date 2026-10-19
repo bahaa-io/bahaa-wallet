@@ -2,6 +2,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use bahaa_config::{Endpoint, Feature};
+use futures_util::future::join_all;
 use thiserror::Error;
 use tokio::time::{Instant, sleep_until};
 
@@ -77,7 +78,25 @@ impl Pool {
         F: Fn(Endpoint) -> Fut,
         Fut: Future<Output = Result<T, Failure<E>>>,
     {
-        self.dispatch(need, op, false).await
+        let Pick {
+            candidates,
+            ready,
+            history,
+        } = self.ready(need)?;
+        let mut last = None;
+        let mut failed = false;
+        for slot in ready {
+            match slot.attempt(&op, history).await {
+                Seen::Accepted(value) => return Ok(value),
+                Seen::Refused(err) => return Err(PoolError::Fatal(err)),
+                Seen::Failed(err) => {
+                    failed = true;
+                    last = Some(err);
+                }
+                Seen::Skipped(err) => last = Some(err),
+            }
+        }
+        Err(nothing_served(&candidates, last, failed))
     }
 
     pub async fn call_all<T, E, F, Fut>(
@@ -89,19 +108,33 @@ impl Pool {
         F: Fn(Endpoint) -> Fut,
         Fut: Future<Output = Result<T, Failure<E>>>,
     {
-        self.dispatch(need, op, true).await
+        let Pick {
+            candidates,
+            ready,
+            history,
+        } = self.ready(need)?;
+        let seen = join_all(ready.iter().map(|slot| slot.attempt(&op, history))).await;
+        let mut last = None;
+        let mut failed = false;
+        let mut refused = None;
+        for outcome in seen {
+            match outcome {
+                Seen::Accepted(value) => return Ok(value),
+                Seen::Refused(err) => refused = refused.or(Some(err)),
+                Seen::Failed(err) => {
+                    failed = true;
+                    last = Some(err);
+                }
+                Seen::Skipped(err) => last = Some(err),
+            }
+        }
+        if let Some(err) = refused {
+            return Err(PoolError::Fatal(err));
+        }
+        Err(nothing_served(&candidates, last, failed))
     }
 
-    async fn dispatch<T, E, F, Fut>(
-        &self,
-        need: Option<Feature>,
-        op: F,
-        every: bool,
-    ) -> Result<T, PoolError<E>>
-    where
-        F: Fn(Endpoint) -> Fut,
-        Fut: Future<Output = Result<T, Failure<E>>>,
-    {
+    fn ready<E>(&self, need: Option<Feature>) -> Result<Pick<'_>, PoolError<E>> {
         let candidates: Vec<&Slot> = self
             .slots
             .iter()
@@ -110,73 +143,17 @@ impl Pool {
         if candidates.is_empty() {
             return Err(PoolError::NoEndpoint);
         }
-        let history = need == Some(Feature::History);
         let now = Instant::now();
-        let ready: Vec<&Slot> = candidates
+        let ready = candidates
             .iter()
             .copied()
             .filter(|slot| slot.available(now))
             .collect();
-        let mut last = None;
-        let mut failed = false;
-        let mut accepted = None;
-        let mut refused = None;
-        for slot in ready {
-            sleep_until(slot.reserve(history)).await;
-            let started = Instant::now();
-            match op(slot.endpoint.clone()).await {
-                Ok(value) => {
-                    slot.succeeded(started.elapsed(), history);
-                    if !every {
-                        return Ok(value);
-                    }
-                    accepted = accepted.or(Some(value));
-                }
-                Err(Failure::Fatal(err)) => {
-                    slot.succeeded(started.elapsed(), history);
-                    if !every {
-                        return Err(PoolError::Fatal(err));
-                    }
-                    refused = refused.or(Some(err));
-                }
-                Err(Failure::Retry(err)) => {
-                    slot.failed(None, history);
-                    failed = true;
-                    last = Some(err);
-                }
-                Err(Failure::RateLimited(err, wait)) => {
-                    slot.failed(Some(wait.unwrap_or(COOLDOWN_BASE)), history);
-                    failed = true;
-                    last = Some(err);
-                }
-                Err(Failure::Unsupported(err)) => {
-                    slot.answered(history);
-                    last = Some(err);
-                }
-            }
-        }
-        if let Some(value) = accepted {
-            return Ok(value);
-        }
-        if let Some(err) = refused {
-            return Err(PoolError::Fatal(err));
-        }
-        if let Some(err) = last {
-            return Err(if failed {
-                PoolError::Exhausted(err)
-            } else {
-                PoolError::Unserved(err)
-            });
-        }
-        let now = Instant::now();
-        let soonest = candidates
-            .iter()
-            .filter_map(|slot| slot.health().cooldown_until)
-            .min()
-            .unwrap_or(now);
-        Err(PoolError::Unavailable(
-            soonest.saturating_duration_since(now),
-        ))
+        Ok(Pick {
+            candidates,
+            ready,
+            history: need == Some(Feature::History),
+        })
     }
 
     pub fn status(&self) -> Vec<EndpointStatus> {
@@ -196,7 +173,70 @@ impl Pool {
     }
 }
 
+struct Pick<'a> {
+    candidates: Vec<&'a Slot>,
+    ready: Vec<&'a Slot>,
+    history: bool,
+}
+
+enum Seen<T, E> {
+    Accepted(T),
+    Refused(E),
+    Failed(E),
+    Skipped(E),
+}
+
+fn nothing_served<E>(candidates: &[&Slot], last: Option<E>, failed: bool) -> PoolError<E> {
+    if let Some(err) = last {
+        return if failed {
+            PoolError::Exhausted(err)
+        } else {
+            PoolError::Unserved(err)
+        };
+    }
+    let now = Instant::now();
+    let soonest = candidates
+        .iter()
+        .filter_map(|slot| slot.health().cooldown_until)
+        .min()
+        .unwrap_or(now);
+    PoolError::Unavailable(soonest.saturating_duration_since(now))
+}
+
 impl Slot {
+    async fn attempt<T, E, F, Fut>(&self, op: &F, history: bool) -> Seen<T, E>
+    where
+        F: Fn(Endpoint) -> Fut,
+        Fut: Future<Output = Result<T, Failure<E>>>,
+    {
+        sleep_until(self.reserve(history)).await;
+        let started = Instant::now();
+        let outcome = op(self.endpoint.clone()).await;
+        let took = started.elapsed();
+        match outcome {
+            Ok(value) => {
+                self.succeeded(took, history);
+                Seen::Accepted(value)
+            }
+            Err(Failure::Fatal(err)) => {
+                self.succeeded(took, history);
+                Seen::Refused(err)
+            }
+            Err(Failure::Retry(err)) => {
+                self.failed(None, history);
+                Seen::Failed(err)
+            }
+            Err(Failure::RateLimited(err, wait)) => {
+                self.failed(Some(wait.unwrap_or(COOLDOWN_BASE)), history);
+                Seen::Failed(err)
+            }
+            Err(Failure::Unsupported(err)) => {
+                self.answered(history);
+                Seen::Skipped(err)
+            }
+        }
+    }
+
     fn health(&self) -> MutexGuard<'_, Health> {
         self.health.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -346,6 +386,20 @@ mod tests {
         };
         assert_eq!(all(refused).await, Err(PoolError::Fatal("bad signature")));
         assert_eq!(taken(&log), ["a", "c"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_broadcast_asks_every_endpoint_at_once() {
+        let pool = pool(&["a", "b", "c"]);
+        let started = Instant::now();
+        let outcome: Result<u32, PoolError<&str>> = pool
+            .call_all(None, |_| async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok(1)
+            })
+            .await;
+        assert_eq!(outcome, Ok(1));
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
     }
 
     #[tokio::test(start_paused = true)]

@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, Write as _};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bahaa_config::{Network, Registry};
 use bahaa_crypto::{ExposeSecret, SecretString};
@@ -468,6 +468,7 @@ impl Live {
         } else {
             Spend::Exact(Amount::parse(amount, decimals)?)
         };
+        let started = Instant::now();
         let draft = self
             .engine
             .prepare_send(SendRequest {
@@ -477,9 +478,12 @@ impl Live {
                 amount,
             })
             .await?;
+        println!("quoted in {:.1?}", started.elapsed());
         self.print_draft(&draft, &network).await?;
         let mut events = self.engine.events();
+        let started = Instant::now();
         let sent = self.engine.confirm_send(draft.id, self.secret()).await?;
+        println!("sent in {:.1?}", started.elapsed());
         println!("sent {:?}: {}", sent.status, sent.id);
         println!("  {}", network.explorer.tx_url(&sent.id));
         let done = settle(&mut events, &sent).await?;

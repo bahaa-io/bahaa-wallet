@@ -846,6 +846,7 @@ dependencies = [
  "bahaa-config",
  "bahaa-crypto",
  "bahaa-types",
+ "futures-util",
  "ruint",
  "thiserror 2.0.21",
  "tokio",
