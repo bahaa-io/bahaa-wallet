@@ -12,6 +12,7 @@ pub struct View {
     pub banner: Option<String>,
     pub toasts: Vec<Toast>,
     pub busy: bool,
+    pub handled: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -84,9 +85,23 @@ pub struct Choice {
 pub struct Input {
     pub field: Field,
     pub label: String,
-    pub value: String,
-    pub secret: bool,
+    pub value: Value,
     pub hint: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Value {
+    Text(String),
+    Hidden(Secret),
+}
+
+impl Value {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text,
+            Self::Hidden(secret) => secret.expose(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,16 +153,20 @@ pub enum Request {
     Quit,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct Secret(Arc<Zeroizing<Vec<String>>>);
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Secret(Arc<Zeroizing<String>>);
 
 impl Secret {
-    pub(crate) fn new(words: Vec<String>) -> Self {
-        Self(Arc::new(Zeroizing::new(words)))
+    pub(crate) fn new(text: &str) -> Self {
+        Self(Arc::new(Zeroizing::new(text.to_owned())))
     }
 
-    pub fn words(&self) -> &[String] {
+    pub fn expose(&self) -> &str {
         &self.0
+    }
+
+    pub fn words(&self) -> impl Iterator<Item = &str> {
+        self.0.split_whitespace()
     }
 }
 

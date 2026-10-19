@@ -2,15 +2,14 @@ use bahaa_engine::{
     Address, Amount, AssetId, Caution, ChainFamily, Contact, Draft, EngineError, MAX_MEMO,
     NetworkId, Replace, SendRequest, Spend, WalletId, is_plain_text,
 };
-use zeroize::Zeroizing;
 
 use super::activity::Transfer;
-use super::{Screen, button, choice, group, hidden, input, kept, line, note};
+use super::{Screen, button, choice, group, hidden, input, line, note};
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::links::{self, Payment};
-use crate::view::{Level, Page, PageId};
+use crate::view::{Level, Page, PageId, Secret};
 use crate::{format, parse, text};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,7 +28,7 @@ enum Step {
     Confirm {
         draft: Draft,
         at: u64,
-        password: Zeroizing<String>,
+        password: Secret,
     },
     Sent {
         network: NetworkId,
@@ -422,7 +421,7 @@ impl Send {
                 self.step = Step::Confirm {
                     draft,
                     at,
-                    password: Zeroizing::default(),
+                    password: Secret::default(),
                 };
                 Reply::default()
             }
@@ -457,7 +456,7 @@ impl Screen for Send {
         match (&mut self.step, action) {
             (_, Action::Submit) => self.submit(ctx),
             (Step::Confirm { password, .. }, Action::Type(Field::Password, value)) => {
-                *password = kept(value);
+                *password = Secret::new(value);
                 Reply::default()
             }
             (Step::Compose, _) => self.compose(action, ctx),
@@ -489,7 +488,7 @@ impl Screen for Send {
             }
             Outcome::Sent(Err(err)) => {
                 if let Step::Confirm { password, .. } = &mut self.step {
-                    *password = Zeroizing::default();
+                    *password = Secret::default();
                 }
                 self.error = Some(text::error(&err));
             }
@@ -522,10 +521,10 @@ impl Screen for Send {
         match &self.step {
             Step::Compose => self.compose_page(ctx),
             Step::Review { draft, at } => self.review_page(draft, *at, ctx),
-            Step::Confirm { .. } => Page {
+            Step::Confirm { password, .. } => Page {
                 id: PageId::Confirm,
                 title: text::CONFIRM_TITLE.to_owned(),
-                inputs: vec![hidden(Field::Password, text::PASSWORD)],
+                inputs: vec![hidden(Field::Password, text::PASSWORD, password)],
                 error: self.error.clone(),
                 buttons: vec![button(text::SEND_NOW, Action::Submit)],
                 ..Page::default()

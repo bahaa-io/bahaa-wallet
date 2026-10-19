@@ -12,13 +12,14 @@ use crate::call::{Call, Load, Loaded, Outcome};
 use crate::screen::{self, Screen};
 use crate::view::{Choice, Level, Page, Request, Toast, View};
 use crate::{format, text};
+use zeroize::Zeroize;
 
 const TOAST_FOR: u64 = 5;
 const CLIPBOARD_FOR: Duration = Duration::from_secs(30);
 const GLOBAL: u64 = 0;
 
 pub(crate) enum Input {
-    Action(Action),
+    Action(u64, Action),
     State(State),
     Portfolio(Box<Portfolio>),
     Event(Box<Event>),
@@ -219,6 +220,7 @@ pub(crate) struct Core {
     counter: u64,
     pending: Option<u64>,
     clipboard: u64,
+    handled: u64,
 }
 
 impl Core {
@@ -235,12 +237,20 @@ impl Core {
             counter: GLOBAL,
             pending: None,
             clipboard: 0,
+            handled: 0,
         }
     }
 
     pub(crate) fn update(&mut self, input: Input) -> Vec<Effect> {
         match input {
-            Input::Action(action) => self.act(&action),
+            Input::Action(number, mut action) => {
+                self.handled = number;
+                let effects = self.act(&action);
+                if let Action::Type(_, text) = &mut action {
+                    text.zeroize();
+                }
+                effects
+            }
             Input::State(state) => self.state(state),
             Input::Portfolio(portfolio) => {
                 self.data.portfolio = *portfolio;
@@ -287,6 +297,7 @@ impl Core {
             banner: self.banner(),
             toasts: self.toasts.iter().map(|(toast, _)| toast.clone()).collect(),
             busy: self.pending.is_some(),
+            handled: self.handled,
         }
     }
 

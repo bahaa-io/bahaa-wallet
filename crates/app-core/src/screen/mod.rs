@@ -12,15 +12,14 @@ mod wallets;
 pub use onboarding::completions;
 
 use bahaa_engine::{
-    AssetId, ChainFamily, ExposeSecret, NetworkId, SecretString, WalletInfo, WalletKind, WordCount,
+    AssetId, ChainFamily, NetworkId, SecretString, WalletInfo, WalletKind, WordCount,
 };
-use zeroize::Zeroizing;
 
 use crate::action::{Action, Field, Pick, Tab};
 use crate::call::Outcome;
 use crate::core::{Ctx, Reply};
 use crate::text;
-use crate::view::{Button, Choice, Group, Input, Level, Line, Note, Page, PageId};
+use crate::view::{Button, Choice, Group, Input, Level, Line, Note, Page, PageId, Secret, Value};
 
 const MIN_PASSWORD: usize = 8;
 const GOOD_PASSWORD: usize = 12;
@@ -118,32 +117,26 @@ pub(crate) fn input(field: Field, label: &str, value: &str) -> Input {
     Input {
         field,
         label: label.to_owned(),
-        value: value.to_owned(),
-        secret: false,
+        value: Value::Text(value.to_owned()),
         hint: None,
     }
 }
 
-pub(crate) fn hidden(field: Field, label: &str) -> Input {
+pub(crate) fn hidden(field: Field, label: &str, value: &Secret) -> Input {
     Input {
         field,
         label: label.to_owned(),
-        value: String::new(),
-        secret: true,
+        value: Value::Hidden(value.clone()),
         hint: None,
     }
 }
 
-pub(crate) fn kept(text: &str) -> Zeroizing<String> {
-    Zeroizing::new(text.to_owned())
+pub(crate) fn secret(text: &Secret) -> SecretString {
+    SecretString::from(text.expose())
 }
 
-pub(crate) fn secret(text: &Zeroizing<String>) -> SecretString {
-    SecretString::from(text.as_str())
-}
-
-pub(crate) fn password_problem(password: &str, confirm: &str) -> Option<&'static str> {
-    if password.chars().count() < MIN_PASSWORD {
+pub(crate) fn password_problem(password: &Secret, confirm: &Secret) -> Option<&'static str> {
+    if password.expose().chars().count() < MIN_PASSWORD {
         Some(text::PASSWORD_SHORT)
     } else if password != confirm {
         Some(text::PASSWORD_MISMATCH)
@@ -152,15 +145,15 @@ pub(crate) fn password_problem(password: &str, confirm: &str) -> Option<&'static
     }
 }
 
-pub(crate) fn password_inputs(password: &str) -> Vec<Input> {
-    let length = password.chars().count();
+pub(crate) fn password_inputs(password: &Secret, confirm: &Secret) -> Vec<Input> {
+    let length = password.expose().chars().count();
     let hint = (length > 0 && length < GOOD_PASSWORD).then(|| text::PASSWORD_WEAK.to_owned());
     vec![
         Input {
             hint,
-            ..hidden(Field::NewPassword, text::NEW_PASSWORD)
+            ..hidden(Field::NewPassword, text::NEW_PASSWORD, password)
         },
-        hidden(Field::Confirm, text::CONFIRM_PASSWORD),
+        hidden(Field::Confirm, text::CONFIRM_PASSWORD, confirm),
     ]
 }
 
@@ -178,14 +171,9 @@ pub(crate) fn wallet_kind(wallet: &WalletInfo) -> String {
     }
 }
 
-pub(crate) fn words(phrase: &SecretString) -> Zeroizing<Vec<String>> {
-    Zeroizing::new(
-        phrase
-            .expose_secret()
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect(),
-    )
+pub(crate) fn revealed(phrase: &SecretString) -> Secret {
+    use bahaa_engine::ExposeSecret;
+    Secret::new(phrase.expose_secret())
 }
 
 pub(crate) fn memo_allowed(asset: &AssetId, family: ChainFamily) -> bool {

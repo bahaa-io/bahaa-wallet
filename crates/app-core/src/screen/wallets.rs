@@ -1,7 +1,6 @@
 use bahaa_engine::{TonContract, WalletId, WalletKind};
-use zeroize::Zeroizing;
 
-use super::{Screen, button, choice, group, hidden, input, kept, line, wallet_kind};
+use super::{Screen, button, choice, group, hidden, input, line, wallet_kind};
 use crate::action::{Action, Contract, Field, Go, Pick, Tab};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
@@ -157,8 +156,8 @@ impl Screen for Wallet {
 
 struct Reveal {
     id: WalletId,
-    password: Zeroizing<String>,
-    words: Option<Zeroizing<Vec<String>>>,
+    password: Secret,
+    words: Option<Secret>,
     error: Option<String>,
 }
 
@@ -166,7 +165,7 @@ impl Reveal {
     fn new(id: WalletId) -> Self {
         Self {
             id,
-            password: Zeroizing::default(),
+            password: Secret::default(),
             words: None,
             error: None,
         }
@@ -176,7 +175,7 @@ impl Reveal {
 impl Screen for Reveal {
     fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
         match action {
-            Action::Type(Field::Password, value) => self.password = kept(value),
+            Action::Type(Field::Password, value) => self.password = Secret::new(value),
             Action::Submit if self.words.is_none() => {
                 return Reply::call(Call::Reveal(self.id, super::secret(&self.password)));
             }
@@ -187,10 +186,10 @@ impl Screen for Reveal {
     }
 
     fn done(&mut self, outcome: Outcome, _ctx: &Ctx<'_>) -> Reply {
-        self.password = Zeroizing::default();
+        self.password = Secret::default();
         match outcome {
             Outcome::Revealed(Ok(phrase)) => {
-                self.words = Some(super::words(&phrase));
+                self.words = Some(super::revealed(&phrase));
                 self.error = None;
             }
             Outcome::Revealed(Err(err)) => self.error = Some(text::error(&err)),
@@ -208,10 +207,10 @@ impl Screen for Reveal {
             ..Page::default()
         };
         if let Some(words) = &self.words {
-            page.secret = Some(Secret::new(words.to_vec()));
+            page.secret = Some(words.clone());
             page.buttons = vec![button(text::DONE, Action::Submit)];
         } else {
-            page.inputs = vec![hidden(Field::Password, text::PASSWORD)];
+            page.inputs = vec![hidden(Field::Password, text::PASSWORD, &self.password)];
             page.buttons = vec![button(text::SHOW_PHRASE, Action::Submit)];
         }
         page
@@ -220,7 +219,7 @@ impl Screen for Reveal {
 
 struct Remove {
     id: WalletId,
-    password: Zeroizing<String>,
+    password: Secret,
     checked: bool,
     error: Option<String>,
 }
@@ -229,7 +228,7 @@ impl Remove {
     fn new(id: WalletId) -> Self {
         Self {
             id,
-            password: Zeroizing::default(),
+            password: Secret::default(),
             checked: false,
             error: None,
         }
@@ -239,7 +238,7 @@ impl Remove {
 impl Screen for Remove {
     fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
         match action {
-            Action::Type(Field::Password, value) => self.password = kept(value),
+            Action::Type(Field::Password, value) => self.password = Secret::new(value),
             Action::Submit => {
                 return Reply::call(Call::CheckPassword(super::secret(&self.password)));
             }
@@ -252,7 +251,7 @@ impl Screen for Remove {
         match outcome {
             Outcome::Done(Ok(())) if !self.checked => {
                 self.checked = true;
-                self.password = Zeroizing::default();
+                self.password = Secret::default();
                 Reply::call(Call::Remove(self.id))
             }
             Outcome::Done(Ok(())) => {
@@ -272,7 +271,7 @@ impl Screen for Remove {
             id: PageId::RemoveWallet,
             title: text::remove_title(&ctx.wallet_name(self.id)),
             text: Some(text::REMOVE_TEXT.to_owned()),
-            inputs: vec![hidden(Field::Password, text::PASSWORD)],
+            inputs: vec![hidden(Field::Password, text::PASSWORD, &self.password)],
             error: self.error.clone(),
             buttons: vec![button(text::REMOVE_WALLET, Action::Submit)],
             ..Page::default()

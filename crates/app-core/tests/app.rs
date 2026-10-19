@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use bahaa_app_core::{
     Action, App, AppConfig, ChainFamily, Currency, EngineConfig, Field, Go, KdfParams, Kind, Page,
-    PageId, Pick, Registry, Request, Tab, View, Words,
+    PageId, Pick, Registry, Request, Tab, Value, View, Words,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -120,7 +120,14 @@ async fn a_new_wallet_is_created_backed_up_and_locked_again() {
     until(&mut view, |current| current.page.error.is_some()).await;
     set_password(&app);
     let shown = at(&mut view, PageId::Phrase).await;
-    let words = shown.page.secret.as_ref().unwrap().words().to_vec();
+    let words: Vec<String> = shown
+        .page
+        .secret
+        .as_ref()
+        .unwrap()
+        .words()
+        .map(str::to_owned)
+        .collect();
     assert_eq!(words.len(), 12);
     app.act(Action::Back);
     until(&mut view, |current| !current.toasts.is_empty()).await;
@@ -156,11 +163,19 @@ async fn a_new_wallet_is_created_backed_up_and_locked_again() {
     assert_eq!(view.borrow().tabs.len(), 0);
     app.act(Action::Type(Field::Password, "not it".to_owned()));
     app.act(Action::Submit);
-    until(&mut view, |current| {
+    let wrong = until(&mut view, |current| {
         current.page.error.as_deref() == Some("Wrong password")
     })
     .await;
-    app.act(Action::Type(Field::Password, PASSWORD.to_owned()));
+    assert!(
+        matches!(&wrong.page.inputs[0].value, Value::Hidden(secret) if secret.expose().is_empty())
+    );
+    let typed = app.act(Action::Type(Field::Password, PASSWORD.to_owned()));
+    let echoed = until(&mut view, |current| current.handled >= typed).await;
+    assert!(
+        matches!(&echoed.page.inputs[0].value, Value::Hidden(secret) if secret.expose() == PASSWORD)
+    );
+    assert!(!format!("{:?}", echoed.page).contains(PASSWORD));
     app.act(Action::Submit);
     at(&mut view, PageId::Portfolio).await;
     app.shutdown().await.unwrap();

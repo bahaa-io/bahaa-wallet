@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bahaa_engine::{Engine, EngineConfig, EngineError};
@@ -28,7 +29,8 @@ impl AppConfig {
 
 #[derive(Clone)]
 pub struct App {
-    actions: mpsc::UnboundedSender<Action>,
+    actions: mpsc::UnboundedSender<(u64, Action)>,
+    sent: Arc<AtomicU64>,
     view: watch::Receiver<Arc<View>>,
     engine: Engine,
 }
@@ -54,6 +56,7 @@ impl App {
         Ok((
             Self {
                 actions,
+                sent: Arc::new(AtomicU64::new(0)),
                 view,
                 engine,
             },
@@ -61,8 +64,10 @@ impl App {
         ))
     }
 
-    pub fn act(&self, action: Action) {
-        let _ = self.actions.send(action);
+    pub fn act(&self, action: Action) -> u64 {
+        let number = self.sent.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self.actions.send((number, action));
+        number
     }
 
     pub fn view(&self) -> watch::Receiver<Arc<View>> {
@@ -77,7 +82,7 @@ impl App {
 struct Runtime {
     engine: Engine,
     core: Core,
-    inbox: mpsc::UnboundedReceiver<Action>,
+    inbox: mpsc::UnboundedReceiver<(u64, Action)>,
     requests: mpsc::Sender<Request>,
     publish: watch::Sender<Arc<View>>,
     results_tx: mpsc::UnboundedSender<Input>,
@@ -94,9 +99,9 @@ impl Runtime {
         loop {
             let input = tokio::select! {
                 action = self.inbox.recv() => match action {
-                    Some(action) => {
+                    Some((number, action)) => {
                         self.engine.touch();
-                        Input::Action(action)
+                        Input::Action(number, action)
                     }
                     None => break,
                 },

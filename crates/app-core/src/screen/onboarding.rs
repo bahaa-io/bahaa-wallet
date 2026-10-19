@@ -1,7 +1,6 @@
 use bahaa_engine::{KeyringError, NewPhrase, PhraseKind, SecretString};
-use zeroize::Zeroizing;
 
-use super::{Screen, button, choice, group, hidden, kept, note, password_inputs, password_problem};
+use super::{Screen, button, choice, group, hidden, note, password_inputs, password_problem};
 use crate::action::{Action, Field, Kind, Pick, Words};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
@@ -69,13 +68,13 @@ impl Screen for Welcome {
 
 enum Next {
     Create(Words),
-    Import(Zeroizing<String>, Zeroizing<String>, Option<PhraseKind>),
+    Import(Secret, Secret, Option<PhraseKind>),
 }
 
 struct NewPassword {
     next: Next,
-    password: Zeroizing<String>,
-    confirm: Zeroizing<String>,
+    password: Secret,
+    confirm: Secret,
     created: bool,
     error: Option<String>,
 }
@@ -84,8 +83,8 @@ impl NewPassword {
     fn new(next: Next) -> Self {
         Self {
             next,
-            password: Zeroizing::default(),
-            confirm: Zeroizing::default(),
+            password: Secret::default(),
+            confirm: Secret::default(),
             created: false,
             error: None,
         }
@@ -104,8 +103,8 @@ impl NewPassword {
 impl Screen for NewPassword {
     fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
         match action {
-            Action::Type(Field::NewPassword, value) => self.password = kept(value),
-            Action::Type(Field::Confirm, value) => self.confirm = kept(value),
+            Action::Type(Field::NewPassword, value) => self.password = Secret::new(value),
+            Action::Type(Field::Confirm, value) => self.confirm = Secret::new(value),
             Action::Submit if self.created => return Reply::call(self.continue_call()),
             Action::Submit => {
                 if let Some(problem) = password_problem(&self.password, &self.confirm) {
@@ -147,7 +146,7 @@ impl Screen for NewPassword {
             id: PageId::NewPassword,
             title: text::SET_PASSWORD.to_owned(),
             text: Some(text::SET_PASSWORD_TEXT.to_owned()),
-            inputs: password_inputs(&self.password),
+            inputs: password_inputs(&self.password, &self.confirm),
             error: self.error.clone(),
             buttons: vec![button(text::CONTINUE, Action::Submit)],
             ..Page::default()
@@ -156,13 +155,13 @@ impl Screen for NewPassword {
 }
 
 struct ShowPhrase {
-    words: Zeroizing<Vec<String>>,
+    phrase: Secret,
 }
 
 impl ShowPhrase {
     fn new(phrase: &SecretString) -> Self {
         Self {
-            words: super::words(phrase),
+            phrase: super::revealed(phrase),
         }
     }
 }
@@ -170,7 +169,7 @@ impl ShowPhrase {
 impl Screen for ShowPhrase {
     fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
         match action {
-            Action::Submit => Reply::nav(Nav::Push(Box::new(Verify::new(self.words.clone())))),
+            Action::Submit => Reply::nav(Nav::Push(Box::new(Verify::new(self.phrase.clone())))),
             _ => Reply::default(),
         }
     }
@@ -184,7 +183,7 @@ impl Screen for ShowPhrase {
             id: PageId::Phrase,
             title: text::YOUR_PHRASE.to_owned(),
             text: Some(text::YOUR_PHRASE_TEXT.to_owned()),
-            secret: Some(Secret::new(self.words.to_vec())),
+            secret: Some(self.phrase.clone()),
             buttons: vec![button(text::WROTE_IT_DOWN, Action::Submit)],
             ..Page::default()
         }
@@ -192,17 +191,17 @@ impl Screen for ShowPhrase {
 }
 
 struct Verify {
-    words: Zeroizing<Vec<String>>,
+    phrase: Secret,
     positions: [usize; CHECKED_WORDS],
-    answers: [Zeroizing<String>; CHECKED_WORDS],
+    answers: [Secret; CHECKED_WORDS],
     error: Option<String>,
 }
 
 impl Verify {
-    fn new(words: Zeroizing<Vec<String>>) -> Self {
-        let positions = pick_positions(words.len());
+    fn new(phrase: Secret) -> Self {
+        let positions = pick_positions(phrase.words().count());
         Self {
-            words,
+            phrase,
             positions,
             answers: Default::default(),
             error: None,
@@ -214,15 +213,19 @@ impl Screen for Verify {
     fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
         match action {
             Action::Type(Field::Word(slot), value) if *slot < CHECKED_WORDS => {
-                self.answers[*slot] = kept(value);
+                self.answers[*slot] = Secret::new(value);
             }
             Action::Submit => {
+                let words: Vec<&str> = self.phrase.words().collect();
                 let wrong = self
                     .positions
                     .iter()
                     .zip(&self.answers)
                     .find(|(position, answer)| {
-                        !answer.trim().eq_ignore_ascii_case(&self.words[**position])
+                        !answer
+                            .expose()
+                            .trim()
+                            .eq_ignore_ascii_case(words[**position])
                     });
                 match wrong {
                     Some((position, _)) => self.error = Some(text::word_mismatch(position + 1)),
@@ -245,7 +248,13 @@ impl Screen for Verify {
                 .positions
                 .iter()
                 .enumerate()
-                .map(|(slot, position)| hidden(Field::Word(slot), &text::word_number(position + 1)))
+                .map(|(slot, position)| {
+                    hidden(
+                        Field::Word(slot),
+                        &text::word_number(position + 1),
+                        &self.answers[slot],
+                    )
+                })
                 .collect(),
             error: self.error.clone(),
             buttons: vec![button(text::CHECK, Action::Submit)],
@@ -256,8 +265,8 @@ impl Screen for Verify {
 
 struct Import {
     adding: bool,
-    phrase: Zeroizing<String>,
-    passphrase: Zeroizing<String>,
+    phrase: Secret,
+    passphrase: Secret,
     kind: Option<Kind>,
     check: Result<PhraseKind, KeyringError>,
     error: Option<String>,
@@ -267,8 +276,8 @@ impl Import {
     fn new(adding: bool) -> Self {
         Self {
             adding,
-            phrase: Zeroizing::default(),
-            passphrase: Zeroizing::default(),
+            phrase: Secret::default(),
+            passphrase: Secret::default(),
             kind: None,
             check: Err(KeyringError::Mnemonic(
                 bahaa_engine::MnemonicError::WordCount(0),
@@ -278,7 +287,7 @@ impl Import {
     }
 
     fn recheck(&mut self) {
-        self.check = bahaa_engine::check_phrase(&self.phrase, &self.passphrase);
+        self.check = bahaa_engine::check_phrase(self.phrase.expose(), self.passphrase.expose());
         self.error = None;
     }
 
@@ -297,12 +306,12 @@ impl Screen for Import {
     fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
         match action {
             Action::Type(Field::Phrase, value) => {
-                self.phrase = kept(value);
+                self.phrase = Secret::new(value);
                 self.kind = None;
                 self.recheck();
             }
             Action::Type(Field::Passphrase, value) => {
-                self.passphrase = kept(value);
+                self.passphrase = Secret::new(value);
                 self.recheck();
             }
             Action::Pick(Pick::Kind(kind)) => self.kind = Some(*kind),
@@ -339,7 +348,7 @@ impl Screen for Import {
     }
 
     fn page(&self, _ctx: &Ctx<'_>) -> Page {
-        let words = self.phrase.split_whitespace().count();
+        let words = self.phrase.words().count();
         let status = match &self.check {
             _ if words == 0 => None,
             Ok(PhraseKind::Bip39) => Some(note(Level::Success, text::looks_multi_chain(words))),
@@ -370,8 +379,8 @@ impl Screen for Import {
             title: text::IMPORT_TITLE.to_owned(),
             text: Some(text::IMPORT_TEXT.to_owned()),
             inputs: vec![
-                hidden(Field::Phrase, text::PHRASE),
-                hidden(Field::Passphrase, text::PASSPHRASE),
+                hidden(Field::Phrase, text::PHRASE, &self.phrase),
+                hidden(Field::Passphrase, text::PASSPHRASE, &self.passphrase),
             ],
             groups,
             notes: status.into_iter().collect(),

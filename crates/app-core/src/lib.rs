@@ -15,5 +15,5 @@ pub use bahaa_engine::{ChainFamily, EngineConfig, EngineError, KdfParams, Regist
 pub use screen::completions;
 pub use view::{
     Button, Choice, Group, Input, Level, Line, Note, Page, PageId, Request, Row, Secret, Table,
-    Toast, View,
+    Toast, Value, View,
 };

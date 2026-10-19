@@ -1,18 +1,16 @@
 use bahaa_engine::Fiat;
-use zeroize::Zeroizing;
 
 use super::onboarding::Welcome;
 use super::tokens;
 use super::wallets::Wallet;
 use super::{
-    Screen, button, choice, group, hidden, kept, line, password_inputs, password_problem,
-    wallet_kind,
+    Screen, button, choice, group, hidden, line, password_inputs, password_problem, wallet_kind,
 };
 use crate::action::{Action, Currency, Field, Go, Pick, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::text;
-use crate::view::{Level, Page, PageId, Row, Table};
+use crate::view::{Level, Page, PageId, Row, Secret, Table};
 
 const AUTO_LOCK: [u16; 5] = [1, 5, 10, 30, 60];
 
@@ -133,18 +131,18 @@ fn fiat(currency: Currency) -> Fiat {
 
 #[derive(Default)]
 struct ChangePassword {
-    old: Zeroizing<String>,
-    new: Zeroizing<String>,
-    confirm: Zeroizing<String>,
+    old: Secret,
+    new: Secret,
+    confirm: Secret,
     error: Option<String>,
 }
 
 impl Screen for ChangePassword {
     fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
         match action {
-            Action::Type(Field::Password, value) => self.old = kept(value),
-            Action::Type(Field::NewPassword, value) => self.new = kept(value),
-            Action::Type(Field::Confirm, value) => self.confirm = kept(value),
+            Action::Type(Field::Password, value) => self.old = Secret::new(value),
+            Action::Type(Field::NewPassword, value) => self.new = Secret::new(value),
+            Action::Type(Field::Confirm, value) => self.confirm = Secret::new(value),
             Action::Submit => match password_problem(&self.new, &self.confirm) {
                 Some(problem) => self.error = Some(problem.to_owned()),
                 None => {
@@ -173,8 +171,8 @@ impl Screen for ChangePassword {
     }
 
     fn page(&self, _ctx: &Ctx<'_>) -> Page {
-        let mut inputs = vec![hidden(Field::Password, text::CURRENT_PASSWORD)];
-        inputs.extend(password_inputs(&self.new));
+        let mut inputs = vec![hidden(Field::Password, text::CURRENT_PASSWORD, &self.old)];
+        inputs.extend(password_inputs(&self.new, &self.confirm));
         Page {
             id: PageId::ChangePassword,
             title: text::CHANGE_PASSWORD.to_owned(),
