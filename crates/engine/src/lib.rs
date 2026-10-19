@@ -5,7 +5,7 @@ mod keyring;
 mod payload;
 mod portfolio;
 
-pub use bahaa_chain::{ChainError, FeeItem, FeeLine, FeeQuote, MAX_MEMO, Replace, Transfer};
+pub use bahaa_chain::{ChainError, FeeItem, FeeLine, FeeQuote, MAX_MEMO, Replace, Transfer, now};
 pub use bahaa_config::{
     ChainKind, Coin, ConfigError, Explorer, Fiat, Network, Registry, Settings, Token,
 };
