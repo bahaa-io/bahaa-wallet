@@ -13,7 +13,7 @@ const GET_TRANSACTIONS: u32 = 0x1c40_e7a1;
 const TRANSACTION_LIST: u32 = 0x6f26_c60b;
 const GET_LIBRARIES: u32 = 0xd122_b662;
 const LIBRARY_RESULT: u32 = 0x117a_b96b;
-const MAX_LIBRARIES: u32 = 16;
+const MAX_LIBRARY_ENTRIES: u32 = 16;
 const GET_BLOCK_PROOF: u32 = 0x8aea_9c44;
 const LOOKUP_BLOCK: u32 = 0xfac8_f71e;
 const BLOCK_HEADER: u32 = 0x752d_8219;
@@ -444,7 +444,7 @@ pub(crate) fn get_libraries(hashes: &[[u8; 32]]) -> Vec<u8> {
 pub(crate) fn library_result(answer: &[u8]) -> Option<Answer<Libraries>> {
     read(answer, LIBRARY_RESULT, |reader| {
         let count = reader.u32()?;
-        if count > MAX_LIBRARIES {
+        if count > MAX_LIBRARY_ENTRIES {
             return None;
         }
         (0..count)

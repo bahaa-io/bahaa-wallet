@@ -4,7 +4,7 @@ use crate::{chain, rpc, tx};
 
 pub fn raw(data: &[u8]) {
     let _ = tx::parse(data);
-    let _ = tx::parse_transfer(data);
+    let _ = bahaa_chain::parse_transfer(data);
     chain::fuzz_input(data);
 }
 

@@ -1,11 +1,10 @@
 use std::collections::{BTreeSet, HashMap};
-use std::fmt::Write;
 use std::sync::{Mutex, PoisonError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use bahaa_chain::{ChainError, Failure, Pool};
 use bahaa_config::{Endpoint, Protocol};
-use bahaa_types::{Address, to_plain_text};
+use bahaa_types::{Address, hex, to_plain_text};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use reqwest::StatusCode;
@@ -25,7 +24,6 @@ const MAX_REPLY: usize = 4 * 1024 * 1024;
 const MAX_MESSAGE: usize = 200;
 const TIMEOUT: Duration = Duration::from_secs(20);
 const CONFIG_FOR: Duration = Duration::from_secs(600);
-const MAX_LIBRARIES: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Item {
@@ -96,14 +94,9 @@ impl Http {
         let params = self.config().await?.encoded().ok_or_else(|| {
             ChainError::Network("the network config cannot be encoded".to_owned())
         })?;
-        let now = u32::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_secs()),
-        )
-        .unwrap_or(u32::MAX);
+        let now = u32::try_from(bahaa_chain::now()).unwrap_or(u32::MAX);
         let mut libraries = Vec::new();
-        for _ in 0..=MAX_LIBRARIES {
+        for _ in 0..=vm::MAX_LIBRARIES {
             match vm::run(&account.boc, method, arg, &params, &libraries, now)? {
                 Ran::Done(items) => return Ok(Some(items)),
                 Ran::Missing(hash) => libraries.push(self.library(&hash).await?),
@@ -170,12 +163,12 @@ impl Http {
                     Protocol::TonLiteservers => self.lite.library(base, hash).await,
                     Protocol::TonApi => {
                         self.ready(&endpoint).await?;
-                        let path = format!("blockchain/libraries/{}", hex(hash));
+                        let path = format!("blockchain/libraries/{}", hex::encode(hash));
                         let reply =
                             api(self.fetch(base, &path, None).await?)?.ok_or_else(unsupported)?;
                         let data = reply["boc"]
                             .as_str()
-                            .and_then(unhex)
+                            .and_then(hex::decode)
                             .ok_or_else(malformed)?;
                         proven_library(data, hash)
                     }
@@ -240,13 +233,13 @@ impl Http {
                         let path = format!(
                             "liteserver/get_transactions/{address}?count={MAX_LISTED}&lt={}&hash={}",
                             from.1,
-                            hex(&from.0)
+                            hex::encode(&from.0)
                         );
                         let reply =
                             api(self.fetch(base, &path, None).await?)?.ok_or_else(unsupported)?;
                         let list = reply["transactions"]
                             .as_str()
-                            .and_then(unhex)
+                            .and_then(hex::decode)
                             .ok_or_else(malformed)?;
                         proven_transactions(&list, address, from)
                     }
@@ -281,7 +274,7 @@ impl Http {
             Provider::Api => api(self
                 .fetch(base, "liteserver/get_masterchain_info", None)
                 .await?)?
-            .and_then(|reply| reply["init"]["root_hash"].as_str().and_then(unhex)),
+            .and_then(|reply| reply["init"]["root_hash"].as_str().and_then(hex::decode)),
         };
         if zero_state.as_deref() != Some(self.zero_state.as_slice()) {
             return Err(Failure::Retry(ChainError::Network(
@@ -355,7 +348,7 @@ fn center((status, reply): Reply) -> Result<Value, Failure<ChainError>> {
     ) {
         return Err(unsupported());
     }
-    let reply = reply.ok_or_else(|| retry("reply is not JSON"))?;
+    let reply = reply.ok_or_else(|| Failure::retry("reply is not JSON"))?;
     if status.is_success() && reply["ok"] == true {
         return Ok(reply["result"].clone());
     }
@@ -376,7 +369,7 @@ fn api((status, reply): Reply) -> Result<Option<Value>, Failure<ChainError>> {
     ) {
         return Err(unsupported());
     }
-    let reply = reply.ok_or_else(|| retry("reply is not JSON"))?;
+    let reply = reply.ok_or_else(|| Failure::retry("reply is not JSON"))?;
     if status.is_success() {
         return Ok(Some(reply));
     }
@@ -393,23 +386,6 @@ fn refusal(status: StatusCode, error: &Value) -> Failure<ChainError> {
     } else {
         Failure::Fatal(ChainError::Rejected(message))
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
-}
-
-fn unhex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok())
-        .collect()
 }
 
 fn join(base: &Url, path: &str) -> Option<Url> {
@@ -430,10 +406,6 @@ fn join(base: &Url, path: &str) -> Option<Url> {
     Some(url)
 }
 
-fn retry(text: &str) -> Failure<ChainError> {
-    Failure::Retry(ChainError::Network(text.to_owned()))
-}
-
 fn unsupported() -> Failure<ChainError> {
     Failure::Unsupported(ChainError::Network(
         "an endpoint does not serve this request".to_owned(),
@@ -441,7 +413,7 @@ fn unsupported() -> Failure<ChainError> {
 }
 
 fn malformed() -> Failure<ChainError> {
-    retry("an endpoint sent a malformed reply")
+    Failure::retry("an endpoint sent a malformed reply")
 }
 
 #[cfg(test)]

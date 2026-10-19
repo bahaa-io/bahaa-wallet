@@ -32,11 +32,7 @@ fn hex_of(value: u128) -> String {
 }
 
 fn unhex(text: &str) -> Vec<u8> {
-    let digits = text.trim_start_matches("0x");
-    (0..digits.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).unwrap())
-        .collect()
+    bahaa_types::hex::decode(text.trim().trim_start_matches("0x")).unwrap()
 }
 
 fn last_word(data: &str) -> u128 {

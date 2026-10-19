@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use bahaa_chain::{ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId};
 use bahaa_crypto::Seed;
 use bahaa_types::{Address, Amount, AssetId, TonContract};
@@ -58,7 +56,7 @@ impl TonChain {
             transfer.take_all(amount(held, decimals)?)?;
         }
         let (seqno, deploy, contract) = self.sequence(&wallet, &transfer.from)?;
-        let now = now();
+        let now = bahaa_chain::now();
         let clock =
             u32::try_from(now).map_err(|_| ChainError::Invalid("the clock is out of range"))?;
         let config = self.http.config().await?;
@@ -101,14 +99,16 @@ impl TonChain {
         } else {
             estimate(&order, deploy, &wallet, (&settings, &storage), clock)?
         };
-        let own = fees.expected().ok_or_else(overflow)?;
-        let own_max = own.checked_mul(2).ok_or_else(overflow)?;
-        let attached = u64::try_from(order.nano).map_err(|_| overflow())?;
+        let own = fees.expected().ok_or_else(ChainError::overflow)?;
+        let own_max = own.checked_mul(2).ok_or_else(ChainError::overflow)?;
+        let attached = u64::try_from(order.nano).map_err(|_| ChainError::overflow())?;
         let (expected, max) = match contracts {
             None => (own, own_max),
             Some(spent) => (
-                own.checked_add(spent).ok_or_else(overflow)?,
-                own_max.checked_add(attached).ok_or_else(overflow)?,
+                own.checked_add(spent).ok_or_else(ChainError::overflow)?,
+                own_max
+                    .checked_add(attached)
+                    .ok_or_else(ChainError::overflow)?,
             ),
         };
         let sent = if order.everything {
@@ -116,7 +116,9 @@ impl TonChain {
         } else {
             order.nano
         };
-        let needed = sent.checked_add(U256::from(own_max)).ok_or_else(overflow)?;
+        let needed = sent
+            .checked_add(U256::from(own_max))
+            .ok_or_else(ChainError::overflow)?;
         let decimals = self.network.native.decimals;
         if wallet.balance < needed {
             return Err(ChainError::Insufficient {
@@ -155,10 +157,8 @@ impl TonChain {
                 "the amount uses the wrong number of decimals",
             ));
         }
-        let ton = |address: &Address| matches!(address, Address::Ton { .. });
-        if !ton(&transfer.from) || !ton(&transfer.to) {
-            return Err(ChainError::Invalid("not a TON address"));
-        }
+        crate::cells::parts(&transfer.from)?;
+        crate::cells::parts(&transfer.to)?;
         Ok((transfer.asset.contract().copied(), decimals))
     }
 
@@ -203,7 +203,7 @@ impl TonChain {
             plan.deploy.then_some(&public),
         )?;
         let id = wallet::normalized(&message)
-            .map(|id| hex(&id))
+            .map(|id| hex::encode(&id))
             .ok_or(ChainError::Invalid("cannot encode the wallet message"))?;
         let bytes = BagOfCells::from_root(message)
             .serialize(true)
@@ -216,7 +216,7 @@ impl TonChain {
 
     pub(super) fn decode_signed(&self, signed: &Signed) -> Result<Decoded, ChainError> {
         let parsed = wallet::parse(&signed.bytes)?;
-        if hex(&parsed.id) != signed.id.as_str() {
+        if hex::encode(&parsed.id) != signed.id.as_str() {
             return Err(ChainError::Mismatch("the transaction id"));
         }
         let contract = parsed.order.contract;
@@ -311,21 +311,23 @@ pub(crate) fn estimate(
     let external = wallet::external(order, &[0; 64], deploy.then_some(&[0; 32]))?;
     let import = settings
         .forward_fee(size_without_root(&external))
-        .ok_or_else(overflow)?;
+        .ok_or_else(ChainError::overflow)?;
     let forward = settings
         .forward_fee(wallet::transfer_size(order)?)
-        .ok_or_else(overflow)?;
-    let due = u64::try_from(wallet.due).map_err(|_| overflow())?;
+        .ok_or_else(ChainError::overflow)?;
+    let due = u64::try_from(wallet.due).map_err(|_| ChainError::overflow())?;
     let storage = prices
         .fee((wallet.bits, wallet.cells), wallet.last_paid, now)
         .and_then(|fee| fee.checked_add(due))
-        .ok_or_else(overflow)?;
+        .ok_or_else(ChainError::overflow)?;
     Ok(Estimate {
         compute: settings
             .gas_fee(wallet::transfer_gas(order.contract))
-            .ok_or_else(overflow)?,
+            .ok_or_else(ChainError::overflow)?,
         storage,
-        forwarding: import.checked_add(forward).ok_or_else(overflow)?,
+        forwarding: import
+            .checked_add(forward)
+            .ok_or_else(ChainError::overflow)?,
     })
 }
 
@@ -339,7 +341,7 @@ fn leave_nothing(
     order.nano = wallet.balance;
     let mut fees = estimate(order, deploy, wallet, prices, now)?;
     for _ in 0..2 {
-        let own = U256::from(fees.expected().ok_or_else(overflow)?);
+        let own = U256::from(fees.expected().ok_or_else(ChainError::overflow)?);
         order.nano = wallet.balance.saturating_sub(own);
         fees = estimate(order, deploy, wallet, prices, now)?;
     }
@@ -352,16 +354,6 @@ fn prices(config: &Config) -> Result<(Settings, Storage), ChainError> {
         config.settings().ok_or_else(unreadable)?,
         config.storage().ok_or_else(unreadable)?,
     ))
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
-fn overflow() -> ChainError {
-    ChainError::Invalid("fee overflow")
 }
 
 #[cfg(test)]
@@ -632,7 +624,7 @@ mod tests {
         parsed.signature[0] ^= 1;
         let message =
             wallet::external(&parsed.order, &parsed.signature, parsed.public_key.as_ref()).unwrap();
-        signed.id = TxId::new(hex(&wallet::normalized(&message).unwrap())).unwrap();
+        signed.id = TxId::new(hex::encode(&wallet::normalized(&message).unwrap())).unwrap();
         signed.bytes = BagOfCells::from_root(message).serialize(true).unwrap();
         assert!(matches!(ton.decode(&signed), Err(ChainError::Invalid(_))));
     }
@@ -653,7 +645,7 @@ mod tests {
         let signature = stranger.sign(digest.as_slice()).to_bytes();
         let message = wallet::external(&ours.order, &signature, Some(&theirs)).unwrap();
         let signed = Signed {
-            id: TxId::new(hex(&wallet::normalized(&message).unwrap())).unwrap(),
+            id: TxId::new(hex::encode(&wallet::normalized(&message).unwrap())).unwrap(),
             bytes: BagOfCells::from_root(message).serialize(true).unwrap(),
         };
         assert!(matches!(ton.decode(&signed), Err(ChainError::Invalid(_))));

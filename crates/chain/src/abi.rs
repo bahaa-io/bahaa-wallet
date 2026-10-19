@@ -1,5 +1,28 @@
+use ruint::aliases::U256;
+
 const WORD: usize = 32;
 const MAX_TEXT: usize = 256;
+const TRANSFER: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
+const TRANSFER_LEN: usize = 4 + WORD + WORD;
+
+pub const TRANSFER_EVENT: &str = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+pub fn transfer_data(to: &[u8; 20], units: U256) -> Vec<u8> {
+    let mut data = Vec::with_capacity(TRANSFER_LEN);
+    data.extend_from_slice(&TRANSFER);
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(to);
+    data.extend_from_slice(&units.to_be_bytes::<32>());
+    data
+}
+
+pub fn parse_transfer(data: &[u8]) -> Option<([u8; 20], U256)> {
+    if data.len() != TRANSFER_LEN || data[..4] != TRANSFER || data[4..16] != [0u8; 12] {
+        return None;
+    }
+    let to: [u8; 20] = data[16..36].try_into().ok()?;
+    Some((to, U256::from_be_slice(&data[36..])))
+}
 
 pub fn abi_text(data: &[u8]) -> Option<String> {
     if data.len() == WORD {

@@ -19,10 +19,10 @@ k256.workspace = true
 reqwest.workspace = true
 ruint.workspace = true
 serde_json.workspace = true
-sha3.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+sha3.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "time"] }
 
 [lints]

@@ -30,10 +30,7 @@ fn on(ton: &bahaa_config::Network, protocol: Option<Protocol>) -> TonChain {
 }
 
 fn unhex(text: &str) -> Vec<u8> {
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
-        .collect()
+    bahaa_types::hex::decode(text.trim().trim_start_matches("0x")).unwrap()
 }
 
 #[tokio::test]

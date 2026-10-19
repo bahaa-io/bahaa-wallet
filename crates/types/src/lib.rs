@@ -1,6 +1,7 @@
 mod address;
 mod amount;
 mod asset;
+pub mod hex;
 mod ids;
 mod price;
 mod text;

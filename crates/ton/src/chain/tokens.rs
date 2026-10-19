@@ -9,7 +9,6 @@ use crate::fees::{Config, Settings};
 use crate::wallet::{self, Order, Token};
 
 const PROBE: u64 = 100_000_000;
-const MAX_LIBRARIES: usize = 4;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Flow {
@@ -75,12 +74,12 @@ impl TonChain {
         let attachment = PROBE
             .checked_sub(probe.refund)
             .and_then(|need| need.checked_mul(2))
-            .ok_or_else(overflow)?;
+            .ok_or_else(ChainError::overflow)?;
         order.nano = U256::from(attachment);
         let flow = self.flow(order, &parties, &run, &mut libraries).await?;
         let spent = i128::from(attachment) - i128::from(flow.refund) - flow.adjustment
             + i128::from(flow.refund_fees);
-        u64::try_from(spent).map_err(|_| overflow())
+        u64::try_from(spent).map_err(|_| ChainError::overflow())
     }
 
     async fn flow(
@@ -90,7 +89,7 @@ impl TonChain {
         run: &Run<'_>,
         libraries: &mut Vec<Vec<u8>>,
     ) -> Result<Flow, ChainError> {
-        for _ in 0..=MAX_LIBRARIES {
+        for _ in 0..=crate::vm::MAX_LIBRARIES {
             let followed = {
                 let emulator = Emulator::new(run.params, libraries, run.settings, run.now)
                     .ok_or_else(|| {
@@ -165,7 +164,7 @@ fn follow(
                 Emulated::Done(hop) => hop,
                 Emulated::Missing(hash) => return Ok(Followed::Missing(hash)),
             };
-            flow.refund = u64::try_from(value).map_err(|_| overflow())?;
+            flow.refund = u64::try_from(value).map_err(|_| ChainError::overflow())?;
             flow.refund_fees = back.fees;
         }
     }
@@ -183,10 +182,6 @@ fn refused(contract: &str, hop: &Hop) -> ChainError {
         Some(code) => format!("{contract} would refuse this transfer with exit code {code}"),
         None => format!("{contract} would refuse this transfer"),
     })
-}
-
-fn overflow() -> ChainError {
-    ChainError::Invalid("fee overflow")
 }
 
 #[cfg(test)]

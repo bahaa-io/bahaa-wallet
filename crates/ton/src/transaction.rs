@@ -12,7 +12,6 @@ use crate::wallet;
 pub(crate) const MAX_LISTED: u32 = 16;
 const TRANSACTION: u8 = 0b0111;
 const ORDINARY: u8 = 0;
-const COMMENT: u32 = 0;
 const ENCRYPTED_COMMENT: u32 = 0x2167_da4b;
 pub(crate) const INTERNAL_TRANSFER: u32 = 0x178d_4519;
 
@@ -364,7 +363,7 @@ fn plain(body: &Cell) -> bool {
         || body
             .parser()
             .load_u32(32)
-            .is_ok_and(|op| op == COMMENT || op == ENCRYPTED_COMMENT)
+            .is_ok_and(|op| op == comment::COMMENT || op == ENCRYPTED_COMMENT)
 }
 
 impl Transaction {
@@ -467,11 +466,7 @@ mod tests {
     const REAL: &str = include_str!("../tests/fixtures/transaction.txt");
 
     fn unhex(text: &str) -> Vec<u8> {
-        let text = text.trim();
-        (0..text.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
-            .collect()
+        bahaa_types::hex::decode(text.trim().trim_start_matches("0x")).unwrap()
     }
 
     fn bytes32(text: &str) -> [u8; 32] {
@@ -894,11 +889,11 @@ mod tests {
         let plain = [
             PLAIN,
             Sent {
-                body: Body::Inline(COMMENT),
+                body: Body::Inline(comment::COMMENT),
                 ..PLAIN
             },
             Sent {
-                body: Body::Referenced(Some(COMMENT)),
+                body: Body::Referenced(Some(comment::COMMENT)),
                 ..PLAIN
             },
             Sent {

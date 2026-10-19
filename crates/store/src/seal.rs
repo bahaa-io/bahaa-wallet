@@ -1,5 +1,4 @@
 use std::fmt;
-use std::fmt::Write as _;
 
 use chacha20poly1305::aead::{AeadInOut, KeyInit};
 use chacha20poly1305::{Tag, XChaCha20Poly1305, XNonce};
@@ -29,14 +28,7 @@ impl StoreKey {
         mac.update(table.as_bytes());
         mac.update(&[0]);
         mac.update(key.as_bytes());
-        Ok(mac
-            .finalize()
-            .into_bytes()
-            .iter()
-            .fold(String::with_capacity(64), |mut out, byte| {
-                let _ = write!(out, "{byte:02x}");
-                out
-            }))
+        Ok(bahaa_types::hex::encode(&mac.finalize().into_bytes()))
     }
 
     pub(crate) fn seal(

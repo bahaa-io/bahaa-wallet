@@ -1,4 +1,3 @@
-use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +12,7 @@ use tokio::time::Instant;
 
 use super::{EngineError, Event, Notice, Reply, Worker};
 use crate::caution::{self, Caution};
-use crate::chains::{self, AnyChain, AnyPlan};
+use crate::chains::{AnyChain, AnyPlan};
 use crate::{KeyringError, WalletId};
 
 const MAX_DRAFTS: usize = 8;
@@ -156,7 +155,7 @@ impl Worker {
         let bytes = tx
             .raw
             .as_deref()
-            .and_then(from_hex)
+            .and_then(bahaa_types::hex::decode)
             .filter(|_| tx.status.is_open())
             .ok_or(ChainError::Invalid(
                 "only a transfer still on its way can be replaced",
@@ -364,10 +363,10 @@ impl Worker {
             fee_max: draft.fee.max(),
             fee_paid: None,
             block: None,
-            created_at: chains::now(),
+            created_at: bahaa_chain::now(),
             expires_at: decoded.expires_at,
             status: SentStatus::Sending,
-            raw: Some(to_hex(&signed.bytes)),
+            raw: Some(bahaa_types::hex::encode(&signed.bytes)),
             transaction: None,
             memo: decoded.memo,
             replaces: draft.replaces.clone(),
@@ -439,7 +438,7 @@ impl Worker {
         let chains = Arc::clone(&self.chains);
         let notices = self.notices_tx.clone();
         self.tracking = Some(tokio::spawn(async move {
-            let now = chains::now();
+            let now = bahaa_chain::now();
             let jobs = open
                 .iter()
                 .map(|(chain, tx)| track(&chains[*chain], tx, now));
@@ -602,7 +601,7 @@ fn step(tx: &SentTx, status: TxStatus, now: u64) -> Step {
             };
             if !gone {
                 let expired = tx.expires_at.is_some_and(|expires| now >= expires);
-                return match tx.raw.as_deref().and_then(from_hex) {
+                return match tx.raw.as_deref().and_then(bahaa_types::hex::decode) {
                     Some(bytes) if !expired => Step::Rebroadcast(bytes),
                     _ => Step::Keep,
                 };
@@ -625,25 +624,6 @@ fn failure(reason: &str) -> String {
     } else {
         reason
     }
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
-}
-
-fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
-        .collect()
 }
 
 #[cfg(test)]
@@ -748,16 +728,5 @@ mod tests {
         };
         assert_eq!(next.status, SentStatus::Pending);
         assert_eq!(step(&next, TxStatus::Pending, 3), Step::Keep);
-    }
-
-    #[test]
-    fn signed_bytes_survive_the_hex_round_trip() {
-        let bytes = vec![0x00, 0x02, 0xf8, 0xff, 0x7a];
-        assert_eq!(to_hex(&bytes), "0002f8ff7a");
-        assert_eq!(from_hex(&to_hex(&bytes)), Some(bytes));
-        for bad in ["0", "zz", "0x02", "02f"] {
-            assert_eq!(from_hex(bad), None, "{bad}");
-        }
-        assert_eq!(from_hex(""), Some(Vec::new()));
     }
 }

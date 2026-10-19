@@ -1,20 +1,17 @@
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::sync::{Mutex, PoisonError};
 
 use alloy_consensus::TxEip1559;
 use alloy_primitives::TxKind;
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, Failure, FeeItem, FeeLine, FeeQuote, MAX_MEMO, Replace,
-    Signed, Transfer, TxId, TxStatus, abi_text,
+    Signed, Transfer, TxId, TxStatus, abi_text, amount, parse_transfer, transfer_data,
 };
 use bahaa_config::{ChainKind, Coin, Network};
-use bahaa_crypto::{DerivationPath, Seed};
+use bahaa_crypto::{DerivationPath, Seed, secp256k1_address};
 use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS, is_plain_text};
-use k256::elliptic_curve::sec1::ToEncodedPoint;
 use ruint::aliases::U256;
 use serde_json::{Value, json};
-use sha3::{Digest, Keccak256};
 
 mod logs;
 mod replace;
@@ -121,7 +118,7 @@ impl EvmChain {
             .as_str()
             .and_then(|text| text.strip_prefix("0x"))
             .and_then(|digits| alloy_primitives::hex::decode(digits).ok())
-            .ok_or_else(|| ChainError::Network("an endpoint sent a malformed reply".to_owned()))?;
+            .ok_or_else(ChainError::malformed)?;
         if data.is_empty() {
             return Err(ChainError::Invalid("this address is not a token contract"));
         }
@@ -219,7 +216,8 @@ impl EvmChain {
         let Some(left) = balance.checked_sub(max).filter(|left| !left.is_zero()) else {
             return Err(insufficient(
                 self.network.native.symbol.clone(),
-                max.checked_add(U256::from(1u8)).ok_or_else(overflow)?,
+                max.checked_add(U256::from(1u8))
+                    .ok_or_else(ChainError::overflow)?,
                 balance,
                 self.network.native.decimals,
             )?);
@@ -249,7 +247,7 @@ impl EvmChain {
             Some(contract) => Route {
                 call_to: contract,
                 value: U256::ZERO,
-                data: tx::transfer_data(&to, units),
+                data: transfer_data(&to, units),
                 token: Some(contract),
                 decimals: self.token_decimals(&contract).await?,
             },
@@ -291,7 +289,7 @@ impl EvmChain {
         let max_fee = base
             .checked_mul(U256::from(2u8))
             .and_then(|fee| fee.checked_add(tip))
-            .ok_or_else(overflow)?;
+            .ok_or_else(ChainError::overflow)?;
         self.priced((estimate, gas_limit), base, tip, max_fee)
     }
 
@@ -302,13 +300,16 @@ impl EvmChain {
         tip: U256,
         max_fee: U256,
     ) -> Result<Fees, ChainError> {
-        let price = base.checked_add(tip).ok_or_else(overflow)?.min(max_fee);
+        let price = base
+            .checked_add(tip)
+            .ok_or_else(ChainError::overflow)?
+            .min(max_fee);
         let max = U256::from(gas_limit)
             .checked_mul(max_fee)
-            .ok_or_else(overflow)?;
+            .ok_or_else(ChainError::overflow)?;
         let expected = U256::from(estimate)
             .checked_mul(price)
-            .ok_or_else(overflow)?;
+            .ok_or_else(ChainError::overflow)?;
         Ok(Fees {
             max_fee,
             tip,
@@ -351,7 +352,7 @@ impl EvmChain {
         let units = transfer.amount.units();
         match route.token {
             None => {
-                let needed = units.checked_add(max).ok_or_else(overflow)?;
+                let needed = units.checked_add(max).ok_or_else(ChainError::overflow)?;
                 if native < needed {
                     return Err(insufficient(
                         native_symbol(),
@@ -398,8 +399,11 @@ struct Fees {
 
 impl Fees {
     fn add(&mut self, item: FeeItem, expected: U256, max: U256) -> Result<(), ChainError> {
-        self.expected = self.expected.checked_add(expected).ok_or_else(overflow)?;
-        self.max = self.max.checked_add(max).ok_or_else(overflow)?;
+        self.expected = self
+            .expected
+            .checked_add(expected)
+            .ok_or_else(ChainError::overflow)?;
+        self.max = self.max.checked_add(max).ok_or_else(ChainError::overflow)?;
         self.lines.push((item, expected));
         Ok(())
     }
@@ -468,8 +472,9 @@ impl Chain for EvmChain {
             chain_id: self.chain_id,
             nonce,
             gas_limit,
-            max_fee_per_gas: u128::try_from(fees.max_fee).map_err(|_| overflow())?,
-            max_priority_fee_per_gas: u128::try_from(fees.tip).map_err(|_| overflow())?,
+            max_fee_per_gas: u128::try_from(fees.max_fee).map_err(|_| ChainError::overflow())?,
+            max_priority_fee_per_gas: u128::try_from(fees.tip)
+                .map_err(|_| ChainError::overflow())?,
             to: TxKind::Call(route.call_to.into()),
             value: route.value,
             input: route.data.clone().into(),
@@ -500,7 +505,7 @@ impl Chain for EvmChain {
 
     fn sign(&self, plan: &EvmPlan, seed: &Seed) -> Result<Signed, ChainError> {
         let key = key(seed, plan.transfer.account)?;
-        if Address::Evm(address_of(&key.public_key())) != plan.transfer.from {
+        if Address::Evm(secp256k1_address(&key.public_key())) != plan.transfer.from {
             return Err(ChainError::Invalid(
                 "this seed does not own the sending account",
             ));
@@ -529,7 +534,7 @@ impl Chain for EvmChain {
                 self.native(parsed.tx.value)?,
             )
         } else {
-            let (to, units) = tx::parse_transfer(&parsed.tx.input)
+            let (to, units) = parse_transfer(&parsed.tx.input)
                 .ok_or(ChainError::Invalid("not a plain token transfer"))?;
             if !parsed.tx.value.is_zero() {
                 return Err(ChainError::Invalid(
@@ -608,7 +613,7 @@ impl Chain for EvmChain {
         let gas_used = field("gasUsed")?;
         let gas_fee = gas_used
             .checked_mul(field("effectiveGasPrice")?)
-            .ok_or_else(overflow)?;
+            .ok_or_else(ChainError::overflow)?;
         if receipt["status"] != "0x1" {
             return Ok(TxStatus::Failed("the transaction reverted".to_owned()));
         }
@@ -650,7 +655,9 @@ impl Chain for EvmChain {
 }
 
 pub fn derive(seed: &Seed, account: u32) -> Result<Address, ChainError> {
-    Ok(Address::Evm(address_of(&key(seed, account)?.public_key())))
+    Ok(Address::Evm(secp256k1_address(
+        &key(seed, account)?.public_key(),
+    )))
 }
 
 fn key(seed: &Seed, account: u32) -> Result<k256::SecretKey, ChainError> {
@@ -685,18 +692,6 @@ fn memo(input: &[u8]) -> Option<String> {
     (!text.is_empty() && is_plain_text(text, MAX_MEMO)).then(|| text.to_owned())
 }
 
-fn overflow() -> ChainError {
-    ChainError::Invalid("fee overflow")
-}
-
-pub(crate) fn address_of(key: &k256::PublicKey) -> [u8; 20] {
-    let point = key.to_encoded_point(false);
-    let hash = Keccak256::digest(&point.as_bytes()[1..]);
-    let mut out = [0u8; 20];
-    out.copy_from_slice(&hash[12..]);
-    out
-}
-
 pub(crate) fn bytes(address: &Address) -> Result<[u8; 20], ChainError> {
     match address {
         Address::Evm(bytes) => Ok(*bytes),
@@ -705,18 +700,11 @@ pub(crate) fn bytes(address: &Address) -> Result<[u8; 20], ChainError> {
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::from("0x"), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
+    format!("0x{}", bahaa_types::hex::encode(bytes))
 }
 
 fn word(address: &[u8; 20]) -> String {
     format!("{:0>64}", &hex(address)[2..])
-}
-
-fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {
-    Amount::new(units, decimals).map_err(|_| ChainError::Invalid("impossible decimals"))
 }
 
 #[cfg(fuzzing)]
@@ -829,7 +817,7 @@ mod tests {
         );
         assert_eq!(native.asset.to_string(), "bsc");
         let usdt = bytes(&bsc.network.tokens[0].contract).unwrap();
-        let data = tx::transfer_data(&[9; 20], U256::from(25u64) * U256::from(10u64.pow(17)));
+        let data = transfer_data(&[9; 20], U256::from(25u64) * U256::from(10u64.pow(17)));
         let token = bsc
             .decode(
                 &bsc.sign(&plan(&bsc, usdt, U256::ZERO, data), &seed())
@@ -847,13 +835,13 @@ mod tests {
     fn refuses_to_decode_what_is_not_a_plain_transfer() {
         let bsc = chain("bsc");
         let usdt = bytes(&bsc.network.tokens[0].contract).unwrap();
-        let mut approve = tx::transfer_data(&[9; 20], U256::from(1u8));
+        let mut approve = transfer_data(&[9; 20], U256::from(1u8));
         approve[..4].copy_from_slice(&[0x09, 0x5e, 0xa7, 0xb3]);
         let signed = bsc
             .sign(&plan(&bsc, usdt, U256::ZERO, approve), &seed())
             .unwrap();
         assert!(matches!(bsc.decode(&signed), Err(ChainError::Invalid(_))));
-        let both = tx::transfer_data(&[9; 20], U256::from(1u8));
+        let both = transfer_data(&[9; 20], U256::from(1u8));
         let signed = bsc
             .sign(&plan(&bsc, usdt, U256::from(1u8), both), &seed())
             .unwrap();

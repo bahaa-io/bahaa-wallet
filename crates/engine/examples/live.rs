@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, Write as _};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use bahaa_config::{Network, Registry};
 use bahaa_crypto::{ExposeSecret, SecretString};
@@ -13,7 +13,7 @@ use bahaa_engine::{
     Replace, SendRequest, SentStatus, SentTx, Spend, WalletId,
 };
 use bahaa_market::Status;
-use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, TonContract, TonForm};
+use bahaa_types::{Address, Amount, AssetId, NetworkId, TonContract, TonForm};
 use tokio::sync::broadcast::{self, error::RecvError};
 
 type Outcome<T = ()> = Result<T, Box<dyn Error>>;
@@ -110,7 +110,7 @@ async fn create() -> Outcome {
     private_dir(&dir)?;
     let mut bytes = [0u8; 24];
     getrandom::fill(&mut bytes).map_err(|_| "no randomness")?;
-    let password = hex(&bytes);
+    let password = bahaa_types::hex::encode(&bytes);
     private_file(&dir.join(PASSWORD))?.write_all(password.as_bytes())?;
     let engine = Engine::start(EngineConfig::new(&dir))?;
     engine.create(SecretString::from(password)).await?;
@@ -317,13 +317,13 @@ impl Live {
                     println!(
                         "{label}.{}  {:<5} {shown}  ({id})",
                         account.index,
-                        family(account.family)
+                        account.family.as_str()
                     );
                 }
                 None => println!(
                     "{label}.{}  {:<5} {}",
                     account.index,
-                    family(account.family),
+                    account.family.as_str(),
                     account.address
                 ),
             }
@@ -332,7 +332,7 @@ impl Live {
     }
 
     async fn fresh(&self) -> Outcome {
-        let started = now();
+        let started = bahaa_chain::now();
         let mut portfolio = self.engine.portfolio();
         self.engine.refresh();
         tokio::time::timeout(FRESH, async {
@@ -817,25 +817,4 @@ async fn settle(events: &mut broadcast::Receiver<Event>, sent: &SentTx) -> Outco
         Ok(result) => Ok(result?),
         Err(_) => Err("still not settled, run track later".into()),
     }
-}
-
-fn family(family: ChainFamily) -> &'static str {
-    match family {
-        ChainFamily::Evm => "evm",
-        ChainFamily::Tron => "tron",
-        ChainFamily::Ton => "ton",
-    }
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{byte:02x}"));
-        out
-    })
 }

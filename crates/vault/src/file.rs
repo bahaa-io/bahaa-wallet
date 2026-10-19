@@ -1,4 +1,3 @@
-use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -41,11 +40,8 @@ fn temporary_path(path: &Path) -> Result<PathBuf, VaultError> {
         .to_string_lossy();
     let mut random = [0u8; 8];
     getrandom::fill(&mut random).map_err(|_| VaultError::Randomness)?;
-    let suffix = random.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    });
-    Ok(path.with_file_name(format!(".{name}.{suffix}.tmp")))
+    let suffix = u64::from_le_bytes(random);
+    Ok(path.with_file_name(format!(".{name}.{suffix:016x}.tmp")))
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), VaultError> {

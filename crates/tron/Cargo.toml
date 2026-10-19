@@ -18,7 +18,6 @@ reqwest.workspace = true
 ruint.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-sha3.workspace = true
 tokio = { workspace = true, features = ["time"] }
 url.workspace = true
 

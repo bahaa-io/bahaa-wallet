@@ -1,14 +1,13 @@
-use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId};
+use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TRANSFER_EVENT, TxId};
 use bahaa_config::Feature;
-use bahaa_types::{Address, AssetId};
+use bahaa_types::{Address, AssetId, hex};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
-use super::{TronChain, amount, bytes, malformed, now_ms};
-use crate::http::{hex, node_text};
+use super::{TronChain, amount, bytes, now_ms};
+use crate::http::node_text;
 use crate::tx;
 
-const TRANSFER_TOPIC: &str = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const REACH_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 const PAGE: u32 = 200;
 const PAGES: usize = 5;
@@ -143,15 +142,15 @@ impl TronChain {
         {
             return None;
         }
-        let raw = crate::http::unhex(entry["raw_data_hex"].as_str()?)?;
+        let raw = hex::decode(entry["raw_data_hex"].as_str()?)?;
         let coins = tx::coins_in(&raw)?;
         let listed = entry["txID"]
             .as_str()
-            .is_some_and(|text| text.eq_ignore_ascii_case(&hex(&coins.id)));
+            .is_some_and(|text| text.eq_ignore_ascii_case(&hex::encode(&coins.id)));
         if !listed || !side.ours(&coins.from, &coins.to, owner) {
             return None;
         }
-        let id = TxId::new(hex(&coins.id)).ok()?;
+        let id = TxId::new(hex::encode(&coins.id)).ok()?;
         let (from, to) = (Address::Tron(coins.from), Address::Tron(coins.to));
         let asset = AssetId::Native(self.network.id.clone());
         let amount = amount(U256::from(coins.sun), self.network.native.decimals).ok()?;
@@ -204,9 +203,11 @@ impl TronChain {
             let id = entry["transaction_id"]
                 .as_str()
                 .filter(|id| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                .ok_or_else(malformed)?
+                .ok_or_else(ChainError::malformed)?
                 .to_ascii_lowercase();
-            let time = entry["block_timestamp"].as_u64().ok_or_else(malformed)?;
+            let time = entry["block_timestamp"]
+                .as_u64()
+                .ok_or_else(ChainError::malformed)?;
             if !listed.iter().any(|(known, _)| *known == id) {
                 listed.push((id, time));
             }
@@ -222,8 +223,13 @@ impl TronChain {
                 .http
                 .post("wallet/gettransactioninfobyid", json!({"value": id}))
                 .await?;
-            let block = info["blockNumber"].as_u64().ok_or_else(malformed)?;
-            let time = info["blockTimeStamp"].as_u64().ok_or_else(malformed)? / 1000;
+            let block = info["blockNumber"]
+                .as_u64()
+                .ok_or_else(ChainError::malformed)?;
+            let time = info["blockTimeStamp"]
+                .as_u64()
+                .ok_or_else(ChainError::malformed)?
+                / 1000;
             for (index, from, to, units) in transfers(&info, &id, contract, owner)?
                 .into_iter()
                 .filter(|(_, from, to, _)| side.ours(from, to, owner))
@@ -288,7 +294,7 @@ impl TronChain {
                     node_text(&reply["error"])
                 )));
             }
-            let page = reply["data"].as_array().ok_or_else(malformed)?;
+            let page = reply["data"].as_array().ok_or_else(ChainError::malformed)?;
             entries.extend(page.iter().cloned());
             fingerprint = reply["meta"]["fingerprint"]
                 .as_str()
@@ -330,7 +336,9 @@ fn capped(listed: Vec<(String, u64)>) -> (Vec<String>, Option<u64>) {
 
 fn latest(entries: &[Value]) -> Result<Option<u64>, ChainError> {
     entries.iter().try_fold(None, |latest: Option<u64>, entry| {
-        let time = entry["block_timestamp"].as_u64().ok_or_else(malformed)?;
+        let time = entry["block_timestamp"]
+            .as_u64()
+            .ok_or_else(ChainError::malformed)?;
         Ok(Some(latest.map_or(time, |latest| latest.max(time))))
     })
 }
@@ -366,12 +374,12 @@ fn transfers(
     let Some(logs) = info.get("log") else {
         return Ok(Vec::new());
     };
-    let logs = logs.as_array().ok_or_else(malformed)?;
+    let logs = logs.as_array().ok_or_else(ChainError::malformed)?;
     let mut found = Vec::new();
     for (index, log) in logs.iter().enumerate() {
         if let Some((from, to, units)) = transfer_log(log, contract, owner) {
             found.push((
-                u64::try_from(index).map_err(|_| malformed())?,
+                u64::try_from(index).map_err(|_| ChainError::malformed())?,
                 from,
                 to,
                 units,
@@ -392,14 +400,14 @@ fn transfer_log(
     } else {
         emitter
     };
-    if !emitter.eq_ignore_ascii_case(&hex(contract)) {
+    if !emitter.eq_ignore_ascii_case(&hex::encode(contract)) {
         return None;
     }
     let topics = log["topics"].as_array()?;
     let [kind, from, to] = topics.as_slice() else {
         return None;
     };
-    if !same(kind, TRANSFER_TOPIC) {
+    if !same(kind, TRANSFER_EVENT) {
         return None;
     }
     let (from, to) = (
@@ -428,7 +436,7 @@ fn padded_address(word: &str) -> Option<[u8; 20]> {
     if !digits(word, 64) || !word[..24].bytes().all(|byte| byte == b'0') {
         return None;
     }
-    let bytes = crate::http::unhex(&word[24..])?;
+    let bytes = hex::decode(&word[24..])?;
     bytes.try_into().ok()
 }
 
@@ -441,7 +449,7 @@ pub(super) fn fuzz(value: &Value) {
     let contract = log["address"]
         .as_str()
         .map(|text| text.strip_prefix("41").unwrap_or(text))
-        .and_then(crate::http::unhex)
+        .and_then(hex::decode)
         .and_then(|bytes| <[u8; 20]>::try_from(bytes).ok())
         .unwrap_or_default();
     for topic in [1, 2] {
@@ -452,7 +460,7 @@ pub(super) fn fuzz(value: &Value) {
         let id = value["id"].as_str().unwrap_or_default();
         let _ = transfers(value, id, &contract, &owner);
     }
-    if let Some(raw) = value["raw_data_hex"].as_str().and_then(crate::http::unhex) {
+    if let Some(raw) = value["raw_data_hex"].as_str().and_then(hex::decode) {
         let _ = tx::coins_in(&raw);
     }
     let _ = fingerprint_ok(value["fingerprint"].as_str().unwrap_or_default());
@@ -468,8 +476,8 @@ mod tests {
 
     fn log() -> Value {
         json!({
-            "address": hex(&TOKEN),
-            "topics": [TRANSFER_TOPIC, format!("{:0>64}", hex(&SENDER)), format!("{:0>64}", hex(&US))],
+            "address": hex::encode(&TOKEN),
+            "topics": [TRANSFER_EVENT, format!("{:0>64}", hex::encode(&SENDER)), format!("{:0>64}", hex::encode(&US))],
             "data": format!("{:064x}", 8_509_335)
         })
     }
@@ -487,12 +495,12 @@ mod tests {
     #[test]
     fn reads_transfers_to_and_from_us_from_the_node_receipt() {
         let mut other = log();
-        other["topics"][2] = json!(format!("{:0>64}", hex(&SENDER)));
+        other["topics"][2] = json!(format!("{:0>64}", hex::encode(&SENDER)));
         let mut prefixed = log();
-        prefixed["address"] = json!(format!("41{}", hex(&TOKEN)));
+        prefixed["address"] = json!(format!("41{}", hex::encode(&TOKEN)));
         let mut ours = log();
-        ours["topics"][1] = json!(format!("{:0>64}", hex(&US)));
-        ours["topics"][2] = json!(format!("{:0>64}", hex(&SENDER)));
+        ours["topics"][1] = json!(format!("{:0>64}", hex::encode(&US)));
+        ours["topics"][2] = json!(format!("{:0>64}", hex::encode(&SENDER)));
         let found = transfers(
             &info(&[other, log(), prefixed, ours]),
             &"AB".repeat(32),
@@ -514,27 +522,27 @@ mod tests {
     #[test]
     fn ignores_logs_that_are_not_exactly_a_transfer_of_this_token() {
         let edits: [(&str, Value); 6] = [
-            ("address", json!(hex(&[0x11; 20]))),
+            ("address", json!(hex::encode(&[0x11; 20]))),
             ("data", json!(format!("{:064x}", 0))),
             ("data", json!("01")),
             (
                 "topics",
-                json!([TRANSFER_TOPIC, format!("{:0>64}", hex(&SENDER))]),
+                json!([TRANSFER_EVENT, format!("{:0>64}", hex::encode(&SENDER))]),
             ),
             (
                 "topics",
                 json!([
                     "00".repeat(32),
-                    format!("{:0>64}", hex(&SENDER)),
-                    format!("{:0>64}", hex(&US))
+                    format!("{:0>64}", hex::encode(&SENDER)),
+                    format!("{:0>64}", hex::encode(&US))
                 ]),
             ),
             (
                 "topics",
                 json!([
-                    TRANSFER_TOPIC,
+                    TRANSFER_EVENT,
                     "11".repeat(32),
-                    format!("{:0>64}", hex(&US))
+                    format!("{:0>64}", hex::encode(&US))
                 ]),
             ),
         ];

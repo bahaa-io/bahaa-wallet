@@ -4,7 +4,7 @@ use bahaa_chain::{Chain, ChainError, FeeQuote, Replace, Signed, Transfer};
 use bahaa_types::{Address, Amount, AssetId};
 use ruint::aliases::U256;
 
-use super::{EvmChain, EvmPlan, PLAIN_GAS, Route, bytes, overflow};
+use super::{EvmChain, EvmPlan, PLAIN_GAS, Route, bytes};
 use crate::tx;
 
 const BUMP: (u128, u128) = (9, 8);
@@ -60,7 +60,8 @@ impl EvmChain {
                     from: Address::Evm(from),
                     to: Address::Evm(from),
                     asset: native,
-                    amount: Amount::zero(self.network.native.decimals).map_err(|_| overflow())?,
+                    amount: Amount::zero(self.network.native.decimals)
+                        .map_err(|_| ChainError::overflow())?,
                     max: false,
                     memo: None,
                 };
@@ -76,15 +77,16 @@ impl EvmChain {
         let max_fee = base
             .checked_mul(U256::from(2u8))
             .and_then(|fee| fee.checked_add(tip))
-            .ok_or_else(overflow)?
+            .ok_or_else(ChainError::overflow)?
             .max(bumped(old.tx.max_fee_per_gas)?);
         let mut fees = self.priced((estimate, gas_limit), base, tip, max_fee)?;
         let replacement = TxEip1559 {
             chain_id: self.chain_id,
             nonce: old.tx.nonce,
             gas_limit,
-            max_fee_per_gas: u128::try_from(fees.max_fee).map_err(|_| overflow())?,
-            max_priority_fee_per_gas: u128::try_from(fees.tip).map_err(|_| overflow())?,
+            max_fee_per_gas: u128::try_from(fees.max_fee).map_err(|_| ChainError::overflow())?,
+            max_priority_fee_per_gas: u128::try_from(fees.tip)
+                .map_err(|_| ChainError::overflow())?,
             to: TxKind::Call(route.call_to.into()),
             value: route.value,
             input: route.data.clone().into(),
@@ -110,7 +112,7 @@ fn bumped(old: u128) -> Result<U256, ChainError> {
         .checked_mul(BUMP.0)
         .map(|scaled| scaled / BUMP.1)
         .and_then(|raised| raised.checked_add(1))
-        .ok_or_else(overflow)?;
+        .ok_or_else(ChainError::overflow)?;
     Ok(U256::from(raised))
 }
 

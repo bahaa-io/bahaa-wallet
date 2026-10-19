@@ -23,7 +23,7 @@ impl TonChain {
         from: &Address,
         expires_at: Option<u64>,
     ) -> Result<TxStatus, ChainError> {
-        let wanted = message_id(id).ok_or(ChainError::Invalid("not a TON message id"))?;
+        let wanted = message(id).ok_or(ChainError::Invalid("not a TON message id"))?;
         let expires = expires_at.ok_or(ChainError::Invalid(
             "a TON transfer can only be tracked with its expiry",
         ))?;
@@ -133,7 +133,7 @@ impl TonChain {
         Ok(TxStatus::Confirmed {
             block: Some(first.lt),
             fee: Some(amount(paid, self.network.native.decimals)?),
-            transaction: Some(TxId::new(hex(&first.hash))?),
+            transaction: Some(TxId::new(hex::encode(&first.hash))?),
         })
     }
 }
@@ -164,17 +164,8 @@ fn unreadable() -> ChainError {
     ChainError::Network("a server sent an unreadable transaction".to_owned())
 }
 
-fn message_id(id: &TxId) -> Option<[u8; 32]> {
-    let text = id.as_str();
-    if text.len() != 64 {
-        return None;
-    }
-    (0..64)
-        .step_by(2)
-        .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
-        .collect::<Option<Vec<u8>>>()?
-        .try_into()
-        .ok()
+fn message(id: &TxId) -> Option<[u8; 32]> {
+    hex::decode_array(id.as_str())
 }
 
 #[cfg(test)]
@@ -183,7 +174,7 @@ mod tests {
 
     #[test]
     fn message_ids_are_sixty_four_hex_digits() {
-        let id = |text: String| message_id(&TxId::new(text).unwrap());
+        let id = |text: String| message(&TxId::new(text).unwrap());
         assert_eq!(id("ab".repeat(32)), Some([0xab; 32]));
         assert_eq!(id("ab".repeat(31)), None);
         assert_eq!(id("ab".repeat(33)), None);

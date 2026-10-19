@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId};
+use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId, amount, now};
 use bahaa_config::Feature;
 use bahaa_types::{Address, AssetId};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
-use super::{EvmChain, amount, bytes, hex, word};
+use super::{EvmChain, bytes, hex, word};
 use crate::rpc::quantity;
 
 const TRANSFER_TOPIC: &str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -228,12 +228,6 @@ fn plan(cursor: Option<ScanCursor>, head: u64, stale: bool) -> Option<Range> {
     }
 }
 
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
 fn parse(log: &Value, owner: &[u8; 20], side: Side, from: u64, until: u64) -> Option<Log> {
     if log["removed"].as_bool() == Some(true) {
         return None;
@@ -248,7 +242,7 @@ fn parse(log: &Value, owner: &[u8; 20], side: Side, from: u64, until: u64) -> Op
         return None;
     }
     let other = padded_address(topics[theirs].as_str()?)?;
-    let contract = decode20(digits(log["address"].as_str()?, 40)?)?;
+    let contract = bahaa_types::hex::decode_array(digits(log["address"].as_str()?, 40)?)?;
     let units = U256::from_str_radix(digits(log["data"].as_str()?, 64)?, 16).ok()?;
     let block = block_number(&log["blockNumber"]).ok()?;
     if units.is_zero() || !(from..=until).contains(&block) {
@@ -282,15 +276,7 @@ fn padded_address(text: &str) -> Option<[u8; 20]> {
     let digits = digits(text, 64)?;
     let (padding, address) = digits.split_at(24);
     padding.bytes().all(|byte| byte == b'0').then_some(())?;
-    decode20(address)
-}
-
-fn decode20(digits: &str) -> Option<[u8; 20]> {
-    let mut out = [0u8; 20];
-    for (slot, at) in out.iter_mut().zip((0..digits.len()).step_by(2)) {
-        *slot = u8::from_str_radix(digits.get(at..at + 2)?, 16).ok()?;
-    }
-    (digits.len() == 40).then_some(out)
+    bahaa_types::hex::decode_array(address)
 }
 
 fn block_number(value: &Value) -> Result<u64, ChainError> {

@@ -14,7 +14,7 @@ use bahaa_engine::{
     SentStatus, SentTx, Spend, WalletId,
 };
 use bahaa_types::{Address, Amount, ChainFamily};
-use common::{HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, USDT, config, result};
+use common::{HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, USDT, config, result, unhex};
 use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
 use tokio::sync::broadcast;
@@ -30,16 +30,11 @@ struct Ledger {
 
 type Shared = Arc<Mutex<Ledger>>;
 
-fn unhex(text: &str) -> Vec<u8> {
-    let digits = text.strip_prefix("0x").unwrap();
-    (0..digits.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).unwrap())
-        .collect()
-}
-
 fn hash_of(raw: &str) -> String {
-    format!("0x{}", common::hex(&Keccak256::digest(unhex(raw))))
+    format!(
+        "0x{}",
+        common::hex(&Keccak256::digest(unhex(raw.trim_start_matches("0x"))))
+    )
 }
 
 fn answer(ledger: &Shared, call: &Value) -> Value {

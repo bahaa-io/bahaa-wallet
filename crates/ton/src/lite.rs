@@ -18,7 +18,7 @@ use tokio::time::timeout;
 use url::Url;
 
 use crate::blocks::{self, Trust};
-use crate::cells::{Account, account};
+use crate::cells::{Account, account, account_at};
 use crate::fees::{Config, PARAMS};
 use crate::proof::{self, Proven};
 use crate::tl::{self, AccountState, Answer, BlockId, ConfigInfo};
@@ -120,7 +120,7 @@ impl Lite {
                     .flatten()
                     .find(|(listed, _)| listed == hash)
                     .map(|(_, data)| data)
-                    .ok_or_else(|| missing("a liteserver does not have a library"))
+                    .ok_or_else(|| Failure::unsupported("a liteserver does not have a library"))
                     .and_then(|data| proven_library(data, hash))
             },
         )
@@ -144,8 +144,9 @@ impl Lite {
             &tl::get_transactions(MAX_LISTED, workchain, &hash, from.1, &from.0),
             kept_history,
             |list| {
-                let list =
-                    list.ok_or_else(|| missing("a liteserver does not keep this history"))?;
+                let list = list.ok_or_else(|| {
+                    Failure::unsupported("a liteserver does not keep this history")
+                })?;
                 proven_transactions(&list.transactions, owner, from)
             },
         )
@@ -239,24 +240,24 @@ impl Lite {
             let key = servers
                 .keys
                 .get(endpoint.url.as_str())
-                .ok_or_else(|| retry("a liteserver has no key"))?;
+                .ok_or_else(|| Failure::retry("a liteserver has no key"))?;
             let address = endpoint
                 .url
                 .host_str()
                 .zip(endpoint.url.port())
-                .ok_or_else(|| retry("a liteserver has no address"))?;
+                .ok_or_else(|| Failure::retry("a liteserver has no address"))?;
             let connected = timeout(CONNECT, AdnlPeer::connect(key, address))
                 .await
-                .map_err(|_| unreachable("a liteserver did not answer in time"))?
-                .map_err(|_| unreachable("a liteserver refused the connection"))?;
+                .map_err(|_| Failure::unreachable("a liteserver did not answer in time"))?
+                .map_err(|_| Failure::unreachable("a liteserver refused the connection"))?;
             *peer = Some(connected);
         }
         let open = peer
             .as_mut()
-            .ok_or_else(|| retry("a liteserver connection closed"))?;
+            .ok_or_else(|| Failure::retry("a liteserver connection closed"))?;
         let info = exchange(open, &tl::get_masterchain_info(), tl::masterchain_info).await?;
         if info.zero_state != self.zero_state {
-            return Err(retry("a liteserver serves another TON network"));
+            return Err(Failure::retry("a liteserver serves another TON network"));
         }
         Ok(info.last)
     }
@@ -273,24 +274,28 @@ impl Lite {
         let mut known = self.trust.key();
         for _ in 0..MAX_ROUNDS {
             if last.seqno <= known.seqno {
-                return Err(retry("a liteserver is behind the trusted TON blocks"));
+                return Err(Failure::retry(
+                    "a liteserver is behind the trusted TON blocks",
+                ));
             }
             let proof = exchange(open, &tl::get_block_proof(&known, last), tl::block_proof).await?;
             let walk = blocks::walk(&known, last, &proof).map_err(|_| {
-                retry("a liteserver sent a block proof that validators did not sign")
+                Failure::retry("a liteserver sent a block proof that validators did not sign")
             })?;
             self.trust.reached(walk.key);
             known = walk.key;
             if let Some(reached) = walk.reached {
                 if !self.trust.current(reached.utime) {
-                    return Err(retry("a liteserver serves an outdated block"));
+                    return Err(Failure::retry("a liteserver serves an outdated block"));
                 }
                 self.trust
                     .authenticated(reached.block, reached.utime, Instant::now());
                 return Ok(reached.block);
             }
         }
-        Err(retry("a liteserver sent a block proof that does not end"))
+        Err(Failure::retry(
+            "a liteserver sent a block proof that does not end",
+        ))
     }
 
     async fn settled(
@@ -299,7 +304,7 @@ impl Lite {
         last: &BlockId,
     ) -> Result<BlockId, Failure<ChainError>> {
         let floor = self.trust.latest().map(|latest| latest.seqno);
-        let Some(seqno) = behind(last.seqno, floor, self.trust.newest(), now()) else {
+        let Some(seqno) = behind(last.seqno, floor, self.trust.newest(), bahaa_chain::now()) else {
             return Ok(*last);
         };
         let found = exchange(
@@ -310,7 +315,7 @@ impl Lite {
         .await?;
         let same_chain = found.workchain == last.workchain && found.shard == last.shard;
         if !same_chain || found.seqno != seqno {
-            return Err(retry("a liteserver answered with another block"));
+            return Err(Failure::retry("a liteserver answered with another block"));
         }
         Ok(found)
     }
@@ -325,23 +330,23 @@ impl Lite {
             .get(config.clone())
             .send()
             .await
-            .map_err(|err| retry(&err.without_url().to_string()))?;
+            .map_err(|err| Failure::retry(&err.without_url().to_string()))?;
         if !response.status().is_success() {
-            return Err(retry("the liteserver list is unavailable"));
+            return Err(Failure::retry("the liteserver list is unavailable"));
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|err| retry(&err.without_url().to_string()))?
+            .map_err(|err| Failure::retry(&err.without_url().to_string()))?
         {
             if bytes.len() + chunk.len() > MAX_CONFIG {
-                return Err(retry("the liteserver list is too large"));
+                return Err(Failure::retry("the liteserver list is too large"));
             }
             bytes.extend_from_slice(&chunk);
         }
-        let list: Value =
-            serde_json::from_slice(&bytes).map_err(|_| retry("the liteserver list is not JSON"))?;
+        let list: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| Failure::retry("the liteserver list is not JSON"))?;
         let servers = Arc::new(self.read_list(&list)?);
         self.warm(&servers).await;
         known.insert(config.to_string(), Arc::clone(&servers));
@@ -368,11 +373,13 @@ impl Lite {
             .as_str()
             .and_then(|text| STANDARD.decode(text).ok());
         if zero_state.as_deref() != Some(self.zero_state.as_slice()) {
-            return Err(retry("the liteserver list is for another TON network"));
+            return Err(Failure::retry(
+                "the liteserver list is for another TON network",
+            ));
         }
         let entries = list["liteservers"]
             .as_array()
-            .ok_or_else(|| retry("the liteserver list has no servers"))?;
+            .ok_or_else(|| Failure::retry("the liteserver list has no servers"))?;
         let mut endpoints = Vec::new();
         let mut keys = HashMap::new();
         let mut sessions = HashMap::new();
@@ -391,7 +398,7 @@ impl Lite {
             });
         }
         if endpoints.is_empty() {
-            return Err(retry("the liteserver list has no usable servers"));
+            return Err(Failure::retry("the liteserver list has no usable servers"));
         }
         let turn = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -411,7 +418,7 @@ impl Servers {
         self.sessions
             .get(endpoint.url.as_str())
             .cloned()
-            .ok_or_else(|| retry("a liteserver has no session"))
+            .ok_or_else(|| Failure::retry("a liteserver has no session"))
     }
 }
 
@@ -436,29 +443,29 @@ async fn exchange<T>(
     read: fn(&[u8]) -> Option<Answer<T>>,
 ) -> Result<T, Failure<ChainError>> {
     let mut id = [0u8; 32];
-    getrandom::fill(&mut id).map_err(|_| retry("no randomness for a query id"))?;
+    getrandom::fill(&mut id).map_err(|_| Failure::retry("no randomness for a query id"))?;
     timeout(ANSWER, peer.send(Bytes::from(tl::query(&id, function))))
         .await
-        .map_err(|_| retry("a liteserver did not take the query in time"))?
-        .map_err(|_| retry("a liteserver connection broke"))?;
+        .map_err(|_| Failure::retry("a liteserver did not take the query in time"))?
+        .map_err(|_| Failure::retry("a liteserver connection broke"))?;
     for _ in 0..MAX_FRAMES {
         let frame = timeout(ANSWER, peer.next())
             .await
-            .map_err(|_| retry("a liteserver did not answer in time"))?
-            .ok_or_else(|| retry("a liteserver closed the connection"))?
-            .map_err(|_| retry("a liteserver sent a broken frame"))?;
+            .map_err(|_| Failure::retry("a liteserver did not answer in time"))?
+            .ok_or_else(|| Failure::retry("a liteserver closed the connection"))?
+            .map_err(|_| Failure::retry("a liteserver sent a broken frame"))?;
         let Some(answer) = tl::answer(&id, &frame) else {
             continue;
         };
         return match read(answer) {
             Some(Answer::Ok(value)) => Ok(value),
-            Some(Answer::Refused { code, message }) => Err(retry(&format!(
+            Some(Answer::Refused { code, message }) => Err(Failure::retry(&format!(
                 "a liteserver refused with code {code}: {message}"
             ))),
-            None => Err(retry("a liteserver sent an unreadable answer")),
+            None => Err(Failure::retry("a liteserver sent an unreadable answer")),
         };
     }
-    Err(retry("a liteserver kept answering something else"))
+    Err(Failure::retry("a liteserver kept answering something else"))
 }
 
 pub(crate) fn proven_account(
@@ -468,7 +475,7 @@ pub(crate) fn proven_account(
 ) -> Result<Account, Failure<ChainError>> {
     let (workchain, hash) = parts(owner)?;
     if state.block != *last {
-        return Err(retry("a liteserver answered for another block"));
+        return Err(Failure::retry("a liteserver answered for another block"));
     }
     let proven = proof::account(
         last,
@@ -478,9 +485,9 @@ pub(crate) fn proven_account(
         workchain,
         &hash,
     )
-    .ok_or_else(|| retry("a liteserver sent an account proof that does not hold"))?;
+    .ok_or_else(|| Failure::retry("a liteserver sent an account proof that does not hold"))?;
     let root = (!state.state.is_empty())
-        .then(|| crate::cells::bag(&state.state)?.single_root().ok())
+        .then(|| crate::cells::root(&state.state))
         .flatten();
     let last = match (proven, &root) {
         (Proven::Present { account, last }, Some(root))
@@ -490,13 +497,16 @@ pub(crate) fn proven_account(
         }
         (Proven::Absent, None) => None,
         _ => {
-            return Err(retry(
+            return Err(Failure::retry(
                 "a liteserver sent an account that its proof does not cover",
             ));
         }
     };
-    let mut read = account(&state.state, owner)
-        .ok_or_else(|| retry("a liteserver sent an unreadable account"))?;
+    let read = match &root {
+        Some(root) => account_at(root, &state.state, owner),
+        None => account(&state.state, owner),
+    };
+    let mut read = read.ok_or_else(|| Failure::retry("a liteserver sent an unreadable account"))?;
     read.last = last;
     Ok(read)
 }
@@ -507,8 +517,9 @@ pub(crate) fn proven_transactions(
     from: ([u8; 32], u64),
 ) -> Result<Vec<Transaction>, Failure<ChainError>> {
     let (_, hash) = parts(owner)?;
-    transaction::linked(boc, &hash, from)
-        .ok_or_else(|| retry("a server sent transactions that do not continue the proven history"))
+    transaction::linked(boc, &hash, from).ok_or_else(|| {
+        Failure::retry("a server sent transactions that do not continue the proven history")
+    })
 }
 
 fn kept_history(answer: &[u8]) -> Option<Answer<Option<tl::TransactionList>>> {
@@ -535,9 +546,9 @@ fn send_answer(answer: &[u8]) -> Option<Answer<Result<bool, (i32, String)>>> {
 fn sent(outcome: Result<bool, (i32, String)>) -> Result<(), Failure<ChainError>> {
     match outcome {
         Ok(true) => Ok(()),
-        Ok(false) => Err(retry("a liteserver did not take the message")),
+        Ok(false) => Err(Failure::retry("a liteserver did not take the message")),
         Err((code, message)) => Err(refused(&message).map_or_else(
-            || retry(&format!("a liteserver refused with code {code}: {message}")),
+            || Failure::retry(&format!("a liteserver refused with code {code}: {message}")),
             Failure::Fatal,
         )),
     }
@@ -569,7 +580,7 @@ pub(crate) fn proven_library(
     if crate::vm::library_hash(&data).as_ref() == Some(hash) {
         Ok(data)
     } else {
-        Err(retry(
+        Err(Failure::retry(
             "a server sent a library that does not match its hash",
         ))
     }
@@ -580,25 +591,22 @@ pub(crate) fn proven_config(
     info: &ConfigInfo,
 ) -> Result<Config, Failure<ChainError>> {
     if info.block != *last {
-        return Err(retry("a liteserver answered for another block"));
+        return Err(Failure::retry("a liteserver answered for another block"));
     }
     proof::config(last, &info.state_proof, &info.config_proof, &PARAMS)
         .and_then(Config::new)
-        .ok_or_else(|| retry("a liteserver sent a config proof that does not hold"))
+        .ok_or_else(|| Failure::retry("a liteserver sent a config proof that does not hold"))
 }
 
 fn open(
     peer: &mut Option<AdnlPeer<TcpStream>>,
 ) -> Result<&mut AdnlPeer<TcpStream>, Failure<ChainError>> {
     peer.as_mut()
-        .ok_or_else(|| retry("a liteserver connection closed"))
+        .ok_or_else(|| Failure::retry("a liteserver connection closed"))
 }
 
 fn parts(address: &Address) -> Result<(i8, [u8; 32]), Failure<ChainError>> {
-    match address {
-        Address::Ton { workchain, hash } => Ok((*workchain, *hash)),
-        _ => Err(Failure::Fatal(ChainError::Invalid("not a TON address"))),
-    }
+    crate::cells::parts(address).map_err(Failure::Fatal)
 }
 
 fn outer(err: PoolError<ChainError>) -> Failure<ChainError> {
@@ -607,7 +615,7 @@ fn outer(err: PoolError<ChainError>) -> Failure<ChainError> {
         PoolError::Exhausted(err) => Failure::Retry(err),
         PoolError::Unserved(err) => Failure::Unsupported(err),
         PoolError::Unavailable(_) | PoolError::NoEndpoint => {
-            retry("no liteserver is available right now")
+            Failure::retry("no liteserver is available right now")
         }
     }
 }
@@ -616,24 +624,6 @@ fn behind(last: i32, floor: Option<i32>, newest: Option<u32>, now: u64) -> Optio
     let live = newest.is_some_and(|utime| u64::from(utime).saturating_add(LIVE_WITHIN) >= now);
     let seqno = last.saturating_sub(LAG).max(floor.unwrap_or(0));
     (live && seqno < last).then_some(seqno)
-}
-
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
-fn unreachable(text: &str) -> Failure<ChainError> {
-    Failure::Unreachable(ChainError::Network(text.to_owned()))
-}
-
-fn retry(text: &str) -> Failure<ChainError> {
-    Failure::Retry(ChainError::Network(text.to_owned()))
-}
-
-fn missing(text: &str) -> Failure<ChainError> {
-    Failure::Unsupported(ChainError::Network(text.to_owned()))
 }
 
 #[cfg(fuzzing)]

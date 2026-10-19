@@ -1,9 +1,10 @@
 use std::fmt;
 
 use bahaa_types::{Address, Amount, AssetId, is_plain_text, to_plain_text};
+use ruint::aliases::U256;
 use thiserror::Error;
 
-use crate::PoolError;
+use crate::{Failure, PoolError};
 
 const MAX_TX_ID: usize = 128;
 pub const MAX_MEMO: usize = 120;
@@ -271,6 +272,34 @@ pub struct Cursor(pub String);
 pub struct HistoryPage {
     pub entries: Vec<HistoryEntry>,
     pub next: Option<Cursor>,
+}
+
+impl ChainError {
+    pub fn overflow() -> Self {
+        Self::Invalid("fee overflow")
+    }
+
+    pub fn malformed() -> Self {
+        Self::Network("an endpoint sent a malformed reply".to_owned())
+    }
+}
+
+impl Failure<ChainError> {
+    pub fn retry(text: &str) -> Self {
+        Self::Retry(ChainError::Network(text.to_owned()))
+    }
+
+    pub fn unsupported(text: &str) -> Self {
+        Self::Unsupported(ChainError::Network(text.to_owned()))
+    }
+
+    pub fn unreachable(text: &str) -> Self {
+        Self::Unreachable(ChainError::Network(text.to_owned()))
+    }
+}
+
+pub fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {
+    Amount::new(units, decimals).map_err(|_| ChainError::Invalid("impossible decimals"))
 }
 
 pub fn memo_text(bytes: &[u8]) -> Option<String> {

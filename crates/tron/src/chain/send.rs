@@ -1,10 +1,11 @@
 use bahaa_chain::{ChainError, Failure, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus};
+use bahaa_types::hex;
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
-use super::{BALANCE_OF, TronChain, amount, bytes, count, malformed, now_ms, tron_hex, word};
+use super::{BALANCE_OF, TronChain, amount, bytes, count, now_ms, tron_hex, word};
 use crate::fees::{self, Prices, Quote, Resources};
-use crate::http::{hex, node_text, unhex};
+use crate::http::node_text;
 use crate::proto::Raw;
 use crate::tx::{self, Anchor};
 
@@ -59,7 +60,7 @@ impl TronChain {
                 }
                 return Ok(());
             }
-            let needed = units.checked_add(max).ok_or_else(overflow)?;
+            let needed = units.checked_add(max).ok_or_else(ChainError::overflow)?;
             if balance < needed {
                 return Err(insufficient(native.0.clone(), needed, balance, native.1)?);
             }
@@ -98,7 +99,7 @@ impl TronChain {
                 coins(sun)?
             }
             Some(contract) => {
-                let data = tx::transfer_data(&to, transfer.amount.units());
+                let data = bahaa_chain::transfer_data(&to, transfer.amount.units());
                 let energy = self.simulate(&from, &contract, &data).await?;
                 let limit = fees::fee_limit(energy, &prices)?;
                 let anchor = self.anchor().await?;
@@ -137,12 +138,14 @@ impl TronChain {
             .http
             .post("wallet/getchainparameters", json!({}))
             .await?;
-        let list = reply["chainParameter"].as_array().ok_or_else(malformed)?;
+        let list = reply["chainParameter"]
+            .as_array()
+            .ok_or_else(ChainError::malformed)?;
         let find = |key: &str| -> Result<u64, ChainError> {
             let entry = list
                 .iter()
                 .find(|entry| entry["key"] == key)
-                .ok_or_else(malformed)?;
+                .ok_or_else(ChainError::malformed)?;
             count(entry, "value")
         };
         Ok(Prices {
@@ -183,7 +186,7 @@ impl TronChain {
             .trigger(json!({
                 "owner_address": tron_hex(owner),
                 "contract_address": tron_hex(contract),
-                "data": hex(data),
+                "data": hex::encode(data),
             }))
             .await?;
         reply["energy_used"]
@@ -198,18 +201,20 @@ impl TronChain {
             .post("wallet/getblock", json!({"detail": false}))
             .await?;
         let header = &reply["block_header"]["raw_data"];
-        let number = header["number"].as_u64().ok_or_else(malformed)?;
+        let number = header["number"]
+            .as_u64()
+            .ok_or_else(ChainError::malformed)?;
         let time_ms = header["timestamp"]
             .as_i64()
             .filter(|time| *time > 0)
-            .ok_or_else(malformed)?;
+            .ok_or_else(ChainError::malformed)?;
         let id: [u8; 32] = reply["blockID"]
             .as_str()
-            .and_then(unhex)
+            .and_then(hex::decode)
             .and_then(|id| id.try_into().ok())
-            .ok_or_else(malformed)?;
+            .ok_or_else(ChainError::malformed)?;
         if id[..8] != number.to_be_bytes() {
-            return Err(malformed());
+            return Err(ChainError::malformed());
         }
         if time_ms < now_ms().saturating_sub(STALE_AFTER_MS) {
             return Err(ChainError::Network(
@@ -242,7 +247,7 @@ impl TronChain {
         self.http
             .post_all(
                 "wallet/broadcasthex",
-                json!({"transaction": hex(&signed.bytes)}),
+                json!({"transaction": hex::encode(&signed.bytes)}),
                 |reply| accepted(reply, &signed.id),
             )
             .await?;
@@ -255,7 +260,7 @@ impl TronChain {
             .http
             .post("wallet/gettransactioninfobyid", asked.clone())
             .await?;
-        let found = info.as_object().ok_or_else(malformed)?;
+        let found = info.as_object().ok_or_else(ChainError::malformed)?;
         if found.is_empty() {
             let pending = self
                 .http
@@ -275,7 +280,9 @@ impl TronChain {
                 "an endpoint answered for another transaction".to_owned(),
             ));
         }
-        let block = info["blockNumber"].as_u64().ok_or_else(malformed)?;
+        let block = info["blockNumber"]
+            .as_u64()
+            .ok_or_else(ChainError::malformed)?;
         let fee = count(&info, "fee")?;
         let outcome = info["receipt"]["result"].as_str();
         if info["result"] == "FAILED" || outcome.is_some_and(|result| result != "SUCCESS") {
@@ -327,7 +334,7 @@ fn short_of_fee(
     fee: u64,
     balance: U256,
 ) -> Result<ChainError, ChainError> {
-    let needed = fee.checked_add(1).ok_or_else(overflow)?;
+    let needed = fee.checked_add(1).ok_or_else(ChainError::overflow)?;
     insufficient(symbol.clone(), U256::from(needed), balance, *decimals)
 }
 
@@ -342,10 +349,6 @@ fn insufficient(
         needed: amount(needed, decimals)?,
         available: amount(available, decimals)?,
     })
-}
-
-fn overflow() -> ChainError {
-    ChainError::Invalid("fee overflow")
 }
 
 #[cfg(fuzzing)]
@@ -404,7 +407,7 @@ mod tests {
         .unwrap();
         let (bytes, id) = tx::sign(noted, &super::super::key(&seed, 0).unwrap()).unwrap();
         let noted = Signed {
-            id: TxId::new(hex(&id)).unwrap(),
+            id: TxId::new(hex::encode(&id)).unwrap(),
             bytes,
         };
         assert_eq!(
@@ -420,7 +423,7 @@ mod tests {
         let other = tx::raw(tx::coins(&from, &[0x27; 20], 1_001), &anchor, 0, None).unwrap();
         let (forged, id) = tx::sign(other, &stranger).unwrap();
         let forged = Signed {
-            id: TxId::new(hex(&id)).unwrap(),
+            id: TxId::new(hex::encode(&id)).unwrap(),
             bytes: forged,
         };
         let refused = chain.push(&forged).await.unwrap_err();

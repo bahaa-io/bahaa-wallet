@@ -108,12 +108,12 @@ impl fmt::Debug for TonMnemonic {
 mod tests {
     use super::*;
     use crate::{Mnemonic, ton_key};
+    use std::fmt::Write;
 
     const PHRASE: &str = "dose ice enrich trigger test dove century still betray gas diet dune use other base gym mad law immense village world example praise game";
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().fold(String::new(), |mut out, byte| {
-            use std::fmt::Write as _;
             let _ = write!(out, "{byte:02x}");
             out
         })

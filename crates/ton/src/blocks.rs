@@ -15,7 +15,6 @@ use tycho_types::models::{
 use crate::tl::{self, BlockId, BlockProof, Link, Signed};
 
 const MASTERCHAIN: i32 = -1;
-const BLOCK: u32 = 0x11ef_55aa;
 const BLOCK_EXTRA: u32 = 0x4a33_f6fd;
 const MC_BLOCK_EXTRA: u16 = 0xcca5;
 const NODE_ID: u32 = 0x4813_b4c6;
@@ -183,7 +182,7 @@ fn opened(proof: &[u8], block: &BlockId) -> Option<Cell> {
 }
 
 fn header(cell: &Cell, block: &BlockId) -> Option<BlockInfo> {
-    if cell.as_slice().ok()?.load_u32().ok()? != BLOCK {
+    if cell.as_slice().ok()?.load_u32().ok()? != crate::proof::BLOCK_TAG {
         return None;
     }
     let info = cell.reference_cloned(0)?.parse::<BlockInfo>().ok()?;

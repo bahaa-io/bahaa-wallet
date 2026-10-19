@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId};
 use bahaa_config::Protocol;
 use bahaa_types::{Address, AssetId};
@@ -66,9 +64,7 @@ impl TonChain {
             received: found,
             sent,
         } = found;
-        let checked = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
+        let checked = bahaa_chain::now();
         let next = covered(cursor, &walked, checked);
         if cursor.is_some_and(|cursor| cursor.next == next.next)
             && found.is_empty()
@@ -193,7 +189,7 @@ fn receipt(
         return Ok(None);
     };
     Ok(Some(Incoming {
-        id: TxId::new(hex(&transaction.hash))?,
+        id: TxId::new(hex::encode(&transaction.hash))?,
         index: 0,
         from: credit.from,
         to: *owner,
@@ -214,7 +210,7 @@ fn departures(
     let (Some(external), Some(true)) = (transaction.external, transaction.succeeded()) else {
         return Ok(Vec::new());
     };
-    let id = TxId::new(hex(&external))?;
+    let id = TxId::new(hex::encode(&external))?;
     let mut sent = Vec::new();
     for (index, message) in transaction.sent.iter().enumerate() {
         let index = u64::try_from(index).map_err(|_| ChainError::Invalid("too many messages"))?;

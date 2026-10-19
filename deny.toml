@@ -11,7 +11,6 @@ targets = [
 [advisories]
 yanked = "deny"
 ignore = [
-    { id = "RUSTSEC-2024-0388", reason = "derivative is a build-time macro pulled in by ton_liteapi for bahaa-probe only; revisit when choosing the TON library" },
     { id = "RUSTSEC-2024-0436", reason = "paste is a finished build-time macro used by alloy-primitives; no runtime code, no known flaw" },
 ]
 

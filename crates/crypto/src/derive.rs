@@ -2,8 +2,9 @@ use ed25519_dalek::SigningKey;
 use hmac::{Hmac, Mac};
 use k256::elliptic_curve::PrimeField;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
-use k256::{FieldBytes, Scalar, SecretKey};
+use k256::{FieldBytes, PublicKey, Scalar, SecretKey};
 use sha2::Sha512;
+use sha3::{Digest, Keccak256};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -33,6 +34,13 @@ struct Node {
 pub fn secp256k1(seed: &Seed, path: &DerivationPath) -> Result<SecretKey, DeriveError> {
     let node = secp256k1_node(hd(seed)?, path)?;
     SecretKey::from_bytes(&FieldBytes::from(*node.key)).map_err(|_| DeriveError::InvalidKey)
+}
+
+pub fn secp256k1_address(key: &PublicKey) -> [u8; 20] {
+    let hash = Keccak256::digest(&key.to_encoded_point(false).as_bytes()[1..]);
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&hash[12..]);
+    out
 }
 
 pub fn ed25519(seed: &Seed, path: &DerivationPath) -> Result<SigningKey, DeriveError> {
@@ -138,11 +146,11 @@ fn hmac512(key: &[u8], parts: &[&[u8]]) -> Result<Zeroizing<[u8; 64]>, DeriveErr
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write;
 
     use serde_json::Value;
 
     use super::*;
+    use std::fmt::Write;
 
     fn bytes(hex: &str) -> Vec<u8> {
         (0..hex.len())

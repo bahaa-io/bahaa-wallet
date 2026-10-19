@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Incoming, Replace, ScanCursor, Scanned, Signed,
@@ -408,7 +407,7 @@ async fn fetch_network(
             Err(err) => result.health.history_problem = Some(err.to_string()),
         }
     }
-    result.health.checked_at = now();
+    result.health.checked_at = bahaa_chain::now();
     result
 }
 
@@ -465,12 +464,6 @@ fn scan_of(
         })
         .collect();
     (scan, found, sent)
-}
-
-pub(crate) fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 #[cfg(test)]

@@ -1,11 +1,10 @@
 use std::collections::BTreeSet;
-use std::fmt::Write;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use bahaa_chain::{ChainError, Failure, Pool};
 use bahaa_config::{Endpoint, Feature};
-use bahaa_types::to_plain_text;
+use bahaa_types::{hex, to_plain_text};
 use reqwest::StatusCode;
 use reqwest::header::RETRY_AFTER;
 use serde_json::{Value, json};
@@ -45,7 +44,7 @@ impl Http {
         Ok(Self {
             pool: Pool::new(endpoints),
             client,
-            genesis: hex(genesis),
+            genesis: hex::encode(genesis),
             verified: Mutex::new(BTreeSet::new()),
         })
     }
@@ -220,20 +219,10 @@ pub(crate) fn classify(message: &str) -> Failure<ChainError> {
 
 pub(crate) fn node_text(value: &Value) -> String {
     let text = value.as_str().unwrap_or("unknown error");
-    match unhex(text) {
+    match hex::decode(text) {
         Some(bytes) => to_plain_text(&String::from_utf8_lossy(&bytes), MAX_MESSAGE),
         None => to_plain_text(text, MAX_MESSAGE),
     }
-}
-
-pub(crate) fn unhex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok())
-        .collect()
 }
 
 fn join(base: &Url, path: &str) -> Option<Url> {
@@ -243,13 +232,6 @@ fn join(base: &Url, path: &str) -> Option<Url> {
         .pop_if_empty()
         .extend(path.split('/'));
     Some(url)
-}
-
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
 }
 
 #[cfg(test)]

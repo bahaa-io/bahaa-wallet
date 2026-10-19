@@ -7,8 +7,8 @@ use tycho_types::boc::Boc;
 use tycho_types::cell::{Cell, CellBuilder, CellSlice, HashBytes, Lazy, Load};
 use tycho_types::dict::{Dict, RawDict};
 use tycho_types::models::{
-    AccountState, BlockchainConfig, BlockchainConfigParams, ComputePhase, LibDescr,
-    OptionalAccount, ShardAccount, SizeLimitsConfig, StdAddr, TxInfo,
+    AccountState, BlockchainConfig, BlockchainConfigParams, ComputePhase, OptionalAccount,
+    ShardAccount, SizeLimitsConfig, StdAddr, TxInfo,
 };
 
 use crate::fees::Settings;
@@ -82,15 +82,7 @@ impl Emulator {
             address: address?,
             params: BlockchainConfigParams::from_raw(dict.root().clone()?),
         };
-        let mut library_dict = Dict::new();
-        for boc in libraries {
-            let lib = Boc::decode(boc).ok()?;
-            let mut publishers = Dict::new();
-            publishers.set(HashBytes::ZERO, ()).ok()?;
-            library_dict
-                .set(*lib.repr_hash(), LibDescr { lib, publishers })
-                .ok()?;
-        }
+        let library_dict = crate::vm::library_dict(libraries)?;
         Some(Self {
             config: ParsedConfig::parse(config, now).ok()?,
             params: ExecutorParams {
@@ -139,9 +131,7 @@ impl Emulator {
         (settled, external): (bool, bool),
     ) -> Result<Emulated, ChainError> {
         let unreadable = || ChainError::Network("a transfer cannot be emulated".to_owned());
-        let Address::Ton { workchain, hash } = address else {
-            return Err(ChainError::Invalid("not a TON address"));
-        };
+        let (workchain, hash) = crate::cells::parts(address)?;
         let mut account = if state.is_empty() {
             OptionalAccount(None)
         } else {
@@ -168,7 +158,7 @@ impl Emulator {
         let output = Executor::new(&self.params, &self.config)
             .with_min_lt(last_lt.saturating_add(1))
             .begin_ordinary_ext(
-                &StdAddr::new(*workchain, HashBytes(*hash)),
+                &StdAddr::new(workchain, HashBytes(hash)),
                 external,
                 message,
                 &shard,
@@ -346,10 +336,7 @@ pub(crate) mod tests {
     pub(crate) const NOW: u32 = 1_792_300_000;
 
     fn unhex(text: &str) -> Vec<u8> {
-        (0..text.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
-            .collect()
+        bahaa_types::hex::decode(text.trim().trim_start_matches("0x")).unwrap()
     }
 
     fn recorded(path: &[&str]) -> Vec<u8> {

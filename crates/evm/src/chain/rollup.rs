@@ -4,7 +4,7 @@ use bahaa_config::{ChainKind, FeeModel};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
-use super::{EvmChain, Fees, hex, overflow};
+use super::{EvmChain, Fees, hex};
 use crate::rpc::quantity;
 
 const ORACLE: [u8; 20] = [
@@ -35,7 +35,9 @@ impl EvmChain {
         let l1 = self
             .oracle(&l1_fee_call(&tx.encoded_for_signing()), &latest)
             .await?;
-        let l1_max = l1.checked_mul(U256::from(L1_MARGIN)).ok_or_else(overflow)?;
+        let l1_max = l1
+            .checked_mul(U256::from(L1_MARGIN))
+            .ok_or_else(ChainError::overflow)?;
         fees.add(FeeItem::L1Data, l1, l1_max)?;
         let operator = self.oracle(&operator_fee_call(estimate), &latest).await?;
         let operator_max = self
@@ -113,10 +115,7 @@ mod tests {
     const UNSIGNED: &str = "02f86b822105808405f5e10084b2d05e0082520894f39fd6e51aad88f6f4ce6ab8827279cfffb92266880de0b6b3a764000080c0";
 
     fn unhex(digits: &str) -> Vec<u8> {
-        (0..digits.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).unwrap())
-            .collect()
+        bahaa_types::hex::decode(digits.trim().trim_start_matches("0x")).unwrap()
     }
 
     #[test]

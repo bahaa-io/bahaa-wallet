@@ -25,9 +25,6 @@ adnl = "2.0.0"
 alloy-consensus = { version = "2.5.0", features = ["k256"] }
 alloy-eips = "2.5.0"
 alloy-primitives = "1.7.3"
-alloy-signer = "2.5.0"
-alloy-signer-local = { version = "2.5.0", features = ["mnemonic"] }
-anyhow = "1.0.104"
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 base64 = "0.23.1"
 bs58 = { version = "0.5.1", features = ["check"] }
@@ -58,7 +55,6 @@ tonlib-core = "0.26.11"
 tycho-executor = "0.3.7"
 tycho-types = { version = "0.3.6", default-features = false, features = ["models"] }
 tycho-vm = "0.3.7"
-ton_liteapi = "0.2.0"
 unicode-normalization = "0.1.26"
 url = { version = "2.5.8", features = ["serde"] }
 zeroize = "1.9.1"

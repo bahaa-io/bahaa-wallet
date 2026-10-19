@@ -4,7 +4,7 @@ use crate::proof::{Found, label, lookup};
 
 pub(crate) const PARAMS: [i32; 13] = [0, 5, 8, 12, 18, 19, 20, 21, 24, 25, 31, 43, 45];
 const REQUIRED: [i32; 10] = [0, 8, 12, 18, 19, 20, 21, 24, 25, 31];
-const STORAGE_PRICES: i32 = 18;
+pub(crate) const STORAGE_PRICES: i32 = 18;
 const FEE_PARAMS: [i32; 2] = [21, 25];
 pub(crate) const TRANSFER_GAS: u64 = 4_939;
 const STORAGE_TAG: u8 = 0xcc;

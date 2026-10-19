@@ -2,7 +2,6 @@
 
 mod common;
 
-use std::fmt::Write;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -15,6 +14,7 @@ use bahaa_types::{Address, AssetId};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
+use common::{hex, read_bytes, recorded, unhex};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -142,41 +142,8 @@ impl Tl {
     }
 }
 
-fn read_bytes(data: &[u8]) -> (&[u8], usize) {
-    let (length, start) = if data[0] < 254 {
-        (usize::from(data[0]), 1)
-    } else {
-        (
-            usize::from(data[1]) | usize::from(data[2]) << 8 | usize::from(data[3]) << 16,
-            4,
-        )
-    };
-    let used = start + length;
-    (&data[start..used], used + (4 - used % 4) % 4)
-}
-
-fn unhex(text: &str) -> Vec<u8> {
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
-        .collect()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
-}
-
 fn mainnet() -> [u8; 32] {
     unhex(MAINNET).try_into().unwrap()
-}
-
-fn recorded(recording: &str, path: &[&str]) -> Option<Vec<u8>> {
-    let fixture: Value = serde_json::from_str(recording).unwrap();
-    let value = path.iter().fold(&fixture, |value, key| &value[*key]);
-    value.as_str().map(unhex)
 }
 
 fn recorded_account(hash: &[u8; 32]) -> Vec<u8> {

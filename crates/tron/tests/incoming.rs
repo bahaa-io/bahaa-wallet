@@ -3,7 +3,6 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,17 +32,11 @@ fn now_ms() -> u64 {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
+    bahaa_types::hex::encode(bytes)
 }
 
 fn unhex(text: &str) -> Vec<u8> {
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
-        .collect()
+    bahaa_types::hex::decode(text.trim().trim_start_matches("0x")).unwrap()
 }
 
 fn varint(mut value: u64, out: &mut Vec<u8>) {

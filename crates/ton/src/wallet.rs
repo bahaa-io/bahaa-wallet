@@ -78,7 +78,8 @@ pub(crate) fn address(
     };
     let wallet = TonWallet::new_with_params(version(contract), keys, 0, wallet_id)
         .map_err(|_| ChainError::Invalid("cannot build the wallet address"))?;
-    from_ton(&wallet.address).ok_or(ChainError::Invalid("cannot build the wallet address"))
+    crate::cells::from_ton(&wallet.address)
+        .ok_or(ChainError::Invalid("cannot build the wallet address"))
 }
 
 pub(crate) fn contract_of(code: &[u8; 32]) -> Option<TonContract> {
@@ -232,7 +233,7 @@ fn token_transfer(body: &Cell, wallet: Address) -> Option<(Address, Token, Optio
     }
     let query_id = parser.load_u64(64).ok()?;
     let units = U256::try_from_be_slice(&parser.load_coins().ok()?.to_bytes_be())?;
-    let to = from_ton(&parser.load_address().ok()?)?;
+    let to = crate::cells::from_ton(&parser.load_address().ok()?)?;
     parser.load_address().ok()?;
     if parser.load_bit().ok()? {
         return None;
@@ -308,8 +309,10 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
     let CommonMsgInfo::ExtIn(info) = &message.info else {
         return Err(invalid());
     };
-    let wallet = from_ton(&TonAddress::from_msg_address(info.dest.clone()).map_err(|_| invalid())?)
-        .ok_or_else(invalid)?;
+    let wallet = crate::cells::from_ton(
+        &TonAddress::from_msg_address(info.dest.clone()).map_err(|_| invalid())?,
+    )
+    .ok_or_else(invalid)?;
     let body = &message.body.value;
     let ((Some(request), None) | (None, Some(request))) = (
         request(body, TonContract::W5),
@@ -332,9 +335,10 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
     if !simple {
         return Err(ChainError::Invalid("not a single plain transfer"));
     }
-    let destination =
-        from_ton(&TonAddress::from_msg_address(sent.dest.clone()).map_err(|_| invalid())?)
-            .ok_or_else(invalid)?;
+    let destination = crate::cells::from_ton(
+        &TonAddress::from_msg_address(sent.dest.clone()).map_err(|_| invalid())?,
+    )
+    .ok_or_else(invalid)?;
     let payload = &inner.body.value;
     let (to, token, memo) = if payload.bit_len() == 0 && payload.references().is_empty() {
         (destination, None, None)
@@ -488,27 +492,16 @@ fn hash_of(cell: &ArcCell) -> Result<[u8; 32], ChainError> {
 }
 
 pub(crate) fn read_address(boc: &[u8]) -> Option<Address> {
-    let root = crate::cells::bag(boc)?.single_root().ok()?;
+    let root = crate::cells::root(boc)?;
     let mut parser = root.parser();
     let address = parser.load_address().ok()?;
     parser.ensure_empty().ok()?;
-    from_ton(&address)
+    crate::cells::from_ton(&address)
 }
 
 fn to_ton(address: &Address) -> Result<TonAddress, ChainError> {
-    match address {
-        Address::Ton { workchain, hash } => {
-            Ok(TonAddress::new(i32::from(*workchain), TonHash::from(*hash)))
-        }
-        _ => Err(ChainError::Invalid("not a TON address")),
-    }
-}
-
-fn from_ton(address: &TonAddress) -> Option<Address> {
-    Some(Address::Ton {
-        workchain: i8::try_from(address.workchain).ok()?,
-        hash: address.hash_part.as_slice().try_into().ok()?,
-    })
+    let (workchain, hash) = crate::cells::parts(address)?;
+    Ok(TonAddress::new(i32::from(workchain), TonHash::from(hash)))
 }
 
 #[cfg(test)]

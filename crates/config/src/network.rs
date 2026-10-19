@@ -413,15 +413,7 @@ impl Coin {
 }
 
 fn block_id(text: Option<&str>) -> Option<[u8; 32]> {
-    let text = text?;
-    if text.len() != 64 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (slot, at) in out.iter_mut().zip((0..text.len()).step_by(2)) {
-        *slot = u8::from_str_radix(&text[at..at + 2], 16).ok()?;
-    }
-    Some(out)
+    bahaa_types::hex::decode_array(text?)
 }
 
 fn check_template(template: &str, placeholder: &str) -> Result<(), &'static str> {

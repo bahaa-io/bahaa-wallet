@@ -2,7 +2,7 @@ use tonlib_core::cell::{ArcCell, Cell, CellParser};
 
 use crate::tl::BlockId;
 
-const BLOCK_TAG: u32 = 0x11ef_55aa;
+pub(crate) const BLOCK_TAG: u32 = 0x11ef_55aa;
 const STATE_TAG: u32 = 0x9023_afe2;
 const MC_STATE_EXTRA_TAG: u16 = 0xcc26;
 const MERKLE_PROOF: u8 = 3;
@@ -77,7 +77,7 @@ pub(crate) fn config(
 }
 
 fn single(boc: &[u8]) -> Option<ArcCell> {
-    crate::cells::bag(boc)?.single_root().ok()
+    crate::cells::root(boc)
 }
 
 fn roots(boc: &[u8]) -> Option<(ArcCell, ArcCell)> {

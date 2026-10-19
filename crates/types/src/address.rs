@@ -1,4 +1,4 @@
-use std::fmt::{self, Write};
+use std::fmt;
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE};
@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha3::{Digest, Keccak256};
 use thiserror::Error;
 
-use crate::ChainFamily;
+use crate::{ChainFamily, hex};
 
 const TRON_PREFIX: u8 = 0x41;
 const TON_BOUNCEABLE: u8 = 0x11;
@@ -62,7 +62,8 @@ impl Address {
             let workchain = workchain
                 .parse::<i8>()
                 .map_err(|_| AddressError::Workchain)?;
-            let hash = decode_hex::<32>(hash).ok_or(AddressError::Format(ChainFamily::Ton))?;
+            let hash =
+                hex::decode_array::<32>(hash).ok_or(AddressError::Format(ChainFamily::Ton))?;
             return Ok((Self::Ton { workchain, hash }, None));
         }
         parse_ton_friendly(text).map(|(address, form)| (address, Some(form)))
@@ -88,10 +89,10 @@ impl Address {
 
     fn shown(&self) -> Vec<String> {
         match self {
-            Self::Evm(bytes) => vec![hex(bytes)],
+            Self::Evm(bytes) => vec![hex::encode(bytes)],
             Self::Tron(bytes) => vec![tron_base58(bytes).chars().skip(1).collect()],
             Self::Ton { hash, .. } => {
-                let mut forms = vec![hex(hash)];
+                let mut forms = vec![hex::encode(hash)];
                 for (bounceable, testnet) in
                     [(true, false), (false, false), (true, true), (false, true)]
                 {
@@ -133,7 +134,7 @@ impl fmt::Display for Address {
         match self {
             Self::Evm(bytes) => f.write_str(&checksummed(bytes)),
             Self::Tron(bytes) => f.write_str(&tron_base58(bytes)),
-            Self::Ton { workchain, hash } => write!(f, "{workchain}:{}", hex(hash)),
+            Self::Ton { workchain, hash } => write!(f, "{workchain}:{}", hex::encode(hash)),
         }
     }
 }
@@ -164,7 +165,7 @@ impl<'de> Deserialize<'de> for Address {
 fn parse_evm(text: &str) -> Result<Address, AddressError> {
     let invalid = AddressError::Format(ChainFamily::Evm);
     let body = text.strip_prefix("0x").ok_or(invalid)?;
-    let bytes = decode_hex::<20>(body).ok_or(invalid)?;
+    let bytes = hex::decode_array::<20>(body).ok_or(invalid)?;
     let mixed_case = body.bytes().any(|byte| byte.is_ascii_lowercase())
         && body.bytes().any(|byte| byte.is_ascii_uppercase());
     if mixed_case && checksummed(&bytes) != text {
@@ -221,7 +222,7 @@ fn parse_ton_friendly(text: &str) -> Result<(Address, TonForm), AddressError> {
 }
 
 fn checksummed(bytes: &[u8; 20]) -> String {
-    let lower = hex(bytes);
+    let lower = hex::encode(bytes);
     let hash = Keccak256::digest(lower.as_bytes());
     let mut out = String::with_capacity(42);
     out.push_str("0x");
@@ -253,29 +254,6 @@ fn same_ends(mine: &str, theirs: &str) -> bool {
         && mine.len() >= ALIKE_START + ALIKE_END
         && mine.get(..ALIKE_START) == theirs.get(..ALIKE_START)
         && mine.get(mine.len() - ALIKE_END..) == theirs.get(theirs.len() - ALIKE_END..)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
-}
-
-fn decode_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
-    if text.len() != N * 2 {
-        return None;
-    }
-    let mut out = [0u8; N];
-    let (pairs, _) = text.as_bytes().as_chunks::<2>();
-    for (slot, [high, low]) in out.iter_mut().zip(pairs) {
-        let high = char::from(*high).to_digit(16)?;
-        let low = char::from(*low).to_digit(16)?;
-        *slot = u8::try_from(high * 16 + low).ok()?;
-    }
-    Some(out)
 }
 
 fn crc16(data: &[u8]) -> u16 {
@@ -362,7 +340,10 @@ mod tests {
         let Address::Tron(bytes) = usdt else {
             panic!("not tron")
         };
-        assert_eq!(hex(&bytes), "a614f803b6fd780986a42c78ec9c7f77e6ded13c");
+        assert_eq!(
+            hex::encode(&bytes),
+            "a614f803b6fd780986a42c78ec9c7f77e6ded13c"
+        );
         assert_eq!(usdt.to_string(), "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t");
         assert_eq!(
             Address::Tron([0; 20]).to_string(),

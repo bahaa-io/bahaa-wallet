@@ -26,8 +26,11 @@ pub(crate) struct Quote {
 
 impl Quote {
     fn add(&mut self, item: FeeItem, expected: u64, max: u64) -> Result<(), ChainError> {
-        self.expected = self.expected.checked_add(expected).ok_or_else(overflow)?;
-        self.max = self.max.checked_add(max).ok_or_else(overflow)?;
+        self.expected = self
+            .expected
+            .checked_add(expected)
+            .ok_or_else(ChainError::overflow)?;
+        self.max = self.max.checked_add(max).ok_or_else(ChainError::overflow)?;
         self.lines.push((item, expected));
         Ok(())
     }
@@ -42,13 +45,13 @@ pub(crate) fn fee_limit(energy: u64, prices: &Prices) -> Result<i64, ChainError>
     let limit = energy
         .checked_add(energy / 5)
         .and_then(|padded| padded.checked_mul(prices.per_energy))
-        .ok_or_else(overflow)?;
+        .ok_or_else(ChainError::overflow)?;
     if limit > prices.max_fee_limit {
         return Err(ChainError::Invalid(
             "this transfer needs more energy than Tron allows",
         ));
     }
-    i64::try_from(limit).map_err(|_| overflow())
+    i64::try_from(limit).map_err(|_| ChainError::overflow())
 }
 
 pub(crate) fn quote(
@@ -65,7 +68,9 @@ pub(crate) fn quote(
     } else if staked || resources.free_bandwidth >= bytes {
         0
     } else {
-        bytes.checked_mul(prices.per_byte).ok_or_else(overflow)?
+        bytes
+            .checked_mul(prices.per_byte)
+            .ok_or_else(ChainError::overflow)?
     };
     quote.add(FeeItem::Bandwidth { bytes }, bandwidth, bandwidth)?;
     if new_account {
@@ -75,12 +80,13 @@ pub(crate) fn quote(
         quote.add(FeeItem::Memo, prices.memo, prices.memo)?;
     }
     if let Some((energy, fee_limit)) = energy {
-        let cap = u64::try_from(fee_limit).map_err(|_| overflow())? / prices.per_energy.max(1);
+        let cap = u64::try_from(fee_limit).map_err(|_| ChainError::overflow())?
+            / prices.per_energy.max(1);
         let burn = |units: u64| {
             units
                 .saturating_sub(resources.energy)
                 .checked_mul(prices.per_energy)
-                .ok_or_else(overflow)
+                .ok_or_else(ChainError::overflow)
         };
         quote.add(FeeItem::Energy { units: energy }, burn(energy)?, burn(cap)?)?;
     }
@@ -105,10 +111,6 @@ pub(crate) fn most(
         return Ok(Some(second));
     }
     Ok(fits(first)?.then_some(first))
-}
-
-fn overflow() -> ChainError {
-    ChainError::Invalid("fee overflow")
 }
 
 #[cfg(test)]

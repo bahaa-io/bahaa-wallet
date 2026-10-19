@@ -3,10 +3,11 @@ use std::sync::{Mutex, PoisonError};
 
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus,
+    amount,
 };
 use bahaa_config::{ChainKind, Checkpoint, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed, SeedKind};
-use bahaa_types::{Address, Amount, AssetId, TonContract};
+use bahaa_types::{Address, AssetId, TonContract, hex};
 use ed25519_dalek::SigningKey;
 use ruint::aliases::U256;
 
@@ -198,9 +199,9 @@ impl TonChain {
             .await?
             .ok_or(ChainError::Invalid("this address is not a token contract"))?;
         let [Item::Cell(boc)] = stack.as_slice() else {
-            return Err(malformed());
+            return Err(ChainError::malformed());
         };
-        let wallet = read_address(boc).ok_or_else(malformed)?;
+        let wallet = read_address(boc).ok_or_else(ChainError::malformed)?;
         self.jetton_wallets
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -229,7 +230,7 @@ impl TonChain {
             _,
         ] = stack.as_slice()
         else {
-            return Err(malformed());
+            return Err(ChainError::malformed());
         };
         if read_address(holder) != Some(*owner) || read_address(minter) != Some(*master) {
             return Err(ChainError::Network(
@@ -256,9 +257,7 @@ impl Chain for TonChain {
         address: &Address,
         assets: &[AssetId],
     ) -> Result<Vec<Balance>, ChainError> {
-        if !matches!(address, Address::Ton { .. }) {
-            return Err(ChainError::Invalid("not a TON address"));
-        }
+        crate::cells::parts(address)?;
         let mut balances = Vec::with_capacity(assets.len());
         for asset in assets {
             if asset.network() != &self.network.id {
@@ -324,9 +323,7 @@ impl Chain for TonChain {
     }
 
     async fn token(&self, contract: &Address) -> Result<Coin, ChainError> {
-        if !matches!(contract, Address::Ton { .. }) {
-            return Err(ChainError::Invalid("not a TON address"));
-        }
+        crate::cells::parts(contract)?;
         self.details(contract).await
     }
 
@@ -351,22 +348,6 @@ fn key(seed: &Seed, account: u32) -> Result<SigningKey, ChainError> {
         .parse()
         .map_err(|_| ChainError::Invalid("account index out of range"))?;
     Ok(bahaa_crypto::ed25519(seed, &path)?)
-}
-
-fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {
-    Amount::new(units, decimals).map_err(|_| ChainError::Invalid("impossible decimals"))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        use std::fmt::Write;
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
-}
-
-fn malformed() -> ChainError {
-    ChainError::Network("an endpoint sent a malformed reply".to_owned())
 }
 
 pub(crate) fn block(checkpoint: &Checkpoint) -> BlockId {

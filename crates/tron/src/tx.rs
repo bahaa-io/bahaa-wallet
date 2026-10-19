@@ -1,11 +1,9 @@
-use bahaa_chain::{ChainError, MAX_MEMO, memo_text};
+use bahaa_chain::{ChainError, MAX_MEMO, memo_text, parse_transfer};
 use bahaa_types::is_plain_text;
 use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
-use k256::elliptic_curve::sec1::ToEncodedPoint;
 use prost::Message;
 use ruint::aliases::U256;
 use sha2::{Digest as _, Sha256};
-use sha3::{Digest as _, Keccak256};
 
 use crate::proto::{Any, Contract, Raw, Transaction, TransferContract, TriggerSmartContract};
 
@@ -14,8 +12,6 @@ const TRANSFER_TYPE: i32 = 1;
 const TRIGGER_TYPE: i32 = 31;
 const TRANSFER_URL: &str = "type.googleapis.com/protocol.TransferContract";
 const TRIGGER_URL: &str = "type.googleapis.com/protocol.TriggerSmartContract";
-const TRANSFER: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
-const TRANSFER_LEN: usize = 4 + 32 + 32;
 const SIGNATURE_LEN: usize = 65;
 const RESULT_BYTES: u64 = 64;
 const LIFETIME_MS: i64 = 5 * 60 * 1000;
@@ -117,23 +113,6 @@ pub(crate) fn bandwidth(raw: &Raw) -> u64 {
     u64::try_from(signed.encoded_len())
         .unwrap_or(u64::MAX)
         .saturating_add(RESULT_BYTES)
-}
-
-pub(crate) fn transfer_data(to: &[u8; 20], units: U256) -> Vec<u8> {
-    let mut data = Vec::with_capacity(TRANSFER_LEN);
-    data.extend_from_slice(&TRANSFER);
-    data.extend_from_slice(&[0u8; 12]);
-    data.extend_from_slice(to);
-    data.extend_from_slice(&units.to_be_bytes::<32>());
-    data
-}
-
-fn parse_transfer(data: &[u8]) -> Option<([u8; 20], U256)> {
-    if data.len() != TRANSFER_LEN || data[..4] != TRANSFER || data[4..16] != [0u8; 12] {
-        return None;
-    }
-    let to: [u8; 20] = data[16..36].try_into().ok()?;
-    Some((to, U256::from_be_slice(&data[36..])))
 }
 
 pub(crate) fn txid(raw: &Raw) -> [u8; 32] {
@@ -268,15 +247,9 @@ fn recover(id: &[u8; 32], signature: &[u8]) -> Option<[u8; 20]> {
     }
     let key = VerifyingKey::recover_from_prehash(id, &signature, RecoveryId::from_byte(recovery)?)
         .ok()?;
-    Some(address_of(&k256::PublicKey::from(&key)))
-}
-
-pub(crate) fn address_of(key: &k256::PublicKey) -> [u8; 20] {
-    let point = key.to_encoded_point(false);
-    let hash = Keccak256::digest(&point.as_bytes()[1..]);
-    let mut out = [0u8; 20];
-    out.copy_from_slice(&hash[12..]);
-    out
+    Some(bahaa_crypto::secp256k1_address(&k256::PublicKey::from(
+        &key,
+    )))
 }
 
 fn tron(address: &[u8; 20]) -> Vec<u8> {
@@ -296,6 +269,8 @@ fn address(bytes: &[u8]) -> Option<[u8; 20]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bahaa_chain::transfer_data;
+    use bahaa_types::hex;
 
     fn key(byte: u8) -> k256::SecretKey {
         k256::SecretKey::from_slice(&[byte; 32]).unwrap()
@@ -313,7 +288,7 @@ mod tests {
     }
 
     fn owner(key: &k256::SecretKey) -> [u8; 20] {
-        address_of(&key.public_key())
+        bahaa_crypto::secp256k1_address(&key.public_key())
     }
 
     #[test]
@@ -452,7 +427,7 @@ mod tests {
 
     #[test]
     fn a_memo_sent_on_mainnet_reads_back_with_its_transfer() {
-        let raw = crate::http::unhex(concat!(
+        let raw = hex::decode(concat!(
             "0a02396b2208045d51e04a2dc2b940988b999c953452154261686161206d656d6f20746573743a2054",
             "726f6e5a67080112630a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54",
             "72616e73666572436f6e747261637412320a15414a7fd4bbed722bbe2fef1ac2f08bcc48e1b0435d12",
@@ -461,15 +436,15 @@ mod tests {
         .unwrap();
         let read = coins_in(&raw).unwrap();
         assert_eq!(
-            crate::http::hex(&read.id),
+            hex::encode(&read.id),
             "9064ca5098cb0429804eb4603c7c5e0f5700c40283ff357ad28be21a840cd1e5"
         );
         assert_eq!(
-            crate::http::hex(&read.from),
+            hex::encode(&read.from),
             "4a7fd4bbed722bbe2fef1ac2f08bcc48e1b0435d"
         );
         assert_eq!(
-            crate::http::hex(&read.to),
+            hex::encode(&read.to),
             "adc0b79c8c5b86a6d842ba408082cb26e289a59c"
         );
         assert_eq!(read.sun, 500_000);

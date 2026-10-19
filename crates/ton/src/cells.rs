@@ -1,3 +1,4 @@
+use bahaa_chain::ChainError;
 use bahaa_types::Address;
 use ruint::aliases::U256;
 use tonlib_core::TonAddress;
@@ -51,11 +52,25 @@ pub(crate) fn bag(boc: &[u8]) -> Option<BagOfCells> {
     BagOfCells::parse(boc).ok()
 }
 
+pub(crate) fn root(boc: &[u8]) -> Option<ArcCell> {
+    bag(boc)?.single_root().ok()
+}
+
+pub(crate) fn parts(address: &Address) -> Result<(i8, [u8; 32]), ChainError> {
+    match address {
+        Address::Ton { workchain, hash } => Ok((*workchain, *hash)),
+        _ => Err(ChainError::Invalid("not a TON address")),
+    }
+}
+
 pub(crate) fn account(boc: &[u8], owner: &Address) -> Option<Account> {
     if boc.is_empty() {
         return Some(Account::missing());
     }
-    let root = bag(boc)?.single_root().ok()?;
+    account_at(&root(boc)?, boc, owner)
+}
+
+pub(crate) fn account_at(root: &ArcCell, boc: &[u8], owner: &Address) -> Option<Account> {
     let mut parser = root.parser();
     if !parser.load_bit().ok()? {
         return Some(Account::missing());

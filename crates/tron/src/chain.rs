@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus,
-    abi_text,
+    abi_text, amount, now_ms,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
-use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS};
+use bahaa_types::{Address, AssetId, MAX_DECIMALS, hex};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
@@ -17,7 +16,7 @@ mod send;
 
 pub use send::TronPlan;
 
-use crate::http::{Http, hex, node_text};
+use crate::http::{Http, node_text};
 use crate::tx::{self, Action};
 
 const PREFIX: &str = "41";
@@ -51,7 +50,7 @@ impl TronChain {
             .http
             .post("wallet/getaccount", json!({"address": tron_hex(owner)}))
             .await?;
-        let account = reply.as_object().ok_or_else(malformed)?;
+        let account = reply.as_object().ok_or_else(ChainError::malformed)?;
         if account.is_empty() {
             return Ok(None);
         }
@@ -149,8 +148,8 @@ impl TronChain {
             .as_array()
             .filter(|results| results.len() == 1)
             .and_then(|results| results[0].as_str())
-            .and_then(crate::http::unhex)
-            .ok_or_else(malformed)?;
+            .and_then(hex::decode)
+            .ok_or_else(ChainError::malformed)?;
         if data.is_empty() {
             return Err(ChainError::Invalid("this address is not a token contract"));
         }
@@ -237,21 +236,21 @@ impl Chain for TronChain {
 
     fn sign(&self, plan: &TronPlan, seed: &Seed) -> Result<Signed, ChainError> {
         let key = key(seed, plan.transfer.account)?;
-        if Address::Tron(tx::address_of(&key.public_key())) != plan.transfer.from {
+        if Address::Tron(bahaa_crypto::secp256k1_address(&key.public_key())) != plan.transfer.from {
             return Err(ChainError::Invalid(
                 "this seed does not own the sending account",
             ));
         }
         let (bytes, id) = tx::sign(plan.raw.clone(), &key)?;
         Ok(Signed {
-            id: TxId::new(hex(&id))?,
+            id: TxId::new(hex::encode(&id))?,
             bytes,
         })
     }
 
     fn decode(&self, signed: &Signed) -> Result<Decoded, ChainError> {
         let parsed = tx::parse(&signed.bytes)?;
-        if hex(&parsed.id) != signed.id.as_str() {
+        if hex::encode(&parsed.id) != signed.id.as_str() {
             return Err(ChainError::Mismatch("the transaction id"));
         }
         let (to, asset, amount) = match parsed.action {
@@ -324,7 +323,7 @@ impl Chain for TronChain {
 }
 
 pub fn derive(seed: &Seed, account: u32) -> Result<Address, ChainError> {
-    Ok(Address::Tron(tx::address_of(
+    Ok(Address::Tron(bahaa_crypto::secp256k1_address(
         &key(seed, account)?.public_key(),
     )))
 }
@@ -366,8 +365,8 @@ fn constant_word(reply: &Value) -> Result<U256, ChainError> {
         .filter(|results| results.len() == 1)
         .and_then(|results| results[0].as_str())
         .filter(|word| word.len() == 64 && word.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or_else(malformed)?;
-    U256::from_str_radix(word, 16).map_err(|_| malformed())
+        .ok_or_else(ChainError::malformed)?;
+    U256::from_str_radix(word, 16).map_err(|_| ChainError::malformed())
 }
 
 fn bytes(address: &Address) -> Result<[u8; 20], ChainError> {
@@ -378,25 +377,17 @@ fn bytes(address: &Address) -> Result<[u8; 20], ChainError> {
 }
 
 fn tron_hex(address: &[u8; 20]) -> String {
-    format!("{PREFIX}{}", hex(address))
+    format!("{PREFIX}{}", hex::encode(address))
 }
 
 fn word(address: &[u8; 20]) -> String {
-    format!("{:0>64}", hex(address))
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
-        .unwrap_or(0)
+    format!("{:0>64}", hex::encode(address))
 }
 
 fn count(value: &Value, field: &str) -> Result<u64, ChainError> {
     match value.get(field) {
         None | Some(Value::Null) => Ok(0),
-        Some(number) => number.as_u64().ok_or_else(malformed),
+        Some(number) => number.as_u64().ok_or_else(ChainError::malformed),
     }
 }
 
@@ -408,7 +399,7 @@ fn staked(account: &Value) -> Result<U256, ChainError> {
             Some(Value::Array(entries)) => {
                 entries.iter().map(|entry| count(entry, inner)).collect()
             }
-            Some(_) => Err(malformed()),
+            Some(_) => Err(ChainError::malformed()),
         }
     };
     let mut parts = Vec::new();
@@ -424,16 +415,10 @@ fn staked(account: &Value) -> Result<U256, ChainError> {
         "frozen_balance",
     )?);
     parts.into_iter().try_fold(U256::ZERO, |total, part| {
-        total.checked_add(U256::from(part)).ok_or_else(malformed)
+        total
+            .checked_add(U256::from(part))
+            .ok_or_else(ChainError::malformed)
     })
-}
-
-fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {
-    Amount::new(units, decimals).map_err(|_| ChainError::Invalid("impossible decimals"))
-}
-
-fn malformed() -> ChainError {
-    ChainError::Network("an endpoint sent a malformed reply".to_owned())
 }
 
 #[cfg(fuzzing)]

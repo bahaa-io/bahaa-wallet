@@ -12,11 +12,11 @@ bahaa-config.workspace = true
 bahaa-crypto.workspace = true
 bahaa-types.workspace = true
 futures-util.workspace = true
+ruint.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-ruint.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 url.workspace = true
 

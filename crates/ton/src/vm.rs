@@ -10,7 +10,7 @@ use tycho_vm::{BehaviourModifiers, OwnedCellSlice, RcStackValue, VmCaller, VmGet
 
 use crate::http::Item;
 
-const STORAGE_PRICES: i32 = 18;
+pub(crate) const MAX_LIBRARIES: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Ran {
@@ -68,10 +68,8 @@ pub(crate) fn library_hash(boc: &[u8]) -> Option<[u8; 32]> {
 }
 
 fn argument(address: &Address) -> Result<OwnedCellSlice, ChainError> {
-    let Address::Ton { workchain, hash } = address else {
-        return Err(ChainError::Invalid("not a TON address"));
-    };
-    let cell = CellBuilder::build_from(StdAddr::new(*workchain, HashBytes(*hash)))
+    let (workchain, hash) = crate::cells::parts(address)?;
+    let cell = CellBuilder::build_from(StdAddr::new(workchain, HashBytes(hash)))
         .map_err(|_| ChainError::Invalid("cannot encode the method arguments"))?;
     Ok(OwnedCellSlice::new_allow_exotic(cell))
 }
@@ -97,7 +95,7 @@ fn config(params: &[(i32, Vec<u8>)], now: u32) -> Option<BlockchainConfigParams>
     let mut dict = Dict::<u32, Cell>::new();
     for (id, boc) in params {
         let cell = Boc::decode(boc).ok()?;
-        let cell = if *id == STORAGE_PRICES {
+        let cell = if *id == crate::fees::STORAGE_PRICES {
             effective_prices(cell, now)?
         } else {
             cell
@@ -124,7 +122,7 @@ fn effective_prices(prices: Cell, now: u32) -> Option<Cell> {
     single.root().clone()
 }
 
-fn library_dict(libraries: &[Vec<u8>]) -> Option<Dict<HashBytes, LibDescr>> {
+pub(crate) fn library_dict(libraries: &[Vec<u8>]) -> Option<Dict<HashBytes, LibDescr>> {
     let mut dict = Dict::new();
     for boc in libraries {
         let lib = Boc::decode(boc).ok()?;
@@ -158,10 +156,7 @@ mod tests {
     const NOW: u32 = 1_792_300_000;
 
     fn unhex(text: &str) -> Vec<u8> {
-        (0..text.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
-            .collect()
+        bahaa_types::hex::decode(text.trim().trim_start_matches("0x")).unwrap()
     }
 
     fn recorded(path: &[&str]) -> Vec<u8> {
@@ -278,7 +273,7 @@ mod tests {
     fn storage_prices_follow_the_clock() {
         let prices = params()
             .into_iter()
-            .find(|(id, _)| *id == STORAGE_PRICES)
+            .find(|(id, _)| *id == crate::fees::STORAGE_PRICES)
             .unwrap()
             .1;
         let since = |now: u32| {

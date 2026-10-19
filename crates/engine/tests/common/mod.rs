@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use std::fmt::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -46,10 +45,7 @@ impl Drop for Scratch {
 }
 
 pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
+    bahaa_types::hex::encode(bytes)
 }
 
 pub fn result(value: Value) -> Value {
@@ -245,10 +241,7 @@ pub const PREVIOUS_KEY: Checkpoint = Checkpoint {
 };
 
 pub fn unhex(text: &str) -> Vec<u8> {
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
-        .collect()
+    bahaa_types::hex::decode(text.trim().trim_start_matches("0x")).unwrap()
 }
 
 pub fn ton_network(id: &str, config: Url) -> Network {

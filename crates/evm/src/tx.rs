@@ -4,31 +4,10 @@ use alloy_eips::eip2718::{Decodable2718, Encodable2718};
 use alloy_primitives::Signature;
 use bahaa_chain::ChainError;
 use k256::ecdsa::SigningKey;
-use ruint::aliases::U256;
-
-const TRANSFER: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
-const TRANSFER_LEN: usize = 4 + 32 + 32;
 
 pub(crate) struct Parsed {
     pub from: [u8; 20],
     pub tx: TxEip1559,
-}
-
-pub(crate) fn transfer_data(to: &[u8; 20], amount: U256) -> Vec<u8> {
-    let mut data = Vec::with_capacity(TRANSFER_LEN);
-    data.extend_from_slice(&TRANSFER);
-    data.extend_from_slice(&[0u8; 12]);
-    data.extend_from_slice(to);
-    data.extend_from_slice(&amount.to_be_bytes::<32>());
-    data
-}
-
-pub(crate) fn parse_transfer(data: &[u8]) -> Option<([u8; 20], U256)> {
-    if data.len() != TRANSFER_LEN || data[..4] != TRANSFER || data[4..16] != [0u8; 12] {
-        return None;
-    }
-    let to: [u8; 20] = data[16..36].try_into().ok()?;
-    Some((to, U256::from_be_slice(&data[36..])))
 }
 
 pub(crate) fn sign(
@@ -64,6 +43,8 @@ mod tests {
     use alloy_primitives::{Bytes, TxKind};
 
     use super::*;
+    use bahaa_chain::{parse_transfer, transfer_data};
+    use ruint::aliases::U256;
 
     fn key(byte: u8) -> k256::SecretKey {
         k256::SecretKey::from_slice(&[byte; 32]).unwrap()
@@ -113,13 +94,16 @@ mod tests {
         let (bytes, hash) = sign(sample(9), &key).unwrap();
         let parsed = parse(&bytes).unwrap();
         assert_eq!(parsed.tx, sample(9));
-        assert_eq!(parsed.from, crate::chain::address_of(&key.public_key()));
+        assert_eq!(
+            parsed.from,
+            bahaa_crypto::secp256k1_address(&key.public_key())
+        );
         assert_eq!(hash.len(), 32);
         let mut tampered = bytes.clone();
         let last = tampered.len() - 40;
         tampered[last] ^= 1;
         assert!(parse(&tampered).map_or(true, |parsed| parsed.from
-            != crate::chain::address_of(&key.public_key())));
+            != bahaa_crypto::secp256k1_address(&key.public_key())));
     }
 
     #[test]
