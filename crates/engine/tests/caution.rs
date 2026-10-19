@@ -193,22 +193,18 @@ async fn look_alikes_and_dust_are_flagged_where_they_arrive_and_where_they_are_s
 #[tokio::test]
 async fn saved_contacts_count_as_known_addresses() {
     let scratch = Scratch::new();
-    let data = scratch.0.join("data");
-    std::fs::create_dir_all(&data).unwrap();
-    {
-        let store = bahaa_store::Store::open(&data.join("wallet.redb")).unwrap();
-        store
-            .save_contact(&bahaa_store::Contact {
-                network: "bsc".parse().unwrap(),
-                address: evm(FRIEND),
-                name: "Friend".to_owned(),
-            })
-            .unwrap();
-    }
     let url = common::node(|call| (answer(call), Duration::ZERO)).await;
     let registry = Registry::with_networks(vec![common::network("bsc", url)]).unwrap();
     let engine = Engine::start(config(&scratch, registry, None)).unwrap();
     engine.create(SecretString::from("pw")).await.unwrap();
+    engine
+        .save_contact(bahaa_store::Contact {
+            network: "bsc".parse().unwrap(),
+            address: evm(FRIEND),
+            name: "Friend".to_owned(),
+        })
+        .await
+        .unwrap();
     let wallet = engine
         .import(SecretString::from(HARDHAT), SecretString::from(""))
         .await
@@ -217,4 +213,51 @@ async fn saved_contacts_count_as_known_addresses() {
     assert_eq!(to_friend.cautions, []);
     let to_impostor = engine.prepare_send(bnb(wallet, LIKE_FRIEND)).await.unwrap();
     assert_eq!(to_impostor.cautions, [Caution::LooksLike(evm(FRIEND))]);
+}
+
+#[tokio::test]
+async fn saved_data_is_sealed_on_disk_and_closed_while_locked() {
+    let scratch = Scratch::new();
+    let url = common::node(|call| (answer(call), Duration::ZERO)).await;
+    let registry = Registry::with_networks(vec![common::network("bsc", url)]).unwrap();
+    let engine = Engine::start(config(&scratch, registry.clone(), None)).unwrap();
+    let mut events = engine.events();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    let friend = bahaa_store::Contact {
+        network: "bsc".parse().unwrap(),
+        address: evm(FRIEND),
+        name: "Friend".to_owned(),
+    };
+    engine.save_contact(friend.clone()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !matches!(events.recv().await, Ok(Event::Received(_))) {}
+    })
+    .await
+    .unwrap();
+    let arrived = engine.incoming().await.unwrap().transfers;
+    assert_eq!(arrived.len(), 1);
+    engine.lock().await.unwrap();
+    assert!(engine.contacts().await.is_err());
+    assert!(engine.incoming().await.is_err());
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    assert_eq!(
+        engine.contacts().await.unwrap(),
+        std::slice::from_ref(&friend)
+    );
+    assert_eq!(engine.incoming().await.unwrap().transfers, arrived);
+    engine.shutdown().await.unwrap();
+    drop(engine);
+    let raw = std::fs::read(scratch.0.join("data").join("wallet.redb")).unwrap();
+    let text = String::from_utf8_lossy(&raw).to_lowercase();
+    for private in ["friend", "3c44cddd", "f39fd6e5", "70997970", "f39f0000"] {
+        assert!(!text.contains(private), "{private}");
+    }
+    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    assert_eq!(engine.contacts().await.unwrap(), [friend]);
+    assert_eq!(engine.incoming().await.unwrap().transfers, arrived);
 }

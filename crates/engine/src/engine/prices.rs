@@ -56,7 +56,7 @@ impl Worker {
     pub(super) fn remember_prices(&mut self) {
         let live = self.prices.borrow().clone();
         let base = self.settings.fiat.price_base();
-        if live.base != base || live.quotes.is_empty() {
+        if live.base != base || live.quotes.is_empty() || !self.store.is_unlocked() {
             return;
         }
         if self.saved.base != base {

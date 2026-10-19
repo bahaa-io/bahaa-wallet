@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
 use bahaa_store::{
     Contact, CustomToken, Outgoing, Received, SavedPrices, SavedQuote, Scan, SentStatus, SentTx,
-    Store, StoreError, TrustedBlock,
+    Store, StoreError, StoreKey, TrustedBlock,
 };
 use bahaa_types::{Address, Amount, ChainFamily, Price};
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use zeroize::Zeroizing;
 
 struct Scratch(PathBuf);
 
@@ -35,6 +36,19 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+fn key(byte: u8) -> StoreKey {
+    StoreKey::new(
+        Zeroizing::new([byte; 32]),
+        Zeroizing::new([byte ^ 0xff; 32]),
+    )
+}
+
+fn unlocked(scratch: &Scratch) -> Store {
+    let store = Store::open(&scratch.file()).unwrap();
+    store.unlock(key(7)).unwrap();
+    store
 }
 
 fn evm(text: &str) -> Address {
@@ -66,7 +80,7 @@ fn token() -> CustomToken {
 #[test]
 fn a_new_store_starts_empty_with_default_settings() {
     let scratch = Scratch::new();
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     assert_eq!(store.settings().unwrap(), Settings::default());
     assert_eq!(store.contacts().unwrap(), []);
     assert_eq!(store.tokens().unwrap(), []);
@@ -81,12 +95,12 @@ fn everything_survives_a_restart() {
         ..Settings::default()
     };
     {
-        let store = Store::open(&scratch.file()).unwrap();
+        let store = unlocked(&scratch);
         store.save_settings(&settings).unwrap();
         store.save_contact(&contact("Mom")).unwrap();
         store.save_token(&token()).unwrap();
     }
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     assert_eq!(store.settings().unwrap(), settings);
     assert_eq!(store.contacts().unwrap(), [contact("Mom")]);
     assert_eq!(store.tokens().unwrap(), [token()]);
@@ -95,7 +109,7 @@ fn everything_survives_a_restart() {
 #[test]
 fn contacts_are_keyed_by_network_and_address() {
     let scratch = Scratch::new();
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     store.save_contact(&contact("Mom")).unwrap();
     store.save_contact(&contact("Mother")).unwrap();
     let on_eth = Contact {
@@ -103,13 +117,14 @@ fn contacts_are_keyed_by_network_and_address() {
         ..contact("Mom on Ethereum")
     };
     store.save_contact(&on_eth).unwrap();
-    let names: Vec<String> = store
+    let mut names: Vec<String> = store
         .contacts()
         .unwrap()
         .into_iter()
         .map(|c| c.name)
         .collect();
-    assert_eq!(names, ["Mother", "Mom on Ethereum"]);
+    names.sort();
+    assert_eq!(names, ["Mom on Ethereum", "Mother"]);
     let first = contact("x");
     assert!(
         store
@@ -127,7 +142,7 @@ fn contacts_are_keyed_by_network_and_address() {
 #[test]
 fn contact_names_must_be_plain_text() {
     let scratch = Scratch::new();
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     for name in ["", " Mom", "Mo\u{202E}m", &"a".repeat(41)] {
         assert!(
             matches!(
@@ -143,7 +158,7 @@ fn contact_names_must_be_plain_text() {
 #[test]
 fn custom_tokens_are_validated() {
     let scratch = Scratch::new();
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     let native = CustomToken {
         asset: "bsc".parse().unwrap(),
         ..token()
@@ -204,7 +219,7 @@ fn sent_transactions_are_kept_and_updated_in_place() {
     let first = sent(&format!("0x{}", "ab".repeat(32)), SentStatus::Sending);
     let second = sent(&format!("0x{}", "cd".repeat(32)), SentStatus::Pending);
     {
-        let store = Store::open(&scratch.file()).unwrap();
+        let store = unlocked(&scratch);
         store.save_sent(&first).unwrap();
         store.save_sent(&second).unwrap();
         let mut done = first.clone();
@@ -214,7 +229,7 @@ fn sent_transactions_are_kept_and_updated_in_place() {
         done.fee_paid = Some(Amount::parse("0.00002", 18).unwrap());
         store.save_sent(&done).unwrap();
     }
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     let all = store.sent().unwrap();
     assert_eq!(all.len(), 2);
     let done = all.iter().find(|tx| tx.id == first.id).unwrap();
@@ -226,7 +241,7 @@ fn sent_transactions_are_kept_and_updated_in_place() {
 #[test]
 fn sent_transactions_are_validated() {
     let scratch = Scratch::new();
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     let id = format!("0x{}", "ab".repeat(32));
     let mut keeps_bytes = sent(&id, SentStatus::Confirmed);
     keeps_bytes.raw = Some("02f8".to_owned());
@@ -301,7 +316,7 @@ fn received(index: u64) -> Received {
 fn a_scan_and_what_it_found_are_saved_together() {
     let scratch = Scratch::new();
     {
-        let store = Store::open(&scratch.file()).unwrap();
+        let store = unlocked(&scratch);
         store
             .save_scan(&scan(200), &[received(1), received(2)], &[outgoing(4)])
             .unwrap();
@@ -309,16 +324,20 @@ fn a_scan_and_what_it_found_are_saved_together() {
             .save_scan(&scan(300), &[received(2)], &[outgoing(4), outgoing(5)])
             .unwrap();
     }
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     assert_eq!(store.scans().unwrap(), [scan(300)]);
-    assert_eq!(store.received().unwrap(), [received(1), received(2)]);
-    assert_eq!(store.outgoing().unwrap(), [outgoing(4), outgoing(5)]);
+    let mut found = store.received().unwrap();
+    found.sort_by_key(|entry| entry.index);
+    assert_eq!(found, [received(1), received(2)]);
+    let mut sent = store.outgoing().unwrap();
+    sent.sort_by_key(|entry| entry.index);
+    assert_eq!(sent, [outgoing(4), outgoing(5)]);
 }
 
 #[test]
 fn a_bad_scan_saves_nothing() {
     let scratch = Scratch::new();
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     let mut foreign = received(1);
     foreign.to = evm("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
     let mut hidden = received(2);
@@ -361,7 +380,7 @@ fn trusted(network: &str, seqno: u32) -> TrustedBlock {
 fn the_latest_trusted_block_of_each_network_survives_a_restart() {
     let scratch = Scratch::new();
     {
-        let store = Store::open(&scratch.file()).unwrap();
+        let store = unlocked(&scratch);
         assert_eq!(store.trusted().unwrap(), Vec::new());
         store.save_trusted(&trusted("ton", 99_746_941)).unwrap();
         store.save_trusted(&trusted("ton", 99_766_000)).unwrap();
@@ -375,7 +394,7 @@ fn the_latest_trusted_block_of_each_network_survives_a_restart() {
             ))
         );
     }
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     assert_eq!(
         store.trusted().unwrap(),
         [
@@ -407,7 +426,7 @@ fn refuses_data_from_a_newer_version() {
 #[test]
 fn damaged_entries_are_reported_not_trusted() {
     let scratch = Scratch::new();
-    drop(Store::open(&scratch.file()).unwrap());
+    drop(unlocked(&scratch));
     {
         let db = Database::create(scratch.file()).unwrap();
         let txn = db.begin_write().unwrap();
@@ -417,7 +436,7 @@ fn damaged_entries_are_reported_not_trusted() {
             .unwrap();
         txn.commit().unwrap();
     }
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     assert!(matches!(store.contacts(), Err(StoreError::Corrupt(_))));
 }
 
@@ -436,7 +455,7 @@ fn only_one_wallet_can_use_the_data_at_a_time() {
 fn the_data_file_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let scratch = Scratch::new();
-    drop(Store::open(&scratch.file()).unwrap());
+    drop(unlocked(&scratch));
     let mode = std::fs::metadata(Path::new(&scratch.file()))
         .unwrap()
         .permissions()
@@ -456,7 +475,7 @@ fn the_last_prices_of_each_base_survive_a_restart() {
         }],
     };
     {
-        let store = Store::open(&scratch.file()).unwrap();
+        let store = unlocked(&scratch);
         assert_eq!(store.prices("USDT").unwrap(), None);
         store.save_prices(&usdt).unwrap();
         let mut bad = usdt.clone();
@@ -472,7 +491,7 @@ fn the_last_prices_of_each_base_survive_a_restart() {
             Err(StoreError::Invalid(_))
         ));
     }
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     assert_eq!(store.prices("USDT").unwrap(), Some(usdt));
     assert_eq!(store.prices("IRT").unwrap(), None);
 }
@@ -481,7 +500,7 @@ fn the_last_prices_of_each_base_survive_a_restart() {
 fn each_wallet_keeps_its_own_accounts() {
     let scratch = Scratch::new();
     {
-        let store = Store::open(&scratch.file()).unwrap();
+        let store = unlocked(&scratch);
         assert_eq!(store.account_indexes(1).unwrap(), [0]);
         store.save_account_indexes(1, &[0, 1, 4]).unwrap();
         for bad in [&[][..], &[1, 0], &[2, 2], &[1u32 << 31]] {
@@ -493,9 +512,99 @@ fn each_wallet_keeps_its_own_accounts() {
         let many: Vec<u32> = (0..21).collect();
         assert!(store.save_account_indexes(2, &many).is_err());
     }
-    let store = Store::open(&scratch.file()).unwrap();
+    let store = unlocked(&scratch);
     assert_eq!(store.account_indexes(1).unwrap(), [0, 1, 4]);
     assert_eq!(store.account_indexes(2).unwrap(), [0]);
     store.forget_account_indexes(1).unwrap();
     assert_eq!(store.account_indexes(1).unwrap(), [0]);
+}
+
+#[test]
+fn private_data_is_sealed_at_rest_and_needs_the_key() {
+    let scratch = Scratch::new();
+    {
+        let store = unlocked(&scratch);
+        store.save_contact(&contact("Alice")).unwrap();
+        store
+            .save_sent(&sent(&"ab".repeat(32), SentStatus::Confirmed))
+            .unwrap();
+        store.save_trusted(&trusted("ton", 9)).unwrap();
+    }
+    {
+        let db = Database::create(scratch.file()).unwrap();
+        let txn = db.begin_read().unwrap();
+        for name in ["contacts", "sent"] {
+            let table = txn
+                .open_table(TableDefinition::<&str, &[u8]>::new(name))
+                .unwrap();
+            for entry in table.iter().unwrap() {
+                let (key, value) = entry.unwrap();
+                let key = key.value().to_owned();
+                let value = String::from_utf8_lossy(value.value()).into_owned();
+                assert_eq!(key.len(), 64, "{name}");
+                for secret in ["Alice", "70997970", "abab", "bsc"] {
+                    assert!(!key.contains(secret) && !value.contains(secret), "{name}");
+                }
+            }
+        }
+    }
+    let store = Store::open(&scratch.file()).unwrap();
+    assert!(matches!(store.contacts(), Err(StoreError::Locked)));
+    assert!(matches!(
+        store.save_contact(&contact("Bob")),
+        Err(StoreError::Locked)
+    ));
+    assert_eq!(store.trusted().unwrap().len(), 1);
+    assert!(matches!(store.unlock(key(8)), Err(StoreError::OtherVault)));
+    store.unlock(key(7)).unwrap();
+    assert_eq!(store.contacts().unwrap(), [contact("Alice")]);
+    store.lock();
+    assert!(matches!(store.sent(), Err(StoreError::Locked)));
+    store.adopt(key(8)).unwrap();
+    assert_eq!(store.contacts().unwrap().len(), 0);
+    assert_eq!(store.sent().unwrap().len(), 0);
+    assert_eq!(store.trusted().unwrap().len(), 1);
+}
+
+#[test]
+fn data_from_before_sealing_is_sealed_on_the_first_unlock() {
+    let scratch = Scratch::new();
+    drop(Store::open(&scratch.file()).unwrap());
+    let alice = contact("Alice");
+    {
+        let db = Database::create(scratch.file()).unwrap();
+        let txn = db.begin_write().unwrap();
+        txn.open_table(TableDefinition::<&str, u64>::new("meta"))
+            .unwrap()
+            .insert("schema", 1)
+            .unwrap();
+        let json = serde_json::to_vec(&alice).unwrap();
+        txn.open_table(TableDefinition::<&str, &[u8]>::new("contacts"))
+            .unwrap()
+            .insert("plain", json.as_slice())
+            .unwrap();
+        txn.commit().unwrap();
+    }
+    let store = unlocked(&scratch);
+    assert_eq!(store.contacts().unwrap(), std::slice::from_ref(&alice));
+    drop(store);
+    {
+        let db = Database::create(scratch.file()).unwrap();
+        let txn = db.begin_read().unwrap();
+        let table = txn
+            .open_table(TableDefinition::<&str, &[u8]>::new("contacts"))
+            .unwrap();
+        let (key, value) = table.iter().unwrap().next().unwrap().unwrap();
+        assert_ne!(key.value(), "plain");
+        assert!(!String::from_utf8_lossy(value.value()).contains("Alice"));
+        let schema = txn
+            .open_table(TableDefinition::<&str, u64>::new("meta"))
+            .unwrap()
+            .get("schema")
+            .unwrap()
+            .unwrap()
+            .value();
+        assert_eq!(schema, 2);
+    }
+    assert_eq!(unlocked(&scratch).contacts().unwrap(), [alice]);
 }

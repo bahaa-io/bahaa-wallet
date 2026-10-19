@@ -1,14 +1,20 @@
 use std::fs::OpenOptions;
 use std::path::Path;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard};
 
 use bahaa_config::{Checkpoint, Coin, Settings};
 use bahaa_types::{Address, Amount, AssetId, NetworkId, Price, PriceId, is_plain_text};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableHandle};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const SCHEMA: u64 = 1;
+mod seal;
+
+pub use seal::StoreKey;
+
+const SCHEMA: u64 = 2;
+const PLAIN_SCHEMA: u64 = 1;
 const SCHEMA_KEY: &str = "schema";
 const SETTINGS_KEY: &str = "settings";
 const MAX_CONTACT_NAME: usize = 40;
@@ -28,6 +34,12 @@ const OUTGOING: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("ou
 const TRUSTED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("trusted");
 const PRICES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("prices");
 const ACCOUNTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("accounts");
+const SEAL: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("seal");
+const SEALED: [TableDefinition<'static, &str, &[u8]>; 8] = [
+    CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS,
+];
+const CHECK: &str = "check";
+const CHECKED: &[u8] = b"bahaa store";
 pub const MAX_ACCOUNTS: usize = 20;
 const HIGHEST_INDEX: u32 = (1 << 31) - 1;
 
@@ -43,6 +55,10 @@ pub enum StoreError {
     Corrupt(String),
     #[error("local database error: {0}")]
     Database(String),
+    #[error("unlock the wallet to read its saved data")]
+    Locked,
+    #[error("the saved data belongs to another vault")]
+    OtherVault,
     #[error("could not access the data file: {0}")]
     Io(std::io::ErrorKind),
 }
@@ -170,15 +186,134 @@ pub struct SavedQuote {
 
 pub struct Store {
     db: Database,
+    key: RwLock<Option<StoreKey>>,
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         prepare(path)?;
         let db = Database::create(path).map_err(database)?;
-        let store = Self { db };
+        let store = Self {
+            db,
+            key: RwLock::new(None),
+        };
         store.migrate()?;
         Ok(store)
+    }
+
+    pub fn unlock(&self, key: StoreKey) -> Result<(), StoreError> {
+        self.take(key, false)
+    }
+
+    pub fn adopt(&self, key: StoreKey) -> Result<(), StoreError> {
+        self.take(key, true)
+    }
+
+    pub fn lock(&self) {
+        *self.key.write().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    pub fn is_unlocked(&self) -> bool {
+        self.key().is_some()
+    }
+
+    fn take(&self, key: StoreKey, fresh: bool) -> Result<(), StoreError> {
+        let txn = self.db.begin_write().map_err(database)?;
+        {
+            let mut meta = txn.open_table(META).map_err(database)?;
+            let schema = meta
+                .get(SCHEMA_KEY)
+                .map_err(database)?
+                .map_or(SCHEMA, |value| value.value());
+            let mut seal = txn.open_table(SEAL).map_err(database)?;
+            let check = key.name(SEAL.name(), CHECK)?;
+            let known = seal.get(check.as_str()).map_err(database)?.is_some();
+            let foreign = !known && seal.iter().map_err(database)?.next().is_some();
+            if schema == PLAIN_SCHEMA {
+                for table in SEALED {
+                    let mut opened = txn.open_table(table).map_err(database)?;
+                    let mut plain = Vec::new();
+                    for entry in opened.iter().map_err(database)? {
+                        let (name, value) = entry.map_err(database)?;
+                        plain.push((name.value().to_owned(), value.value().to_vec()));
+                    }
+                    for (name, value) in plain {
+                        opened.remove(name.as_str()).map_err(database)?;
+                        let sealed_name = key.name(table.name(), &name)?;
+                        let sealed = key.seal(table.name(), &sealed_name, &value)?;
+                        opened
+                            .insert(sealed_name.as_str(), sealed.as_slice())
+                            .map_err(database)?;
+                    }
+                }
+            } else if foreign && !fresh {
+                return Err(StoreError::OtherVault);
+            } else if foreign {
+                for table in SEALED {
+                    let mut opened = txn.open_table(table).map_err(database)?;
+                    opened.retain(|_, _| false).map_err(database)?;
+                }
+                seal.retain(|_, _| false).map_err(database)?;
+            }
+            if known {
+                let stored = seal
+                    .get(check.as_str())
+                    .map_err(database)?
+                    .map(|value| value.value().to_vec())
+                    .unwrap_or_default();
+                if key
+                    .open(SEAL.name(), &check, &stored)
+                    .ok()
+                    .as_deref()
+                    .map(Vec::as_slice)
+                    != Some(CHECKED)
+                {
+                    return Err(StoreError::OtherVault);
+                }
+            } else {
+                let sealed = key.seal(SEAL.name(), &check, CHECKED)?;
+                seal.insert(check.as_str(), sealed.as_slice())
+                    .map_err(database)?;
+            }
+            meta.insert(SCHEMA_KEY, SCHEMA).map_err(database)?;
+        }
+        txn.commit().map_err(database)?;
+        *self.key.write().unwrap_or_else(PoisonError::into_inner) = Some(key);
+        Ok(())
+    }
+
+    fn key(&self) -> RwLockReadGuard<'_, Option<StoreKey>> {
+        self.key.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn entry(
+        &self,
+        table: TableDefinition<'_, &str, &[u8]>,
+        key: &str,
+        bytes: &[u8],
+    ) -> Result<(String, Vec<u8>), StoreError> {
+        if !sealed(table) {
+            return Ok((key.to_owned(), bytes.to_vec()));
+        }
+        let guard = self.key();
+        let seal = guard.as_ref().ok_or(StoreError::Locked)?;
+        let name = seal.name(table.name(), key)?;
+        let value = seal.seal(table.name(), &name, bytes)?;
+        Ok((name, value))
+    }
+
+    fn stored_name(
+        &self,
+        table: TableDefinition<'_, &str, &[u8]>,
+        key: &str,
+    ) -> Result<String, StoreError> {
+        if !sealed(table) {
+            return Ok(key.to_owned());
+        }
+        self.key()
+            .as_ref()
+            .ok_or(StoreError::Locked)?
+            .name(table.name(), key)
     }
 
     pub fn settings(&self) -> Result<Settings, StoreError> {
@@ -328,21 +463,24 @@ impl Store {
             let mut received = txn.open_table(RECEIVED).map_err(database)?;
             for entry in found {
                 let key = format!("{}/{}/{}", entry.network, entry.id, entry.index);
+                let (name, value) = self.entry(RECEIVED, &key, &encode(entry)?)?;
                 received
-                    .insert(key.as_str(), encode(entry)?.as_slice())
+                    .insert(name.as_str(), value.as_slice())
                     .map_err(database)?;
             }
             let mut outgoing = txn.open_table(OUTGOING).map_err(database)?;
             for entry in sent {
                 let key = format!("{}/{}/{}", entry.network, entry.id, entry.index);
+                let (name, value) = self.entry(OUTGOING, &key, &encode(entry)?)?;
                 outgoing
-                    .insert(key.as_str(), encode(entry)?.as_slice())
+                    .insert(name.as_str(), value.as_slice())
                     .map_err(database)?;
             }
             let key = address_key(&scan.network, &scan.address);
+            let (name, value) = self.entry(SCANS, &key, &encode(scan)?)?;
             txn.open_table(SCANS)
                 .map_err(database)?
-                .insert(key.as_str(), encode(scan)?.as_slice())
+                .insert(name.as_str(), value.as_slice())
                 .map_err(database)?;
         }
         txn.commit().map_err(database)
@@ -422,7 +560,7 @@ impl Store {
             }
             for table in [
                 SETTINGS, CONTACTS, TOKENS, SENT, RECEIVED, SCANS, TRUSTED, OUTGOING, PRICES,
-                ACCOUNTS,
+                ACCOUNTS, SEAL,
             ] {
                 txn.open_table(table).map_err(database)?;
             }
@@ -435,12 +573,20 @@ impl Store {
         table: TableDefinition<'_, &str, &[u8]>,
         key: &str,
     ) -> Result<Option<Vec<u8>>, StoreError> {
+        let name = self.stored_name(table, key)?;
         let txn = self.db.begin_read().map_err(database)?;
-        let table = txn.open_table(table).map_err(database)?;
-        Ok(table
-            .get(key)
-            .map_err(database)?
-            .map(|value| value.value().to_vec()))
+        let opened = txn.open_table(table).map_err(database)?;
+        let Some(value) = opened.get(name.as_str()).map_err(database)? else {
+            return Ok(None);
+        };
+        if !sealed(table) {
+            return Ok(Some(value.value().to_vec()));
+        }
+        let guard = self.key();
+        let seal = guard.as_ref().ok_or(StoreError::Locked)?;
+        Ok(Some(
+            seal.open(table.name(), &name, value.value())?.to_vec(),
+        ))
     }
 
     fn put(
@@ -449,10 +595,11 @@ impl Store {
         key: &str,
         bytes: &[u8],
     ) -> Result<(), StoreError> {
+        let (name, value) = self.entry(table, key, bytes)?;
         let txn = self.db.begin_write().map_err(database)?;
         txn.open_table(table)
             .map_err(database)?
-            .insert(key, bytes)
+            .insert(name.as_str(), value.as_slice())
             .map_err(database)?;
         txn.commit().map_err(database)
     }
@@ -462,11 +609,12 @@ impl Store {
         table: TableDefinition<'_, &str, &[u8]>,
         key: &str,
     ) -> Result<bool, StoreError> {
+        let name = self.stored_name(table, key)?;
         let txn = self.db.begin_write().map_err(database)?;
         let removed = txn
             .open_table(table)
             .map_err(database)?
-            .remove(key)
+            .remove(name.as_str())
             .map_err(database)?
             .is_some();
         txn.commit().map_err(database)?;
@@ -477,18 +625,34 @@ impl Store {
         &self,
         table: TableDefinition<'_, &str, &[u8]>,
     ) -> Result<Vec<T>, StoreError> {
+        let guard = self.key();
+        let seal = if sealed(table) {
+            Some(guard.as_ref().ok_or(StoreError::Locked)?)
+        } else {
+            None
+        };
         let txn = self.db.begin_read().map_err(database)?;
-        let table = txn.open_table(table).map_err(database)?;
-        table
+        let opened = txn.open_table(table).map_err(database)?;
+        opened
             .iter()
             .map_err(database)?
             .map(|entry| {
-                let (_, value) = entry.map_err(database)?;
-                serde_json::from_slice(value.value())
-                    .map_err(|err| StoreError::Corrupt(err.to_string()))
+                let (name, value) = entry.map_err(database)?;
+                let read = |bytes: &[u8]| {
+                    serde_json::from_slice(bytes)
+                        .map_err(|err| StoreError::Corrupt(err.to_string()))
+                };
+                match seal {
+                    Some(seal) => read(&seal.open(table.name(), name.value(), value.value())?),
+                    None => read(value.value()),
+                }
             })
             .collect()
     }
+}
+
+fn sealed(table: TableDefinition<'_, &str, &[u8]>) -> bool {
+    SEALED.iter().any(|known| known.name() == table.name())
 }
 
 fn memo_ok(memo: Option<&String>) -> bool {

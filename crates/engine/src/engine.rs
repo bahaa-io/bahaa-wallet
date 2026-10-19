@@ -16,7 +16,8 @@ use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{
-    Contact, CustomToken, Outgoing, Received, Scan, SentTx, Store, StoreError, TrustedBlock,
+    Contact, CustomToken, Outgoing, Received, Scan, SentTx, Store, StoreError, StoreKey,
+    TrustedBlock,
 };
 use bahaa_types::{Address, AssetId, NetworkId, TonContract};
 use bahaa_vault::KdfParams;
@@ -208,21 +209,12 @@ impl Engine {
         let store = Store::open(&data_dir.join(STORE_FILE))?;
         let settings = store.settings()?;
         let saved = prices::saved(&store, settings.fiat.price_base());
-        let custom = Arc::new(store.tokens()?);
-        let mut history = store.sent()?;
-        history.sort_by_key(|tx| std::cmp::Reverse(tx.created_at));
-        let scans = store.scans()?;
-        let mut received = store.received()?;
-        incoming::sort(&mut received);
-        let mut outgoing = store.outgoing()?;
-        incoming::sort_sent(&mut outgoing);
         let registry = match registry {
             Some(registry) => registry,
             None => Registry::builtin()?,
         };
         let chains: Arc<Vec<AnyChain>> = Arc::new(chains::build(&registry));
         chains::restore(&chains, &store.trusted()?);
-        chains::know(&chains, &custom);
         let trusted = chains::trusted(&chains);
         let keyring = Keyring::new(data_dir.join(VAULT_FILE), kdf);
         let initial = if keyring.exists() {
@@ -247,7 +239,7 @@ impl Engine {
             store,
             registry,
             chains,
-            custom,
+            custom: Arc::new(Vec::new()),
             settings,
             market,
             prices: market_prices(&prices),
@@ -272,10 +264,10 @@ impl Engine {
             session: 0,
             drafts: BTreeMap::new(),
             next_draft: 0,
-            history,
-            scans,
-            received,
-            outgoing,
+            history: Vec::new(),
+            scans: Vec::new(),
+            received: Vec::new(),
+            outgoing: Vec::new(),
             trusted,
             broadcasting: BTreeSet::new(),
             tracking: None,
@@ -601,13 +593,19 @@ impl Worker {
         match command {
             Command::Create(password, reply) => {
                 let result = self
-                    .keyring(move |keyring| keyring.create(password.expose_secret().as_bytes()))
+                    .keyring(move |keyring| {
+                        keyring.create(password.expose_secret().as_bytes())?;
+                        keyring.store_key()
+                    })
                     .await;
                 self.opened(result, reply).await;
             }
             Command::Unlock(password, reply) => {
                 let result = self
-                    .keyring(move |keyring| keyring.unlock(password.expose_secret().as_bytes()))
+                    .keyring(move |keyring| {
+                        keyring.unlock(password.expose_secret().as_bytes())?;
+                        keyring.store_key()
+                    })
                     .await;
                 self.opened(result, reply).await;
             }
@@ -764,11 +762,54 @@ impl Worker {
         self.keyring.as_ref().is_some_and(Keyring::is_unlocked)
     }
 
-    async fn opened(&mut self, result: Result<(), EngineError>, reply: Reply<()>) {
-        if result.is_ok() {
-            self.after_unlock().await;
+    async fn opened(&mut self, result: Result<StoreKey, EngineError>, reply: Reply<()>) {
+        let result = result.and_then(|key| self.open_store(key));
+        match result {
+            Ok(()) => self.after_unlock().await,
+            Err(_) => self.lock(),
         }
         let _ = reply.send(result);
+    }
+
+    fn open_store(&mut self, key: StoreKey) -> Result<(), EngineError> {
+        match self.store.unlock(key) {
+            Err(StoreError::OtherVault) => {
+                let keyring = self.keyring.as_ref().ok_or(EngineError::Stopped)?;
+                self.store.adopt(keyring.store_key()?)?;
+            }
+            opened => opened?,
+        }
+        let custom = self.store.tokens()?;
+        let mut history = self.store.sent()?;
+        history.sort_by_key(|tx| std::cmp::Reverse(tx.created_at));
+        let scans = self.store.scans()?;
+        let mut received = self.store.received()?;
+        incoming::sort(&mut received);
+        let mut outgoing = self.store.outgoing()?;
+        incoming::sort_sent(&mut outgoing);
+        chains::know(&self.chains, &custom);
+        self.custom = Arc::new(custom);
+        self.history = history;
+        self.scans = scans;
+        self.received = received;
+        self.outgoing = outgoing;
+        self.saved = prices::saved(&self.store, self.settings.fiat.price_base());
+        self.saved_at = None;
+        self.unsaved = false;
+        self.remember_prices();
+        Ok(())
+    }
+
+    fn forget_private(&mut self) {
+        self.store.lock();
+        self.custom = Arc::new(Vec::new());
+        self.history.clear();
+        self.scans.clear();
+        self.received.clear();
+        self.outgoing.clear();
+        self.saved = prices::saved(&self.store, self.settings.fiat.price_base());
+        self.saved_at = None;
+        self.unsaved = false;
     }
 
     async fn after_unlock(&mut self) {
@@ -988,6 +1029,7 @@ impl Worker {
         self.held.clear();
         self.health.clear();
         self.keep_prices();
+        self.forget_private();
         let state = if self.keyring.as_ref().is_some_and(Keyring::exists) {
             State::Locked
         } else {

@@ -184,3 +184,19 @@ fn files_are_written_atomically_and_privately() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn subkeys_are_stable_per_vault_and_label() {
+    let mut vault = Vault::create(PASSWORD, FAST).unwrap();
+    let file = vault.seal(PAYLOAD).unwrap();
+    let index = vault.subkey(b"index").unwrap();
+    assert_ne!(*index, *vault.subkey(b"data").unwrap());
+    let (reopened, _) = Vault::open(&file, PASSWORD).unwrap();
+    assert_eq!(*reopened.subkey(b"index").unwrap(), *index);
+    vault.change_password(b"another password", FAST).unwrap();
+    let moved = vault.seal(PAYLOAD).unwrap();
+    let (moved, _) = Vault::open(&moved, b"another password").unwrap();
+    assert_eq!(*moved.subkey(b"index").unwrap(), *index);
+    let other = Vault::create(PASSWORD, FAST).unwrap();
+    assert_ne!(*other.subkey(b"index").unwrap(), *index);
+}

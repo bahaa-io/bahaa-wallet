@@ -6,6 +6,7 @@ use bahaa_crypto::{
     ExposeSecret, Mnemonic, MnemonicError, SecretString, Seed, TonMnemonic, TonPhraseError,
     WordCount,
 };
+use bahaa_store::StoreKey;
 use bahaa_types::TonContract;
 use bahaa_vault::{KdfParams, Vault, VaultError};
 use thiserror::Error;
@@ -188,6 +189,14 @@ impl Keyring {
 
     pub fn lock(&mut self) {
         self.session = None;
+    }
+
+    pub fn store_key(&self) -> Result<StoreKey, KeyringError> {
+        let vault = &self.session()?.vault;
+        Ok(StoreKey::new(
+            vault.subkey(b"bahaa store names")?,
+            vault.subkey(b"bahaa store data")?,
+        ))
     }
 
     pub fn wallets(&self) -> Result<Vec<WalletInfo>, KeyringError> {

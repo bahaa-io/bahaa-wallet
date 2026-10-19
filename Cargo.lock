@@ -998,11 +998,15 @@ version = "0.0.0"
 dependencies = [
  "bahaa-config",
  "bahaa-types",
+ "chacha20poly1305",
  "getrandom 0.4.3",
+ "hmac",
  "redb",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
+ "zeroize",
 ]
 
 [[package]]
@@ -1071,7 +1075,9 @@ dependencies = [
  "argon2",
  "chacha20poly1305",
  "getrandom 0.4.3",
+ "hmac",
  "secrecy",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "zeroize",
 ]

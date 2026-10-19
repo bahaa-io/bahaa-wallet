@@ -3,7 +3,9 @@ use std::fmt;
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{AeadInOut, KeyInit};
 use chacha20poly1305::{Tag, XChaCha20Poly1305, XNonce};
+use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, ExposeSecretMut, SecretBox};
+use sha2::Sha256;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -158,6 +160,15 @@ impl Vault {
 
     pub fn params(&self) -> KdfParams {
         self.params
+    }
+
+    pub fn subkey(&self, label: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>, VaultError> {
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(self.key.expose_secret())
+            .map_err(|_| VaultError::Format)?;
+        mac.update(label);
+        let mut key = Zeroizing::new([0u8; KEY_LEN]);
+        key.copy_from_slice(&mac.finalize().into_bytes());
+        Ok(key)
     }
 
     fn header(&self) -> [u8; HEADER_LEN] {
