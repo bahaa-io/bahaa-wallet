@@ -14,7 +14,7 @@ pub enum Action {
     Quit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Field {
     Password,
     NewPassword,
