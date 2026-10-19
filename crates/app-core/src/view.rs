@@ -1,0 +1,158 @@
+use std::fmt;
+use std::sync::Arc;
+
+use zeroize::Zeroizing;
+
+use crate::action::{Action, Field};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct View {
+    pub page: Page,
+    pub tabs: Vec<Choice>,
+    pub banner: Option<String>,
+    pub toasts: Vec<Toast>,
+    pub busy: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Page {
+    pub id: PageId,
+    pub title: String,
+    pub text: Option<String>,
+    pub headline: Option<String>,
+    pub lines: Vec<Line>,
+    pub groups: Vec<Group>,
+    pub inputs: Vec<Input>,
+    pub table: Option<Table>,
+    pub notes: Vec<Note>,
+    pub error: Option<String>,
+    pub buttons: Vec<Button>,
+    pub qr: Option<String>,
+    pub secret: Option<Secret>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PageId {
+    #[default]
+    Starting,
+    Welcome,
+    NewPassword,
+    Phrase,
+    Verify,
+    Import,
+    Unlock,
+    Portfolio,
+    Asset,
+    Activity,
+    Transfer,
+    Compose,
+    Review,
+    Confirm,
+    Sent,
+    Receive,
+    Contacts,
+    Contact,
+    Settings,
+    Wallet,
+    Reveal,
+    RemoveWallet,
+    Tokens,
+    NewToken,
+    ChangePassword,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Group {
+    pub label: String,
+    pub choices: Vec<Choice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Choice {
+    pub label: String,
+    pub action: Action,
+    pub selected: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Input {
+    pub field: Field,
+    pub label: String,
+    pub value: String,
+    pub secret: bool,
+    pub hint: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Table {
+    pub columns: Vec<String>,
+    pub rows: Vec<Row>,
+    pub empty: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub cells: Vec<String>,
+    pub open: Option<Action>,
+    pub warn: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    pub level: Level,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Button {
+    pub label: String,
+    pub action: Action,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Toast {
+    pub id: u64,
+    pub level: Level,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Request {
+    Copy(String),
+    ClearClipboard,
+    Open(String),
+    Quit,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(Arc<Zeroizing<Vec<String>>>);
+
+impl Secret {
+    pub(crate) fn new(words: Vec<String>) -> Self {
+        Self(Arc::new(Zeroizing::new(words)))
+    }
+
+    pub fn words(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Secret([redacted])")
+    }
+}
