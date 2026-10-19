@@ -14,6 +14,7 @@ const MAX_DOUBLINGS: u32 = 10;
 pub enum Failure<E> {
     Retry(E),
     RateLimited(E, Option<Duration>),
+    Unreachable(E),
     Unsupported(E),
     Fatal(E),
 }
@@ -43,6 +44,7 @@ pub struct EndpointStatus {
 #[derive(Debug)]
 pub struct Pool {
     slots: Vec<Slot>,
+    balanced: bool,
 }
 
 #[derive(Debug)]
@@ -70,6 +72,14 @@ impl Pool {
                     health: Mutex::new(Health::default()),
                 })
                 .collect(),
+            balanced: false,
+        }
+    }
+
+    pub fn balanced(endpoints: Vec<Endpoint>) -> Self {
+        Self {
+            balanced: true,
+            ..Self::new(endpoints)
         }
     }
 
@@ -144,11 +154,21 @@ impl Pool {
             return Err(PoolError::NoEndpoint);
         }
         let now = Instant::now();
-        let ready = candidates
+        let mut ready: Vec<&Slot> = candidates
             .iter()
             .copied()
             .filter(|slot| slot.available(now))
             .collect();
+        if self.balanced {
+            ready.sort_by_key(|slot| {
+                let health = slot.health();
+                (
+                    health.failures > 0,
+                    health.latency.is_none(),
+                    health.latency,
+                )
+            });
+        }
         Ok(Pick {
             candidates,
             ready,
@@ -228,6 +248,10 @@ impl Slot {
             }
             Err(Failure::RateLimited(err, wait)) => {
                 self.failed(Some(wait.unwrap_or(COOLDOWN_BASE)), history);
+                Seen::Failed(err)
+            }
+            Err(Failure::Unreachable(err)) => {
+                self.failed(Some(COOLDOWN_MAX), history);
                 Seen::Failed(err)
             }
             Err(Failure::Unsupported(err)) => {

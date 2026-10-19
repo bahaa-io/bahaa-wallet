@@ -250,6 +250,7 @@ mod tests {
         match failure {
             Failure::Retry(_) => "retry",
             Failure::RateLimited(..) => "limited",
+            Failure::Unreachable(_) => "unreachable",
             Failure::Unsupported(_) => "unsupported",
             Failure::Fatal(_) => "fatal",
         }

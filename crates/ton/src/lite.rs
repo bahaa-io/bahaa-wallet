@@ -25,8 +25,10 @@ use crate::proof::{self, Proven};
 use crate::tl::{self, AccountState, Answer, BlockId, ConfigInfo};
 use crate::transaction::{self, MAX_LISTED, Transaction};
 
-const CONNECT: Duration = Duration::from_secs(5);
+const CONNECT: Duration = Duration::from_secs(2);
 const ANSWER: Duration = Duration::from_secs(10);
+const LAG: i32 = 32;
+const LIVE_WITHIN: u64 = 120;
 const MAX_CONFIG: usize = 1024 * 1024;
 const MAX_SERVERS: usize = 64;
 const MAX_FRAMES: usize = 4;
@@ -197,13 +199,24 @@ impl Lite {
                     let session = servers.session(&endpoint)?;
                     let mut peer = session.lock().await;
                     let outcome = async {
-                        let last = self.connect(&mut peer, &servers, &endpoint).await?;
-                        let open = open(&mut peer)?;
-                        let block = match anchor {
-                            Anchor::Authenticated => self.anchored(open, &last).await?,
-                            Anchor::Unused => last,
+                        let reused = match anchor {
+                            Anchor::Authenticated if peer.is_some() => {
+                                self.trust.recent(None, Instant::now())
+                            }
+                            _ => None,
                         };
-                        let answer = exchange(open, &function(&block), decode).await?;
+                        let block = if let Some(block) = reused {
+                            block
+                        } else {
+                            let last = self.connect(&mut peer, &servers, &endpoint).await?;
+                            match anchor {
+                                Anchor::Authenticated => {
+                                    self.anchored(open(&mut peer)?, &last).await?
+                                }
+                                Anchor::Unused => last,
+                            }
+                        };
+                        let answer = exchange(open(&mut peer)?, &function(&block), decode).await?;
                         finish(&block, answer)
                     }
                     .await;
@@ -235,8 +248,8 @@ impl Lite {
                 .ok_or_else(|| retry("a liteserver has no address"))?;
             let connected = timeout(CONNECT, AdnlPeer::connect(key, address))
                 .await
-                .map_err(|_| retry("a liteserver did not answer in time"))?
-                .map_err(|_| retry("a liteserver refused the connection"))?;
+                .map_err(|_| unreachable("a liteserver did not answer in time"))?
+                .map_err(|_| unreachable("a liteserver refused the connection"))?;
             *peer = Some(connected);
         }
         let open = peer
@@ -257,6 +270,7 @@ impl Lite {
         if let Some(block) = self.trust.recent(Some(last), Instant::now()) {
             return Ok(block);
         }
+        let last = &self.settled(open, last).await?;
         let mut known = self.trust.key();
         for _ in 0..MAX_ROUNDS {
             if last.seqno <= known.seqno {
@@ -278,6 +292,28 @@ impl Lite {
             }
         }
         Err(retry("a liteserver sent a block proof that does not end"))
+    }
+
+    async fn settled(
+        &self,
+        open: &mut AdnlPeer<TcpStream>,
+        last: &BlockId,
+    ) -> Result<BlockId, Failure<ChainError>> {
+        let floor = self.trust.latest().map(|latest| latest.seqno);
+        let Some(seqno) = behind(last.seqno, floor, self.trust.newest(), now()) else {
+            return Ok(*last);
+        };
+        let found = exchange(
+            open,
+            &tl::lookup_block(last.workchain, last.shard, seqno),
+            tl::block_header,
+        )
+        .await?;
+        let same_chain = found.workchain == last.workchain && found.shard == last.shard;
+        if !same_chain || found.seqno != seqno {
+            return Err(retry("a liteserver answered with another block"));
+        }
+        Ok(found)
     }
 
     async fn servers(&self, config: &Url) -> Result<Arc<Servers>, Failure<ChainError>> {
@@ -308,8 +344,24 @@ impl Lite {
         let list: Value =
             serde_json::from_slice(&bytes).map_err(|_| retry("the liteserver list is not JSON"))?;
         let servers = Arc::new(self.read_list(&list)?);
+        self.warm(&servers).await;
         known.insert(config.to_string(), Arc::clone(&servers));
         Ok(servers)
+    }
+
+    async fn warm(&self, servers: &Servers) {
+        let _ = servers
+            .pool
+            .call_all(None, |endpoint| async move {
+                let session = servers.session(&endpoint)?;
+                let mut peer = session.lock().await;
+                let outcome = self.connect(&mut peer, servers, &endpoint).await.map(drop);
+                if outcome.is_err() {
+                    *peer = None;
+                }
+                outcome
+            })
+            .await;
     }
 
     fn read_list(&self, list: &Value) -> Result<Servers, Failure<ChainError>> {
@@ -348,7 +400,7 @@ impl Lite {
         let len = u32::try_from(endpoints.len()).unwrap_or(1);
         endpoints.rotate_left(usize::try_from(turn % len).unwrap_or(0));
         Ok(Servers {
-            pool: Pool::new(endpoints),
+            pool: Pool::balanced(endpoints),
             keys,
             sessions,
         })
@@ -561,6 +613,22 @@ fn outer(err: PoolError<ChainError>) -> Failure<ChainError> {
     }
 }
 
+fn behind(last: i32, floor: Option<i32>, newest: Option<u32>, now: u64) -> Option<i32> {
+    let live = newest.is_some_and(|utime| u64::from(utime).saturating_add(LIVE_WITHIN) >= now);
+    let seqno = last.saturating_sub(LAG).max(floor.unwrap_or(0));
+    (live && seqno < last).then_some(seqno)
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+fn unreachable(text: &str) -> Failure<ChainError> {
+    Failure::Unreachable(ChainError::Network(text.to_owned()))
+}
+
 fn retry(text: &str) -> Failure<ChainError> {
     Failure::Retry(ChainError::Network(text.to_owned()))
 }
@@ -587,6 +655,19 @@ mod tests {
                 file_hash: [0; 32],
             },
         )
+    }
+
+    #[test]
+    fn a_live_chain_is_read_a_little_behind_its_newest_block() {
+        let now = 1_792_400_000;
+        let recent = Some(u32::try_from(now - 5).unwrap());
+        assert_eq!(behind(1_000, None, recent, now), Some(968));
+        assert_eq!(behind(1_000, Some(990), recent, now), Some(990));
+        assert_eq!(behind(1_000, Some(1_000), recent, now), None);
+        assert_eq!(behind(20, None, recent, now), Some(0));
+        let recorded = Some(u32::try_from(now - 86_400).unwrap());
+        assert_eq!(behind(1_000, None, recorded, now), None);
+        assert_eq!(behind(1_000, None, None, now), None);
     }
 
     #[test]

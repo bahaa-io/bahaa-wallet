@@ -507,10 +507,10 @@ async fn proven_gram_and_usdt_arrive_over_adnl() {
     let chain = TonChain::new(network(config(&[server], mainnet()).await)).unwrap();
     let balances = chain.balances(&ton(OWNER), &assets()).await.unwrap();
     assert_eq!(amounts(&balances), ["59570010.146444835", "94631240.538"]);
-    assert_eq!(*asked.lock().unwrap(), 11);
+    assert_eq!(*asked.lock().unwrap(), 9);
     let again = chain.balances(&ton(OWNER), &assets()).await.unwrap();
     assert_eq!(amounts(&again), amounts(&balances));
-    assert_eq!(*asked.lock().unwrap(), 15);
+    assert_eq!(*asked.lock().unwrap(), 11);
     let fresh = chain.balances(&ton(FRESH), &[gram()]).await.unwrap();
     assert_eq!(amounts(&fresh), ["0"]);
 }
@@ -576,7 +576,7 @@ async fn servers_of_another_network_or_not_ready_are_passed_over() {
         assert_eq!(amounts(&balances), ["59570010.146444835"]);
     }
     assert!(*foreign_asked.lock().unwrap() <= 1);
-    assert!(*busy_asked.lock().unwrap() <= 2);
+    assert!(*busy_asked.lock().unwrap() <= 3);
     assert!(*good_asked.lock().unwrap() >= 4);
 }
 
@@ -1197,7 +1197,7 @@ async fn later_scans_read_only_what_is_new() {
         summed(&later.found),
         (12, ruint::aliases::U256::from(1_100_001u64))
     );
-    assert_eq!(*asked.lock().unwrap(), 5);
+    assert_eq!(*asked.lock().unwrap(), 6);
     assert_eq!(
         chain
             .scan(&ton(SENDER), &[gram()], Some(later.cursor))

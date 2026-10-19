@@ -19,7 +19,7 @@ const BLOCK: u32 = 0x11ef_55aa;
 const BLOCK_EXTRA: u32 = 0x4a33_f6fd;
 const MC_BLOCK_EXTRA: u16 = 0xcca5;
 const NODE_ID: u32 = 0x4813_b4c6;
-const FRESH: Duration = Duration::from_secs(3);
+const FRESH: Duration = Duration::from_secs(6);
 const MAX_BEHIND: u32 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +65,14 @@ impl Trust {
 
     pub(crate) fn key(&self) -> BlockId {
         self.lock().key
+    }
+
+    pub(crate) fn latest(&self) -> Option<BlockId> {
+        self.lock().latest.map(|(_, block)| block)
+    }
+
+    pub(crate) fn newest(&self) -> Option<u32> {
+        self.lock().newest
     }
 
     pub(crate) fn recent(&self, last: Option<&BlockId>, now: Instant) -> Option<BlockId> {

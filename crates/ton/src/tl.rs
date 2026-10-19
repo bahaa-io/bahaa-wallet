@@ -15,6 +15,9 @@ const GET_LIBRARIES: u32 = 0xd122_b662;
 const LIBRARY_RESULT: u32 = 0x117a_b96b;
 const MAX_LIBRARIES: u32 = 16;
 const GET_BLOCK_PROOF: u32 = 0x8aea_9c44;
+const LOOKUP_BLOCK: u32 = 0xfac8_f71e;
+const BLOCK_HEADER: u32 = 0x752d_8219;
+const BY_SEQNO: u32 = 1;
 const TO_TARGET: u32 = 0x1001;
 const PARTIAL_BLOCK_PROOF: u32 = 0x8ed0_d2c1;
 const BLOCK_LINK_FORWARD: u32 = 0x520f_ce1c;
@@ -369,6 +372,17 @@ pub(crate) fn get_block_proof(known: &BlockId, target: &BlockId) -> Vec<u8> {
     writer.0
 }
 
+pub(crate) fn lookup_block(workchain: i32, shard: i64, seqno: i32) -> Vec<u8> {
+    let mut writer = Writer::default();
+    writer
+        .u32(LOOKUP_BLOCK)
+        .u32(BY_SEQNO)
+        .i32(workchain)
+        .i64(shard)
+        .i32(seqno);
+    writer.0
+}
+
 pub(crate) fn block_signed(block: &BlockId) -> Vec<u8> {
     let mut writer = Writer::default();
     writer
@@ -501,6 +515,15 @@ pub(crate) fn masterchain_info(answer: &[u8]) -> Option<Answer<MasterchainInfo>>
         let zero_state = reader.int256()?;
         reader.int256()?;
         (workchain == -1).then_some(MasterchainInfo { last, zero_state })
+    })
+}
+
+pub(crate) fn block_header(answer: &[u8]) -> Option<Answer<BlockId>> {
+    read(answer, BLOCK_HEADER, |reader| {
+        let id = reader.block()?;
+        reader.u32()?;
+        reader.bytes()?;
+        Some(id)
     })
 }
 
@@ -789,6 +812,26 @@ mod tests {
             }))
         );
         assert_eq!(account_state(&info.0), None);
+    }
+
+    #[test]
+    fn an_older_block_is_looked_up_by_its_seqno() {
+        let asked = lookup_block(-1, i64::MIN, 99_971_206);
+        assert_eq!(asked[..4], LOOKUP_BLOCK.to_le_bytes());
+        assert_eq!(asked[4..8], 1u32.to_le_bytes());
+        assert_eq!(asked[8..12], (-1i32).to_le_bytes());
+        assert_eq!(asked[12..20], i64::MIN.to_le_bytes());
+        assert_eq!(asked[20..], 99_971_206i32.to_le_bytes());
+        let mut header = Writer::default();
+        header
+            .u32(BLOCK_HEADER)
+            .block(&block())
+            .u32(1)
+            .bytes(b"proof");
+        assert_eq!(block_header(&header.0), Some(Answer::Ok(block())));
+        let mut longer = header.0.clone();
+        longer.push(0);
+        assert_eq!(block_header(&longer), None);
     }
 
     #[test]
