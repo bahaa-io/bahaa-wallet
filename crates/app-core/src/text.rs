@@ -1,6 +1,6 @@
-use bahaa_engine::{Caution, EngineError, FeeItem, Replace, SentStatus, TonContract};
+use bahaa_engine::{Caution, EngineError, FeeItem, Replace, SentStatus, Status, TonContract};
 
-use crate::action::Tab;
+use crate::action::{Direction, Tab};
 use crate::core::Ctx;
 use crate::format;
 
@@ -55,7 +55,7 @@ pub(crate) const UNLOCK: &str = "Unlock your wallet";
 pub(crate) const UNLOCK_BUTTON: &str = "Unlock";
 
 pub(crate) const PORTFOLIO: &str = "Portfolio";
-pub(crate) const PORTFOLIO_COLUMNS: [&str; 4] = ["Asset", "Network", "Amount", "Value"];
+pub(crate) const PORTFOLIO_COLUMNS: [&str; 5] = ["Asset", "Network", "Price", "Amount", "Value"];
 pub(crate) const HOLDING_COLUMNS: [&str; 5] = ["Wallet", "Account", "Address", "Amount", "Value"];
 pub(crate) const WALLETS: &str = "Wallets";
 pub(crate) const ALL_WALLETS: &str = "All";
@@ -66,10 +66,25 @@ pub(crate) const NETWORK: &str = "Network";
 pub(crate) const PRICE: &str = "Price";
 pub(crate) const ASSET: &str = "Asset";
 pub(crate) const PRICES_OFFLINE: &str = "Prices are unavailable right now";
+pub(crate) const OTHER: &str = "Other";
+pub(crate) const CHECKING: &str = "Checking networks…";
+pub(crate) const CONNECTED: &str = "Connected";
+
+pub(crate) const NETWORK_STATUS: &str = "Network status";
+pub(crate) const NETWORK_STATUS_TEXT: &str = "Balances and history come straight from public servers of each network. Prices come from api.bahaa.io.";
+pub(crate) const NETWORK_COLUMNS: [&str; 4] = ["Network", "Balances", "Updated", "History"];
+pub(crate) const PRICES: &str = "Prices";
+pub(crate) const REACHABLE: &str = "Reachable";
+pub(crate) const UNREACHABLE: &str = "Can't reach";
+pub(crate) const NOT_CHECKED: &str = "Checking";
+pub(crate) const HISTORY_OK: &str = "Readable";
+pub(crate) const HISTORY_FAILED: &str = "Can't read now";
+pub(crate) const REFRESH_NOW: &str = "Refresh now";
 
 pub(crate) const ACTIVITY: &str = "Activity";
 pub(crate) const ACTIVITY_COLUMNS: [&str; 5] = ["When", "Amount", "Network", "With", "Status"];
 pub(crate) const NO_ACTIVITY: &str = "No transfers yet";
+pub(crate) const NO_MATCHES: &str = "No transfers match these filters";
 pub(crate) const RECEIVED: &str = "Received";
 pub(crate) const ELSEWHERE: &str = "Sent from another app";
 pub(crate) const TRANSFER: &str = "Transfer";
@@ -178,6 +193,31 @@ pub(crate) const LINK_INVALID: &str = "This payment link is broken";
 pub(crate) const LINK_UNSUPPORTED: &str = "This kind of payment link is not supported";
 pub(crate) const LINK_UNKNOWN_NETWORK: &str =
     "This payment link is for a network the wallet does not have";
+
+pub(crate) fn direction(direction: Direction) -> &'static str {
+    match direction {
+        Direction::All => ALL_WALLETS,
+        Direction::Received => RECEIVED,
+        Direction::Sent => SENT_TITLE,
+    }
+}
+
+pub(crate) fn prices(status: Status) -> &'static str {
+    match status {
+        Status::Idle => "Not needed yet",
+        Status::Live => "Live",
+        Status::Polling => "Updating every 30 seconds",
+        Status::Offline => "Offline",
+    }
+}
+
+pub(crate) fn network_problem(network: &str, problem: &str) -> String {
+    format!("{network}: {problem}")
+}
+
+pub(crate) fn history_problem(network: &str, problem: &str) -> String {
+    format!("{network} history: {problem}")
+}
 
 pub(crate) fn tab(tab: Tab) -> &'static str {
     match tab {

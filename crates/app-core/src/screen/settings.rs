@@ -4,13 +4,14 @@ use super::onboarding::Welcome;
 use super::tokens;
 use super::wallets::Wallet;
 use super::{
-    Screen, button, choice, group, hidden, line, password_inputs, password_problem, wallet_kind,
+    Screen, button, cell, choice, group, hidden, line, password_inputs, password_problem,
+    wallet_kind,
 };
 use crate::action::{Action, Currency, Field, Go, Pick, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::text;
-use crate::view::{Level, Page, PageId, Row, Secret, Table};
+use crate::view::{Level, Page, PageId, Row, Secret, Table, Tone};
 
 const AUTO_LOCK: [u16; 5] = [1, 5, 10, 30, 60];
 
@@ -84,7 +85,10 @@ impl Screen for Settings {
             .iter()
             .enumerate()
             .map(|(position, wallet)| Row {
-                cells: vec![ctx.wallet_name(wallet.id), wallet_kind(wallet)],
+                cells: vec![
+                    ctx.wallet_name(wallet.id).into(),
+                    cell(wallet_kind(wallet), Tone::Muted),
+                ],
                 open: Some(Action::Go(Go::Wallet(position))),
                 warn: false,
             })
@@ -114,6 +118,7 @@ impl Screen for Settings {
             buttons: vec![
                 button(text::ADD_WALLET, Action::Go(Go::AddWallet)),
                 button(text::TOKENS, Action::Go(Go::Tokens)),
+                button(text::NETWORK_STATUS, Action::Go(Go::Networks)),
                 button(text::CHANGE_PASSWORD, Action::Go(Go::ChangePassword)),
                 button(text::LOCK_NOW, Action::Lock),
             ],

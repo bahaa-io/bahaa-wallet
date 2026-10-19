@@ -1,14 +1,21 @@
 use std::cmp::Ordering;
 
 use bahaa_engine::{Amount, AssetId, Holding, WalletId};
+use ruint::aliases::U256;
 
 use super::receive::Receive;
 use super::send::{Send, Source};
-use super::{Screen, button, choice, group, line};
+use super::{
+    Screen, asset_cell, button, cell, choice, group, line, network_cell, network_line,
+    picked_wallet, wallet_group,
+};
 use crate::action::{Action, Go, Pick, Toggle};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Page, PageId, Row, Table};
+use crate::view::{Item, Page, PageId, Row, Share, Table, Tone};
 use crate::{format, text};
+
+const SHARES: usize = 5;
+const PERMILLE: u16 = 1000;
 
 #[derive(Default)]
 pub(crate) struct Portfolio {
@@ -58,11 +65,7 @@ impl Portfolio {
 impl Screen for Portfolio {
     fn act(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
         match action {
-            Action::Pick(Pick::Wallet(position)) => {
-                self.filter = position
-                    .and_then(|position| ctx.data.wallets.get(position))
-                    .map(|wallet| wallet.id);
-            }
+            Action::Pick(Pick::Wallet(position)) => self.filter = picked_wallet(ctx, *position),
             Action::Toggle(Toggle::HideEmpty) => self.show_empty = !self.show_empty,
             Action::Go(Go::Asset(row)) => {
                 if let Some(summary) = self.summaries(ctx).into_iter().nth(*row) {
@@ -83,54 +86,45 @@ impl Screen for Portfolio {
             .iter()
             .filter_map(|summary| summary.value)
             .reduce(|total, value| total.checked_add(value).unwrap_or(total));
-        let mut wallets = vec![choice(
-            text::ALL_WALLETS,
-            Action::Pick(Pick::Wallet(None)),
-            self.filter.is_none(),
-        )];
-        wallets.extend(
-            ctx.data
-                .wallets
-                .iter()
-                .enumerate()
-                .map(|(position, wallet)| {
-                    choice(
-                        ctx.wallet_name(wallet.id),
-                        Action::Pick(Pick::Wallet(Some(position))),
-                        self.filter == Some(wallet.id),
-                    )
-                }),
-        );
         let rows = summaries
             .iter()
             .enumerate()
             .map(|(position, summary)| Row {
                 cells: vec![
-                    ctx.symbol(&summary.asset),
-                    ctx.network_name(summary.asset.network()),
-                    format::amount(summary.amount, &ctx.symbol(&summary.asset)),
-                    format::fiat(summary.value, ctx.fiat()),
+                    asset_cell(ctx, &summary.asset),
+                    network_cell(ctx, summary.asset.network()),
+                    cell(
+                        format::price(ctx.price(&summary.asset), ctx.fiat()),
+                        Tone::Muted,
+                    ),
+                    format::amount(summary.amount, &ctx.symbol(&summary.asset)).into(),
+                    format::fiat(summary.value, ctx.fiat()).into(),
                 ],
                 open: Some(Action::Go(Go::Asset(position))),
                 warn: false,
             })
             .collect();
+        let mut form: Vec<Item> = wallet_group(ctx, self.filter)
+            .into_iter()
+            .map(Item::from)
+            .collect();
+        form.push(
+            group(
+                text::SHOW,
+                vec![choice(
+                    text::EMPTY_BALANCES,
+                    Action::Toggle(Toggle::HideEmpty),
+                    self.show_empty,
+                )],
+            )
+            .into(),
+        );
         Page {
             id: PageId::Portfolio,
             title: text::PORTFOLIO.to_owned(),
             headline: Some(format::fiat(total, ctx.fiat())),
-            form: vec![
-                group(text::WALLETS, wallets).into(),
-                group(
-                    text::SHOW,
-                    vec![choice(
-                        text::EMPTY_BALANCES,
-                        Action::Toggle(Toggle::HideEmpty),
-                        self.show_empty,
-                    )],
-                )
-                .into(),
-            ],
+            shares: total.map_or_else(Vec::new, |total| shares(ctx, &summaries, total)),
+            form,
             table: Some(Table {
                 columns: text::PORTFOLIO_COLUMNS.map(str::to_owned).to_vec(),
                 rows,
@@ -202,11 +196,14 @@ impl Screen for Asset {
                 };
                 Row {
                     cells: vec![
-                        ctx.wallet_name(holding.wallet),
-                        account_label(ctx, holding),
-                        format::short(&ctx.shown(&holding.address, self.asset.network())),
-                        amount,
-                        format::fiat(holding.value, ctx.fiat()),
+                        ctx.wallet_name(holding.wallet).into(),
+                        cell(account_label(ctx, holding), Tone::Muted),
+                        cell(
+                            format::short(&ctx.shown(&holding.address, self.asset.network())),
+                            Tone::Muted,
+                        ),
+                        amount.into(),
+                        format::fiat(holding.value, ctx.fiat()).into(),
                     ],
                     open: None,
                     warn: false,
@@ -221,7 +218,7 @@ impl Screen for Asset {
             ),
             headline: total.map(|total| format::exact(total, &symbol)),
             lines: vec![
-                line(text::NETWORK, ctx.network_name(self.asset.network())),
+                network_line(ctx, self.asset.network()),
                 line(text::PRICE, price),
             ],
             table: Some(Table {
@@ -246,6 +243,47 @@ fn held<'a>(ctx: &'a Ctx<'_>, filter: Option<WalletId>) -> impl Iterator<Item = 
         .filter(move |holding| filter.is_none_or(|wallet| holding.wallet == wallet))
 }
 
+fn shares(ctx: &Ctx<'_>, summaries: &[Summary], total: Amount) -> Vec<Share> {
+    let mut parts: Vec<(String, Tone, Amount)> = Vec::new();
+    for summary in summaries {
+        let Some(value) = summary.value.filter(|value| !value.is_zero()) else {
+            continue;
+        };
+        let symbol = ctx.symbol(&summary.asset);
+        match parts.iter_mut().find(|(label, ..)| *label == symbol) {
+            Some((_, _, sum)) => *sum = sum.checked_add(value).unwrap_or(*sum),
+            None => parts.push((symbol, ctx.coin_tone(&summary.asset), value)),
+        }
+    }
+    parts.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal));
+    if parts.len() > SHARES {
+        let rest = parts.split_off(SHARES - 1);
+        if let Some(sum) = rest
+            .into_iter()
+            .map(|(.., value)| value)
+            .reduce(|sum, value| sum.checked_add(value).unwrap_or(sum))
+        {
+            parts.push((text::OTHER.to_owned(), Tone::Muted, sum));
+        }
+    }
+    parts
+        .into_iter()
+        .map(|(label, tone, value)| Share {
+            label,
+            permille: permille(value, total),
+            tone,
+        })
+        .collect()
+}
+
+fn permille(value: Amount, total: Amount) -> u16 {
+    if total.is_zero() {
+        return 0;
+    }
+    let scaled = value.units().saturating_mul(U256::from(PERMILLE)) / total.units();
+    u16::try_from(scaled).map_or(PERMILLE, |permille| permille.min(PERMILLE))
+}
+
 fn sum(total: Option<Amount>, value: Option<Amount>) -> Option<Amount> {
     total?.checked_add(value?).ok()
 }
@@ -253,4 +291,23 @@ fn sum(total: Option<Amount>, value: Option<Amount>) -> Option<Amount> {
 fn account_label(ctx: &Ctx<'_>, holding: &Holding) -> String {
     ctx.account_index(holding.wallet, &holding.address)
         .map_or_else(String::new, text::account)
+}
+
+#[cfg(test)]
+mod tests {
+    use bahaa_engine::Amount;
+
+    use super::permille;
+
+    fn usd(text: &str) -> Amount {
+        Amount::parse(text, 2).unwrap()
+    }
+
+    #[test]
+    fn shares_are_parts_of_a_thousand() {
+        assert_eq!(permille(usd("1"), usd("3")), 333);
+        assert_eq!(permille(usd("2.5"), usd("2.5")), 1000);
+        assert_eq!(permille(usd("0"), usd("7")), 0);
+        assert_eq!(permille(usd("7"), usd("0")), 0);
+    }
 }

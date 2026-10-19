@@ -1,6 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use bahaa_engine::Color;
 use zeroize::Zeroizing;
 
 use crate::action::{Action, Field};
@@ -9,7 +10,7 @@ use crate::action::{Action, Field};
 pub struct View {
     pub page: Page,
     pub tabs: Vec<Choice>,
-    pub banner: Option<String>,
+    pub banner: Option<Banner>,
     pub toasts: Vec<Toast>,
     pub busy: bool,
     pub handled: u64,
@@ -21,6 +22,7 @@ pub struct Page {
     pub title: String,
     pub text: Option<String>,
     pub headline: Option<String>,
+    pub shares: Vec<Share>,
     pub lines: Vec<Line>,
     pub form: Vec<Item>,
     pub table: Option<Table>,
@@ -75,12 +77,40 @@ pub enum PageId {
     Tokens,
     NewToken,
     ChangePassword,
+    Networks,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tone {
+    #[default]
+    Plain,
+    Muted,
+    Good,
+    Waiting,
+    Warning,
+    Bad,
+    Brand(Color),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Banner {
+    pub level: Level,
+    pub text: String,
+    pub action: Action,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Share {
+    pub label: String,
+    pub permille: u16,
+    pub tone: Tone,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
     pub label: String,
     pub value: String,
+    pub tone: Tone,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,9 +176,24 @@ pub struct Table {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
-    pub cells: Vec<String>,
+    pub cells: Vec<Cell>,
     pub open: Option<Action>,
     pub warn: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cell {
+    pub text: String,
+    pub tone: Tone,
+}
+
+impl From<String> for Cell {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            tone: Tone::Plain,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

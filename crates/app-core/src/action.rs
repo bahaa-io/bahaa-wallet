@@ -67,6 +67,7 @@ pub enum Go {
     RemoveWallet,
     SendAsset,
     ReceiveAsset,
+    Networks,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +76,7 @@ pub enum Pick {
     Import,
     Kind(Kind),
     Wallet(Option<usize>),
+    Direction(Direction),
     Source(usize),
     Contact(usize),
     Network(usize),
@@ -95,6 +97,14 @@ pub enum Toggle {
     Max,
     HideEmpty,
     Testnets,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Direction {
+    #[default]
+    All,
+    Received,
+    Sent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_app_core::{
-    Action, App, AppConfig, ChainFamily, Currency, EngineConfig, Field, Go, KdfParams, Kind, Page,
-    PageId, Pick, Registry, Request, Tab, Value, View, Words,
+    Action, App, AppConfig, ChainFamily, Currency, Direction, EngineConfig, Field, Go, KdfParams,
+    Kind, Level, Page, PageId, Pick, Registry, Request, Tab, Tone, Value, View, Words,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -302,7 +302,7 @@ async fn contacts_and_settings_are_saved() {
                 table
                     .rows
                     .first()
-                    .is_some_and(|row| row.cells[0] == "Friend")
+                    .is_some_and(|row| row.cells[0].text == "Friend")
             })
     })
     .await;
@@ -327,6 +327,58 @@ async fn contacts_and_settings_are_saved() {
         empty.page.buttons[0].action,
         Action::Go(Go::Tab(Tab::Receive))
     );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_banner_opens_the_network_status() {
+    let scratch = Scratch::new();
+    let (app, _requests, mut view) = imported(&scratch).await;
+    let down = until(&mut view, |current| {
+        current
+            .banner
+            .as_ref()
+            .is_some_and(|banner| banner.level == Level::Warning)
+    })
+    .await;
+    let banner = down.banner.clone().unwrap();
+    assert!(banner.text.starts_with("Can't reach"));
+    app.act(banner.action.clone());
+    app.act(banner.action);
+    let status = until(&mut view, |current| {
+        current.page.id == PageId::Networks && !current.page.notes.is_empty()
+    })
+    .await;
+    let table = status.page.table.as_ref().unwrap();
+    let bsc = table
+        .rows
+        .iter()
+        .find(|row| row.cells[0].text == "BNB Smart Chain")
+        .unwrap();
+    assert!(matches!(bsc.cells[0].tone, Tone::Brand(_)));
+    assert_eq!(bsc.cells[1].text, "Can't reach");
+    assert!(
+        status
+            .page
+            .notes
+            .iter()
+            .any(|note| note.text.starts_with("BNB Smart Chain: "))
+    );
+    app.act(Action::Back);
+    at(&mut view, PageId::Portfolio).await;
+    app.act(Action::Go(Go::Tab(Tab::Activity)));
+    let activity = at(&mut view, PageId::Activity).await;
+    assert_eq!(activity.page.groups().count(), 1);
+    app.act(Action::Pick(Pick::Direction(Direction::Sent)));
+    until(&mut view, |current| {
+        current.page.groups().next().is_some_and(|group| {
+            group
+                .choices
+                .iter()
+                .any(|choice| choice.label == "Sent" && choice.selected)
+        })
+    })
+    .await;
     app.shutdown().await.unwrap();
 }
 
@@ -375,7 +427,7 @@ async fn words_valid_both_ways_ask_which_wallet_made_them() {
             table
                 .rows
                 .first()
-                .is_some_and(|row| row.cells[1] == "TON wallet (W5)")
+                .is_some_and(|row| row.cells[1].text == "TON wallet (W5)")
         })
     })
     .await;

@@ -4,12 +4,14 @@ use bahaa_engine::{
 };
 
 use super::activity::Transfer;
-use super::{Screen, button, choice, group, hidden, input, line, note};
+use super::{
+    Screen, button, choice, group, hidden, input, line, network_line, note, status_tone, toned_line,
+};
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::links::{self, Payment};
-use crate::view::{Level, Page, PageId, Secret};
+use crate::view::{Level, Page, PageId, Secret, Tone};
 use crate::{format, parse, text};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -373,7 +375,7 @@ impl Send {
         };
         let mut lines = vec![
             line(text::FROM, from),
-            line(text::NETWORK, ctx.network_name(network)),
+            network_line(ctx, network),
             line(text::TO, recipient),
         ];
         if let Some(memo) = &transfer.memo {
@@ -547,11 +549,17 @@ impl Screen for Send {
                     title: text::SENT_TITLE.to_owned(),
                     headline: sent.map(|tx| format::exact(tx.amount, &ctx.symbol(&tx.asset))),
                     lines: vec![
-                        line(
-                            text::STATUS,
-                            sent.map_or(text::SENDING.to_owned(), |tx| text::status(&tx.status)),
+                        sent.map_or_else(
+                            || toned_line(text::STATUS, text::SENDING, Tone::Waiting),
+                            |tx| {
+                                toned_line(
+                                    text::STATUS,
+                                    text::status(&tx.status),
+                                    status_tone(&tx.status),
+                                )
+                            },
                         ),
-                        line(text::NETWORK, ctx.network_name(network)),
+                        network_line(ctx, network),
                     ],
                     buttons: vec![
                         button(text::VIEW_TRANSFER, Action::Submit),

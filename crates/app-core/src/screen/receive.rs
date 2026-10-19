@@ -1,6 +1,6 @@
 use bahaa_engine::{Address, AssetId, Holding, MAX_MEMO, NetworkId, WalletId, is_plain_text};
 
-use super::{Screen, button, choice, group, input, line, note};
+use super::{Screen, button, choice, group, input, network_line, note, toned_line};
 use crate::action::{Action, Field, Pick};
 use crate::core::{Ctx, Reply};
 use crate::view::{Level, Page, PageId, Request};
@@ -142,8 +142,8 @@ impl Screen for Receive {
             (memo_allowed && is_plain_text(self.memo.trim(), MAX_MEMO)).then(|| self.memo.trim());
         page.headline = Some(ctx.shown(&target.address, &target.network));
         page.lines = vec![
-            line(text::NETWORK, network.name.clone()),
-            line(text::ASSET, ctx.symbol(&asset)),
+            network_line(ctx, &network.id),
+            toned_line(text::ASSET, ctx.symbol(&asset), ctx.coin_tone(&asset)),
         ];
         page.form
             .push(input(Field::Amount, text::AMOUNT_OPTIONAL, &self.amount).into());

@@ -1,10 +1,10 @@
 use bahaa_engine::{AssetId, NetworkId};
 
-use super::{Screen, button, input, network_group, picked_network};
+use super::{Screen, asset_cell, button, cell, input, network_cell, network_group, picked_network};
 use crate::action::{Action, Field, Go, Pick};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Level, Page, PageId, Row, Table};
+use crate::view::{Level, Page, PageId, Row, Table, Tone};
 use crate::{format, parse, text};
 
 pub(crate) struct List;
@@ -39,12 +39,15 @@ impl Screen for List {
             .iter()
             .map(|token| Row {
                 cells: vec![
-                    token.coin.symbol.clone(),
-                    token.coin.name.clone(),
-                    ctx.network_name(token.asset.network()),
-                    token.asset.contract().map_or_else(String::new, |contract| {
-                        format::short(&ctx.shown(contract, token.asset.network()))
-                    }),
+                    asset_cell(ctx, &token.asset),
+                    token.coin.name.clone().into(),
+                    network_cell(ctx, token.asset.network()),
+                    cell(
+                        token.asset.contract().map_or_else(String::new, |contract| {
+                            format::short(&ctx.shown(contract, token.asset.network()))
+                        }),
+                        Tone::Muted,
+                    ),
                 ],
                 open: None,
                 warn: false,

@@ -1,10 +1,12 @@
 use bahaa_engine::{Contact, NetworkId};
 
-use super::{Screen, button, input, line, network_group, picked_network};
+use super::{
+    Screen, button, cell, input, line, network_cell, network_group, network_line, picked_network,
+};
 use crate::action::{Action, Field, Go, Pick};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Level, Page, PageId, Row, Table};
+use crate::view::{Level, Page, PageId, Row, Table, Tone};
 use crate::{format, parse, text};
 
 pub(crate) struct List;
@@ -32,9 +34,12 @@ impl Screen for List {
             .enumerate()
             .map(|(position, contact)| Row {
                 cells: vec![
-                    contact.name.clone(),
-                    ctx.network_name(&contact.network),
-                    format::short(&ctx.shown(&contact.address, &contact.network)),
+                    contact.name.clone().into(),
+                    network_cell(ctx, &contact.network),
+                    cell(
+                        format::short(&ctx.shown(&contact.address, &contact.network)),
+                        Tone::Muted,
+                    ),
                 ],
                 open: Some(Action::Go(Go::Contact(position))),
                 warn: false,
@@ -166,7 +171,7 @@ impl Screen for Edit {
         };
         if let Some(contact) = &self.existing {
             page.lines = vec![
-                line(text::NETWORK, ctx.network_name(&contact.network)),
+                network_line(ctx, &contact.network),
                 line(text::ADDRESS, ctx.shown(&contact.address, &contact.network)),
             ];
             page.buttons

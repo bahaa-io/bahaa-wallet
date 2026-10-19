@@ -1,5 +1,6 @@
 mod activity;
 mod contacts;
+mod networks;
 mod onboarding;
 mod portfolio;
 mod receive;
@@ -12,7 +13,8 @@ mod wallets;
 pub use onboarding::completions;
 
 use bahaa_engine::{
-    AssetId, ChainFamily, NetworkId, SecretString, WalletInfo, WalletKind, WordCount,
+    AssetId, ChainFamily, NetworkId, SecretString, SentStatus, WalletId, WalletInfo, WalletKind,
+    WordCount,
 };
 
 use crate::action::{Action, Field, Pick, Tab};
@@ -20,7 +22,7 @@ use crate::call::Outcome;
 use crate::core::{Ctx, Reply};
 use crate::text;
 use crate::view::{
-    Button, Choice, Group, Input, Item, Level, Line, Note, Page, PageId, Secret, Value,
+    Button, Cell, Choice, Group, Input, Item, Level, Line, Note, Page, PageId, Secret, Tone, Value,
 };
 
 const MIN_PASSWORD: usize = 8;
@@ -48,6 +50,10 @@ pub(crate) fn welcome(adding: bool) -> Box<dyn Screen> {
     Box::new(onboarding::Welcome::new(adding))
 }
 
+pub(crate) fn networks() -> Box<dyn Screen> {
+    Box::new(networks::Networks)
+}
+
 pub(crate) fn unlock() -> Box<dyn Screen> {
     Box::new(unlock::Unlock::default())
 }
@@ -55,7 +61,7 @@ pub(crate) fn unlock() -> Box<dyn Screen> {
 pub(crate) fn tab(tab: Tab) -> Box<dyn Screen> {
     match tab {
         Tab::Portfolio => Box::new(portfolio::Portfolio::default()),
-        Tab::Activity => Box::new(activity::List),
+        Tab::Activity => Box::new(activity::List::default()),
         Tab::Send => Box::new(send::Send::new(None)),
         Tab::Receive => Box::new(receive::Receive::default()),
         Tab::Contacts => Box::new(contacts::List),
@@ -102,10 +108,80 @@ pub(crate) fn group(label: &str, choices: Vec<Choice>) -> Group {
 }
 
 pub(crate) fn line(label: &str, value: impl Into<String>) -> Line {
+    toned_line(label, value, Tone::Plain)
+}
+
+pub(crate) fn toned_line(label: &str, value: impl Into<String>, tone: Tone) -> Line {
     Line {
         label: label.to_owned(),
         value: value.into(),
+        tone,
     }
+}
+
+pub(crate) fn network_line(ctx: &Ctx<'_>, network: &NetworkId) -> Line {
+    toned_line(
+        text::NETWORK,
+        ctx.network_name(network),
+        ctx.network_tone(network),
+    )
+}
+
+pub(crate) fn status_tone(status: &SentStatus) -> Tone {
+    match status {
+        SentStatus::Sending | SentStatus::Pending => Tone::Waiting,
+        SentStatus::Confirmed => Tone::Good,
+        SentStatus::Failed(_) => Tone::Bad,
+        SentStatus::Dropped => Tone::Warning,
+    }
+}
+
+pub(crate) fn cell(text: impl Into<String>, tone: Tone) -> Cell {
+    Cell {
+        text: text.into(),
+        tone,
+    }
+}
+
+pub(crate) fn network_cell(ctx: &Ctx<'_>, network: &NetworkId) -> Cell {
+    cell(ctx.network_name(network), ctx.network_tone(network))
+}
+
+pub(crate) fn asset_cell(ctx: &Ctx<'_>, asset: &AssetId) -> Cell {
+    cell(ctx.symbol(asset), ctx.coin_tone(asset))
+}
+
+pub(crate) fn wallet_group(ctx: &Ctx<'_>, filter: Option<WalletId>) -> Option<Group> {
+    if ctx.data.wallets.len() < 2 {
+        return None;
+    }
+    let all = choice(
+        text::ALL_WALLETS,
+        Action::Pick(Pick::Wallet(None)),
+        filter.is_none(),
+    );
+    let wallets = ctx
+        .data
+        .wallets
+        .iter()
+        .enumerate()
+        .map(|(position, wallet)| {
+            choice(
+                ctx.wallet_name(wallet.id),
+                Action::Pick(Pick::Wallet(Some(position))),
+                filter == Some(wallet.id),
+            )
+        });
+    Some(group(
+        text::WALLETS,
+        std::iter::once(all).chain(wallets).collect(),
+    ))
+}
+
+pub(crate) fn picked_wallet(ctx: &Ctx<'_>, position: Option<usize>) -> Option<WalletId> {
+    position
+        .and_then(|position| ctx.data.wallets.get(position))
+        .map(|wallet| wallet.id)
 }
 
 pub(crate) fn note(level: Level, text: impl Into<String>) -> Note {

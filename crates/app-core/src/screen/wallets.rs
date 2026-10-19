@@ -1,10 +1,10 @@
 use bahaa_engine::{TonContract, WalletId, WalletKind};
 
-use super::{Screen, button, choice, group, hidden, input, line, wallet_kind};
+use super::{Screen, button, cell, choice, group, hidden, input, line, wallet_kind};
 use crate::action::{Action, Contract, Field, Go, Pick, Tab};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Level, Page, PageId, Row, Secret, Table};
+use crate::view::{Level, Page, PageId, Row, Secret, Table, Tone};
 use crate::{format, text};
 
 pub(crate) struct Wallet {
@@ -93,12 +93,15 @@ impl Screen for Wallet {
             .iter()
             .map(|account| Row {
                 cells: vec![
-                    text::account(account.index),
-                    account.family.as_str().to_owned(),
-                    format::short(&account.network.as_ref().map_or_else(
-                        || account.address.to_string(),
-                        |network| ctx.shown(&account.address, network),
-                    )),
+                    text::account(account.index).into(),
+                    cell(account.family.as_str(), Tone::Muted),
+                    cell(
+                        format::short(&account.network.as_ref().map_or_else(
+                            || account.address.to_string(),
+                            |network| ctx.shown(&account.address, network),
+                        )),
+                        Tone::Muted,
+                    ),
                 ],
                 open: None,
                 warn: false,

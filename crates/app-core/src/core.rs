@@ -10,7 +10,7 @@ use bahaa_engine::{
 use crate::action::{Action, Go, Tab};
 use crate::call::{Call, Load, Loaded, Outcome};
 use crate::screen::{self, Screen};
-use crate::view::{Choice, Level, Page, Request, Toast, View};
+use crate::view::{Banner, Choice, Level, Page, PageId, Request, Toast, Tone, View};
 use crate::{format, text};
 use zeroize::Zeroize;
 
@@ -87,6 +87,17 @@ impl Ctx<'_> {
     pub(crate) fn network_name(&self, id: &NetworkId) -> String {
         self.network(id)
             .map_or_else(|| id.to_string(), |network| network.name.clone())
+    }
+
+    pub(crate) fn network_tone(&self, id: &NetworkId) -> Tone {
+        self.network(id)
+            .map_or(Tone::Plain, |network| Tone::Brand(network.color))
+    }
+
+    pub(crate) fn coin_tone(&self, asset: &AssetId) -> Tone {
+        self.coin(asset)
+            .and_then(|coin| coin.color)
+            .map_or(Tone::Plain, Tone::Brand)
     }
 
     pub(crate) fn networks(&self) -> Vec<&Network> {
@@ -343,6 +354,12 @@ impl Core {
                 self.open_tab(*tab);
                 Vec::new()
             }
+            Action::Go(Go::Networks) if self.in_tabs() => {
+                if self.top().map(|top| top.page(&self.ctx()).id) != Some(PageId::Networks) {
+                    self.stack.push(screen::networks());
+                }
+                Vec::new()
+            }
             Action::Back => {
                 let reply = self
                     .stack
@@ -547,22 +564,31 @@ impl Core {
         ));
     }
 
-    fn banner(&self) -> Option<String> {
+    fn banner(&self) -> Option<Banner> {
         if !self.in_tabs() {
             return None;
         }
         let ctx = self.ctx();
-        let down: Vec<String> = self
-            .data
-            .portfolio
+        let portfolio = &self.data.portfolio;
+        let down: Vec<String> = portfolio
             .networks
             .iter()
             .filter(|health| health.problem.is_some())
             .map(|health| ctx.network_name(&health.network))
             .collect();
-        if !down.is_empty() {
-            return Some(text::unreachable(&down));
-        }
-        (self.data.portfolio.prices == Status::Offline).then(|| text::PRICES_OFFLINE.to_owned())
+        let (level, text) = if !down.is_empty() {
+            (Level::Warning, text::unreachable(&down))
+        } else if portfolio.prices == Status::Offline {
+            (Level::Warning, text::PRICES_OFFLINE.to_owned())
+        } else if portfolio.networks.is_empty() {
+            (Level::Info, text::CHECKING.to_owned())
+        } else {
+            (Level::Success, text::CONNECTED.to_owned())
+        };
+        Some(Banner {
+            level,
+            text,
+            action: Action::Go(Go::Networks),
+        })
     }
 }

@@ -1,17 +1,43 @@
-use bahaa_engine::{Activity, ActivityKind, ChainFamily, Movement, NetworkId, Replace};
+use bahaa_engine::{Activity, ActivityKind, ChainFamily, Movement, NetworkId, Replace, WalletId};
 
 use super::send::Send;
-use super::{Screen, button, line, note};
-use crate::action::{Action, Go, Pick};
+use super::{
+    Screen, button, cell, choice, group, line, network_cell, network_line, note, picked_wallet,
+    status_tone, toned_line, wallet_group,
+};
+use crate::action::{Action, Direction, Go, Pick};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Level, Line, Page, PageId, Request, Row, Table};
+use crate::view::{Item, Level, Line, Page, PageId, Request, Row, Table, Tone};
 use crate::{format, text};
 
-pub(crate) struct List;
+#[derive(Default)]
+pub(crate) struct List {
+    filter: Option<WalletId>,
+    direction: Direction,
+}
+
+impl List {
+    fn shows(&self, activity: &Activity) -> bool {
+        let direction = match activity.kind {
+            ActivityKind::Received(_) => Direction::Received,
+            ActivityKind::Sent(_) | ActivityKind::SentElsewhere(_) => Direction::Sent,
+        };
+        self.filter.is_none_or(|wallet| activity.wallet == wallet)
+            && (self.direction == Direction::All || self.direction == direction)
+    }
+}
 
 impl Screen for List {
     fn act(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
         match action {
+            Action::Pick(Pick::Wallet(position)) => {
+                self.filter = picked_wallet(ctx, *position);
+                Reply::default()
+            }
+            Action::Pick(Pick::Direction(direction)) => {
+                self.direction = *direction;
+                Reply::default()
+            }
             Action::Go(Go::Transfer(row)) => ctx
                 .data
                 .activity
@@ -24,42 +50,53 @@ impl Screen for List {
     }
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
-        let rows = ctx
+        let rows: Vec<Row> = ctx
             .data
             .activity
             .iter()
             .enumerate()
+            .filter(|(_, activity)| self.shows(activity))
             .map(|(position, activity)| {
                 let (sign, moved, party, status, warn) = match &activity.kind {
                     ActivityKind::Sent(tx) => (
                         '−',
                         (tx.amount, &tx.asset),
                         ctx.party(&tx.to, &tx.network),
-                        text::status(&tx.status),
+                        cell(text::status(&tx.status), status_tone(&tx.status)),
                         false,
                     ),
                     ActivityKind::SentElsewhere(moved) => (
                         '−',
                         (moved.amount, &moved.asset),
                         ctx.party(&moved.to, &moved.network),
-                        text::ELSEWHERE.to_owned(),
+                        cell(text::ELSEWHERE, Tone::Muted),
                         false,
                     ),
-                    ActivityKind::Received(arrival) => (
-                        '+',
-                        (arrival.received.amount, &arrival.received.asset),
-                        ctx.party(&arrival.received.from, &arrival.received.network),
-                        text::RECEIVED.to_owned(),
-                        !arrival.cautions.is_empty(),
-                    ),
+                    ActivityKind::Received(arrival) => {
+                        let warn = !arrival.cautions.is_empty();
+                        (
+                            '+',
+                            (arrival.received.amount, &arrival.received.asset),
+                            ctx.party(&arrival.received.from, &arrival.received.network),
+                            cell(
+                                text::RECEIVED,
+                                if warn { Tone::Warning } else { Tone::Good },
+                            ),
+                            warn,
+                        )
+                    }
                 };
                 let (amount, asset) = moved;
+                let amount_tone = if sign == '+' { Tone::Good } else { Tone::Plain };
                 Row {
                     cells: vec![
-                        format::ago(activity.time, ctx.now),
-                        format!("{sign}{}", format::amount(amount, &ctx.symbol(asset))),
-                        ctx.network_name(asset.network()),
-                        party,
+                        cell(format::ago(activity.time, ctx.now), Tone::Muted),
+                        cell(
+                            format!("{sign}{}", format::amount(amount, &ctx.symbol(asset))),
+                            amount_tone,
+                        ),
+                        network_cell(ctx, asset.network()),
+                        party.into(),
                         status,
                     ],
                     open: Some(Action::Go(Go::Transfer(position))),
@@ -67,13 +104,34 @@ impl Screen for List {
                 }
             })
             .collect();
+        let directions = [Direction::All, Direction::Received, Direction::Sent]
+            .into_iter()
+            .map(|direction| {
+                choice(
+                    text::direction(direction),
+                    Action::Pick(Pick::Direction(direction)),
+                    self.direction == direction,
+                )
+            })
+            .collect();
+        let mut form: Vec<Item> = wallet_group(ctx, self.filter)
+            .into_iter()
+            .map(Item::from)
+            .collect();
+        form.push(group(text::SHOW, directions).into());
+        let empty = if ctx.data.activity.is_empty() {
+            text::NO_ACTIVITY
+        } else {
+            text::NO_MATCHES
+        };
         Page {
             id: PageId::Activity,
             title: text::ACTIVITY.to_owned(),
+            form,
             table: Some(Table {
                 columns: text::ACTIVITY_COLUMNS.map(str::to_owned).to_vec(),
                 rows,
-                empty: text::NO_ACTIVITY.to_owned(),
+                empty: empty.to_owned(),
             }),
             ..Page::default()
         }
@@ -168,7 +226,11 @@ impl Screen for Transfer {
                     |paid| format::exact(paid, &symbol),
                 );
                 let mut lines = vec![
-                    line(text::STATUS, text::status(&tx.status)),
+                    toned_line(
+                        text::STATUS,
+                        text::status(&tx.status),
+                        status_tone(&tx.status),
+                    ),
                     line(text::FROM, ctx.party(&tx.from, &tx.network)),
                     line(text::TO, ctx.shown(&tx.to, &tx.network)),
                     line(text::FEE, fee),
@@ -203,7 +265,7 @@ impl Screen for Transfer {
                     .collect(),
             ),
         };
-        lines.push(line(text::NETWORK, ctx.network_name(network)));
+        lines.push(network_line(ctx, network));
         lines.push(line(text::TIME, format::when(activity.time)));
         lines.push(line(text::TRANSACTION, id.to_owned()));
         Page {
