@@ -4,16 +4,14 @@ use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bahaa_config::{Network, Registry};
-use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_engine::{
-    Account, ActivityKind, CustomToken, Draft, Engine, EngineConfig, Event, NewPhrase, PhraseKind,
-    Replace, SendRequest, SentStatus, SentTx, Spend, WalletId,
+    Account, ActivityKind, Address, Amount, AssetId, CustomToken, Draft, Engine, EngineConfig,
+    Event, ExposeSecret, Network, NetworkId, NewPhrase, PhraseKind, Registry, Replace,
+    SecretString, SendRequest, SentStatus, SentTx, Spend, Status, TonContract, TonForm, WalletId,
 };
-use bahaa_market::Status;
-use bahaa_types::{Address, Amount, AssetId, NetworkId, TonContract, TonForm};
 use tokio::sync::broadcast::{self, error::RecvError};
 
 type Outcome<T = ()> = Result<T, Box<dyn Error>>;
@@ -149,7 +147,7 @@ fn private_file(path: &Path) -> io::Result<fs::File> {
 struct Live {
     engine: Engine,
     password: SecretString,
-    registry: Registry,
+    registry: Arc<Registry>,
 }
 
 impl Live {
@@ -162,9 +160,9 @@ impl Live {
             .unlock(SecretString::from(password.trim().to_owned()))
             .await?;
         Ok(Self {
+            registry: engine.registry(),
             engine,
             password: SecretString::from(password.trim().to_owned()),
-            registry: Registry::builtin()?,
         })
     }
 
@@ -219,19 +217,9 @@ impl Live {
     }
 
     async fn symbol(&self, asset: &AssetId) -> Outcome<String> {
-        let network = self.network(asset.network())?;
-        let Some(contract) = asset.contract() else {
-            return Ok(network.native.symbol.clone());
-        };
-        if let Some(token) = network.tokens.iter().find(|t| t.contract == *contract) {
-            return Ok(token.coin.symbol.clone());
-        }
-        Ok(self
-            .custom()
-            .await?
-            .into_iter()
-            .find(|token| token.asset == *asset)
-            .map_or_else(|| "?".to_owned(), |token| token.coin.symbol))
+        let custom = self.custom().await?;
+        Ok(bahaa_engine::coin(&self.registry, &custom, asset)
+            .map_or_else(|| "?".to_owned(), |coin| coin.symbol.clone()))
     }
 
     async fn asset(&self, text: &str) -> Outcome<(AssetId, u8)> {

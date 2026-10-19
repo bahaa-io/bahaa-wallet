@@ -188,6 +188,81 @@ async fn changing_the_password_goes_through_the_engine() {
 }
 
 #[tokio::test]
+async fn passwords_are_checked_without_changing_anything() {
+    let scratch = Scratch::new();
+    let engine = Engine::start(scratch.config()).unwrap();
+    engine.create(secret("pw")).await.unwrap();
+    engine.check_password(secret("pw")).await.unwrap();
+    assert_eq!(
+        engine.check_password(secret("nope")).await,
+        Err(EngineError::Keyring(KeyringError::WrongPassword))
+    );
+    assert_eq!(engine.state(), State::Unlocked);
+}
+
+#[tokio::test]
+async fn wallets_keep_their_names_across_restarts() {
+    let scratch = Scratch::new();
+    let id = {
+        let engine = Engine::start(scratch.config()).unwrap();
+        let mut events = engine.events();
+        engine.create(secret("pw")).await.unwrap();
+        let id = engine.import(secret(HARDHAT), secret("")).await.unwrap();
+        assert_eq!(engine.wallets().await.unwrap()[0].name, None);
+        engine
+            .rename_wallet(id, "Savings".to_owned())
+            .await
+            .unwrap();
+        let announced = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(Event::WalletsChanged(wallets)) = events.recv().await
+                    && wallets[0].name.is_some()
+                {
+                    return wallets;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(announced[0].name.as_deref(), Some("Savings"));
+        assert!(matches!(
+            engine.rename_wallet(id, " ".to_owned()).await,
+            Err(EngineError::Store(StoreError::Invalid(_)))
+        ));
+        engine.shutdown().await.unwrap();
+        id
+    };
+    let engine = Engine::start(scratch.config()).unwrap();
+    engine.unlock(secret("pw")).await.unwrap();
+    let wallets = engine.wallets().await.unwrap();
+    assert_eq!(
+        (wallets[0].id, wallets[0].name.as_deref()),
+        (id, Some("Savings"))
+    );
+    engine.remove(id).await.unwrap();
+    assert_eq!(
+        engine.rename_wallet(id, "Gone".to_owned()).await,
+        Err(EngineError::Keyring(KeyringError::UnknownWallet))
+    );
+    engine.import(secret(HARDHAT), secret("")).await.unwrap();
+    assert_eq!(engine.wallets().await.unwrap()[0].name, None);
+}
+
+#[tokio::test]
+async fn the_network_list_is_shared_with_the_app() {
+    let scratch = Scratch::new();
+    let engine = Engine::start(scratch.config()).unwrap();
+    assert_eq!(engine.registry().networks().count(), 0);
+    let other = Scratch::new();
+    let builtin = Engine::start(EngineConfig {
+        registry: None,
+        ..other.config()
+    })
+    .unwrap();
+    assert!(builtin.registry().get(&"bsc".parse().unwrap()).is_some());
+}
+
+#[tokio::test]
 async fn only_one_engine_may_use_the_data_folder() {
     let scratch = Scratch::new();
     let first = Engine::start(scratch.config()).unwrap();

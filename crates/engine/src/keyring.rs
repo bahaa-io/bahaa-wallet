@@ -33,9 +33,10 @@ impl fmt::Display for WalletId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WalletInfo {
     pub id: WalletId,
+    pub name: Option<String>,
     pub words: WordCount,
     pub passphrase: bool,
     pub kind: WalletKind,
@@ -211,12 +212,14 @@ impl Keyring {
                     passphrase,
                 } => WalletInfo {
                     id: WalletId(entry.id),
+                    name: None,
                     words: mnemonic.word_count(),
                     passphrase: !passphrase.expose_secret().is_empty(),
                     kind: WalletKind::Bip39,
                 },
                 Phrase::Ton { contract, .. } => WalletInfo {
                     id: WalletId(entry.id),
+                    name: None,
                     words: WordCount::TwentyFour,
                     passphrase: false,
                     kind: WalletKind::Ton(*contract),
@@ -239,20 +242,7 @@ impl Keyring {
 
     pub fn import(&mut self, phrase: &str, passphrase: &str) -> Result<WalletId, KeyringError> {
         self.session()?;
-        let multi = Mnemonic::parse(phrase);
-        let ton = passphrase
-            .is_empty()
-            .then(|| TonMnemonic::parse(phrase).ok())
-            .flatten();
-        match (multi, ton) {
-            (Ok(_), Some(_)) => Err(KeyringError::Ambiguous),
-            (Ok(mnemonic), None) => self.add(bip39(mnemonic, passphrase)?),
-            (Err(_), Some(mnemonic)) => self.add(Phrase::Ton {
-                mnemonic,
-                contract: TonContract::W5,
-            }),
-            (Err(err), None) => Err(err.into()),
-        }
+        self.add(parse(phrase, passphrase, None)?)
     }
 
     pub fn import_as(
@@ -262,14 +252,7 @@ impl Keyring {
         kind: PhraseKind,
     ) -> Result<WalletId, KeyringError> {
         self.session()?;
-        match kind {
-            PhraseKind::Bip39 => self.add(bip39(Mnemonic::parse(phrase)?, passphrase)?),
-            PhraseKind::Ton if !passphrase.is_empty() => Err(KeyringError::TonPassphrase),
-            PhraseKind::Ton => self.add(Phrase::Ton {
-                mnemonic: TonMnemonic::parse(phrase)?,
-                contract: TonContract::W5,
-            }),
-        }
+        self.add(parse(phrase, passphrase, Some(kind))?)
     }
 
     pub fn set_ton_contract(
@@ -413,6 +396,38 @@ pub(crate) fn used_contract(w5: Option<u64>, v4r2: Option<u64>) -> TonContract {
         TonContract::V4R2
     } else {
         TonContract::W5
+    }
+}
+
+pub fn check_phrase(phrase: &str, passphrase: &str) -> Result<PhraseKind, KeyringError> {
+    Ok(match parse(phrase, passphrase, None)? {
+        Phrase::Bip39 { .. } => PhraseKind::Bip39,
+        Phrase::Ton { .. } => PhraseKind::Ton,
+    })
+}
+
+fn parse(phrase: &str, passphrase: &str, kind: Option<PhraseKind>) -> Result<Phrase, KeyringError> {
+    let ton = |mnemonic| Phrase::Ton {
+        mnemonic,
+        contract: TonContract::W5,
+    };
+    match kind {
+        None => {
+            let multi = Mnemonic::parse(phrase);
+            let native = passphrase
+                .is_empty()
+                .then(|| TonMnemonic::parse(phrase).ok())
+                .flatten();
+            match (multi, native) {
+                (Ok(_), Some(_)) => Err(KeyringError::Ambiguous),
+                (Ok(mnemonic), None) => bip39(mnemonic, passphrase),
+                (Err(_), Some(mnemonic)) => Ok(ton(mnemonic)),
+                (Err(err), None) => Err(err.into()),
+            }
+        }
+        Some(PhraseKind::Bip39) => bip39(Mnemonic::parse(phrase)?, passphrase),
+        Some(PhraseKind::Ton) if !passphrase.is_empty() => Err(KeyringError::TonPassphrase),
+        Some(PhraseKind::Ton) => Ok(ton(TonMnemonic::parse(phrase)?)),
     }
 }
 

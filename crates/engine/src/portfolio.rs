@@ -62,7 +62,7 @@ pub struct Portfolio {
     pub prices: Status,
 }
 
-pub(crate) fn coin<'a>(
+pub fn coin<'a>(
     registry: &'a Registry,
     custom: &'a [CustomToken],
     asset: &AssetId,

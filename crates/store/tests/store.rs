@@ -608,3 +608,24 @@ fn data_from_before_sealing_is_sealed_on_the_first_unlock() {
     }
     assert_eq!(unlocked(&scratch).contacts().unwrap(), [alice]);
 }
+
+#[test]
+fn wallet_names_are_kept_validated_and_forgotten() {
+    let scratch = Scratch::new();
+    let store = unlocked(&scratch);
+    assert_eq!(store.wallet_name(1).unwrap(), None);
+    store.save_wallet_name(1, "Savings").unwrap();
+    store.save_wallet_name(2, "Daily").unwrap();
+    assert_eq!(store.wallet_name(1).unwrap().as_deref(), Some("Savings"));
+    for bad in ["", " Savings", "Sa\u{202E}vings", &"a".repeat(41)] {
+        assert!(matches!(
+            store.save_wallet_name(3, bad),
+            Err(StoreError::Invalid(_))
+        ));
+    }
+    store.forget_wallet_name(1).unwrap();
+    assert_eq!(store.wallet_name(1).unwrap(), None);
+    assert_eq!(store.wallet_name(2).unwrap().as_deref(), Some("Daily"));
+    store.lock();
+    assert!(matches!(store.wallet_name(2), Err(StoreError::Locked)));
+}

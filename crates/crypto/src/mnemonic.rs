@@ -16,6 +16,10 @@ const BITS_PER_WORD: usize = 11;
 pub(crate) static WORDS: LazyLock<Vec<&'static str>> =
     LazyLock::new(|| include_str!("english.txt").lines().collect());
 
+pub fn english_words() -> &'static [&'static str] {
+    &WORDS
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WordCount {
     Twelve,

@@ -140,6 +140,8 @@ enum Command {
     SetTonContract(WalletId, TonContract, Reply<()>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
     ChangePassword(SecretString, SecretString, Reply<()>),
+    CheckPassword(SecretString, Reply<()>),
+    RenameWallet(WalletId, String, Reply<()>),
     Settings(Reply<Settings>),
     SetSettings(Settings, Reply<()>),
     PrepareSend(SendRequest, Reply<Draft>),
@@ -193,6 +195,7 @@ pub struct Engine {
     state: watch::Receiver<State>,
     prices: watch::Receiver<Snapshot>,
     portfolio: watch::Receiver<Portfolio>,
+    registry: Arc<Registry>,
 }
 
 impl Engine {
@@ -211,10 +214,10 @@ impl Engine {
         let store = Store::open(&data_dir.join(STORE_FILE))?;
         let settings = store.settings()?;
         let saved = prices::empty(settings.fiat.price_base());
-        let registry = match registry {
+        let registry = Arc::new(match registry {
             Some(registry) => registry,
             None => Registry::builtin()?,
-        };
+        });
         let chains: Arc<Vec<AnyChain>> = Arc::new(chains::build(&registry));
         chains::restore(&chains, &store.trusted()?);
         let trusted = chains::trusted(&chains);
@@ -239,7 +242,7 @@ impl Engine {
         let worker = Worker {
             keyring: Some(keyring),
             store,
-            registry,
+            registry: Arc::clone(&registry),
             chains,
             custom: Arc::new(Vec::new()),
             settings,
@@ -284,7 +287,12 @@ impl Engine {
             state,
             prices,
             portfolio,
+            registry,
         })
+    }
+
+    pub fn registry(&self) -> Arc<Registry> {
+        Arc::clone(&self.registry)
     }
 
     pub fn state(&self) -> State {
@@ -402,6 +410,16 @@ impl Engine {
             .await
     }
 
+    pub async fn check_password(&self, password: SecretString) -> Result<(), EngineError> {
+        self.ask(|reply| Command::CheckPassword(password, reply))
+            .await
+    }
+
+    pub async fn rename_wallet(&self, id: WalletId, name: String) -> Result<(), EngineError> {
+        self.ask(|reply| Command::RenameWallet(id, name, reply))
+            .await
+    }
+
     pub async fn settings(&self) -> Result<Settings, EngineError> {
         self.ask(Command::Settings).await
     }
@@ -506,7 +524,7 @@ fn market_prices(prices: &watch::Receiver<Snapshot>) -> watch::Receiver<Snapshot
 struct Worker {
     keyring: Option<Keyring>,
     store: Store,
-    registry: Registry,
+    registry: Arc<Registry>,
     chains: Arc<Vec<AnyChain>>,
     custom: Arc<Vec<CustomToken>>,
     settings: Settings,
@@ -646,7 +664,9 @@ impl Worker {
             | Command::RemoveAccount(..)
             | Command::SetTonContract(..)
             | Command::Reveal(..)
-            | Command::ChangePassword(..)) => self.handle_wallets(command).await,
+            | Command::ChangePassword(..)
+            | Command::CheckPassword(..)
+            | Command::RenameWallet(..)) => self.handle_wallets(command).await,
             Command::Settings(reply) => answer(reply, Ok(self.settings.clone())),
             Command::SetSettings(settings, reply) => answer(reply, self.set_settings(settings)),
         }
@@ -655,7 +675,7 @@ impl Worker {
     async fn handle_wallets(&mut self, command: Command) {
         match command {
             Command::Wallets(reply) => {
-                let result = self.keyring(|keyring| keyring.wallets()).await;
+                let result = self.wallets().await;
                 let _ = reply.send(result);
             }
             Command::Accounts(reply) => {
@@ -680,6 +700,7 @@ impl Worker {
                 let result = self.keyring(move |keyring| keyring.remove(id)).await;
                 if result.is_ok() {
                     let _ = self.store.forget_account_indexes(id.value());
+                    let _ = self.store.forget_wallet_name(id.value());
                 }
                 self.after_change(result.is_ok()).await;
                 let _ = reply.send(result);
@@ -716,8 +737,37 @@ impl Worker {
                     .await;
                 let _ = reply.send(result);
             }
+            Command::CheckPassword(password, reply) => {
+                let result = self
+                    .keyring(move |keyring| {
+                        keyring.check_password(password.expose_secret().as_bytes())
+                    })
+                    .await;
+                let _ = reply.send(result);
+            }
+            Command::RenameWallet(id, name, reply) => {
+                let result = self.rename_wallet(id, &name).await;
+                self.after_change(result.is_ok()).await;
+                let _ = reply.send(result);
+            }
             _ => {}
         }
+    }
+
+    async fn wallets(&mut self) -> Result<Vec<WalletInfo>, EngineError> {
+        let mut wallets = self.keyring(|keyring| keyring.wallets()).await?;
+        for wallet in &mut wallets {
+            wallet.name = self.store.wallet_name(wallet.id.value())?;
+        }
+        Ok(wallets)
+    }
+
+    async fn rename_wallet(&mut self, id: WalletId, name: &str) -> Result<(), EngineError> {
+        if !self.wallets().await?.iter().any(|wallet| wallet.id == id) {
+            return Err(KeyringError::UnknownWallet.into());
+        }
+        self.store.save_wallet_name(id.value(), name)?;
+        Ok(())
     }
 
     fn set_settings(&mut self, settings: Settings) -> Result<(), EngineError> {
@@ -916,7 +966,7 @@ impl Worker {
         if !ok {
             return;
         }
-        if let Ok(wallets) = self.keyring(|keyring| keyring.wallets()).await {
+        if let Ok(wallets) = self.wallets().await {
             let _ = self.events.send(Event::WalletsChanged(wallets));
         }
         self.derive_accounts().await;

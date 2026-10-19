@@ -17,7 +17,7 @@ const SCHEMA: u64 = 2;
 const PLAIN_SCHEMA: u64 = 1;
 const SCHEMA_KEY: &str = "schema";
 const SETTINGS_KEY: &str = "settings";
-const MAX_CONTACT_NAME: usize = 40;
+const MAX_NAME: usize = 40;
 const MAX_TX_ID: usize = 128;
 pub const MAX_REASON: usize = 200;
 pub const MAX_QUOTES: usize = 512;
@@ -34,9 +34,10 @@ const OUTGOING: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("ou
 const TRUSTED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("trusted");
 const PRICES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("prices");
 const ACCOUNTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("accounts");
+const NAMES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("names");
 const SEAL: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("seal");
-const SEALED: [TableDefinition<'static, &str, &[u8]>; 8] = [
-    CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS,
+const SEALED: [TableDefinition<'static, &str, &[u8]>; 9] = [
+    CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS, NAMES,
 ];
 const CHECK: &str = "check";
 const CHECKED: &[u8] = b"bahaa store";
@@ -328,7 +329,7 @@ impl Store {
     }
 
     pub fn save_contact(&self, contact: &Contact) -> Result<(), StoreError> {
-        if !is_plain_text(&contact.name, MAX_CONTACT_NAME) {
+        if !is_plain_text(&contact.name, MAX_NAME) {
             return Err(StoreError::Invalid(
                 "a contact name must be 1 to 40 visible characters, without hidden ones",
             ));
@@ -532,6 +533,25 @@ impl Store {
 
     pub fn forget_account_indexes(&self, wallet: u32) -> Result<(), StoreError> {
         self.delete(ACCOUNTS, &wallet.to_string()).map(drop)
+    }
+
+    pub fn wallet_name(&self, wallet: u32) -> Result<Option<String>, StoreError> {
+        self.get(NAMES, &wallet.to_string())?
+            .map(|bytes| decode(&bytes))
+            .transpose()
+    }
+
+    pub fn save_wallet_name(&self, wallet: u32, name: &str) -> Result<(), StoreError> {
+        if !is_plain_text(name, MAX_NAME) {
+            return Err(StoreError::Invalid(
+                "a wallet name must be 1 to 40 visible characters, without hidden ones",
+            ));
+        }
+        self.put(NAMES, &wallet.to_string(), &encode(&name)?)
+    }
+
+    pub fn forget_wallet_name(&self, wallet: u32) -> Result<(), StoreError> {
+        self.delete(NAMES, &wallet.to_string()).map(drop)
     }
 
     fn migrate(&self) -> Result<(), StoreError> {

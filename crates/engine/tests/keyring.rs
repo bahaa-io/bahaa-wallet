@@ -373,3 +373,33 @@ fn a_ton_wallet_keeps_the_contract_it_was_found_on() {
         [WalletKind::Ton(TonContract::V4R2), WalletKind::Bip39]
     );
 }
+
+#[test]
+fn phrases_are_checked_with_the_rules_import_uses() {
+    use bahaa_crypto::{MnemonicError, TonPhraseError};
+    use bahaa_engine::check_phrase;
+    assert_eq!(check_phrase(HARDHAT, ""), Ok(PhraseKind::Bip39));
+    assert_eq!(check_phrase(HARDHAT, "extra words"), Ok(PhraseKind::Bip39));
+    assert_eq!(check_phrase(TON, ""), Ok(PhraseKind::Ton));
+    assert_eq!(check_phrase(BOTH, ""), Err(KeyringError::Ambiguous));
+    assert_eq!(
+        check_phrase(BOTH, "with a passphrase"),
+        Ok(PhraseKind::Bip39)
+    );
+    assert_eq!(
+        check_phrase("test test", ""),
+        Err(KeyringError::Mnemonic(MnemonicError::WordCount(2)))
+    );
+    assert_eq!(
+        check_phrase(&HARDHAT.replace("junk", "jjunk"), ""),
+        Err(KeyringError::Mnemonic(MnemonicError::UnknownWord(12)))
+    );
+    assert_eq!(
+        check_phrase(&HARDHAT.replace("junk", "test"), ""),
+        Err(KeyringError::Mnemonic(MnemonicError::Checksum))
+    );
+    assert!(matches!(
+        check_phrase(TON, "a passphrase"),
+        Err(KeyringError::Mnemonic(_) | KeyringError::TonPhrase(TonPhraseError::NotTon))
+    ));
+}
