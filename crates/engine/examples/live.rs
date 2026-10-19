@@ -43,6 +43,8 @@ const USAGE: &str = "commands:
   testnets <on|off>                   include the test networks
   tokens | token add <asset> | token remove <asset>
   ton-contract <wallet> <w5|v4r2>     choose the contract of a TON phrase
+  account add <wallet> | account remove <wallet> <n>
+                                      another account of a phrase, named like a.1
   reveal <wallet>                     print a phrase, run it in your own terminal only
   import [bip39|ton]                  read a phrase from the keyboard
 assets look like bsc, bsc/USDT or bsc/0x55d3...; <to> is a wallet letter or an address";
@@ -85,6 +87,8 @@ async fn run(args: &[String]) -> Outcome {
         ["token", "remove", asset] => live.remove_token(asset).await,
         ["ton-contract", wallet, contract] => live.ton_contract(wallet, contract).await,
         ["reveal", wallet] => live.reveal(wallet).await,
+        ["account", "add", wallet] => live.add_account(wallet).await,
+        ["account", "remove", wallet, index] => live.remove_account(wallet, index.parse()?).await,
         ["import"] => live.import(None).await,
         ["import", "bip39"] => live.import(Some(PhraseKind::Bip39)).await,
         ["import", "ton"] => live.import(Some(PhraseKind::Ton)).await,
@@ -198,6 +202,14 @@ impl Live {
         Ok(*self.wallets().await?.get(at).ok_or("no such wallet")?)
     }
 
+    async fn holder(&self, name: &str) -> Outcome<(WalletId, u32)> {
+        let (letter, index) = match name.split_once('.') {
+            Some((letter, index)) => (letter, index.parse()?),
+            None => (name, 0),
+        };
+        Ok((self.wallet(letter).await?, index))
+    }
+
     fn network(&self, id: &NetworkId) -> Outcome<&Network> {
         Ok(self.registry.get(id).ok_or("unknown network")?)
     }
@@ -257,21 +269,27 @@ impl Live {
         Ok(self.engine.accounts().await?)
     }
 
-    async fn address_of(&self, wallet: WalletId, network: &Network) -> Outcome<Address> {
+    async fn address_of(
+        &self,
+        (wallet, index): (WalletId, u32),
+        network: &Network,
+    ) -> Outcome<Address> {
         Ok(self
             .accounts()
             .await?
             .into_iter()
             .find(|account| {
-                account.wallet == wallet && account.serves(&network.id, network.family())
+                account.wallet == wallet
+                    && account.index == index
+                    && account.serves(&network.id, network.family())
             })
-            .ok_or("this wallet has no account on that network")?
+            .ok_or("this wallet has no such account on that network")?
             .address)
     }
 
     async fn destination(&self, text: &str, network: &Network) -> Outcome<Address> {
-        if text.len() == 1 {
-            return self.address_of(self.wallet(text).await?, network).await;
+        if text.len() <= 4 {
+            return self.address_of(self.holder(text).await?, network).await;
         }
         Ok(Address::parse(network.family(), text)?)
     }
@@ -296,9 +314,18 @@ impl Live {
                         continue;
                     }
                     let shown = Self::shown(&account.address, network);
-                    println!("{label}  {:<5} {shown}  ({id})", family(account.family));
+                    println!(
+                        "{label}.{}  {:<5} {shown}  ({id})",
+                        account.index,
+                        family(account.family)
+                    );
                 }
-                None => println!("{label}  {:<5} {}", family(account.family), account.address),
+                None => println!(
+                    "{label}.{}  {:<5} {}",
+                    account.index,
+                    family(account.family),
+                    account.address
+                ),
             }
         }
         Ok(())
@@ -536,7 +563,7 @@ impl Live {
         memo: Option<&str>,
         confirm: bool,
     ) -> Outcome {
-        let wallet = self.wallet(from).await?;
+        let (wallet, account) = self.holder(from).await?;
         let (asset, decimals) = self.asset(asset).await?;
         let network = self.network(asset.network())?.clone();
         let to = self.destination(to, &network).await?;
@@ -552,6 +579,7 @@ impl Live {
         let draft = self
             .engine
             .prepare_send(SendRequest {
+                account,
                 wallet,
                 asset,
                 to,
@@ -714,6 +742,20 @@ impl Live {
         };
         self.engine
             .set_ton_contract(self.wallet(wallet).await?, contract)
+            .await?;
+        self.addresses().await
+    }
+
+    async fn add_account(&self, wallet: &str) -> Outcome {
+        for account in self.engine.add_account(self.wallet(wallet).await?).await? {
+            println!("added {wallet}.{}  {}", account.index, account.address);
+        }
+        Ok(())
+    }
+
+    async fn remove_account(&self, wallet: &str, index: u32) -> Outcome {
+        self.engine
+            .remove_account(self.wallet(wallet).await?, index)
             .await?;
         self.addresses().await
     }

@@ -388,6 +388,7 @@ async fn tron_holdings_join_the_portfolio_under_the_wallets_tron_account() {
             .all(|network| network.problem.is_none())
     );
     let request = SendRequest {
+        account: 0,
         wallet,
         asset: "tron".parse().unwrap(),
         to: Address::parse(ChainFamily::Tron, TRON_0).unwrap(),

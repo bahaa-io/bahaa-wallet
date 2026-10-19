@@ -135,6 +135,7 @@ async fn trx_is_sent_from_the_wallets_tron_account_and_tracked_until_confirmed()
         .await
         .unwrap();
     let request = SendRequest {
+        account: 0,
         wallet,
         asset: "tron".parse().unwrap(),
         to: Address::parse(ChainFamily::Tron, TRON_1).unwrap(),

@@ -105,6 +105,7 @@ async fn setup(
 
 fn bnb(wallet: WalletId, amount: &str) -> SendRequest {
     SendRequest {
+        account: 0,
         wallet,
         asset: "bsc".parse().unwrap(),
         to: Address::parse(ChainFamily::Evm, HARDHAT_1).unwrap(),
@@ -289,6 +290,68 @@ async fn a_waiting_send_is_sped_up_and_the_original_is_dropped() {
         engine.replace(bsc, first.id, Replace::Cancel).await,
         Err(EngineError::Chain(ChainError::Invalid(_)))
     ));
+}
+
+#[tokio::test]
+async fn a_second_account_sends_and_stays_after_a_restart() {
+    let scratch = Scratch::new();
+    let ledger = Shared::default();
+    let (engine, wallet) = setup(&scratch, &ledger, |_| {}).await;
+    let added = engine.add_account(wallet).await.unwrap();
+    assert_eq!(added.len(), 1);
+    assert_eq!(
+        (added[0].index, added[0].address.to_string()),
+        (1, HARDHAT_1.to_owned())
+    );
+    let from_second = SendRequest {
+        account: 1,
+        to: Address::parse(ChainFamily::Evm, HARDHAT_0).unwrap(),
+        ..bnb(wallet, "0.25")
+    };
+    let draft = engine.prepare_send(from_second.clone()).await.unwrap();
+    assert_eq!(draft.transfer.from.to_string(), HARDHAT_1);
+    let sent = engine
+        .confirm_send(draft.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    assert_eq!(sent.from.to_string(), HARDHAT_1);
+    let missing = SendRequest {
+        account: 7,
+        ..from_second.clone()
+    };
+    assert!(matches!(
+        engine.prepare_send(missing).await,
+        Err(EngineError::Chain(ChainError::Invalid(_)))
+    ));
+    engine.shutdown().await.unwrap();
+    let mut config = config(&scratch, ledger_node(&ledger).await, None);
+    config.kdf = bahaa_vault::KdfParams {
+        memory_kib: 64,
+        iterations: 1,
+        lanes: 1,
+    };
+    let engine = Engine::start(config).unwrap();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    let indexes: Vec<u32> = engine
+        .accounts()
+        .await
+        .unwrap()
+        .iter()
+        .map(|account| account.index)
+        .collect();
+    assert_eq!(indexes, [0, 1]);
+    for (index, refused) in [(7, true), (1, false), (0, true)] {
+        let outcome = engine.remove_account(wallet, index).await;
+        assert_eq!(outcome.is_err(), refused, "{index}: {outcome:?}");
+    }
+    let left: Vec<u32> = engine
+        .accounts()
+        .await
+        .unwrap()
+        .iter()
+        .map(|account| account.index)
+        .collect();
+    assert_eq!(left, [0]);
 }
 
 #[tokio::test]

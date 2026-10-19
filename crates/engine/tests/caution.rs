@@ -115,6 +115,7 @@ async fn market() -> MarketConfig {
 
 fn bnb(wallet: WalletId, to: &str) -> SendRequest {
     SendRequest {
+        account: 0,
         wallet,
         asset: "bsc".parse().unwrap(),
         to: Address::parse(ChainFamily::Evm, to).unwrap(),

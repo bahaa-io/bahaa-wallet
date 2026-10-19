@@ -27,6 +27,9 @@ const SCANS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("scans
 const OUTGOING: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("outgoing");
 const TRUSTED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("trusted");
 const PRICES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("prices");
+const ACCOUNTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("accounts");
+pub const MAX_ACCOUNTS: usize = 20;
+const HIGHEST_INDEX: u32 = (1 << 31) - 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum StoreError {
@@ -378,6 +381,30 @@ impl Store {
         self.put(PRICES, base, &encode(prices)?)
     }
 
+    pub fn account_indexes(&self, wallet: u32) -> Result<Vec<u32>, StoreError> {
+        match self.get(ACCOUNTS, &wallet.to_string())? {
+            Some(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|err| StoreError::Corrupt(err.to_string()))
+            }
+            None => Ok(vec![0]),
+        }
+    }
+
+    pub fn save_account_indexes(&self, wallet: u32, indexes: &[u32]) -> Result<(), StoreError> {
+        let ordered = indexes.windows(2).all(|pair| pair[0] < pair[1]);
+        let sized = (1..=MAX_ACCOUNTS).contains(&indexes.len());
+        if !ordered || !sized || indexes.iter().any(|index| *index > HIGHEST_INDEX) {
+            return Err(StoreError::Invalid(
+                "a wallet keeps one to twenty distinct accounts",
+            ));
+        }
+        self.put(ACCOUNTS, &wallet.to_string(), &encode(&indexes)?)
+    }
+
+    pub fn forget_account_indexes(&self, wallet: u32) -> Result<(), StoreError> {
+        self.delete(ACCOUNTS, &wallet.to_string()).map(drop)
+    }
+
     fn migrate(&self) -> Result<(), StoreError> {
         let txn = self.db.begin_write().map_err(database)?;
         {
@@ -395,6 +422,7 @@ impl Store {
             }
             for table in [
                 SETTINGS, CONTACTS, TOKENS, SENT, RECEIVED, SCANS, TRUSTED, OUTGOING, PRICES,
+                ACCOUNTS,
             ] {
                 txn.open_table(table).map_err(database)?;
             }

@@ -96,6 +96,7 @@ async fn ton_accounts_follow_each_networks_wallet_id_and_show_gram() {
     assert!(!asked.contains(&(GET_ACCOUNT_STATE, hash(&test))));
     assert_eq!(*test_asked.lock().unwrap(), Vec::new());
     let request = SendRequest {
+        account: 0,
         wallet,
         asset: "ton".parse().unwrap(),
         to: test,
@@ -211,6 +212,7 @@ async fn ton_token_sends_are_quoted_from_proven_contract_state() {
         .await
         .unwrap();
     let request = SendRequest {
+        account: 0,
         wallet,
         asset: bahaa_types::AssetId::Token("ton".parse().unwrap(), usdt),
         to: bahaa_types::Address::parse(ChainFamily::Ton, TON_0).unwrap(),
@@ -301,6 +303,10 @@ async fn a_ton_phrase_opens_only_its_ton_accounts() {
             "{hash}"
         );
     }
+    assert!(matches!(
+        engine.add_account(wallet).await,
+        Err(EngineError::Chain(bahaa_chain::ChainError::Invalid(_)))
+    ));
     let accounts = engine.accounts().await.unwrap();
     let shape: Vec<(ChainFamily, Option<String>, String)> = accounts
         .iter()
@@ -328,6 +334,7 @@ async fn a_ton_phrase_opens_only_its_ton_accounts() {
         ]
     );
     let bnb = SendRequest {
+        account: 0,
         wallet,
         asset: "bsc".parse().unwrap(),
         to: bahaa_types::Address::parse(ChainFamily::Evm, HARDHAT_0).unwrap(),

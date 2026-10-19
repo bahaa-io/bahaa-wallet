@@ -476,3 +476,26 @@ fn the_last_prices_of_each_base_survive_a_restart() {
     assert_eq!(store.prices("USDT").unwrap(), Some(usdt));
     assert_eq!(store.prices("IRT").unwrap(), None);
 }
+
+#[test]
+fn each_wallet_keeps_its_own_accounts() {
+    let scratch = Scratch::new();
+    {
+        let store = Store::open(&scratch.file()).unwrap();
+        assert_eq!(store.account_indexes(1).unwrap(), [0]);
+        store.save_account_indexes(1, &[0, 1, 4]).unwrap();
+        for bad in [&[][..], &[1, 0], &[2, 2], &[1u32 << 31]] {
+            assert!(matches!(
+                store.save_account_indexes(2, bad),
+                Err(StoreError::Invalid(_))
+            ));
+        }
+        let many: Vec<u32> = (0..21).collect();
+        assert!(store.save_account_indexes(2, &many).is_err());
+    }
+    let store = Store::open(&scratch.file()).unwrap();
+    assert_eq!(store.account_indexes(1).unwrap(), [0, 1, 4]);
+    assert_eq!(store.account_indexes(2).unwrap(), [0]);
+    store.forget_account_indexes(1).unwrap();
+    assert_eq!(store.account_indexes(1).unwrap(), [0]);
+}

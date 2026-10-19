@@ -33,6 +33,7 @@ pub enum Spend {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SendRequest {
     pub wallet: WalletId,
+    pub account: u32,
     pub asset: AssetId,
     pub to: Address,
     pub amount: Spend,
@@ -191,9 +192,15 @@ impl Worker {
         if mine.peek().is_none() {
             return Err(KeyringError::UnknownWallet.into());
         }
+        let mut mine = mine
+            .filter(|account| account.serves(request.asset.network(), family))
+            .peekable();
+        if mine.peek().is_none() {
+            return Err(ChainError::Key(DeriveError::TonOnly).into());
+        }
         let from = mine
-            .find(|account| account.serves(request.asset.network(), family))
-            .ok_or(ChainError::Key(DeriveError::TonOnly))?
+            .find(|account| account.index == request.account)
+            .ok_or(ChainError::Invalid("this wallet has no such account"))?
             .address;
         if request
             .memo
@@ -213,7 +220,7 @@ impl Worker {
         Ok((
             chain,
             Transfer {
-                account: 0,
+                account: request.account,
                 from,
                 to: request.to,
                 asset: request.asset.clone(),

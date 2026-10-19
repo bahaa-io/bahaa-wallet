@@ -245,6 +245,7 @@ pub(crate) fn trusted(chains: &[AnyChain]) -> Vec<TrustedBlock> {
 
 pub(crate) fn accounts(
     wallet: WalletId,
+    index: u32,
     derived: &[(ChainFamily, NetworkId, Address)],
 ) -> Vec<Account> {
     let mut families: Vec<ChainFamily> = derived.iter().map(|(family, ..)| *family).collect();
@@ -258,7 +259,7 @@ pub(crate) fn accounts(
         let account = |network: Option<NetworkId>, address: Address| Account {
             wallet,
             family,
-            index: 0,
+            index,
             address,
             network,
         };
@@ -461,7 +462,7 @@ mod tests {
             (ChainFamily::Ton, id("ton-testnet"), test),
             (ChainFamily::Evm, id("bsc-testnet"), evm),
         ];
-        let grouped: Vec<(ChainFamily, Option<NetworkId>, Address)> = accounts(wallet, &derived)
+        let grouped: Vec<(ChainFamily, Option<NetworkId>, Address)> = accounts(wallet, 0, &derived)
             .into_iter()
             .map(|account| (account.family, account.network, account.address))
             .collect();
@@ -473,7 +474,7 @@ mod tests {
                 (ChainFamily::Ton, Some(id("ton-testnet")), test),
             ]
         );
-        let ton = accounts(wallet, &derived)[1].clone();
+        let ton = accounts(wallet, 0, &derived)[1].clone();
         assert!(ton.serves(&id("ton"), ChainFamily::Ton));
         assert!(!ton.serves(&id("ton-testnet"), ChainFamily::Ton));
         assert!(!ton.serves(&id("ton"), ChainFamily::Evm));

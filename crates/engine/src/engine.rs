@@ -1,3 +1,4 @@
+mod accounts;
 mod activity;
 mod contacts;
 mod incoming;
@@ -131,6 +132,8 @@ enum Command {
         Reply<WalletId>,
     ),
     Remove(WalletId, Reply<()>),
+    AddAccount(WalletId, Reply<Vec<Account>>),
+    RemoveAccount(WalletId, u32, Reply<()>),
     SetTonContract(WalletId, TonContract, Reply<()>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
     ChangePassword(SecretString, SecretString, Reply<()>),
@@ -368,6 +371,15 @@ impl Engine {
 
     pub async fn remove(&self, id: WalletId) -> Result<(), EngineError> {
         self.ask(|reply| Command::Remove(id, reply)).await
+    }
+
+    pub async fn add_account(&self, wallet: WalletId) -> Result<Vec<Account>, EngineError> {
+        self.ask(|reply| Command::AddAccount(wallet, reply)).await
+    }
+
+    pub async fn remove_account(&self, wallet: WalletId, index: u32) -> Result<(), EngineError> {
+        self.ask(|reply| Command::RemoveAccount(wallet, index, reply))
+            .await
     }
 
     pub async fn set_ton_contract(
@@ -625,6 +637,23 @@ impl Worker {
             Command::AddToken(asset, reply) => self.add_token(asset, reply),
             Command::RemoveToken(asset, reply) => answer(reply, self.remove_token(&asset)),
             Command::Touch | Command::Shutdown(_) => {}
+            command @ (Command::Wallets(_)
+            | Command::Accounts(_)
+            | Command::Generate(..)
+            | Command::Import(..)
+            | Command::Remove(..)
+            | Command::AddAccount(..)
+            | Command::RemoveAccount(..)
+            | Command::SetTonContract(..)
+            | Command::Reveal(..)
+            | Command::ChangePassword(..)) => self.handle_wallets(command).await,
+            Command::Settings(reply) => answer(reply, Ok(self.settings.clone())),
+            Command::SetSettings(settings, reply) => answer(reply, self.set_settings(settings)),
+        }
+    }
+
+    async fn handle_wallets(&mut self, command: Command) {
+        match command {
             Command::Wallets(reply) => {
                 let result = self.keyring(|keyring| keyring.wallets()).await;
                 let _ = reply.send(result);
@@ -649,7 +678,18 @@ impl Worker {
             }
             Command::Remove(id, reply) => {
                 let result = self.keyring(move |keyring| keyring.remove(id)).await;
+                if result.is_ok() {
+                    let _ = self.store.forget_account_indexes(id.value());
+                }
                 self.after_change(result.is_ok()).await;
+                let _ = reply.send(result);
+            }
+            Command::AddAccount(wallet, reply) => {
+                let result = self.add_account(wallet).await;
+                let _ = reply.send(result);
+            }
+            Command::RemoveAccount(wallet, index, reply) => {
+                let result = self.remove_account(wallet, index).await;
                 let _ = reply.send(result);
             }
             Command::SetTonContract(id, contract, reply) => {
@@ -676,8 +716,7 @@ impl Worker {
                     .await;
                 let _ = reply.send(result);
             }
-            Command::Settings(reply) => answer(reply, Ok(self.settings.clone())),
-            Command::SetSettings(settings, reply) => answer(reply, self.set_settings(settings)),
+            _ => {}
         }
     }
 
@@ -819,6 +858,24 @@ impl Worker {
 
     async fn derive_accounts(&mut self) {
         let chains = Arc::clone(&self.chains);
+        let listed = self
+            .keyring
+            .as_ref()
+            .map_or_else(|| Ok(Vec::new()), Keyring::wallets)
+            .unwrap_or_default();
+        let indexes: Vec<(WalletId, Vec<u32>)> = listed
+            .iter()
+            .map(|wallet| {
+                let kept = match wallet.kind {
+                    WalletKind::Ton(_) => vec![0],
+                    WalletKind::Bip39 => self
+                        .store
+                        .account_indexes(wallet.id.value())
+                        .unwrap_or_else(|_| vec![0]),
+                };
+                (wallet.id, kept)
+            })
+            .collect();
         let derived = self
             .keyring(move |keyring| {
                 let mut accounts = Vec::new();
@@ -828,15 +885,21 @@ impl Worker {
                         WalletKind::Ton(contract) => contract,
                         WalletKind::Bip39 => TonContract::W5,
                     };
-                    let mut derived = Vec::with_capacity(chains.len());
-                    for chain in chains.iter().filter(|chain| chain.holds(seed.kind())) {
-                        derived.push((
-                            chain.family(),
-                            chain.network().id.clone(),
-                            chain.derive(seed, 0, contract)?,
-                        ));
+                    let kept = indexes
+                        .iter()
+                        .find(|(id, _)| *id == wallet.id)
+                        .map_or_else(|| vec![0], |(_, kept)| kept.clone());
+                    for index in kept {
+                        let mut derived = Vec::with_capacity(chains.len());
+                        for chain in chains.iter().filter(|chain| chain.holds(seed.kind())) {
+                            derived.push((
+                                chain.family(),
+                                chain.network().id.clone(),
+                                chain.derive(seed, index, contract)?,
+                            ));
+                        }
+                        accounts.extend(chains::accounts(wallet.id, index, &derived));
                     }
-                    accounts.extend(chains::accounts(wallet.id, &derived));
                 }
                 Ok::<_, EngineError>(accounts)
             })
