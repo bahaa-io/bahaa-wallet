@@ -204,6 +204,7 @@ impl Chain for FakeChain {
             Some(fee) => TxStatus::Confirmed {
                 block: Some(1),
                 fee: Some(*fee),
+                transaction: None,
             },
             None => TxStatus::NotFound,
         })
@@ -277,7 +278,8 @@ async fn any_chain_works_through_the_same_generic_code() {
         chain.status(&id, &transfer.from, None).await.unwrap(),
         TxStatus::Confirmed {
             block: Some(1),
-            fee: Some(native("0.000021"))
+            fee: Some(native("0.000021")),
+            transaction: None,
         }
     );
 }

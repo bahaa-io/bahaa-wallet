@@ -220,8 +220,9 @@ async fn live_a_real_transfer_is_tracked_and_its_message_cannot_be_sent_again() 
         - nano(&refund["in_msg"]["value"])
         + nano(&refund["total_fees"]);
     let confirmed = TxStatus::Confirmed {
-        block: None,
+        block: Some(nano(&indexed["lt"])),
         fee: Some(Amount::new(U256::from(paid), 9).unwrap()),
+        transaction: Some(TxId::new(base64_hex(indexed["hash"].as_str().unwrap())).unwrap()),
     };
     let sender = Address::parse(ChainFamily::Ton, SENDER).unwrap();
     let signed = Signed {
@@ -568,10 +569,22 @@ async fn live_v4r2_sends_are_tracked_with_what_they_paid() {
     assert_eq!(
         status,
         TxStatus::Confirmed {
-            block: None,
-            fee: Some(Amount::new(U256::from(paid), 9).unwrap())
+            block: Some(nano(&sent["lt"])),
+            fee: Some(Amount::new(U256::from(paid), 9).unwrap()),
+            transaction: Some(TxId::new(base64_hex(sent["hash"].as_str().unwrap())).unwrap()),
         }
     );
+}
+
+fn base64_hex(text: &str) -> String {
+    STANDARD
+        .decode(text)
+        .unwrap()
+        .iter()
+        .fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }
 
 #[tokio::test]

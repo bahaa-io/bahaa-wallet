@@ -261,6 +261,7 @@ impl Worker {
             expires_at: decoded.expires_at,
             status: SentStatus::Sending,
             raw: Some(to_hex(&signed.bytes)),
+            transaction: None,
         };
         self.save(record.clone())?;
         Ok((chain, record, signed))
@@ -442,10 +443,15 @@ enum Step {
 fn step(tx: &SentTx, status: TxStatus, now: u64) -> Step {
     let mut next = tx.clone();
     match status {
-        TxStatus::Confirmed { block, fee } => {
+        TxStatus::Confirmed {
+            block,
+            fee,
+            transaction,
+        } => {
             next.status = SentStatus::Confirmed;
             next.block = block;
             next.fee_paid = fee;
+            next.transaction = transaction.map(|hash| hash.to_string());
             next.raw = None;
         }
         TxStatus::Failed(reason) => {
@@ -525,6 +531,7 @@ mod tests {
             expires_at: None,
             status,
             raw: Some("02f801".to_owned()),
+            transaction: None,
         }
     }
 
@@ -534,6 +541,7 @@ mod tests {
         let confirmed = TxStatus::Confirmed {
             block: Some(9),
             fee: Some(fee),
+            transaction: None,
         };
         let Step::Update(next) = step(&open(SentStatus::Pending, 100), confirmed, 120) else {
             panic!("expected an update");

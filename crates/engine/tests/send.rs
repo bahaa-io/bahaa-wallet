@@ -171,6 +171,7 @@ async fn a_send_needs_the_password_and_is_tracked_until_confirmed() {
     assert_eq!(done.status, SentStatus::Confirmed);
     assert_eq!((done.block, done.raw.as_deref()), (Some(16), None));
     assert_eq!(done.fee_paid.unwrap().to_string(), "0.000042");
+    assert_eq!(done.transaction.as_deref(), Some(sent.id.as_str()));
     assert_eq!(done.amount.to_string(), "0.25");
     assert_eq!(engine.history().await.unwrap(), [done]);
     assert_eq!(ledger.lock().unwrap().accepted.len(), 1);

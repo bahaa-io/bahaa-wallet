@@ -536,6 +536,7 @@ async fn the_status_comes_from_the_receipt_or_the_pending_pool() {
             TxStatus::Confirmed {
                 block: Some(87_210_600),
                 fee: Some(trx(1_100_000)),
+                transaction: Some(id.clone()),
             },
         ),
         (
@@ -543,6 +544,7 @@ async fn the_status_comes_from_the_receipt_or_the_pending_pool() {
             TxStatus::Confirmed {
                 block: Some(87_210_601),
                 fee: Some(trx(0)),
+                transaction: Some(id.clone()),
             },
         ),
         (

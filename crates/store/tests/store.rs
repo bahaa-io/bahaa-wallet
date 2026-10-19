@@ -180,6 +180,7 @@ fn sent(id: &str, status: SentStatus) -> SentTx {
         expires_at: None,
         status,
         raw,
+        transaction: None,
     }
 }
 

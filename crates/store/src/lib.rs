@@ -74,6 +74,8 @@ pub struct SentTx {
     pub expires_at: Option<u64>,
     pub status: SentStatus,
     pub raw: Option<String>,
+    #[serde(default)]
+    pub transaction: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,6 +226,13 @@ impl Store {
             return Err(StoreError::Invalid(
                 "a failure reason must be short plain text",
             ));
+        }
+        if tx
+            .transaction
+            .as_ref()
+            .is_some_and(|hash| !is_plain_text(hash, MAX_TX_ID))
+        {
+            return Err(StoreError::Invalid("not a transaction hash"));
         }
         if tx.status.is_open() != tx.raw.is_some() {
             return Err(StoreError::Invalid(

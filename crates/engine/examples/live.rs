@@ -432,6 +432,9 @@ impl Live {
                 .map_or_else(|| "-".to_owned(), |block| block.to_string()),
             network.explorer.tx_url(&tx.id)
         );
+        if let Some(hash) = tx.transaction.as_ref().filter(|hash| **hash != tx.id) {
+            println!("    transaction {hash}");
+        }
         Ok(())
     }
 

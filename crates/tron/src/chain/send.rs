@@ -284,6 +284,7 @@ impl TronChain {
         Ok(TxStatus::Confirmed {
             block: Some(block),
             fee: Some(amount(U256::from(fee), self.network.native.decimals)?),
+            transaction: Some(id.clone()),
         })
     }
 }

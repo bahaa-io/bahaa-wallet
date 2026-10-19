@@ -89,10 +89,16 @@ async fn live_bsc_status_of_a_real_transfer() {
     let id =
         TxId::new("0xf54187da477e131a07472915a7fd23896829b69ce8ad6f09f42e6690814fbbfe").unwrap();
     let status = chain.status(&id, &common::owner(), None).await.unwrap();
-    let TxStatus::Confirmed { block, fee } = status else {
+    let TxStatus::Confirmed {
+        block,
+        fee,
+        transaction,
+    } = status
+    else {
         panic!("expected a confirmed transfer, got {status:?}");
     };
     assert_eq!(block, Some(0x07a4_d222));
+    assert_eq!(transaction, Some(id));
     assert!(fee.is_some_and(|fee| !fee.is_zero()));
 }
 

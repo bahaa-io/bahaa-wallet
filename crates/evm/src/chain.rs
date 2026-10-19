@@ -581,6 +581,7 @@ impl Chain for EvmChain {
         Ok(TxStatus::Confirmed {
             block,
             fee: fee.map(|fee| self.native(fee)).transpose()?,
+            transaction: Some(id.clone()),
         })
     }
 

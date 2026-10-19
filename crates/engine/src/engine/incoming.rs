@@ -201,6 +201,7 @@ mod tests {
             expires_at: None,
             status: bahaa_store::SentStatus::Confirmed,
             raw: None,
+            transaction: None,
         }
     }
 

@@ -28,6 +28,7 @@ const QUOTE: &str = include_str!("fixtures/quote.json");
 const TRACK: &str = include_str!("fixtures/track.json");
 const SENT: &str = "b5ee9c72410205010001100001e5880027fb320fdb12cc1b3721f24b7aa94d605395f66d142e5111e3ff8dfad20c49ca039b4b3b73fffff88b566b9008000000559e4f7c61649cead47b81fc559961f1397ad6d17bf54953722f26dc0e635781c76df6d6f81c372949e1c8cb6a2cd85973bdab865f605980a59459cdf5e17aca0701020a0ec3c86d0302030000016862005bfa00866642a075cac79e914142651bcacae9fd297238395e0f73c0e9af00f3a018685d68000000000000000000000000010400ac0f8a7ea5000000006acd70d7506cc74a400801bca4e3e99d4b7eeed43fa097305639a10a68520be36b0b239c7ece42e7159acf0004ff6641fb62598366e43e496f5529ac0a72becda285ca223c7ff1bf5a41893942027a92ffc8";
 const SENT_ID: &str = "88d7201d27158e7cbaf4cceaef8ce46f460e9dc1e084490b2485eb6e6112bd54";
+const SENT_TRANSACTION: &str = "5bf15add946afef16f4406a82138e7ab3d1f2f2a6a2c765595421669f0cbd7e9";
 const SENT_EXPIRES: u64 = 1_791_848_961;
 const LATEST: u64 = 1_792_170_273;
 const LATEST_LT: i64 = 110_383_004_000_040;
@@ -36,6 +37,8 @@ const YOUNG: [u8; 32] = [
     0xee, 0x33, 0x40, 0xe1, 0x48, 0xf6, 0x25, 0x0d, 0xac, 0x2b, 0x15, 0x49, 0x21, 0x0f, 0x17, 0x43,
 ];
 const DEPLOYED_ID: &str = "fbeb45558f4b19cbd0bfd02efea09b2303382c8fbecb471de9df383b75234891";
+const DEPLOYED_TRANSACTION: &str =
+    "78c776be57eb213dc447788a28b1a600e519234915fcdebfaa76401571aabf31";
 const DEPLOYED_EXPIRES: u64 = 1_791_888_072 + 300;
 const REFUSAL: &str = "cannot apply external message to current state : External message was not accepted: cannot run message on account: inbound external message rejected by transaction 13FD9907ED89660D9B90F925BD54A6B029CAFB368A172888F1FFC6FD690624E5:\nexitcode=133, steps=49, gas_used=0\nVM Log (truncated):\n...SIGNU";
 const SENDER: [u8; 32] = [
@@ -889,8 +892,9 @@ async fn tonapi_fills_in_history_and_libraries_checked_against_proven_state() {
             .await
             .unwrap(),
         TxStatus::Confirmed {
-            block: None,
-            fee: Some(bahaa_types::Amount::parse("0.001186605", 9).unwrap())
+            block: Some(109_578_663_000_001),
+            fee: Some(bahaa_types::Amount::parse("0.001186605", 9).unwrap()),
+            transaction: Some(TxId::new(SENT_TRANSACTION.to_owned()).unwrap()),
         }
     );
     assert!(
@@ -940,8 +944,9 @@ async fn a_sent_transfer_is_found_in_the_proven_wallet_history() {
             .await
             .unwrap(),
         TxStatus::Confirmed {
-            block: None,
-            fee: Some(bahaa_types::Amount::parse("0.001186605", 9).unwrap())
+            block: Some(109_578_663_000_001),
+            fee: Some(bahaa_types::Amount::parse("0.001186605", 9).unwrap()),
+            transaction: Some(TxId::new(SENT_TRANSACTION.to_owned()).unwrap()),
         }
     );
     let unknown = TxId::new("ab".repeat(32)).unwrap();
@@ -970,8 +975,9 @@ async fn a_sent_transfer_is_found_in_the_proven_wallet_history() {
             .await
             .unwrap(),
         TxStatus::Confirmed {
-            block: None,
-            fee: Some(bahaa_types::Amount::parse("0.00046067", 9).unwrap())
+            block: Some(109_677_210_000_029),
+            fee: Some(bahaa_types::Amount::parse("0.00046067", 9).unwrap()),
+            transaction: Some(TxId::new(DEPLOYED_TRANSACTION.to_owned()).unwrap()),
         }
     );
     assert_eq!(

@@ -184,6 +184,7 @@ pub enum TxStatus {
     Confirmed {
         block: Option<u64>,
         fee: Option<Amount>,
+        transaction: Option<TxId>,
     },
     Failed(String),
     NotFound,

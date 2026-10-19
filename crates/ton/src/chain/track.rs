@@ -4,7 +4,7 @@ use bahaa_types::Address;
 use ruint::aliases::U256;
 
 use super::send::LIFETIME;
-use super::{TonChain, amount};
+use super::{TonChain, amount, hex};
 use crate::transaction::{INTERNAL_TRANSFER, Outcome, Outgoing, Transaction};
 use crate::wallet;
 
@@ -46,7 +46,7 @@ impl TonChain {
             .iter()
             .find(|message| message.op == Some(wallet::TOKEN_TRANSFER))
         {
-            None => self.confirmed(paid),
+            None => self.confirmed(&first, paid),
             Some(transfer) => self.followed(from, &first, transfer, paid).await,
         }
     }
@@ -81,7 +81,7 @@ impl TonChain {
             .and_then(|total| total.checked_sub(returned))
             .and_then(|total| total.checked_add(processing))
             .ok_or_else(unreadable)?;
-        self.confirmed(spent)
+        self.confirmed(first, spent)
     }
 
     async fn received(
@@ -129,10 +129,11 @@ impl TonChain {
         }
     }
 
-    fn confirmed(&self, paid: U256) -> Result<TxStatus, ChainError> {
+    fn confirmed(&self, first: &Transaction, paid: U256) -> Result<TxStatus, ChainError> {
         Ok(TxStatus::Confirmed {
-            block: None,
+            block: Some(first.lt),
             fee: Some(amount(paid, self.network.native.decimals)?),
+            transaction: Some(TxId::new(hex(&first.hash))?),
         })
     }
 }

@@ -273,7 +273,8 @@ async fn a_confirmed_base_transfer_counts_the_l1_and_operator_fees_it_paid() {
             status,
             TxStatus::Confirmed {
                 block: Some(16),
-                fee: fee.map(wei)
+                fee: fee.map(wei),
+                transaction: Some(id.clone()),
             },
             "{extra}"
         );
@@ -300,7 +301,8 @@ async fn other_networks_never_ask_the_oracle() {
         chain.status(&id, &common::owner(), None).await.unwrap(),
         TxStatus::Confirmed {
             block: Some(16),
-            fee: Some(wei(21_000 * (BASE_FEE + TIP)))
+            fee: Some(wei(21_000 * (BASE_FEE + TIP))),
+            transaction: Some(id.clone()),
         }
     );
     assert_eq!(*calls.lock().unwrap(), Vec::<Value>::new());
