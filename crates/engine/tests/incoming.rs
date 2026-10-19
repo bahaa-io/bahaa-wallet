@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Arrival, Engine, EngineError, Event, IncomingHistory, KeyringError};
+use bahaa_engine::{
+    ActivityKind, Arrival, Engine, EngineError, Event, IncomingHistory, KeyringError,
+};
 use common::{HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, USDT, config, result};
 use serde_json::{Value, json};
 
@@ -138,7 +140,7 @@ async fn incoming_tokens_are_found_kept_and_scanned_onward() {
     let engine = Engine::start(config(&scratch, bsc(&chain).await, None)).unwrap();
     let mut events = engine.events();
     engine.create(SecretString::from("pw")).await.unwrap();
-    engine
+    let wallet = engine
         .import(SecretString::from(HARDHAT), SecretString::from(""))
         .await
         .unwrap();
@@ -179,6 +181,22 @@ async fn incoming_tokens_are_found_kept_and_scanned_onward() {
             8_000
         )
     );
+    let activity = engine.activity().await.unwrap();
+    let kinds: Vec<(u64, ActivityKind)> = activity
+        .iter()
+        .map(|activity| (activity.time, activity.kind.clone()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (GENESIS + 9_000, ActivityKind::Received(fresh[0].clone())),
+            (
+                GENESIS + 8_000,
+                ActivityKind::SentElsewhere(elsewhere[0].clone())
+            ),
+        ]
+    );
+    assert!(activity.iter().all(|activity| activity.wallet == wallet));
     let coverage = &incoming.coverage[0];
     assert_eq!(
         (

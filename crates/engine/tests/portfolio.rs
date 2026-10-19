@@ -216,6 +216,25 @@ async fn prices_are_asked_only_for_held_coins_in_the_chosen_fiat() {
     let mut prices = engine.prices();
     engine.lock().await.unwrap();
     until(&mut prices, |snapshot| snapshot.status == Status::Idle).await;
+    engine.shutdown().await.unwrap();
+    let offline = Engine::start(config(
+        &scratch,
+        registry(node(Arc::default(), Duration::ZERO).await),
+        None,
+    ))
+    .unwrap();
+    let mut portfolio = offline.portfolio();
+    offline.unlock(SecretString::from("pw")).await.unwrap();
+    let remembered = until(&mut portfolio, |p| p.total.is_some()).await;
+    assert_eq!(remembered.total.unwrap().fixed(), "122075000");
+    assert_eq!(remembered.prices, Status::Idle);
+    let ages: Vec<Option<u64>> = remembered
+        .holdings
+        .iter()
+        .filter(|holding| holding.value.is_some())
+        .map(|holding| holding.price_at)
+        .collect();
+    assert_eq!(ages, [Some(1), Some(1)]);
 }
 
 async fn wait_for(calls: &Arc<Mutex<usize>>, at_least: usize) {

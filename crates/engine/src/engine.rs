@@ -1,5 +1,7 @@
+mod activity;
 mod contacts;
 mod incoming;
+mod prices;
 mod send;
 mod tokens;
 
@@ -28,6 +30,7 @@ use crate::keyring;
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
 use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, WalletKind};
 
+pub use activity::{Activity, ActivityKind};
 pub use incoming::IncomingHistory;
 use send::{Delivered, Prepared, Quoted};
 pub use send::{Draft, DraftId, SendRequest, Spend};
@@ -138,6 +141,7 @@ enum Command {
     History(Reply<Vec<SentTx>>),
     Incoming(Reply<IncomingHistory>),
     Outgoing(Reply<Vec<Outgoing>>),
+    Activity(Reply<Vec<Activity>>),
     Contacts(Reply<Vec<Contact>>),
     SaveContact(Contact, Reply<()>),
     RemoveContact(NetworkId, Address, Reply<bool>),
@@ -166,6 +170,7 @@ impl Command {
                 | Self::History(_)
                 | Self::Incoming(_)
                 | Self::Outgoing(_)
+                | Self::Activity(_)
                 | Self::Contacts(_)
                 | Self::Cautions(..)
                 | Self::Tokens(_)
@@ -198,6 +203,7 @@ impl Engine {
         crate::keyring::private_dir(&data_dir)?;
         let store = Store::open(&data_dir.join(STORE_FILE))?;
         let settings = store.settings()?;
+        let saved = prices::saved(&store, settings.fiat.price_base());
         let custom = Arc::new(store.tokens()?);
         let mut history = store.sent()?;
         history.sort_by_key(|tx| std::cmp::Reverse(tx.created_at));
@@ -241,6 +247,9 @@ impl Engine {
             settings,
             market,
             prices: market_prices(&prices),
+            saved,
+            saved_at: None,
+            unsaved: false,
             inbox,
             events: events.clone(),
             state: publish_state,
@@ -416,6 +425,10 @@ impl Engine {
         self.ask(Command::Outgoing).await
     }
 
+    pub async fn activity(&self) -> Result<Vec<Activity>, EngineError> {
+        self.ask(Command::Activity).await
+    }
+
     pub async fn contacts(&self) -> Result<Vec<Contact>, EngineError> {
         self.ask(Command::Contacts).await
     }
@@ -482,6 +495,9 @@ struct Worker {
     settings: Settings,
     market: Option<Market>,
     prices: watch::Receiver<Snapshot>,
+    saved: Snapshot,
+    saved_at: Option<Instant>,
+    unsaved: bool,
     inbox: mpsc::Receiver<Command>,
     events: broadcast::Sender<Event>,
     state: watch::Sender<State>,
@@ -545,9 +561,13 @@ impl Worker {
                 () = at(next_refresh) => self.start_refresh(),
                 () = at(next_track) => self.start_tracking(),
                 Some(notice) = self.notices.recv() => self.notice(notice),
-                Ok(()) = self.prices.changed(), if has_market => self.publish_portfolio(),
+                Ok(()) = self.prices.changed(), if has_market => {
+                    self.remember_prices();
+                    self.publish_portfolio();
+                }
             }
         };
+        self.keep_prices();
         drop(self);
         if let Some(reply) = shutdown {
             let _ = reply.send(Ok(()));
@@ -580,6 +600,7 @@ impl Worker {
             Command::History(reply) => answer(reply, self.history()),
             Command::Incoming(reply) => answer(reply, self.incoming()),
             Command::Outgoing(reply) => answer(reply, self.outgoing()),
+            Command::Activity(reply) => answer(reply, self.activities()),
             Command::Contacts(reply) => answer(reply, self.contacts()),
             Command::SaveContact(contact, reply) => answer(reply, self.save_contact(&contact)),
             Command::RemoveContact(network, address, reply) => {
@@ -650,6 +671,7 @@ impl Worker {
         self.store.save_settings(&settings)?;
         let testnets_changed = settings.show_testnets != self.settings.show_testnets;
         self.settings = settings.clone();
+        self.switch_prices();
         let _ = self.events.send(Event::SettingsChanged(settings));
         self.activity();
         self.refresh_prices();
@@ -888,6 +910,7 @@ impl Worker {
         self.accounts.clear();
         self.held.clear();
         self.health.clear();
+        self.keep_prices();
         let state = if self.keyring.as_ref().is_some_and(Keyring::exists) {
             State::Locked
         } else {
@@ -913,7 +936,7 @@ impl Worker {
     }
 
     fn publish_portfolio(&self) {
-        let snapshot = self.prices.borrow().clone();
+        let snapshot = self.quotes();
         let portfolio = portfolio::build(
             &self.registry,
             &self.custom,
@@ -930,7 +953,17 @@ impl Worker {
             return;
         };
         let wanted = if self.unlocked() {
-            portfolio::wanted(&self.registry, &self.custom, &self.held)
+            let ours = |address: &Address| {
+                self.accounts
+                    .iter()
+                    .any(|account| account.address == *address)
+            };
+            let received = self
+                .received
+                .iter()
+                .filter(|entry| ours(&entry.to))
+                .map(|entry| &entry.asset);
+            portfolio::wanted(&self.registry, &self.custom, &self.held, received)
         } else {
             BTreeSet::new()
         };

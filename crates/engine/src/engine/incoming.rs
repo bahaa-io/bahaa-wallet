@@ -119,7 +119,7 @@ impl Worker {
 
     pub(super) fn arrivals(&self, entries: &[Received]) -> Vec<Arrival> {
         let known = self.known();
-        let snapshot = self.prices.borrow().clone();
+        let snapshot = self.quotes();
         entries
             .iter()
             .map(|entry| {

@@ -10,8 +10,8 @@ use bahaa_chain::ChainError;
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
 use bahaa_engine::{
-    Engine, EngineConfig, EngineError, Event, KeyringError, SendRequest, SentStatus, SentTx, Spend,
-    WalletId,
+    ActivityKind, Engine, EngineConfig, EngineError, Event, KeyringError, SendRequest, SentStatus,
+    SentTx, Spend, WalletId,
 };
 use bahaa_types::{Address, Amount, ChainFamily};
 use common::{HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, USDT, config, result};
@@ -173,7 +173,13 @@ async fn a_send_needs_the_password_and_is_tracked_until_confirmed() {
     assert_eq!(done.fee_paid.unwrap().to_string(), "0.000042");
     assert_eq!(done.transaction.as_deref(), Some(sent.id.as_str()));
     assert_eq!(done.amount.to_string(), "0.25");
-    assert_eq!(engine.history().await.unwrap(), [done]);
+    assert_eq!(engine.history().await.unwrap(), std::slice::from_ref(&done));
+    let activity = engine.activity().await.unwrap();
+    assert_eq!(activity.len(), 1);
+    assert_eq!(
+        (activity[0].wallet, activity[0].time, &activity[0].kind),
+        (wallet, done.created_at, &ActivityKind::Sent(done))
+    );
     assert_eq!(ledger.lock().unwrap().accepted.len(), 1);
 }
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use bahaa_config::{Coin, Fiat, Registry};
-use bahaa_market::{Snapshot, Status};
+use bahaa_market::{Quote, Snapshot, Status};
 use bahaa_store::CustomToken;
 use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, Price, PriceId};
 
@@ -49,6 +49,7 @@ pub struct Holding {
     pub amount: Amount,
     pub staked: Option<Amount>,
     pub price: Option<Price>,
+    pub price_at: Option<u64>,
     pub value: Option<Amount>,
 }
 
@@ -88,27 +89,31 @@ pub(crate) fn value(
     asset: &AssetId,
     amount: Amount,
 ) -> Option<Amount> {
-    price(coin(registry, custom, asset)?, snapshot, fiat)?
+    quote(coin(registry, custom, asset)?, snapshot, fiat)?
+        .price
         .value_of(amount, fiat.places())
         .ok()
 }
 
-fn price(coin: &Coin, snapshot: &Snapshot, fiat: Fiat) -> Option<Price> {
+fn quote(coin: &Coin, snapshot: &Snapshot, fiat: Fiat) -> Option<Quote> {
     coin.price
         .as_ref()
         .filter(|_| snapshot.base == fiat.price_base())
         .and_then(|id| snapshot.quotes.get(id))
-        .map(|quote| quote.price)
+        .copied()
 }
 
-pub(crate) fn wanted(
+pub(crate) fn wanted<'a>(
     registry: &Registry,
     custom: &[CustomToken],
-    held: &[Held],
+    held: &'a [Held],
+    received: impl IntoIterator<Item = &'a AssetId>,
 ) -> BTreeSet<PriceId> {
     held.iter()
         .filter(|holding| !holding.amount.is_zero() || holding.staked.is_some())
-        .filter_map(|holding| coin(registry, custom, &holding.asset)?.price.clone())
+        .map(|holding| &holding.asset)
+        .chain(received)
+        .filter_map(|asset| coin(registry, custom, asset)?.price.clone())
         .collect()
 }
 
@@ -124,7 +129,8 @@ pub(crate) fn build(
         .iter()
         .filter_map(|holding| {
             let coin = coin(registry, custom, &holding.asset)?;
-            let price = price(coin, snapshot, fiat);
+            let quote = quote(coin, snapshot, fiat);
+            let price = quote.map(|quote| quote.price);
             let owned = match holding.staked {
                 Some(staked) => holding.amount.checked_add(staked).ok(),
                 None => Some(holding.amount),
@@ -141,6 +147,7 @@ pub(crate) fn build(
                 amount: holding.amount,
                 staked: holding.staked,
                 price,
+                price_at: quote.map(|quote| quote.updated_at),
                 value,
             })
         })
@@ -246,7 +253,7 @@ mod tests {
             ]
         );
         assert_eq!(portfolio.total.unwrap().fixed(), "26.25");
-        let asked = wanted(&registry(), &[], &[locked]);
+        let asked = wanted(&registry(), &[], &[locked], &[]);
         assert_eq!(asked.len(), 1);
     }
 
@@ -324,16 +331,20 @@ mod tests {
     }
 
     #[test]
-    fn only_held_coins_are_priced() {
+    fn held_and_received_coins_are_priced() {
         let held = [
             held("bsc", "1", 18),
             held(USDT, "0", 18),
             held("ethereum", "0.1", 18),
         ];
-        let wanted: Vec<String> = wanted(&registry(), &[], &held)
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(wanted, ["crypto/BNB", "crypto/ETH"]);
+        let priced = |received: &[AssetId]| -> Vec<String> {
+            wanted(&registry(), &[], &held, received)
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        assert_eq!(priced(&[]), ["crypto/BNB", "crypto/ETH"]);
+        let dust: AssetId = "tron".parse().unwrap();
+        assert_eq!(priced(&[dust]), ["crypto/BNB", "crypto/ETH", "crypto/TRX"]);
     }
 }

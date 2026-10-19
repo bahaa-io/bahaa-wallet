@@ -2,6 +2,7 @@ use std::fmt;
 
 use ruint::UintTryFrom;
 use ruint::aliases::{U256, U512};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{Amount, MAX_DECIMALS};
@@ -9,7 +10,8 @@ use crate::{Amount, MAX_DECIMALS};
 pub const MAX_SCALE: u32 = 36;
 const MAX_EXPONENT_DIGITS: usize = 3;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Price {
     digits: U256,
     scale: u32,
@@ -103,6 +105,20 @@ impl Price {
     }
 }
 
+impl TryFrom<String> for Price {
+    type Error = PriceError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::parse(&text)
+    }
+}
+
+impl From<Price> for String {
+    fn from(price: Price) -> Self {
+        price.to_string()
+    }
+}
+
 impl fmt::Display for Price {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = self.digits.to_string();
@@ -160,6 +176,16 @@ mod tests {
 
     fn amount(text: &str, decimals: u8) -> Amount {
         Amount::parse(text, decimals).unwrap()
+    }
+
+    #[test]
+    fn prices_are_stored_as_their_exact_decimal_text() {
+        let tiny = price("0.000000000009222");
+        let json = serde_json::to_string(&tiny).unwrap();
+        assert_eq!(json, "\"0.000000000009222\"");
+        assert_eq!(serde_json::from_str::<Price>(&json).unwrap(), tiny);
+        assert!(serde_json::from_str::<Price>("\"-1\"").is_err());
+        assert!(serde_json::from_str::<Price>("1.5").is_err());
     }
 
     #[test]

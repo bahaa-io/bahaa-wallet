@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 
 use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
 use bahaa_store::{
-    Contact, CustomToken, Outgoing, Received, Scan, SentStatus, SentTx, Store, StoreError,
-    TrustedBlock,
+    Contact, CustomToken, Outgoing, Received, SavedPrices, SavedQuote, Scan, SentStatus, SentTx,
+    Store, StoreError, TrustedBlock,
 };
-use bahaa_types::{Address, Amount, ChainFamily};
+use bahaa_types::{Address, Amount, ChainFamily, Price};
 use redb::{Database, TableDefinition};
 
 struct Scratch(PathBuf);
@@ -438,4 +438,37 @@ fn the_data_file_is_private() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
+}
+
+#[test]
+fn the_last_prices_of_each_base_survive_a_restart() {
+    let scratch = Scratch::new();
+    let usdt = SavedPrices {
+        base: "USDT".to_owned(),
+        quotes: vec![SavedQuote {
+            id: "crypto/TRX".parse().unwrap(),
+            price: Price::parse("0.331").unwrap(),
+            updated_at: 1_792_385_000,
+        }],
+    };
+    {
+        let store = Store::open(&scratch.file()).unwrap();
+        assert_eq!(store.prices("USDT").unwrap(), None);
+        store.save_prices(&usdt).unwrap();
+        let mut bad = usdt.clone();
+        bad.base = "usdt".to_owned();
+        assert!(matches!(
+            store.save_prices(&bad),
+            Err(StoreError::Invalid(_))
+        ));
+        bad.base = "IRT".to_owned();
+        bad.quotes = vec![usdt.quotes[0].clone(); 513];
+        assert!(matches!(
+            store.save_prices(&bad),
+            Err(StoreError::Invalid(_))
+        ));
+    }
+    let store = Store::open(&scratch.file()).unwrap();
+    assert_eq!(store.prices("USDT").unwrap(), Some(usdt));
+    assert_eq!(store.prices("IRT").unwrap(), None);
 }

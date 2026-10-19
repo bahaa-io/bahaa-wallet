@@ -2,7 +2,7 @@ use std::fs::OpenOptions;
 use std::path::Path;
 
 use bahaa_config::{Checkpoint, Coin, Settings};
-use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text};
+use bahaa_types::{Address, Amount, AssetId, NetworkId, Price, PriceId, is_plain_text};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ const SETTINGS_KEY: &str = "settings";
 const MAX_CONTACT_NAME: usize = 40;
 const MAX_TX_ID: usize = 128;
 const MAX_REASON: usize = 200;
+const MAX_QUOTES: usize = 512;
 
 const META: TableDefinition<'static, &str, u64> = TableDefinition::new("meta");
 const SETTINGS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("settings");
@@ -24,6 +25,7 @@ const RECEIVED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("re
 const SCANS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("scans");
 const OUTGOING: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("outgoing");
 const TRUSTED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("trusted");
+const PRICES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("prices");
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum StoreError {
@@ -137,6 +139,21 @@ pub struct Scan {
 pub struct TrustedBlock {
     pub network: NetworkId,
     pub checkpoint: Checkpoint,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedPrices {
+    pub base: String,
+    pub quotes: Vec<SavedQuote>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedQuote {
+    pub id: PriceId,
+    pub price: Price,
+    pub updated_at: u64,
 }
 
 pub struct Store {
@@ -323,6 +340,26 @@ impl Store {
         self.put(TRUSTED, block.network.as_str(), &encode(block)?)
     }
 
+    pub fn prices(&self, base: &str) -> Result<Option<SavedPrices>, StoreError> {
+        match self.get(PRICES, base)? {
+            Some(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|err| StoreError::Corrupt(err.to_string())),
+            None => Ok(None),
+        }
+    }
+
+    pub fn save_prices(&self, prices: &SavedPrices) -> Result<(), StoreError> {
+        let base = &prices.base;
+        if !(3..=5).contains(&base.len()) || !base.bytes().all(|byte| byte.is_ascii_uppercase()) {
+            return Err(StoreError::Invalid("not a price base"));
+        }
+        if prices.quotes.len() > MAX_QUOTES {
+            return Err(StoreError::Invalid("too many prices to keep"));
+        }
+        self.put(PRICES, base, &encode(prices)?)
+    }
+
     fn migrate(&self) -> Result<(), StoreError> {
         let txn = self.db.begin_write().map_err(database)?;
         {
@@ -339,7 +376,7 @@ impl Store {
                 }
             }
             for table in [
-                SETTINGS, CONTACTS, TOKENS, SENT, RECEIVED, SCANS, TRUSTED, OUTGOING,
+                SETTINGS, CONTACTS, TOKENS, SENT, RECEIVED, SCANS, TRUSTED, OUTGOING, PRICES,
             ] {
                 txn.open_table(table).map_err(database)?;
             }

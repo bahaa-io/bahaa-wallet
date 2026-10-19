@@ -9,8 +9,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use bahaa_config::{Network, Registry};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_engine::{
-    Account, CustomToken, Draft, Engine, EngineConfig, Event, NewPhrase, PhraseKind, SendRequest,
-    SentStatus, SentTx, Spend, WalletId,
+    Account, ActivityKind, CustomToken, Draft, Engine, EngineConfig, Event, NewPhrase, PhraseKind,
+    SendRequest, SentStatus, SentTx, Spend, WalletId,
 };
 use bahaa_market::Status;
 use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, TonContract, TonForm};
@@ -31,6 +31,7 @@ const USAGE: &str = "commands:
   create                              new test vault with wallets a and b
   addresses                           every wallet's receiving addresses
   status                              refresh, then balances, sends and receipts
+  activity                            every transfer of every wallet, newest first
   send <wallet> <asset> <to> <amount|max>
                                       quote, sign, broadcast and wait until settled
   quote <wallet> <asset> <to> <amount|max>
@@ -62,6 +63,7 @@ async fn run(args: &[String]) -> Outcome {
     let result = match words.as_slice() {
         ["addresses"] => live.addresses().await,
         ["status"] => live.status().await,
+        ["activity"] => live.activity().await,
         ["send", from, asset, to, amount] => live.send(from, asset, to, amount, true).await,
         ["quote", from, asset, to, amount] => live.send(from, asset, to, amount, false).await,
         ["watch", seconds] => live.watch(Duration::from_secs(seconds.parse()?)).await,
@@ -411,6 +413,51 @@ impl Live {
                 "  {:<12} {} since {}",
                 scan.network, scan.address, scan.complete_since
             );
+        }
+        Ok(())
+    }
+
+    async fn activity(&self) -> Outcome {
+        for activity in self.engine.activity().await? {
+            let label = self.label(activity.wallet).await?;
+            let (network, line) = match &activity.kind {
+                ActivityKind::Sent(tx) => (
+                    &tx.network,
+                    format!(
+                        "sent {} {} to {} {:?} fee {}",
+                        tx.amount,
+                        self.symbol(&tx.asset).await?,
+                        tx.to,
+                        tx.status,
+                        tx.fee_paid
+                            .map_or_else(|| "?".to_owned(), |fee| fee.to_string())
+                    ),
+                ),
+                ActivityKind::SentElsewhere(tx) => (
+                    &tx.network,
+                    format!(
+                        "sent {} {} to {} from another app",
+                        tx.amount,
+                        self.symbol(&tx.asset).await?,
+                        tx.to
+                    ),
+                ),
+                ActivityKind::Received(arrival) => (
+                    &arrival.received.network,
+                    format!(
+                        "received {} {} from {}{}",
+                        arrival.received.amount,
+                        self.symbol(&arrival.received.asset).await?,
+                        arrival.received.from,
+                        if arrival.cautions.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {:?}", arrival.cautions)
+                        }
+                    ),
+                ),
+            };
+            println!("{}  {label}  {network:<12} {line}", activity.time);
         }
         Ok(())
     }
