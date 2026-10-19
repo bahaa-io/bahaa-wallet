@@ -21,7 +21,19 @@ pub fn to_plain_text(text: &str, max_chars: usize) -> String {
 
 fn hidden(c: char) -> bool {
     c.is_control()
-        || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'
+                | '\u{200E}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
 }
 
 #[cfg(test)]
@@ -30,7 +42,15 @@ mod tests {
 
     #[test]
     fn accepts_ordinary_names_in_any_script() {
-        for text in ["Mom", "Exchange wallet", "مامان", "钱包", "Café 2"] {
+        for text in [
+            "Mom",
+            "Exchange wallet",
+            "مامان",
+            "钱包",
+            "Café 2",
+            "می\u{200C}خواهم",
+            "👨\u{200D}👩\u{200D}👧",
+        ] {
             assert!(is_plain_text(text, 40), "{text}");
         }
     }
@@ -46,6 +66,11 @@ mod tests {
             "Mo\u{7}m",
             "Mo\nm",
             "\u{FEFF}Mom",
+            "Mom\u{E0041}\u{E0042}",
+            "Mo\u{2060}m",
+            "Mo\u{00AD}m",
+            "Mo\u{061C}m",
+            "Mo\u{200E}m",
         ] {
             assert!(!is_plain_text(text, 40), "{text:?}");
         }
