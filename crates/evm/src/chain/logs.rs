@@ -12,6 +12,8 @@ use crate::rpc::quantity;
 const TRANSFER_TOPIC: &str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const CHUNK: u64 = 2_000;
 const REACH: u64 = 4_000;
+const BUDGET: u64 = 20 * CHUNK;
+const BACKLOG: u64 = 7 * 24 * 60 * 60;
 const CONFIRMATIONS: u64 = 12;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -54,7 +56,15 @@ impl EvmChain {
     ) -> Result<Option<Scanned>, ChainError> {
         let ours = bytes(owner)?;
         let head = block_number(&self.logs_call("eth_blockNumber", json!([])).await?)?;
-        let Some(range) = plan(cursor, head) else {
+        let mut times = HashMap::new();
+        let stale = match cursor {
+            Some(cursor) if cursor.next.saturating_add(REACH) <= head => {
+                let since = self.block_time(cursor.next, &mut times).await?;
+                now().saturating_sub(since) > BACKLOG
+            }
+            _ => false,
+        };
+        let Some(range) = plan(cursor, head, stale) else {
             return Ok(None);
         };
         let tokens: Vec<(&AssetId, [u8; 20])> = tokens
@@ -62,7 +72,6 @@ impl EvmChain {
             .filter(|asset| asset.network() == &self.network.id)
             .filter_map(|asset| Some((asset, bytes(asset.contract()?).ok()?)))
             .collect();
-        let mut times = HashMap::new();
         let (mut found, mut sent) = (Vec::new(), Vec::new());
         if !tokens.is_empty() {
             let mut from = range.from;
@@ -181,14 +190,14 @@ impl EvmChain {
     }
 }
 
-fn plan(cursor: Option<ScanCursor>, head: u64) -> Option<Range> {
+fn plan(cursor: Option<ScanCursor>, head: u64, stale: bool) -> Option<Range> {
     let until = head.checked_sub(CONFIRMATIONS)?;
     let earliest = until.saturating_sub(REACH - 1);
     match cursor {
         Some(cursor) if cursor.next > until => None,
-        Some(cursor) if cursor.next >= earliest => Some(Range {
+        Some(cursor) if !stale => Some(Range {
             from: cursor.next,
-            until,
+            until: until.min(cursor.next.saturating_add(BUDGET - 1)),
             reset: false,
         }),
         _ => Some(Range {
@@ -197,6 +206,12 @@ fn plan(cursor: Option<ScanCursor>, head: u64) -> Option<Range> {
             reset: true,
         }),
     }
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 fn parse(log: &Value, owner: &[u8; 20], side: Side, from: u64, until: u64) -> Option<Log> {
@@ -291,23 +306,27 @@ mod tests {
     }
 
     #[test]
-    fn scans_forward_within_reach_and_waits_for_confirmations() {
-        assert_eq!(plan(None, 10_000), Some(range(5_989, 9_988, true)));
+    fn scans_forward_catches_up_and_waits_for_confirmations() {
+        assert_eq!(plan(None, 10_000, false), Some(range(5_989, 9_988, true)));
         assert_eq!(
-            plan(Some(cursor(9_000)), 10_000),
+            plan(Some(cursor(9_000)), 10_000, false),
             Some(range(9_000, 9_988, false))
         );
         assert_eq!(
-            plan(Some(cursor(5_989)), 10_000),
-            Some(range(5_989, 9_988, false))
+            plan(Some(cursor(5_988)), 10_000, false),
+            Some(range(5_988, 9_988, false))
         );
         assert_eq!(
-            plan(Some(cursor(5_988)), 10_000),
+            plan(Some(cursor(100)), 100_000, false),
+            Some(range(100, 40_099, false))
+        );
+        assert_eq!(
+            plan(Some(cursor(100)), 10_000, true),
             Some(range(5_989, 9_988, true))
         );
-        assert_eq!(plan(Some(cursor(9_989)), 10_000), None);
-        assert_eq!(plan(None, 11), None);
-        assert_eq!(plan(None, 100), Some(range(0, 88, true)));
+        assert_eq!(plan(Some(cursor(9_989)), 10_000, false), None);
+        assert_eq!(plan(None, 11, false), None);
+        assert_eq!(plan(None, 100, false), Some(range(0, 88, true)));
     }
 
     fn log() -> Value {

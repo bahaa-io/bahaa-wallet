@@ -20,7 +20,17 @@ const GENESIS: u64 = 1_760_000_000;
 #[derive(Default)]
 struct FakeChain {
     head: AtomicU64,
+    genesis: AtomicU64,
     asked: Mutex<Vec<(u64, u64)>>,
+}
+
+impl FakeChain {
+    fn genesis(&self) -> u64 {
+        match self.genesis.load(Ordering::SeqCst) {
+            0 => GENESIS,
+            set => set,
+        }
+    }
 }
 
 fn number(value: &Value) -> u64 {
@@ -68,7 +78,7 @@ async fn bsc(chain: &Arc<FakeChain>) -> Registry {
             "eth_call" => json!(format!("0x{:064x}", 0)),
             "eth_blockNumber" => json!(format!("0x{:x}", chain.head.load(Ordering::SeqCst))),
             "eth_getBlockByNumber" => {
-                json!({"timestamp": format!("0x{:x}", GENESIS + number(&params[0]))})
+                json!({"timestamp": format!("0x{:x}", chain.genesis() + number(&params[0]))})
             }
             "eth_getLogs" if params[0]["topics"][1] == json!(padded(HARDHAT_0)) => {
                 let (from, to) = (
@@ -231,4 +241,44 @@ async fn incoming_tokens_are_found_kept_and_scanned_onward() {
     .await;
     assert_eq!(after_gap.coverage[0].complete_since, GENESIS + 95_989);
     assert_eq!(after_gap.transfers, fresh);
+}
+
+#[tokio::test]
+async fn a_short_gap_is_caught_up_instead_of_skipped() {
+    let scratch = Scratch::new();
+    let chain = Arc::new(FakeChain::default());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    chain.genesis.store(now - 100_000, Ordering::SeqCst);
+    chain.head.store(10_000, Ordering::SeqCst);
+    let engine = Engine::start(config(&scratch, bsc(&chain).await, None)).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    incoming_until(&engine, |incoming| {
+        incoming
+            .coverage
+            .first()
+            .is_some_and(|scan| scan.next == 9_989)
+    })
+    .await;
+    engine.shutdown().await.unwrap();
+    chain.head.store(100_000, Ordering::SeqCst);
+    let first_after = chain.asked.lock().unwrap().len();
+    let engine = Engine::start(config(&scratch, bsc(&chain).await, None)).unwrap();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    let caught = incoming_until(&engine, |incoming| incoming.coverage[0].next == 49_989).await;
+    assert_eq!(caught.coverage[0].complete_from, 5_989);
+    assert_eq!(chain.asked.lock().unwrap()[first_after], (9_989, 11_988));
+    for next in [89_989, 99_989] {
+        engine.refresh();
+        incoming_until(&engine, |incoming| incoming.coverage[0].next == next).await;
+    }
+    let done = engine.incoming().await.unwrap();
+    assert_eq!(done.coverage[0].complete_from, 5_989);
+    assert_eq!(done.transfers.len(), 1);
 }
