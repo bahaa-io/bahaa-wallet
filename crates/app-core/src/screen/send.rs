@@ -281,7 +281,7 @@ impl Send {
                 ..Page::default()
             };
         }
-        let sources = Self::sources(ctx)
+        let sources: Vec<_> = Self::sources(ctx)
             .into_iter()
             .enumerate()
             .map(|(position, (source, amount))| {
@@ -297,7 +297,15 @@ impl Send {
                 )
             })
             .collect();
-        let mut groups = vec![group(text::FROM, sources)];
+        if sources.is_empty() {
+            return Page {
+                id: PageId::Compose,
+                title: text::SEND.to_owned(),
+                text: Some(text::NOTHING_TO_SEND.to_owned()),
+                buttons: vec![button(text::RECEIVE, Action::Go(Go::Tab(Tab::Receive)))],
+                ..Page::default()
+            };
+        }
         let contacts: Vec<_> = self
             .contacts(ctx)
             .into_iter()
@@ -306,29 +314,32 @@ impl Send {
                 choice(&contact.name, Action::Pick(Pick::Contact(position)), false)
             })
             .collect();
-        if !contacts.is_empty() {
-            groups.push(group(text::CONTACTS, contacts));
-        }
-        groups.push(group(
-            text::AMOUNT,
-            vec![choice(
-                text::SEND_ALL,
-                Action::Toggle(Toggle::Max),
-                self.max,
-            )],
-        ));
-        let mut inputs = vec![
-            input(Field::To, text::TO, &self.to_text),
-            input(Field::Amount, text::AMOUNT, &self.amount_text),
+        let mut form = vec![
+            group(text::FROM, sources).into(),
+            input(Field::To, text::TO, &self.to_text).into(),
         ];
+        if !contacts.is_empty() {
+            form.push(group(text::CONTACTS, contacts).into());
+        }
+        form.extend([
+            input(Field::Amount, text::AMOUNT, &self.amount_text).into(),
+            group(
+                "",
+                vec![choice(
+                    text::SEND_ALL,
+                    Action::Toggle(Toggle::Max),
+                    self.max,
+                )],
+            )
+            .into(),
+        ]);
         if self.memo_allowed(ctx) {
-            inputs.push(input(Field::Memo, text::MEMO, &self.memo));
+            form.push(input(Field::Memo, text::MEMO, &self.memo).into());
         }
         Page {
             id: PageId::Compose,
             title: text::SEND.to_owned(),
-            groups,
-            inputs,
+            form,
             notes: self
                 .cautions
                 .iter()
@@ -524,7 +535,7 @@ impl Screen for Send {
             Step::Confirm { password, .. } => Page {
                 id: PageId::Confirm,
                 title: text::CONFIRM_TITLE.to_owned(),
-                inputs: vec![hidden(Field::Password, text::PASSWORD, password)],
+                form: vec![hidden(Field::Password, text::PASSWORD, password).into()],
                 error: self.error.clone(),
                 buttons: vec![button(text::SEND_NOW, Action::Submit)],
                 ..Page::default()

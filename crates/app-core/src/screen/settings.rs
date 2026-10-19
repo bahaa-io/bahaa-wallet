@@ -93,9 +93,9 @@ impl Screen for Settings {
             id: PageId::Settings,
             title: text::SETTINGS.to_owned(),
             lines: vec![line(text::VERSION, env!("CARGO_PKG_VERSION"))],
-            groups: vec![
-                group(text::CURRENCY, currencies),
-                group(text::AUTO_LOCK, locks),
+            form: vec![
+                group(text::CURRENCY, currencies).into(),
+                group(text::AUTO_LOCK, locks).into(),
                 group(
                     text::NETWORKS,
                     vec![choice(
@@ -103,7 +103,8 @@ impl Screen for Settings {
                         Action::Toggle(Toggle::Testnets),
                         settings.show_testnets,
                     )],
-                ),
+                )
+                .into(),
             ],
             table: Some(Table {
                 columns: text::WALLET_COLUMNS.map(str::to_owned).to_vec(),
@@ -171,12 +172,12 @@ impl Screen for ChangePassword {
     }
 
     fn page(&self, _ctx: &Ctx<'_>) -> Page {
-        let mut inputs = vec![hidden(Field::Password, text::CURRENT_PASSWORD, &self.old)];
-        inputs.extend(password_inputs(&self.new, &self.confirm));
+        let mut form = vec![hidden(Field::Password, text::CURRENT_PASSWORD, &self.old).into()];
+        form.extend(password_inputs(&self.new, &self.confirm));
         Page {
             id: PageId::ChangePassword,
             title: text::CHANGE_PASSWORD.to_owned(),
-            inputs,
+            form,
             error: self.error.clone(),
             buttons: vec![button(text::SAVE, Action::Submit)],
             ..Page::default()

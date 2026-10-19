@@ -127,8 +127,10 @@ impl Screen for Add {
             id: PageId::NewToken,
             title: text::ADD_TOKEN.to_owned(),
             text: Some(text::ADD_TOKEN_TEXT.to_owned()),
-            groups: vec![network_group(ctx, self.network.as_ref())],
-            inputs: vec![input(Field::Contract, text::CONTRACT, &self.contract)],
+            form: vec![
+                network_group(ctx, self.network.as_ref()).into(),
+                input(Field::Contract, text::CONTRACT, &self.contract).into(),
+            ],
             error: self.error.clone(),
             buttons: vec![button(text::ADD, Action::Submit)],
             ..Page::default()

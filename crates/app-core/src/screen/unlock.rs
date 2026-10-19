@@ -39,7 +39,7 @@ impl Screen for Unlock {
         Page {
             id: PageId::Unlock,
             title: text::UNLOCK.to_owned(),
-            inputs: vec![hidden(Field::Password, text::PASSWORD, &self.password)],
+            form: vec![hidden(Field::Password, text::PASSWORD, &self.password).into()],
             error: self.error.clone(),
             buttons: vec![button(text::UNLOCK_BUTTON, Action::Submit)],
             ..Page::default()

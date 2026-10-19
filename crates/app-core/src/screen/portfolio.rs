@@ -119,8 +119,8 @@ impl Screen for Portfolio {
             id: PageId::Portfolio,
             title: text::PORTFOLIO.to_owned(),
             headline: Some(format::fiat(total, ctx.fiat())),
-            groups: vec![
-                group(text::WALLETS, wallets),
+            form: vec![
+                group(text::WALLETS, wallets).into(),
                 group(
                     text::SHOW,
                     vec![choice(
@@ -128,7 +128,8 @@ impl Screen for Portfolio {
                         Action::Toggle(Toggle::HideEmpty),
                         self.show_empty,
                     )],
-                ),
+                )
+                .into(),
             ],
             table: Some(Table {
                 columns: text::PORTFOLIO_COLUMNS.map(str::to_owned).to_vec(),

@@ -22,14 +22,29 @@ pub struct Page {
     pub text: Option<String>,
     pub headline: Option<String>,
     pub lines: Vec<Line>,
-    pub groups: Vec<Group>,
-    pub inputs: Vec<Input>,
+    pub form: Vec<Item>,
     pub table: Option<Table>,
     pub notes: Vec<Note>,
     pub error: Option<String>,
     pub buttons: Vec<Button>,
     pub qr: Option<String>,
     pub secret: Option<Secret>,
+}
+
+impl Page {
+    pub fn inputs(&self) -> impl Iterator<Item = &Input> {
+        self.form.iter().filter_map(|item| match item {
+            Item::Input(input) => Some(input),
+            Item::Group(_) => None,
+        })
+    }
+
+    pub fn groups(&self) -> impl Iterator<Item = &Group> {
+        self.form.iter().filter_map(|item| match item {
+            Item::Group(group) => Some(group),
+            Item::Input(_) => None,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,6 +81,24 @@ pub enum PageId {
 pub struct Line {
     pub label: String,
     pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Item {
+    Group(Group),
+    Input(Input),
+}
+
+impl From<Group> for Item {
+    fn from(group: Group) -> Self {
+        Self::Group(group)
+    }
+}
+
+impl From<Input> for Item {
+    fn from(input: Input) -> Self {
+        Self::Input(input)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

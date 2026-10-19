@@ -96,8 +96,7 @@ async fn at(view: &mut watch::Receiver<Arc<View>>, page: PageId) -> Arc<View> {
 }
 
 fn word_slots(page: &Page) -> Vec<usize> {
-    page.inputs
-        .iter()
+    page.inputs()
         .map(|input| input.label.trim_start_matches("Word #").parse().unwrap())
         .collect()
 }
@@ -168,12 +167,12 @@ async fn a_new_wallet_is_created_backed_up_and_locked_again() {
     })
     .await;
     assert!(
-        matches!(&wrong.page.inputs[0].value, Value::Hidden(secret) if secret.expose().is_empty())
+        matches!(&wrong.page.inputs().next().unwrap().value, Value::Hidden(secret) if secret.expose().is_empty())
     );
     let typed = app.act(Action::Type(Field::Password, PASSWORD.to_owned()));
     let echoed = until(&mut view, |current| current.handled >= typed).await;
     assert!(
-        matches!(&echoed.page.inputs[0].value, Value::Hidden(secret) if secret.expose() == PASSWORD)
+        matches!(&echoed.page.inputs().next().unwrap().value, Value::Hidden(secret) if secret.expose() == PASSWORD)
     );
     assert!(!format!("{:?}", echoed.page).contains(PASSWORD));
     app.act(Action::Submit);
@@ -244,7 +243,11 @@ async fn receiving_shows_the_address_and_a_payment_link() {
     let (app, mut requests, mut view) = imported(&scratch).await;
     app.act(Action::Go(Go::Tab(Tab::Receive)));
     let receive = at(&mut view, PageId::Receive).await;
-    let evm = receive.page.groups[0]
+    let evm = receive
+        .page
+        .groups()
+        .next()
+        .unwrap()
         .choices
         .iter()
         .position(|choice| choice.label.contains("BNB Smart Chain"))
@@ -280,7 +283,11 @@ async fn contacts_and_settings_are_saved() {
     at(&mut view, PageId::Contacts).await;
     app.act(Action::Go(Go::NewContact));
     let form = at(&mut view, PageId::Contact).await;
-    let bsc = form.page.groups[0]
+    let bsc = form
+        .page
+        .groups()
+        .next()
+        .unwrap()
         .choices
         .iter()
         .position(|choice| choice.label == "BNB Smart Chain")
@@ -303,19 +310,23 @@ async fn contacts_and_settings_are_saved() {
     at(&mut view, PageId::Settings).await;
     app.act(Action::Pick(Pick::Currency(Currency::Eur)));
     until(&mut view, |current| {
-        current.page.groups[0]
+        current
+            .page
+            .groups()
+            .next()
+            .unwrap()
             .choices
             .iter()
             .any(|choice| choice.label == "EUR" && choice.selected)
     })
     .await;
     app.act(Action::Go(Go::Tab(Tab::Send)));
-    at(&mut view, PageId::Compose).await;
-    app.act(Action::Submit);
-    until(&mut view, |current| {
-        current.page.error.as_deref() == Some("Choose what to send")
-    })
-    .await;
+    let empty = at(&mut view, PageId::Compose).await;
+    assert_eq!(empty.page.form.len(), 0);
+    assert_eq!(
+        empty.page.buttons[0].action,
+        Action::Go(Go::Tab(Tab::Receive))
+    );
     app.shutdown().await.unwrap();
 }
 
@@ -324,8 +335,8 @@ async fn import_as_ton(app: &App, view: &mut watch::Receiver<Arc<View>>) {
     app.act(Action::Pick(Pick::Import));
     at(view, PageId::Import).await;
     app.act(Action::Type(Field::Phrase, BOTH.to_owned()));
-    let asked = until(view, |current| !current.page.groups.is_empty()).await;
-    assert_eq!(asked.page.groups[0].choices.len(), 2);
+    let asked = until(view, |current| current.page.groups().next().is_some()).await;
+    assert_eq!(asked.page.groups().next().unwrap().choices.len(), 2);
     app.act(Action::Submit);
     until(view, |current| current.page.error.is_some()).await;
     app.act(Action::Pick(Pick::Kind(Kind::Ton)));

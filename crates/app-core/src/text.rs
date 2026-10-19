@@ -105,6 +105,8 @@ pub(crate) const QUOTING: &str = "Getting a fee quote…";
 pub(crate) const TRY_AGAIN: &str = "Try again";
 pub(crate) const QUOTE_EXPIRED: &str = "The fee quote expired, review the new one";
 pub(crate) const PICK_SOURCE: &str = "Choose what to send";
+pub(crate) const NOTHING_TO_SEND: &str =
+    "Nothing to send yet. Receive coins first, then send them from here.";
 pub(crate) const ENTER_RECIPIENT: &str = "Enter who to send to";
 pub(crate) const UNKNOWN_ACCOUNT: &str = "This account is not in the wallet anymore";
 pub(crate) const UNKNOWN_ASSET: &str = "This asset is not known to the wallet";
@@ -314,7 +316,11 @@ pub(crate) fn dropped(amount: &str) -> String {
 }
 
 pub(crate) fn unreachable(networks: &[String]) -> String {
-    format!("Can't reach {} right now", networks.join(", "))
+    match networks {
+        [one] => format!("Can't reach {one} right now"),
+        [one, two] => format!("Can't reach {one} and {two} right now"),
+        many => format!("Can't reach {} networks right now", many.len()),
+    }
 }
 
 pub(crate) fn reveal_title(wallet: &str) -> String {

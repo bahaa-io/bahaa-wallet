@@ -159,7 +159,7 @@ impl Screen for Edit {
                 text::NEW_CONTACT
             }
             .to_owned(),
-            inputs: vec![input(Field::Name, text::NAME, &self.name)],
+            form: vec![input(Field::Name, text::NAME, &self.name).into()],
             error: self.error.clone(),
             buttons: vec![button(text::SAVE, Action::Submit)],
             ..Page::default()
@@ -172,9 +172,10 @@ impl Screen for Edit {
             page.buttons
                 .push(button(text::DELETE, Action::Pick(Pick::Delete)));
         } else {
-            page.groups = vec![network_group(ctx, self.network.as_ref())];
-            page.inputs
-                .push(input(Field::Address, text::ADDRESS, &self.address));
+            page.form.extend([
+                network_group(ctx, self.network.as_ref()).into(),
+                input(Field::Address, text::ADDRESS, &self.address).into(),
+            ]);
         }
         page
     }

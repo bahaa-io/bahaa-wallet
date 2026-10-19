@@ -19,7 +19,9 @@ use crate::action::{Action, Field, Pick, Tab};
 use crate::call::Outcome;
 use crate::core::{Ctx, Reply};
 use crate::text;
-use crate::view::{Button, Choice, Group, Input, Level, Line, Note, Page, PageId, Secret, Value};
+use crate::view::{
+    Button, Choice, Group, Input, Item, Level, Line, Note, Page, PageId, Secret, Value,
+};
 
 const MIN_PASSWORD: usize = 8;
 const GOOD_PASSWORD: usize = 12;
@@ -145,15 +147,16 @@ pub(crate) fn password_problem(password: &Secret, confirm: &Secret) -> Option<&'
     }
 }
 
-pub(crate) fn password_inputs(password: &Secret, confirm: &Secret) -> Vec<Input> {
+pub(crate) fn password_inputs(password: &Secret, confirm: &Secret) -> Vec<Item> {
     let length = password.expose().chars().count();
     let hint = (length > 0 && length < GOOD_PASSWORD).then(|| text::PASSWORD_WEAK.to_owned());
     vec![
         Input {
             hint,
             ..hidden(Field::NewPassword, text::NEW_PASSWORD, password)
-        },
-        hidden(Field::Confirm, text::CONFIRM_PASSWORD, confirm),
+        }
+        .into(),
+        hidden(Field::Confirm, text::CONFIRM_PASSWORD, confirm).into(),
     ]
 }
 

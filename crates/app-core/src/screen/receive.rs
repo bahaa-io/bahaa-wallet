@@ -114,7 +114,7 @@ impl Screen for Receive {
         let mut page = Page {
             id: PageId::Receive,
             title: text::RECEIVE.to_owned(),
-            groups: vec![group(text::RECEIVE_TO, targets)],
+            form: vec![group(text::RECEIVE_TO, targets).into()],
             ..Page::default()
         };
         let (Some(target), Some(asset)) = (&self.target, self.asset()) else {
@@ -136,10 +136,11 @@ impl Screen for Receive {
             line(text::NETWORK, network.name.clone()),
             line(text::ASSET, ctx.symbol(&asset)),
         ];
-        page.inputs = vec![input(Field::Amount, text::AMOUNT_OPTIONAL, &self.amount)];
+        page.form
+            .push(input(Field::Amount, text::AMOUNT_OPTIONAL, &self.amount).into());
         if memo_allowed {
-            page.inputs
-                .push(input(Field::Memo, text::MEMO_OPTIONAL, &self.memo));
+            page.form
+                .push(input(Field::Memo, text::MEMO_OPTIONAL, &self.memo).into());
         }
         page.notes = vec![note(Level::Info, text::receive_note(&network.name))];
         page.qr = Some(links::request(

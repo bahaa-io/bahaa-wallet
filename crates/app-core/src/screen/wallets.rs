@@ -105,7 +105,7 @@ impl Screen for Wallet {
             })
             .collect();
         let mut buttons = vec![button(text::SAVE_NAME, Action::Submit)];
-        let mut groups = Vec::new();
+        let mut form = vec![input(Field::Name, text::NAME, &self.name).into()];
         match wallet.kind {
             WalletKind::Bip39 => {
                 buttons.push(button(text::ADD_ACCOUNT, Action::Pick(Pick::AddAccount)));
@@ -118,21 +118,24 @@ impl Screen for Wallet {
                     }));
                 }
             }
-            WalletKind::Ton(contract) => groups.push(group(
-                text::TON_CONTRACT,
-                vec![
-                    choice(
-                        text::W5,
-                        Action::Pick(Pick::Contract(Contract::W5)),
-                        contract == TonContract::W5,
-                    ),
-                    choice(
-                        text::V4R2,
-                        Action::Pick(Pick::Contract(Contract::V4R2)),
-                        contract == TonContract::V4R2,
-                    ),
-                ],
-            )),
+            WalletKind::Ton(contract) => form.push(
+                group(
+                    text::TON_CONTRACT,
+                    vec![
+                        choice(
+                            text::W5,
+                            Action::Pick(Pick::Contract(Contract::W5)),
+                            contract == TonContract::W5,
+                        ),
+                        choice(
+                            text::V4R2,
+                            Action::Pick(Pick::Contract(Contract::V4R2)),
+                            contract == TonContract::V4R2,
+                        ),
+                    ],
+                )
+                .into(),
+            ),
         }
         buttons.push(button(text::SHOW_PHRASE, Action::Go(Go::Reveal)));
         buttons.push(button(text::REMOVE_WALLET, Action::Go(Go::RemoveWallet)));
@@ -140,8 +143,7 @@ impl Screen for Wallet {
             id: PageId::Wallet,
             title: ctx.wallet_name(self.id),
             lines: vec![line(text::KIND, wallet_kind(wallet))],
-            inputs: vec![input(Field::Name, text::NAME, &self.name)],
-            groups,
+            form,
             table: Some(Table {
                 columns: text::ACCOUNT_COLUMNS.map(str::to_owned).to_vec(),
                 rows,
@@ -210,7 +212,7 @@ impl Screen for Reveal {
             page.secret = Some(words.clone());
             page.buttons = vec![button(text::DONE, Action::Submit)];
         } else {
-            page.inputs = vec![hidden(Field::Password, text::PASSWORD, &self.password)];
+            page.form = vec![hidden(Field::Password, text::PASSWORD, &self.password).into()];
             page.buttons = vec![button(text::SHOW_PHRASE, Action::Submit)];
         }
         page
@@ -271,7 +273,7 @@ impl Screen for Remove {
             id: PageId::RemoveWallet,
             title: text::remove_title(&ctx.wallet_name(self.id)),
             text: Some(text::REMOVE_TEXT.to_owned()),
-            inputs: vec![hidden(Field::Password, text::PASSWORD, &self.password)],
+            form: vec![hidden(Field::Password, text::PASSWORD, &self.password).into()],
             error: self.error.clone(),
             buttons: vec![button(text::REMOVE_WALLET, Action::Submit)],
             ..Page::default()

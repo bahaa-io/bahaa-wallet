@@ -146,7 +146,7 @@ impl Screen for NewPassword {
             id: PageId::NewPassword,
             title: text::SET_PASSWORD.to_owned(),
             text: Some(text::SET_PASSWORD_TEXT.to_owned()),
-            inputs: password_inputs(&self.password, &self.confirm),
+            form: password_inputs(&self.password, &self.confirm),
             error: self.error.clone(),
             buttons: vec![button(text::CONTINUE, Action::Submit)],
             ..Page::default()
@@ -244,7 +244,7 @@ impl Screen for Verify {
             id: PageId::Verify,
             title: text::CHECK_PHRASE.to_owned(),
             text: Some(text::CHECK_PHRASE_TEXT.to_owned()),
-            inputs: self
+            form: self
                 .positions
                 .iter()
                 .enumerate()
@@ -254,6 +254,7 @@ impl Screen for Verify {
                         &text::word_number(position + 1),
                         &self.answers[slot],
                     )
+                    .into()
                 })
                 .collect(),
             error: self.error.clone(),
@@ -356,33 +357,35 @@ impl Screen for Import {
             Err(KeyringError::Ambiguous) => Some(note(Level::Info, text::AMBIGUOUS)),
             Err(err) => Some(note(Level::Warning, text::sentence(&err.to_string()))),
         };
-        let groups = match self.check {
-            Err(KeyringError::Ambiguous) => vec![group(
-                text::WHICH_APP,
-                vec![
-                    choice(
-                        text::KIND_MULTI_CHAIN,
-                        Action::Pick(Pick::Kind(Kind::MultiChain)),
-                        self.kind == Some(Kind::MultiChain),
-                    ),
-                    choice(
-                        text::KIND_TON,
-                        Action::Pick(Pick::Kind(Kind::Ton)),
-                        self.kind == Some(Kind::Ton),
-                    ),
-                ],
-            )],
-            _ => Vec::new(),
-        };
+        let mut form = vec![
+            hidden(Field::Phrase, text::PHRASE, &self.phrase).into(),
+            hidden(Field::Passphrase, text::PASSPHRASE, &self.passphrase).into(),
+        ];
+        if let Err(KeyringError::Ambiguous) = self.check {
+            form.push(
+                group(
+                    text::WHICH_APP,
+                    vec![
+                        choice(
+                            text::KIND_MULTI_CHAIN,
+                            Action::Pick(Pick::Kind(Kind::MultiChain)),
+                            self.kind == Some(Kind::MultiChain),
+                        ),
+                        choice(
+                            text::KIND_TON,
+                            Action::Pick(Pick::Kind(Kind::Ton)),
+                            self.kind == Some(Kind::Ton),
+                        ),
+                    ],
+                )
+                .into(),
+            );
+        }
         Page {
             id: PageId::Import,
             title: text::IMPORT_TITLE.to_owned(),
             text: Some(text::IMPORT_TEXT.to_owned()),
-            inputs: vec![
-                hidden(Field::Phrase, text::PHRASE, &self.phrase),
-                hidden(Field::Passphrase, text::PASSPHRASE, &self.passphrase),
-            ],
-            groups,
+            form,
             notes: status.into_iter().collect(),
             error: self.error.clone(),
             buttons: vec![button(text::CONTINUE, Action::Submit)],
