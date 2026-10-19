@@ -32,9 +32,9 @@ const USAGE: &str = "commands:
   addresses                           every wallet's receiving addresses
   status                              refresh, then balances, sends and receipts
   activity                            every transfer of every wallet, newest first
-  send <wallet> <asset> <to> <amount|max>
+  send <wallet> <asset> <to> <amount|max> [memo]
                                       quote, sign, broadcast and wait until settled
-  quote <wallet> <asset> <to> <amount|max>
+  quote <wallet> <asset> <to> <amount|max> [memo]
                                       only show what send would do
   watch <seconds>                     print what the engine reports
   track                               wait until every open send is settled
@@ -64,8 +64,14 @@ async fn run(args: &[String]) -> Outcome {
         ["addresses"] => live.addresses().await,
         ["status"] => live.status().await,
         ["activity"] => live.activity().await,
-        ["send", from, asset, to, amount] => live.send(from, asset, to, amount, true).await,
-        ["quote", from, asset, to, amount] => live.send(from, asset, to, amount, false).await,
+        ["send", from, asset, to, amount] => live.send(from, asset, to, amount, None, true).await,
+        ["send", from, asset, to, amount, memo] => {
+            live.send(from, asset, to, amount, Some(memo), true).await
+        }
+        ["quote", from, asset, to, amount] => live.send(from, asset, to, amount, None, false).await,
+        ["quote", from, asset, to, amount, memo] => {
+            live.send(from, asset, to, amount, Some(memo), false).await
+        }
         ["watch", seconds] => live.watch(Duration::from_secs(seconds.parse()?)).await,
         ["track"] => live.track().await,
         ["testnets", choice @ ("on" | "off")] => live.testnets(*choice == "on").await,
@@ -490,11 +496,16 @@ impl Live {
         let symbol = self.symbol(&transfer.asset).await?;
         let native = &network.native.symbol;
         println!(
-            "draft: {} {symbol}{} from {} to {}",
+            "draft: {} {symbol}{} from {} to {}{}",
             transfer.amount,
             if transfer.max { " (max)" } else { "" },
             Self::shown(&transfer.from, network),
-            Self::shown(&transfer.to, network)
+            Self::shown(&transfer.to, network),
+            transfer
+                .memo
+                .as_ref()
+                .map(|memo| format!(" memo {memo:?}"))
+                .unwrap_or_default()
         );
         for line in draft.fee.lines() {
             println!("  fee {:?}: {} {native}", line.item, line.amount);
@@ -517,6 +528,7 @@ impl Live {
         asset: &str,
         to: &str,
         amount: &str,
+        memo: Option<&str>,
         confirm: bool,
     ) -> Outcome {
         let wallet = self.wallet(from).await?;
@@ -539,6 +551,7 @@ impl Live {
                 asset,
                 to,
                 amount,
+                memo: memo.map(str::to_owned),
             })
             .await?;
         println!("quoted in {:.1?}", started.elapsed());

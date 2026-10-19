@@ -383,6 +383,7 @@ fn scan_of(
             amount: incoming.amount,
             block: incoming.block,
             time: incoming.time,
+            memo: incoming.memo,
         })
         .collect();
     let sent = scanned
@@ -398,6 +399,7 @@ fn scan_of(
             amount: outgoing.amount,
             block: outgoing.block,
             time: outgoing.time,
+            memo: outgoing.memo,
         })
         .collect();
     (scan, found, sent)

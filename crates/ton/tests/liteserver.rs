@@ -690,6 +690,7 @@ fn send(amount: &str) -> bahaa_chain::Transfer {
         asset: gram(),
         amount: bahaa_types::Amount::parse(amount, 9).unwrap(),
         max: false,
+        memo: None,
     }
 }
 
@@ -1049,6 +1050,8 @@ fn summed(found: &[Incoming]) -> (usize, ruint::aliases::U256) {
     )
 }
 
+const SPAM: &str = "@pgon - крипто-фиатный кошелек в ТГ. Пополни по СБП / выведи по СБП / Оплаты QR в магазине. Промокод - 3ABSA1BERAA8";
+
 fn incoming(id: &str, from: &str, to: [u8; 32], nano: &str, lt: u64, time: u64) -> Incoming {
     Incoming {
         id: TxId::new(id.to_owned()).unwrap(),
@@ -1059,6 +1062,7 @@ fn incoming(id: &str, from: &str, to: [u8; 32], nano: &str, lt: u64, time: u64) 
         amount: bahaa_types::Amount::parse(nano, 9).unwrap(),
         block: lt,
         time,
+        memo: None,
     }
 }
 
@@ -1084,14 +1088,20 @@ async fn a_first_scan_reads_back_to_the_cap_or_the_first_transaction() {
     );
     assert_eq!(
         busy.found[0],
-        incoming(
-            "ca7ce93aedf52d8acefc446f635ebb2569f1720a05abe8d9e14d0133cc72a544",
-            "0:aaa71dfbda12f506eff5ec31ad26ea9a2133107c8d7493b0331c318aef12c4dc",
-            SENDER,
-            "0.000000001",
-            109_775_840_000_021,
-            1_791_927_519
-        )
+        Incoming {
+            memo: Some(
+                "@ceoman at the auction: 140 GRAM last bid https://fragment.com/username/ceoman"
+                    .to_owned()
+            ),
+            ..incoming(
+                "ca7ce93aedf52d8acefc446f635ebb2569f1720a05abe8d9e14d0133cc72a544",
+                "0:aaa71dfbda12f506eff5ec31ad26ea9a2133107c8d7493b0331c318aef12c4dc",
+                SENDER,
+                "0.000000001",
+                109_775_840_000_021,
+                1_791_927_519
+            )
+        }
     );
     assert_eq!(
         busy.found[33].id.as_str(),
@@ -1113,14 +1123,17 @@ async fn a_first_scan_reads_back_to_the_cap_or_the_first_transaction() {
     assert_eq!(
         young.found,
         [
-            incoming(
-                "7ab267622380d313537edc04dbe4cc6036252295be130c43fd67f80c18740eab",
-                "0:2a0ef9232b5aab6a2ded5e2c60bc24815af53d50c34f40ea98d5c08ad5f45b01",
-                YOUNG,
-                "0.00001",
-                109_677_718_000_018,
-                1_791_888_274
-            ),
+            Incoming {
+                memo: Some(SPAM.to_owned()),
+                ..incoming(
+                    "7ab267622380d313537edc04dbe4cc6036252295be130c43fd67f80c18740eab",
+                    "0:2a0ef9232b5aab6a2ded5e2c60bc24815af53d50c34f40ea98d5c08ad5f45b01",
+                    YOUNG,
+                    "0.00001",
+                    109_677_718_000_018,
+                    1_791_888_274
+                )
+            },
             incoming(
                 "dfa71cba2dc3d7eb03c5b2ce5897547c6b6a47f589854c4b65ba36722d129375",
                 "0:3f0483d026c5651998a75832a9ea573e35c6dd8d49912f70f275c7bde7effacf",
@@ -1318,6 +1331,7 @@ fn usdt_send(amount: &str, to: [u8; 32]) -> bahaa_chain::Transfer {
         asset: assets()[1].clone(),
         amount: bahaa_types::Amount::parse(amount, 6).unwrap(),
         max: false,
+        memo: None,
     }
 }
 

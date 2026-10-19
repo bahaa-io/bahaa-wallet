@@ -96,6 +96,7 @@ impl EvmChain {
                                 amount,
                                 block: log.block,
                                 time,
+                                memo: None,
                             }),
                             Side::Sent => sent.push(Outgoing {
                                 id,
@@ -106,6 +107,7 @@ impl EvmChain {
                                 amount,
                                 block: log.block,
                                 time,
+                                memo: None,
                             }),
                         }
                     }

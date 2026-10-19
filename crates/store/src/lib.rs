@@ -15,6 +15,7 @@ const MAX_CONTACT_NAME: usize = 40;
 const MAX_TX_ID: usize = 128;
 const MAX_REASON: usize = 200;
 const MAX_QUOTES: usize = 512;
+const MAX_MEMO: usize = 120;
 
 const META: TableDefinition<'static, &str, u64> = TableDefinition::new("meta");
 const SETTINGS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("settings");
@@ -78,6 +79,8 @@ pub struct SentTx {
     pub raw: Option<String>,
     #[serde(default)]
     pub transaction: Option<String>,
+    #[serde(default)]
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +111,8 @@ pub struct Received {
     pub amount: Amount,
     pub block: u64,
     pub time: u64,
+    #[serde(default)]
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +127,8 @@ pub struct Outgoing {
     pub amount: Amount,
     pub block: u64,
     pub time: u64,
+    #[serde(default)]
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +258,9 @@ impl Store {
         {
             return Err(StoreError::Invalid("not a transaction hash"));
         }
+        if !memo_ok(tx.memo.as_ref()) {
+            return Err(StoreError::Invalid("a memo must be short plain text"));
+        }
         if tx.status.is_open() != tx.raw.is_some() {
             return Err(StoreError::Invalid(
                 "only a transaction still on its way keeps its signed bytes",
@@ -286,6 +296,9 @@ impl Store {
             if !is_plain_text(&entry.id, MAX_TX_ID) {
                 return Err(StoreError::Invalid("not a transaction id"));
             }
+            if !memo_ok(entry.memo.as_ref()) {
+                return Err(StoreError::Invalid("a memo must be short plain text"));
+            }
             if entry.network != scan.network || entry.to != scan.address {
                 return Err(StoreError::Invalid(
                     "a transfer must belong to the scan that found it",
@@ -295,6 +308,9 @@ impl Store {
         for entry in sent {
             if !is_plain_text(&entry.id, MAX_TX_ID) {
                 return Err(StoreError::Invalid("not a transaction id"));
+            }
+            if !memo_ok(entry.memo.as_ref()) {
+                return Err(StoreError::Invalid("a memo must be short plain text"));
             }
             if entry.network != scan.network || entry.from != scan.address {
                 return Err(StoreError::Invalid(
@@ -443,6 +459,10 @@ impl Store {
             })
             .collect()
     }
+}
+
+fn memo_ok(memo: Option<&String>) -> bool {
+    memo.is_none_or(|memo| !memo.is_empty() && is_plain_text(memo, MAX_MEMO))
 }
 
 fn address_key(network: &NetworkId, address: &Address) -> String {

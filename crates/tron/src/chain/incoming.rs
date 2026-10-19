@@ -157,6 +157,7 @@ impl TronChain {
         let amount = amount(U256::from(coins.sun), self.network.native.decimals).ok()?;
         let block = entry["blockNumber"].as_u64()?;
         let time = entry["block_timestamp"].as_u64()? / 1000;
+        let memo = coins.memo;
         Some(if side == Side::Received {
             Seen::Received(Incoming {
                 id,
@@ -167,6 +168,7 @@ impl TronChain {
                 amount,
                 block,
                 time,
+                memo,
             })
         } else {
             Seen::Sent(Outgoing {
@@ -178,6 +180,7 @@ impl TronChain {
                 amount,
                 block,
                 time,
+                memo,
             })
         })
     }
@@ -241,6 +244,7 @@ impl TronChain {
                         amount,
                         block,
                         time,
+                        memo: None,
                     })
                 } else {
                     Seen::Sent(Outgoing {
@@ -252,6 +256,7 @@ impl TronChain {
                         amount,
                         block,
                         time,
+                        memo: None,
                     })
                 });
             }

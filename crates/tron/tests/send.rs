@@ -78,6 +78,7 @@ fn parameters() -> Value {
         ("getCreateNewAccountFeeInSystemContract", 1_000_000),
         ("getMaxFeeLimit", 15_000_000_000_u64),
         ("getFreeNetLimit", 600),
+        ("getMemoFee", 1_000_000),
     ]
     .into_iter()
     .map(|(key, value)| json!({"key": key, "value": value}))
@@ -194,6 +195,7 @@ fn send(to: &str, asset: &str, amount: &str) -> Transfer {
         asset: asset.parse().unwrap(),
         amount: Amount::parse(amount, 6).unwrap(),
         max: false,
+        memo: None,
     }
 }
 
@@ -422,6 +424,48 @@ async fn a_max_send_leaves_exactly_the_fee_behind() {
 }
 
 #[tokio::test]
+async fn a_memo_is_signed_and_its_network_fee_quoted() {
+    let free = json!({"freeNetLimit": 600, "freeNetUsed": 100});
+    let ledger = Ledger::new(30_000_000, 3_000_000, free.clone());
+    let chain = chain(&ledger).await;
+    let noted = Transfer {
+        memo: Some("deposit 4417".to_owned()),
+        ..send(KNOWN, "tron", "1.5")
+    };
+    let (plan, quote) = chain.prepare(&noted).await.unwrap();
+    let bytes = bandwidth_of(&quote);
+    assert_eq!(
+        lines(&quote),
+        [
+            (FeeItem::Bandwidth { bytes }, trx(0)),
+            (FeeItem::Memo, trx(1_000_000))
+        ]
+    );
+    let plain_bytes = bandwidth_of(&chain.prepare(&send(KNOWN, "tron", "1.5")).await.unwrap().1);
+    assert_eq!(bytes, plain_bytes + 14);
+    let decoded = chain.decode(&chain.sign(&plan, &seed()).unwrap()).unwrap();
+    assert_eq!(decoded.memo.as_deref(), Some("deposit 4417"));
+    check_signed(&noted, &decoded).unwrap();
+    assert_eq!(
+        check_signed(&send(KNOWN, "tron", "1.5"), &decoded),
+        Err(ChainError::Mismatch("the memo"))
+    );
+    let all = Transfer {
+        memo: Some("deposit 4417".to_owned()),
+        ..everything(KNOWN, "tron")
+    };
+    let planned = most(5_000_000, 0, free.clone(), &all).await;
+    assert_eq!(planned.amount, trx(4_000_000));
+    let usdt = format!("tron/{USDT}");
+    let tokens = Transfer {
+        memo: Some("deposit 4417".to_owned()),
+        ..send(FRESH, &usdt, "1")
+    };
+    let (_, quote) = chain.prepare(&tokens).await.unwrap();
+    assert!(quote.lines().iter().any(|line| line.item == FeeItem::Memo));
+}
+
+#[tokio::test]
 async fn a_stale_head_block_is_not_used_as_the_anchor() {
     let mut ledger = Ledger::new(5_000_000, 0, json!({"freeNetLimit": 600}));
     Arc::get_mut(&mut ledger).unwrap().head_age_ms = 5 * 60 * 1000;
@@ -588,6 +632,7 @@ async fn live_tron_quotes_for_a_new_recipient() {
         asset: "tron".parse().unwrap(),
         amount: Amount::parse("1", 6).unwrap(),
         max: false,
+        memo: None,
     };
     let (_, quote) = chain.prepare(&coins).await.unwrap();
     let items: Vec<&FeeItem> = quote.lines().iter().map(|line| &line.item).collect();
@@ -601,7 +646,7 @@ async fn live_tron_quotes_for_a_new_recipient() {
     );
     let tokens = Transfer {
         asset: format!("tron/{USDT}").parse().unwrap(),
-        ..coins
+        ..coins.clone()
     };
     let (_, quote) = chain.prepare(&tokens).await.unwrap();
     let items: Vec<&FeeItem> = quote.lines().iter().map(|line| &line.item).collect();

@@ -139,6 +139,7 @@ async fn trx_is_sent_from_the_wallets_tron_account_and_tracked_until_confirmed()
         asset: "tron".parse().unwrap(),
         to: Address::parse(ChainFamily::Tron, TRON_1).unwrap(),
         amount: Spend::Exact(Amount::parse("1.5", 6).unwrap()),
+        memo: None,
     };
     let draft = engine.prepare_send(request).await.unwrap();
     assert!(matches!(

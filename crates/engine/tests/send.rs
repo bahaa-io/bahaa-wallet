@@ -54,6 +54,7 @@ fn answer(ledger: &Shared, call: &Value) -> Value {
         }
         "eth_maxPriorityFeePerGas" => json!("0x3b9aca00"),
         "eth_estimateGas" => json!("0x5208"),
+        "eth_getCode" => json!("0x"),
         "eth_call" => json!(format!("0x{:064x}", 0)),
         "eth_sendRawTransaction" => {
             if let Some(reason) = ledger.refuse {
@@ -108,6 +109,7 @@ fn bnb(wallet: WalletId, amount: &str) -> SendRequest {
         asset: "bsc".parse().unwrap(),
         to: Address::parse(ChainFamily::Evm, HARDHAT_1).unwrap(),
         amount: Spend::Exact(Amount::parse(amount, 18).unwrap()),
+        memo: None,
     }
 }
 
@@ -208,6 +210,43 @@ async fn a_max_send_is_drafted_with_the_amount_it_really_sends() {
     assert_eq!(sent.amount, draft.transfer.amount);
     assert_eq!(sent.fee_max, draft.fee.max());
     assert_eq!(ledger.lock().unwrap().accepted.len(), 1);
+}
+
+#[tokio::test]
+async fn a_memo_is_sent_recorded_and_checked() {
+    let scratch = Scratch::new();
+    let ledger = Shared::default();
+    let (engine, wallet) = setup(&scratch, &ledger, |_| {}).await;
+    let noted = SendRequest {
+        memo: Some("deposit 4417".to_owned()),
+        ..bnb(wallet, "0.25")
+    };
+    let draft = engine.prepare_send(noted.clone()).await.unwrap();
+    assert_eq!(draft.transfer.memo.as_deref(), Some("deposit 4417"));
+    let sent = engine
+        .confirm_send(draft.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    assert_eq!(sent.memo.as_deref(), Some("deposit 4417"));
+    let raw = ledger.lock().unwrap().accepted[0].clone();
+    assert!(raw.contains("6465706f7369742034343137"), "{raw}");
+    for bad in [
+        String::new(),
+        "  ".to_owned(),
+        "pay\u{202e}lla".to_owned(),
+        "x".repeat(121),
+    ] {
+        let refused = engine
+            .prepare_send(SendRequest {
+                memo: Some(bad.clone()),
+                ..noted.clone()
+            })
+            .await;
+        assert!(
+            matches!(refused, Err(EngineError::Chain(ChainError::Invalid(_)))),
+            "{bad:?}: {refused:?}"
+        );
+    }
 }
 
 #[tokio::test]

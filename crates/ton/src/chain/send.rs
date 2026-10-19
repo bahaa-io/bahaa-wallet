@@ -75,6 +75,7 @@ impl TonChain {
             everything: transfer.max && token.is_none(),
             bounce: false,
             token: None,
+            memo: transfer.memo.clone(),
         };
         let contracts = match token {
             None => {
@@ -260,6 +261,7 @@ impl TonChain {
             everything: parsed.order.everything,
             sequence: Some(u64::from(parsed.order.seqno)),
             expires_at: Some(u64::from(parsed.order.valid_until)),
+            memo: parsed.order.memo,
         })
     }
 }
@@ -413,6 +415,7 @@ mod tests {
                 asset: "ton".parse().unwrap(),
                 amount,
                 max: false,
+                memo: None,
             },
             order: Order {
                 wallet: from,
@@ -425,6 +428,7 @@ mod tests {
                 everything: false,
                 bounce: !deploy,
                 token: None,
+                memo: None,
             },
             deploy,
         }
@@ -753,6 +757,7 @@ mod tests {
                     everything: true,
                     bounce: false,
                     token: None,
+                    memo: None,
                 };
                 let fees =
                     leave_nothing(&mut order, deploy, &wallet, (&settings, &storage), NOW).unwrap();
@@ -763,10 +768,11 @@ mod tests {
                     asset: "ton".parse().unwrap(),
                     amount: amount(order.nano, 9).unwrap(),
                     max: true,
+                    memo: None,
                 };
                 let plan = TonPlan {
                     transfer: transfer.clone(),
-                    order,
+                    order: order.clone(),
                     deploy,
                 };
                 let signed = ton.sign(&plan, &seed()).unwrap();
@@ -806,6 +812,76 @@ mod tests {
     }
 
     #[test]
+    fn a_memo_travels_with_coins_through_the_real_wallets() {
+        let ton = chain("ton");
+        let (settings, storage) = prices(&emulate::tests::config()).unwrap();
+        let emulator = emulate::tests::emulator();
+        let memo = format!("deposit 4417 {}", "é".repeat(60));
+        let to = Address::Ton {
+            workchain: 0,
+            hash: [0x5c; 32],
+        };
+        for contract in [TonContract::W5, TonContract::V4R2] {
+            let from = ton.derive_as(&seed(), 0, contract).unwrap();
+            let state = stored(&ton, &from, contract, true);
+            let wallet = crate::cells::account(&state, &from).unwrap();
+            let order = Order {
+                wallet: from,
+                contract,
+                wallet_id: ton.subwallet(contract),
+                seqno: 0,
+                valid_until: NOW + 300,
+                to,
+                nano: U256::from(500_000_000u32),
+                everything: false,
+                bounce: false,
+                token: None,
+                memo: Some(memo.clone()),
+            };
+            let fees = estimate(&order, true, &wallet, (&settings, &storage), NOW).unwrap();
+            let transfer = Transfer {
+                account: 0,
+                from,
+                to,
+                asset: "ton".parse().unwrap(),
+                amount: amount(order.nano, 9).unwrap(),
+                max: false,
+                memo: Some(memo.clone()),
+            };
+            let plan = TonPlan {
+                transfer: transfer.clone(),
+                order,
+                deploy: true,
+            };
+            let signed = ton.sign(&plan, &seed()).unwrap();
+            let decoded = ton.decode(&signed).unwrap();
+            assert_eq!(decoded.memo.as_deref(), Some(memo.as_str()));
+            bahaa_chain::check_signed(&transfer, &decoded).unwrap();
+            let other = Transfer {
+                memo: Some("another".to_owned()),
+                ..transfer.clone()
+            };
+            assert_eq!(
+                bahaa_chain::check_signed(&other, &decoded),
+                Err(ChainError::Mismatch("the memo"))
+            );
+            let hop = done(emulator.run_external(&from, &state, &signed.bytes).unwrap());
+            assert!(hop.success, "{contract:?}: {hop:?}");
+            let Address::Ton { hash, .. } = from else {
+                panic!("not a TON wallet");
+            };
+            let seen = crate::transaction::single(&hop.transaction, &hash).unwrap();
+            assert_eq!(seen.sent[0].memo.as_deref(), Some(memo.as_str()));
+            let (_, forward) = carried(&hop.out[0]);
+            assert_eq!(
+                u128::from(fees.expected().unwrap()),
+                u128::from(hop.fees) + forward,
+                "{contract:?}"
+            );
+        }
+    }
+
+    #[test]
     fn only_a_single_plain_transfer_in_mode_three_or_send_all_is_accepted() {
         let ton = chain("ton");
         let wallet = ton.derive(&seed(), 0).unwrap();
@@ -813,6 +889,10 @@ mod tests {
         let mut note = CellBuilder::new();
         note.store_u32(32, 0).unwrap().store_slice(b"hi").unwrap();
         let note = note.build().unwrap();
+        let mut hidden = CellBuilder::new();
+        hidden.store_u32(32, 0).unwrap();
+        hidden.store_slice("pay\u{202e}lla".as_bytes()).unwrap();
+        let hidden = hidden.build().unwrap();
         let body = |msgs: Vec<tonlib_core::cell::ArcCell>, modes: Vec<u8>| WalletExtMsgBodyV5 {
             wallet_id: ton.wallet_id,
             valid_until: 1_792_400_000,
@@ -827,6 +907,11 @@ mod tests {
             &wallet,
         );
         assert!(wallet::parse(&all).unwrap().order.everything);
+        let noted = with_body(&body(vec![transfer(true, note)], vec![3]), &wallet);
+        assert_eq!(
+            wallet::parse(&noted).unwrap().order.memo.as_deref(),
+            Some("hi")
+        );
         let mut tokens = token_plan(&ton).order;
         tokens.wallet = wallet;
         tokens.everything = true;
@@ -842,7 +927,7 @@ mod tests {
             body(vec![transfer(true, empty.clone())], vec![128]),
             body(vec![transfer(true, empty.clone())], vec![2]),
             body(vec![transfer(true, empty.clone())], vec![131]),
-            body(vec![transfer(true, note)], vec![3]),
+            body(vec![transfer(true, hidden)], vec![3]),
             body(Vec::new(), Vec::new()),
         ];
         for case in cases {

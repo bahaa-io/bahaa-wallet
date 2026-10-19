@@ -74,6 +74,7 @@ mod tests {
             amount: Amount::parse(amount, 18).unwrap(),
             block: 1,
             time: 1,
+            memo: None,
         }
     }
 

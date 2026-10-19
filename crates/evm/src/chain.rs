@@ -5,12 +5,12 @@ use std::sync::{Mutex, PoisonError};
 use alloy_consensus::TxEip1559;
 use alloy_primitives::TxKind;
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, Failure, FeeItem, FeeLine, FeeQuote, Signed, Transfer,
-    TxId, TxStatus, abi_text,
+    Balance, Chain, ChainError, Decoded, Failure, FeeItem, FeeLine, FeeQuote, MAX_MEMO, Signed,
+    Transfer, TxId, TxStatus, abi_text,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
-use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS};
+use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS, is_plain_text};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use ruint::aliases::U256;
 use serde_json::{Value, json};
@@ -235,10 +235,16 @@ impl EvmChain {
             None => Route {
                 call_to: to,
                 value: units,
-                data: Vec::new(),
+                data: match &transfer.memo {
+                    Some(memo) => self.memo_to(&to, memo).await?,
+                    None => Vec::new(),
+                },
                 token: None,
                 decimals: self.network.native.decimals,
             },
+            Some(_) if transfer.memo.is_some() => {
+                return Err(ChainError::Unsupported("memos on token transfers"));
+            }
             Some(contract) => Route {
                 call_to: contract,
                 value: U256::ZERO,
@@ -253,6 +259,19 @@ impl EvmChain {
             ));
         }
         Ok(route)
+    }
+
+    async fn memo_to(&self, to: &[u8; 20], memo: &str) -> Result<Vec<u8>, ChainError> {
+        let code = self
+            .rpc
+            .call("eth_getCode", json!([hex(to), "latest"]))
+            .await?;
+        if code.as_str() != Some("0x") {
+            return Err(ChainError::Invalid(
+                "this address has contract code, a memo would run as a call",
+            ));
+        }
+        Ok(memo.as_bytes().to_vec())
     }
 
     async fn estimate(&self, from: &[u8; 20], route: &Route) -> Result<u64, ChainError> {
@@ -482,7 +501,8 @@ impl Chain for EvmChain {
             return Err(ChainError::Invalid("contract creation is not a transfer"));
         };
         let target = target.into_array();
-        let (to, asset, amount) = if parsed.tx.input.is_empty() {
+        let memo = memo(&parsed.tx.input);
+        let (to, asset, amount) = if parsed.tx.input.is_empty() || memo.is_some() {
             (
                 target,
                 AssetId::Native(self.network.id.clone()),
@@ -513,6 +533,7 @@ impl Chain for EvmChain {
             everything: false,
             sequence: Some(parsed.tx.nonce),
             expires_at: None,
+            memo,
         })
     }
 
@@ -639,6 +660,11 @@ fn already_known(message: &str) -> bool {
         .any(|phrase| lower.contains(phrase))
 }
 
+fn memo(input: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(input).ok()?;
+    (!text.is_empty() && is_plain_text(text, MAX_MEMO)).then(|| text.to_owned())
+}
+
 fn overflow() -> ChainError {
     ChainError::Invalid("fee overflow")
 }
@@ -739,6 +765,7 @@ mod tests {
                 asset: AssetId::Native(chain.network.id.clone()),
                 amount: chain.native(value).unwrap(),
                 max: false,
+                memo: None,
             },
             tx: TxEip1559 {
                 chain_id: chain.chain_id,
@@ -807,6 +834,30 @@ mod tests {
             ethereum.decode(&foreign).unwrap_err(),
             ChainError::Mismatch("the network")
         );
+    }
+
+    #[test]
+    fn a_memo_rides_on_a_plain_coin_transfer_only() {
+        let bsc = chain("bsc");
+        let noted = bsc
+            .sign(
+                &plan(&bsc, [9; 20], U256::from(5u8), b"deposit 4417".to_vec()),
+                &seed(),
+            )
+            .unwrap();
+        let decoded = bsc.decode(&noted).unwrap();
+        assert_eq!(decoded.asset, AssetId::Native(bsc.network.id.clone()));
+        assert_eq!(decoded.memo.as_deref(), Some("deposit 4417"));
+        for data in [vec![0xff, 0xfe], "pay\u{202e}lla".as_bytes().to_vec()] {
+            let signed = bsc
+                .sign(&plan(&bsc, [9; 20], U256::from(5u8), data), &seed())
+                .unwrap();
+            assert!(matches!(bsc.decode(&signed), Err(ChainError::Invalid(_))));
+        }
+        let plain = bsc
+            .sign(&plan(&bsc, [9; 20], U256::from(5u8), Vec::new()), &seed())
+            .unwrap();
+        assert_eq!(bsc.decode(&plain).unwrap().memo, None);
     }
 
     #[test]

@@ -182,6 +182,7 @@ mod tests {
             amount: Amount::parse("1", 18).unwrap(),
             block: 5,
             time: 5,
+            memo: None,
         }
     }
 
@@ -202,6 +203,7 @@ mod tests {
             status: bahaa_store::SentStatus::Confirmed,
             raw: None,
             transaction: None,
+            memo: None,
         }
     }
 

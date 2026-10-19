@@ -150,6 +150,7 @@ async fn live_v5r1_quote_follows_the_network_fee_settings() {
         asset: "ton".parse().unwrap(),
         amount: bahaa_types::Amount::parse("0.01", 9).unwrap(),
         max: false,
+        memo: None,
     };
     let nano = |text: &str| bahaa_types::Amount::parse(text, 9).unwrap();
     let mut seen = Vec::new();
@@ -457,6 +458,7 @@ async fn live_usdt_quotes_match_what_the_network_charged() {
         asset: format!("ton/{USDT}").parse().unwrap(),
         amount: Amount::parse("1", 6).unwrap(),
         max: false,
+        memo: None,
     };
     let mut seen = Vec::new();
     for protocol in [Some(Protocol::TonLiteservers), None] {
@@ -510,6 +512,7 @@ async fn live_v4r2_quotes_charge_the_gas_the_network_charges() {
         asset: "ton".parse().unwrap(),
         amount: Amount::parse("0.000000001", 9).unwrap(),
         max: false,
+        memo: None,
     };
     let (_, quote) = on(&ton, Some(Protocol::TonLiteservers))
         .prepare(&transfer)
@@ -648,6 +651,7 @@ async fn live_custom_jetton_transfers_are_emulated_with_the_real_state_limits() 
         asset: format!("ton/{ston}").parse().unwrap(),
         amount: Amount::parse("1", coin.decimals).unwrap(),
         max: false,
+        memo: None,
     };
     match chain.prepare(&transfer).await {
         Ok((_, quote)) => assert!(

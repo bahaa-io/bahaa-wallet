@@ -114,6 +114,7 @@ fn transfer(chain: &EvmChain, asset: AssetId, amount: Amount) -> Transfer {
         asset,
         amount,
         max: false,
+        memo: None,
     }
 }
 
@@ -221,6 +222,35 @@ async fn a_max_send_leaves_only_the_fee_room_it_did_not_use() {
         chain.prepare(&transfer).await,
         Err(ChainError::Insufficient { .. })
     ));
+}
+
+#[tokio::test]
+#[ignore = "needs a local anvil: BAHAA_ANVIL=/path/to/anvil"]
+async fn a_memo_is_carried_on_chain_by_a_coin_transfer() {
+    let anvil = Anvil::start("bsc", &[]);
+    anvil.ready().await;
+    let chain = anvil.chain();
+    let mut transfer = transfer(
+        &chain,
+        "bsc".parse().unwrap(),
+        Amount::parse("0.01", 18).unwrap(),
+    );
+    transfer.memo = Some("deposit 4417".to_owned());
+    let (plan, quote) = chain.prepare(&transfer).await.unwrap();
+    assert!(matches!(
+        quote.lines()[0].item,
+        FeeItem::Gas { units, .. } if units > 21_000
+    ));
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    check_signed(&transfer, &chain.decode(&signed).unwrap()).unwrap();
+    let id = chain.broadcast(&signed).await.unwrap();
+    confirmed(&chain, &id).await;
+    let http = reqwest::Client::new();
+    let mined = anvil
+        .rpc(&http, "eth_getTransactionByHash", json!([id.as_str()]))
+        .await
+        .unwrap();
+    assert_eq!(mined["input"], "0x6465706f7369742034343137");
 }
 
 #[tokio::test]

@@ -100,6 +100,7 @@ async fn ton_accounts_follow_each_networks_wallet_id_and_show_gram() {
         asset: "ton".parse().unwrap(),
         to: test,
         amount: Spend::Exact(Amount::parse("1", 9).unwrap()),
+        memo: None,
     };
     assert!(matches!(
         engine.prepare_send(request).await,
@@ -125,6 +126,7 @@ fn received(id: &str, from: &str, lt: u64, time: u64) -> Arrival {
         amount: Amount::parse("0.0001", 9).unwrap(),
         block: lt,
         time,
+        memo: None,
     };
     Arrival {
         received,
@@ -213,6 +215,7 @@ async fn ton_token_sends_are_quoted_from_proven_contract_state() {
         asset: bahaa_types::AssetId::Token("ton".parse().unwrap(), usdt),
         to: bahaa_types::Address::parse(ChainFamily::Ton, TON_0).unwrap(),
         amount: Spend::Exact(Amount::parse("1", 6).unwrap()),
+        memo: None,
     };
     assert_eq!(
         engine.prepare_send(request).await,
@@ -329,6 +332,7 @@ async fn a_ton_phrase_opens_only_its_ton_accounts() {
         asset: "bsc".parse().unwrap(),
         to: bahaa_types::Address::parse(ChainFamily::Evm, HARDHAT_0).unwrap(),
         amount: Spend::Exact(Amount::parse("1", 18).unwrap()),
+        memo: None,
     };
     assert_eq!(
         engine.prepare_send(bnb).await,

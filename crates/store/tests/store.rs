@@ -181,6 +181,7 @@ fn sent(id: &str, status: SentStatus) -> SentTx {
         status,
         raw,
         transaction: None,
+        memo: None,
     }
 }
 
@@ -274,6 +275,7 @@ fn outgoing(index: u64) -> Outgoing {
         amount: Amount::parse("3", 18).unwrap(),
         block: 160,
         time: 1_760_000_400,
+        memo: None,
     }
 }
 
@@ -290,6 +292,7 @@ fn received(index: u64) -> Received {
         amount: Amount::parse("12.5", 18).unwrap(),
         block: 150,
         time: 1_760_000_300,
+        memo: None,
     }
 }
 

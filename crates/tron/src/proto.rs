@@ -14,6 +14,8 @@ pub(crate) struct Raw {
     pub ref_block_hash: Vec<u8>,
     #[prost(int64, tag = "8")]
     pub expiration: i64,
+    #[prost(bytes = "vec", tag = "10")]
+    pub data: Vec<u8>,
     #[prost(message, repeated, tag = "11")]
     pub contract: Vec<Contract>,
     #[prost(int64, tag = "14")]

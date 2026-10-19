@@ -7,6 +7,7 @@ pub(crate) struct Prices {
     pub create_account: u64,
     pub activation: u64,
     pub max_fee_limit: u64,
+    pub memo: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -53,7 +54,7 @@ pub(crate) fn fee_limit(energy: u64, prices: &Prices) -> Result<i64, ChainError>
 pub(crate) fn quote(
     bytes: u64,
     energy: Option<(u64, i64)>,
-    new_account: bool,
+    (new_account, memo): (bool, bool),
     resources: &Resources,
     prices: &Prices,
 ) -> Result<Quote, ChainError> {
@@ -69,6 +70,9 @@ pub(crate) fn quote(
     quote.add(FeeItem::Bandwidth { bytes }, bandwidth, bandwidth)?;
     if new_account {
         quote.add(FeeItem::Activation, prices.activation, prices.activation)?;
+    }
+    if memo {
+        quote.add(FeeItem::Memo, prices.memo, prices.memo)?;
     }
     if let Some((energy, fee_limit)) = energy {
         let cap = u64::try_from(fee_limit).map_err(|_| overflow())? / prices.per_energy.max(1);
@@ -117,6 +121,7 @@ mod tests {
         create_account: 100_000,
         activation: 1_000_000,
         max_fee_limit: 15_000_000_000,
+        memo: 1_000_000,
     };
 
     fn resources(free: u64, staked: u64, energy: u64) -> Resources {
@@ -136,7 +141,7 @@ mod tests {
             (resources(0, 0, 0), 265_000),
         ];
         for (held, burn) in cases {
-            let quote = quote(265, None, false, &held, &PRICES).unwrap();
+            let quote = quote(265, None, (false, false), &held, &PRICES).unwrap();
             assert_eq!(
                 quote.lines,
                 [(FeeItem::Bandwidth { bytes: 265 }, burn)],
@@ -148,7 +153,7 @@ mod tests {
 
     #[test]
     fn activating_a_new_account_costs_one_trx_and_cannot_use_free_bandwidth() {
-        let fresh = quote(265, None, true, &resources(600, 0, 0), &PRICES).unwrap();
+        let fresh = quote(265, None, (true, false), &resources(600, 0, 0), &PRICES).unwrap();
         assert_eq!(
             fresh.lines,
             [
@@ -157,8 +162,21 @@ mod tests {
             ]
         );
         assert_eq!(fresh.expected, 1_100_000);
-        let staked = quote(265, None, true, &resources(0, 265, 0), &PRICES).unwrap();
+        let staked = quote(265, None, (true, false), &resources(0, 265, 0), &PRICES).unwrap();
         assert_eq!(staked.expected, 1_000_000);
+    }
+
+    #[test]
+    fn a_memo_costs_the_networks_memo_fee_on_top() {
+        let noted = quote(300, None, (false, true), &resources(600, 0, 0), &PRICES).unwrap();
+        assert_eq!(
+            noted.lines,
+            [
+                (FeeItem::Bandwidth { bytes: 300 }, 0),
+                (FeeItem::Memo, 1_000_000)
+            ]
+        );
+        assert_eq!((noted.expected, noted.max), (1_000_000, 1_000_000));
     }
 
     #[test]
@@ -168,7 +186,7 @@ mod tests {
         let burnt = quote(
             345,
             Some((130_285, limit)),
-            false,
+            (false, false),
             &resources(600, 0, 0),
             &PRICES,
         )
@@ -184,7 +202,7 @@ mod tests {
         let staked = quote(
             345,
             Some((130_285, limit)),
-            false,
+            (false, false),
             &resources(600, 0, 140_000),
             &PRICES,
         )
@@ -193,7 +211,7 @@ mod tests {
         let rich = quote(
             345,
             Some((130_285, limit)),
-            false,
+            (false, false),
             &resources(600, 0, 1_000_000),
             &PRICES,
         )

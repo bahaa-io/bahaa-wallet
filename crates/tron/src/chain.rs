@@ -271,6 +271,7 @@ impl Chain for TronChain {
             everything: false,
             sequence: None,
             expires_at: u64::try_from(parsed.expiration_ms).ok().map(|ms| ms / 1000),
+            memo: parsed.memo,
         })
     }
 

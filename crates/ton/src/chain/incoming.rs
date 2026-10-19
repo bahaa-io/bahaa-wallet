@@ -201,6 +201,7 @@ fn receipt(
         amount: amount(credit.units, history.decimals)?,
         block: transaction.lt,
         time: u64::from(transaction.now),
+        memo: credit.memo.clone(),
     }))
 }
 
@@ -241,6 +242,7 @@ fn departures(
                 amount: amount(units, decimals)?,
                 block: transaction.lt,
                 time: u64::from(transaction.now),
+                memo: message.memo.clone(),
             });
         }
     }

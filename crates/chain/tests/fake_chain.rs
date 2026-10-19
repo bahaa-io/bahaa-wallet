@@ -170,6 +170,7 @@ impl Chain for FakeChain {
             everything: false,
             sequence: None,
             expires_at: None,
+            memo: None,
         })
     }
 
@@ -241,6 +242,7 @@ fn setup() -> (FakeChain, Seed, Transfer) {
         asset: AssetId::Native(chain.network().id.clone()),
         amount: native("0.25"),
         max: false,
+        memo: None,
     };
     (chain, seed, transfer)
 }

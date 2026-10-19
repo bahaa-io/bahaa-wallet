@@ -1,9 +1,11 @@
+use bahaa_chain::memo_text;
 use bahaa_types::Address;
 use ruint::aliases::U256;
 use tonlib_core::TonAddress;
 use tonlib_core::cell::{ArcCell, BagOfCells, Cell, CellParser};
 
 use crate::cells::{from_ton, var_uint};
+use crate::comment;
 use crate::fees::leaves;
 use crate::wallet;
 
@@ -37,12 +39,14 @@ pub(crate) struct Outgoing {
     pub op: Option<u32>,
     pub plain: bool,
     pub token: Option<(U256, Address)>,
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Credit {
     pub from: Address,
     pub units: U256,
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,7 +203,11 @@ fn credit(message: &Cell, account: &[u8; 32]) -> Option<Credit> {
         return None;
     }
     let body = body(&mut parser)?;
-    (nano > U256::ZERO && plain(&body)).then_some(Credit { from, units: nano })
+    (nano > U256::ZERO && plain(&body)).then(|| Credit {
+        from,
+        units: nano,
+        memo: note(&body),
+    })
 }
 
 fn tokens(message: &Cell, account: &[u8; 32]) -> Option<Credit> {
@@ -223,7 +231,25 @@ fn tokens(message: &Cell, account: &[u8; 32]) -> Option<Credit> {
         Ok(address) if address != TonAddress::NULL => from_ton(&address)?,
         _ => source,
     };
-    (units > U256::ZERO).then_some(Credit { from, units })
+    let memo = parser
+        .load_address()
+        .ok()
+        .and_then(|_| parser.load_coins().ok())
+        .and_then(|_| forwarded(&mut parser));
+    (units > U256::ZERO).then_some(Credit { from, units, memo })
+}
+
+fn forwarded(parser: &mut CellParser<'_>) -> Option<String> {
+    let payload = if parser.load_bit().ok()? {
+        parser.next_reference().ok()?
+    } else {
+        parser.load_remaining().ok()?.to_arc()
+    };
+    note(&payload)
+}
+
+fn note(body: &Cell) -> Option<String> {
+    memo_text(&comment::bytes(body)?)
 }
 
 fn outgoing(message: &ArcCell) -> Option<Outgoing> {
@@ -249,17 +275,23 @@ fn outgoing(message: &ArcCell) -> Option<Outgoing> {
         }
     }
     let body = body(&mut parser)?;
+    let token = token_transfer(&body);
+    let memo = match &token {
+        Some((_, _, memo)) => memo.clone(),
+        None => note(&body),
+    };
     Some(Outgoing {
         hash: Cell::cell_hash(message).as_slice().try_into().ok()?,
         to,
         value,
         op: body.parser().load_u32(32).ok(),
         plain: plain(&body),
-        token: token_transfer(&body),
+        token: token.map(|(units, to, _)| (units, to)),
+        memo,
     })
 }
 
-fn token_transfer(body: &Cell) -> Option<(U256, Address)> {
+fn token_transfer(body: &Cell) -> Option<(U256, Address, Option<String>)> {
     let mut parser = body.parser();
     if parser.load_u32(32).ok()? != wallet::TOKEN_TRANSFER {
         return None;
@@ -267,7 +299,19 @@ fn token_transfer(body: &Cell) -> Option<(U256, Address)> {
     parser.skip_bits(64).ok()?;
     let units = var_uint(&mut parser, 4)?;
     let to = from_ton(&parser.load_address().ok()?)?;
-    Some((units, to))
+    let memo = parser
+        .load_address()
+        .ok()
+        .and_then(|_| {
+            if parser.load_bit().ok()? {
+                parser.next_reference().ok().map(drop)
+            } else {
+                Some(())
+            }
+        })
+        .and_then(|()| parser.load_coins().ok())
+        .and_then(|_| forwarded(&mut parser));
+    Some((units, to, memo))
 }
 
 fn internal(parser: &mut CellParser<'_>, account: &[u8; 32]) -> Option<(Address, U256)> {
@@ -460,6 +504,7 @@ mod tests {
                         ),
                     }
                 )),
+                memo: None,
             }]
         );
         assert_eq!(transaction.succeeded(), Some(true));
@@ -819,6 +864,7 @@ mod tests {
                 hash: [0x5a; 32],
             },
             units: U256::from(7u8),
+            memo: None,
         });
         let plain = [
             PLAIN,
@@ -931,6 +977,7 @@ mod tests {
             Some(Credit {
                 from: Address::Ton { workchain: 0, hash },
                 units: U256::from(9u8),
+                memo: None,
             })
         };
         let sent = transfer(9, Some([0x6a; 32]));

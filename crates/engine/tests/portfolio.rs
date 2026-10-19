@@ -392,6 +392,7 @@ async fn tron_holdings_join_the_portfolio_under_the_wallets_tron_account() {
         asset: "tron".parse().unwrap(),
         to: Address::parse(ChainFamily::Tron, TRON_0).unwrap(),
         amount: Spend::Exact(Amount::parse("1", 6).unwrap()),
+        memo: None,
     };
     assert_eq!(
         engine.prepare_send(request).await,

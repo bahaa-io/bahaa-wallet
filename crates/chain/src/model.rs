@@ -1,11 +1,12 @@
 use std::fmt;
 
-use bahaa_types::{Address, Amount, AssetId, is_plain_text};
+use bahaa_types::{Address, Amount, AssetId, is_plain_text, to_plain_text};
 use thiserror::Error;
 
 use crate::PoolError;
 
 const MAX_TX_ID: usize = 128;
+pub const MAX_MEMO: usize = 120;
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ChainError {
@@ -81,6 +82,7 @@ pub struct Transfer {
     pub asset: AssetId,
     pub amount: Amount,
     pub max: bool,
+    pub memo: Option<String>,
 }
 
 impl Transfer {
@@ -106,6 +108,7 @@ pub enum FeeItem {
     Forwarding,
     Network,
     Contracts,
+    Memo,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,6 +177,7 @@ pub struct Decoded {
     pub asset: AssetId,
     pub amount: Amount,
     pub everything: bool,
+    pub memo: Option<String>,
     pub sequence: Option<u64>,
     pub expires_at: Option<u64>,
 }
@@ -207,6 +211,7 @@ pub struct Incoming {
     pub amount: Amount,
     pub block: u64,
     pub time: u64,
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,6 +224,7 @@ pub struct Outgoing {
     pub amount: Amount,
     pub block: u64,
     pub time: u64,
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,6 +262,11 @@ pub struct HistoryPage {
     pub next: Option<Cursor>,
 }
 
+pub fn memo_text(bytes: &[u8]) -> Option<String> {
+    let text = to_plain_text(&String::from_utf8_lossy(bytes), MAX_MEMO);
+    (!text.is_empty()).then_some(text)
+}
+
 pub fn check_signed(transfer: &Transfer, decoded: &Decoded) -> Result<(), ChainError> {
     let checks = [
         (decoded.from == transfer.from, "the sender"),
@@ -263,6 +274,7 @@ pub fn check_signed(transfer: &Transfer, decoded: &Decoded) -> Result<(), ChainE
         (decoded.asset == transfer.asset, "the asset"),
         (decoded.amount == transfer.amount, "the amount"),
         (transfer.max || !decoded.everything, "the amount"),
+        (decoded.memo == transfer.memo, "the memo"),
     ];
     match checks.into_iter().find(|(same, _)| !same) {
         Some((_, field)) => Err(ChainError::Mismatch(field)),

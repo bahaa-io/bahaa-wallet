@@ -1,4 +1,5 @@
-use bahaa_chain::ChainError;
+use bahaa_chain::{ChainError, MAX_MEMO, memo_text};
+use bahaa_types::is_plain_text;
 use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use prost::Message;
@@ -45,6 +46,7 @@ pub(crate) struct CoinsIn {
     pub from: [u8; 20],
     pub to: [u8; 20],
     pub sun: u64,
+    pub memo: Option<String>,
 }
 
 #[derive(Debug)]
@@ -53,6 +55,7 @@ pub(crate) struct Parsed {
     pub from: [u8; 20],
     pub action: Action,
     pub expiration_ms: i64,
+    pub memo: Option<String>,
 }
 
 pub(crate) fn coins(owner: &[u8; 20], to: &[u8; 20], sun: i64) -> Contract {
@@ -84,8 +87,16 @@ fn contract(kind: i32, type_url: &str, value: Vec<u8>) -> Contract {
     }
 }
 
-pub(crate) fn raw(contract: Contract, anchor: &Anchor, fee_limit: i64) -> Result<Raw, ChainError> {
+pub(crate) fn raw(
+    contract: Contract,
+    anchor: &Anchor,
+    fee_limit: i64,
+    memo: Option<&str>,
+) -> Result<Raw, ChainError> {
     Ok(Raw {
+        data: memo
+            .map(|memo| memo.as_bytes().to_vec())
+            .unwrap_or_default(),
         ref_block_bytes: anchor.number.to_be_bytes()[6..].to_vec(),
         ref_block_hash: anchor.id[8..16].to_vec(),
         expiration: anchor
@@ -161,12 +172,26 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, ChainError> {
             "the signature does not belong to the sender",
         ));
     }
+    let memo = if raw.data.is_empty() {
+        None
+    } else {
+        let text = String::from_utf8(raw.data.clone()).map_err(|_| unreadable_memo())?;
+        if !is_plain_text(&text, MAX_MEMO) {
+            return Err(unreadable_memo());
+        }
+        Some(text)
+    };
     Ok(Parsed {
         id,
         from: signer,
         action,
         expiration_ms: raw.expiration,
+        memo,
     })
+}
+
+fn unreadable_memo() -> ChainError {
+    ChainError::Invalid("the memo is not short plain text")
 }
 
 pub(crate) fn coins_in(raw_bytes: &[u8]) -> Option<CoinsIn> {
@@ -177,6 +202,7 @@ pub(crate) fn coins_in(raw_bytes: &[u8]) -> Option<CoinsIn> {
             from,
             to,
             sun,
+            memo: memo_text(&raw.data),
         }),
         (_, Action::Token { .. }) => None,
     }
@@ -292,7 +318,7 @@ mod tests {
 
     #[test]
     fn the_reference_block_and_lifetime_follow_tapos() {
-        let raw = raw(coins(&[1; 20], &[2; 20], 5), &anchor(), 0).unwrap();
+        let raw = raw(coins(&[1; 20], &[2; 20], 5), &anchor(), 0, None).unwrap();
         assert_eq!(raw.ref_block_bytes, 87_210_587u64.to_be_bytes()[6..]);
         assert_eq!(raw.ref_block_hash, [7; 8]);
         assert_eq!(raw.expiration - raw.timestamp, 300_000);
@@ -304,7 +330,7 @@ mod tests {
         let key = key(3);
         let from = owner(&key);
         let (bytes, id) = sign(
-            raw(coins(&from, &[9; 20], 1_500_000), &anchor(), 0).unwrap(),
+            raw(coins(&from, &[9; 20], 1_500_000), &anchor(), 0, None).unwrap(),
             &key,
         )
         .unwrap();
@@ -320,7 +346,7 @@ mod tests {
         assert_eq!(parsed.expiration_ms, 1_792_305_063_000);
         let data = transfer_data(&[9; 20], U256::from(2_500_000u64));
         let (bytes, _) = sign(
-            raw(token(&from, &[5; 20], data), &anchor(), 7_800_000).unwrap(),
+            raw(token(&from, &[5; 20], data), &anchor(), 7_800_000, None).unwrap(),
             &key,
         )
         .unwrap();
@@ -335,9 +361,34 @@ mod tests {
     }
 
     #[test]
+    fn memos_are_signed_with_the_transfer_and_must_be_plain_text() {
+        let key = key(5);
+        let from = owner(&key);
+        for contract in [
+            coins(&from, &[9; 20], 1_000),
+            token(&from, &[5; 20], transfer_data(&[9; 20], U256::from(3u8))),
+        ] {
+            let built = raw(contract, &anchor(), 1, Some("deposit 4417")).unwrap();
+            assert_eq!(built.data, b"deposit 4417");
+            let (bytes, id) = sign(built, &key).unwrap();
+            let parsed = parse(&bytes).unwrap();
+            assert_eq!(parsed.id, id);
+            assert_eq!(parsed.memo.as_deref(), Some("deposit 4417"));
+        }
+        let plain = raw(coins(&from, &[9; 20], 1_000), &anchor(), 0, None).unwrap();
+        assert_eq!(parse(&sign(plain, &key).unwrap().0).unwrap().memo, None);
+        for bad in [&[0xff, 0xfe][..], "pay\u{202e}lla".as_bytes()] {
+            let mut built = raw(coins(&from, &[9; 20], 1_000), &anchor(), 0, None).unwrap();
+            built.data = bad.to_vec();
+            let (bytes, _) = sign(built, &key).unwrap();
+            assert!(matches!(parse(&bytes), Err(ChainError::Invalid(_))));
+        }
+    }
+
+    #[test]
     fn the_bandwidth_estimate_is_the_signed_size_plus_the_result_reserve() {
         let key = key(4);
-        let built = raw(coins(&owner(&key), &[9; 20], 1), &anchor(), 0).unwrap();
+        let built = raw(coins(&owner(&key), &[9; 20], 1), &anchor(), 0, None).unwrap();
         let estimate = bandwidth(&built);
         let (bytes, _) = sign(built, &key).unwrap();
         assert_eq!(estimate, u64::try_from(bytes.len()).unwrap() + 64);
@@ -348,7 +399,7 @@ mod tests {
         for byte in 1..40 {
             let key = key(byte);
             let (bytes, _) = sign(
-                raw(coins(&owner(&key), &[9; 20], 1), &anchor(), 0).unwrap(),
+                raw(coins(&owner(&key), &[9; 20], 1), &anchor(), 0, None).unwrap(),
                 &key,
             )
             .unwrap();
@@ -359,7 +410,7 @@ mod tests {
         }
         let key = key(5);
         let (bytes, _) = sign(
-            raw(coins(&owner(&key), &[9; 20], 1), &anchor(), 0).unwrap(),
+            raw(coins(&owner(&key), &[9; 20], 1), &anchor(), 0, None).unwrap(),
             &key,
         )
         .unwrap();
@@ -376,13 +427,14 @@ mod tests {
     fn coin_transfers_from_history_are_read_from_the_bytes_their_id_covers() {
         let key = key(7);
         let from = owner(&key);
-        let built = raw(coins(&from, &[9; 20], 42), &anchor(), 0).unwrap();
+        let built = raw(coins(&from, &[9; 20], 42), &anchor(), 0, None).unwrap();
         let bytes = built.encode_to_vec();
         let expected = CoinsIn {
             id: txid(&built),
             from,
             to: [9; 20],
             sun: 42,
+            memo: None,
         };
         assert_eq!(coins_in(&bytes), Some(expected));
         let mut memo = bytes.clone();
@@ -391,8 +443,9 @@ mod tests {
         assert_eq!(read.id, <[u8; 32]>::from(Sha256::digest(&memo)));
         assert_ne!(read.id, txid(&built));
         assert_eq!((read.from, read.to, read.sun), (from, [9; 20], 42));
+        assert_eq!(read.memo.as_deref(), Some("hi"));
         let data = transfer_data(&[9; 20], U256::from(1u8));
-        let tokens = raw(token(&from, &[5; 20], data), &anchor(), 1).unwrap();
+        let tokens = raw(token(&from, &[5; 20], data), &anchor(), 1, None).unwrap();
         assert_eq!(coins_in(&tokens.encode_to_vec()), None);
         assert_eq!(coins_in(&[0xff, 0x01]), None);
     }
@@ -401,8 +454,11 @@ mod tests {
     fn only_plain_transfers_signed_by_their_owner_are_accepted() {
         let key = key(6);
         let from = owner(&key);
-        let signed =
-            |contract: Contract| sign(raw(contract, &anchor(), 0).unwrap(), &key).unwrap().0;
+        let signed = |contract: Contract| {
+            sign(raw(contract, &anchor(), 0, None).unwrap(), &key)
+                .unwrap()
+                .0
+        };
         let stranger = coins(&[8; 20], &[9; 20], 1);
         assert!(parse(&signed(stranger)).is_err());
         let zero = coins(&from, &[9; 20], 0);
@@ -422,7 +478,7 @@ mod tests {
         let mut mislabelled = coins(&from, &[9; 20], 1);
         mislabelled.kind = TRIGGER_TYPE;
         assert!(parse(&signed(mislabelled)).is_err());
-        let mut built = raw(coins(&from, &[9; 20], 1), &anchor(), 0).unwrap();
+        let mut built = raw(coins(&from, &[9; 20], 1), &anchor(), 0, None).unwrap();
         built.contract.push(coins(&from, &[9; 20], 1));
         assert!(parse(&sign(built, &key).unwrap().0).is_err());
     }

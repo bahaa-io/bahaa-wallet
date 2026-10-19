@@ -16,6 +16,8 @@ use tonlib_core::wallet::versioned::v5::{WalletDataV5, WalletExtMsgBodyV5};
 use tonlib_core::wallet::wallet_version::WalletVersion;
 use tonlib_core::{TonAddress, TonHash};
 
+use crate::comment;
+
 pub(crate) const SEND_MODE: u8 = 3;
 pub(crate) const SEND_ALL: u8 = 130;
 pub(crate) const TOKEN_TRANSFER: u32 = 0x0f8a_7ea5;
@@ -30,7 +32,7 @@ pub(crate) struct Token {
     pub query_id: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Order {
     pub wallet: Address,
     pub contract: TonContract,
@@ -42,6 +44,7 @@ pub(crate) struct Order {
     pub everything: bool,
     pub bounce: bool,
     pub token: Option<Token>,
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,7 +169,10 @@ fn outgoing(order: &Order, source: Option<&Address>) -> Result<Cell, ChainError>
         None => (
             order.to,
             order.bounce,
-            CellBuilder::new().build().map_err(broken)?,
+            match &order.memo {
+                Some(memo) => comment::build(memo)?,
+                None => CellBuilder::new().build().map_err(broken)?,
+            },
         ),
         Some(token) => (token.wallet, true, token_body(order, token)?),
     };
@@ -206,11 +212,20 @@ fn token_body(order: &Order, token: &Token) -> Result<Cell, ChainError> {
     body.store_bit(false).map_err(broken)?;
     body.store_coins(&BigUint::from(FORWARD_NANO))
         .map_err(broken)?;
-    body.store_bit(false).map_err(broken)?;
+    match &order.memo {
+        Some(memo) => {
+            body.store_bit(true).map_err(broken)?;
+            body.store_reference(&comment::build(memo)?.to_arc())
+                .map_err(broken)?;
+        }
+        None => {
+            body.store_bit(false).map_err(broken)?;
+        }
+    }
     body.build().map_err(broken)
 }
 
-fn token_transfer(body: &Cell, wallet: Address) -> Option<(Address, Token)> {
+fn token_transfer(body: &Cell, wallet: Address) -> Option<(Address, Token, Option<String>)> {
     let mut parser = body.parser();
     if parser.load_u32(32).ok()? != TOKEN_TRANSFER {
         return None;
@@ -218,6 +233,17 @@ fn token_transfer(body: &Cell, wallet: Address) -> Option<(Address, Token)> {
     let query_id = parser.load_u64(64).ok()?;
     let units = U256::try_from_be_slice(&parser.load_coins().ok()?.to_bytes_be())?;
     let to = from_ton(&parser.load_address().ok()?)?;
+    parser.load_address().ok()?;
+    if parser.load_bit().ok()? {
+        return None;
+    }
+    parser.load_coins().ok()?;
+    let memo = if parser.load_bit().ok()? {
+        let payload = parser.next_reference().ok()?;
+        Some(comment::text(&payload)?)
+    } else {
+        None
+    };
     Some((
         to,
         Token {
@@ -225,6 +251,7 @@ fn token_transfer(body: &Cell, wallet: Address) -> Option<(Address, Token)> {
             units,
             query_id,
         },
+        memo,
     ))
 }
 
@@ -309,13 +336,17 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
         from_ton(&TonAddress::from_msg_address(sent.dest.clone()).map_err(|_| invalid())?)
             .ok_or_else(invalid)?;
     let payload = &inner.body.value;
-    let (to, token) = if payload.bit_len() == 0 && payload.references().is_empty() {
-        (destination, None)
+    let (to, token, memo) = if payload.bit_len() == 0 && payload.references().is_empty() {
+        (destination, None, None)
+    } else if payload.parser().load_u32(32).ok() == Some(comment::COMMENT) {
+        let memo = comment::text(payload)
+            .ok_or(ChainError::Invalid("the memo is not short plain text"))?;
+        (destination, None, Some(memo))
     } else {
-        let (to, token) = token_transfer(payload, destination)
+        let (to, token, memo) = token_transfer(payload, destination)
             .filter(|_| !everything)
             .ok_or(ChainError::Invalid("not a single plain transfer"))?;
-        (to, Some(token))
+        (to, Some(token), memo)
     };
     let nano =
         U256::try_from_be_slice(&sent.value.grams.amount.to_bytes_be()).ok_or_else(invalid)?;
@@ -330,6 +361,7 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
         everything,
         bounce: sent.bounce,
         token,
+        memo,
     };
     let unsigned_cell = unsigned(&order)?;
     let resigned =
@@ -555,6 +587,7 @@ mod tests {
             everything: false,
             bounce: false,
             token: None,
+            memo: None,
         };
         let plain = external(&order, &[9; 64], None).unwrap();
         let id = normalized(&plain).unwrap();
@@ -575,7 +608,15 @@ mod tests {
         relayed.store_bit(false).unwrap().store_bit(false).unwrap();
         relayed.store_cell(&message.body.value).unwrap();
         assert_eq!(normalized(&relayed.build().unwrap()), Some(id));
-        let later = external(&Order { seqno: 4, ..order }, &[9; 64], None).unwrap();
+        let later = external(
+            &Order {
+                seqno: 4,
+                ..order.clone()
+            },
+            &[9; 64],
+            None,
+        )
+        .unwrap();
         assert_ne!(normalized(&later), Some(id));
         let body = WalletExtMsgBodyV5::from_cell(&unsigned(&order).unwrap().to_arc()).unwrap();
         assert_eq!(normalized(&body.msgs[0]), None);

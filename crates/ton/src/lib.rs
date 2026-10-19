@@ -1,6 +1,7 @@
 mod blocks;
 mod cells;
 mod chain;
+mod comment;
 mod emulate;
 mod fees;
 mod http;

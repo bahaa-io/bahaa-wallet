@@ -68,6 +68,7 @@ impl TronChain {
         funds(transfer.amount.units(), U256::ZERO)?;
         let prices = self.prices().await?;
         let resources = self.resources(&from).await?;
+        let memo = transfer.memo.as_deref();
         let (raw, quote) = match token {
             None => {
                 let new_account = self.account(&to).await?.is_none();
@@ -75,23 +76,21 @@ impl TronChain {
                 let coins = |sun: u64| -> Result<(Raw, Quote), ChainError> {
                     let sun = i64::try_from(sun)
                         .map_err(|_| ChainError::Invalid("the amount is too large"))?;
-                    let raw = tx::raw(tx::coins(&from, &to, sun), &anchor, 0)?;
-                    let quote =
-                        fees::quote(tx::bandwidth(&raw), None, new_account, &resources, &prices)?;
+                    let raw = tx::raw(tx::coins(&from, &to, sun), &anchor, 0, memo)?;
+                    let quote = fees::quote(
+                        tx::bandwidth(&raw),
+                        None,
+                        (new_account, memo.is_some()),
+                        &resources,
+                        &prices,
+                    )?;
                     Ok((raw, quote))
                 };
                 let mut sun = u64::try_from(transfer.amount.units())
                     .map_err(|_| ChainError::Invalid("the amount is too large"))?;
                 if transfer.max {
                     let Some(most) = fees::most(sun, |sun| Ok(coins(sun)?.1.max))? else {
-                        let fee = coins(sun)?.1.max;
-                        let needed = fee.checked_add(1).ok_or_else(overflow)?;
-                        return Err(insufficient(
-                            native.0.clone(),
-                            U256::from(needed),
-                            balance,
-                            native.1,
-                        )?);
+                        return Err(short_of_fee(&native, coins(sun)?.1.max, balance)?);
                     };
                     sun = most;
                     transfer.amount = amount(U256::from(sun), decimals)?;
@@ -103,11 +102,11 @@ impl TronChain {
                 let energy = self.simulate(&from, &contract, &data).await?;
                 let limit = fees::fee_limit(energy, &prices)?;
                 let anchor = self.anchor().await?;
-                let raw = tx::raw(tx::token(&from, &contract, data), &anchor, limit)?;
+                let raw = tx::raw(tx::token(&from, &contract, data), &anchor, limit, memo)?;
                 let quote = fees::quote(
                     tx::bandwidth(&raw),
                     Some((energy, limit)),
-                    false,
+                    (false, memo.is_some()),
                     &resources,
                     &prices,
                 )?;
@@ -152,6 +151,7 @@ impl TronChain {
             create_account: find("getCreateAccountFee")?,
             activation: find("getCreateNewAccountFeeInSystemContract")?,
             max_fee_limit: find("getMaxFeeLimit")?,
+            memo: find("getMemoFee").unwrap_or(0),
         })
     }
 
@@ -322,6 +322,15 @@ fn failure(outcome: Option<&str>, message: &Value) -> String {
     }
 }
 
+fn short_of_fee(
+    (symbol, decimals): &(String, u8),
+    fee: u64,
+    balance: U256,
+) -> Result<ChainError, ChainError> {
+    let needed = fee.checked_add(1).ok_or_else(overflow)?;
+    insufficient(symbol.clone(), U256::from(needed), balance, *decimals)
+}
+
 fn insufficient(
     symbol: String,
     needed: U256,
@@ -357,7 +366,7 @@ mod tests {
         let seed = Mnemonic::from_entropy(&[0x5c; 16]).unwrap().to_seed("");
         let from = bytes(&chain.derive(&seed, 0).unwrap()).unwrap();
         let anchor = chain.anchor().await.unwrap();
-        let raw = tx::raw(tx::coins(&from, &[0x27; 20], 1_000), &anchor, 0).unwrap();
+        let raw = tx::raw(tx::coins(&from, &[0x27; 20], 1_000), &anchor, 0, None).unwrap();
         let plan = TronPlan {
             transfer: Transfer {
                 account: 0,
@@ -366,6 +375,7 @@ mod tests {
                 asset: "tron-nile".parse().unwrap(),
                 amount: amount(U256::from(1_000u16), 6).unwrap(),
                 max: false,
+                memo: None,
             },
             raw,
         };
@@ -378,7 +388,7 @@ mod tests {
         let named = format!("account [{}] does not exist", Address::Tron(from));
         assert!(reason.contains(&named), "{reason}");
         let stranger = k256::SecretKey::from_slice(&[0x42; 32]).unwrap();
-        let other = tx::raw(tx::coins(&from, &[0x27; 20], 1_001), &anchor, 0).unwrap();
+        let other = tx::raw(tx::coins(&from, &[0x27; 20], 1_001), &anchor, 0, None).unwrap();
         let (forged, id) = tx::sign(other, &stranger).unwrap();
         let forged = Signed {
             id: TxId::new(hex(&id)).unwrap(),

@@ -2,10 +2,10 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bahaa_chain::{ChainError, FeeQuote, Signed, Transfer, TxId, TxStatus, check_signed};
+use bahaa_chain::{ChainError, FeeQuote, MAX_MEMO, Signed, Transfer, TxId, TxStatus, check_signed};
 use bahaa_crypto::{DeriveError, ExposeSecret, SecretString};
 use bahaa_store::{Received, SentStatus, SentTx};
-use bahaa_types::{Address, Amount, AssetId, NetworkId, to_plain_text};
+use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text, to_plain_text};
 use futures_util::future::join_all;
 use tokio::time::Instant;
 
@@ -34,6 +34,7 @@ pub struct SendRequest {
     pub asset: AssetId,
     pub to: Address,
     pub amount: Spend,
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +121,15 @@ impl Worker {
             .find(|account| account.serves(request.asset.network(), family))
             .ok_or(ChainError::Key(DeriveError::TonOnly))?
             .address;
+        if request
+            .memo
+            .as_ref()
+            .is_some_and(|memo| memo.trim().is_empty() || !is_plain_text(memo, MAX_MEMO))
+        {
+            return Err(
+                ChainError::Invalid("a memo must be plain text of at most 120 characters").into(),
+            );
+        }
         if request.asset.contract() == Some(&request.to) {
             return Err(ChainError::Invalid(
                 "that is the token's own contract address, tokens sent there are lost",
@@ -138,6 +148,7 @@ impl Worker {
                     Spend::Max => Amount::default(),
                 },
                 max: request.amount == Spend::Max,
+                memo: request.memo.clone(),
             },
         ))
     }
@@ -262,6 +273,7 @@ impl Worker {
             status: SentStatus::Sending,
             raw: Some(to_hex(&signed.bytes)),
             transaction: None,
+            memo: decoded.memo,
         };
         self.save(record.clone())?;
         Ok((chain, record, signed))
@@ -532,6 +544,7 @@ mod tests {
             status,
             raw: Some("02f801".to_owned()),
             transaction: None,
+            memo: None,
         }
     }
 

@@ -73,6 +73,8 @@ async fn fake(chain_id: &str, balance: u128, receipt: Value) -> (Url, Calls) {
         "eth_feeHistory" => result(&json!({"baseFeePerGas": [hex_of(BASE_FEE), hex_of(BASE_FEE)]})),
         "eth_maxPriorityFeePerGas" => result(&json!(hex_of(TIP))),
         "eth_getTransactionReceipt" => result(&receipt),
+        "eth_getCode" if params[0] == format!("0x{}", "09".repeat(20)) => result(&json!("0x")),
+        "eth_getCode" => result(&json!("0x6080604052")),
         "eth_call" => {
             seen.lock().unwrap().push(params.clone());
             oracle(params)
@@ -91,6 +93,7 @@ fn send_eth(network: &str) -> Transfer {
         asset: network.parse().unwrap(),
         amount: Amount::new(U256::from(AMOUNT), 18).unwrap(),
         max: false,
+        memo: None,
     }
 }
 
@@ -243,6 +246,50 @@ async fn a_max_send_keeps_back_the_most_the_fees_can_cost() {
 }
 
 #[tokio::test]
+async fn a_memo_is_priced_on_l1_and_never_sent_to_contract_code() {
+    let (url, calls) = fake("0x2105", AMOUNT * 2, Value::Null).await;
+    let chain = EvmChain::new(network_on("base", &[url])).unwrap();
+    let noted = Transfer {
+        memo: Some("deposit 4417".to_owned()),
+        ..send_eth("base")
+    };
+    let (plan, _) = chain.prepare(&noted).await.unwrap();
+    let seed = Mnemonic::parse("test test test test test test test test test test test junk")
+        .unwrap()
+        .to_seed("");
+    let signed = chain.sign(&plan, &seed).unwrap();
+    let envelope = TxEnvelope::decode_2718(&mut &signed.bytes[..]).unwrap();
+    assert_eq!(
+        envelope.as_eip1559().unwrap().tx().input.as_ref(),
+        b"deposit 4417"
+    );
+    let decoded = chain.decode(&signed).unwrap();
+    bahaa_chain::check_signed(&noted, &decoded).unwrap();
+    let priced = calls.lock().unwrap()[0][0]["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(priced.contains("6465706f7369742034343137"), "{priced}");
+    let to_code = Transfer {
+        to: Address::Evm([7; 20]),
+        ..noted.clone()
+    };
+    assert!(matches!(
+        chain.prepare(&to_code).await,
+        Err(ChainError::Invalid(_))
+    ));
+    let network = network_on("base", &[]);
+    let tokens = Transfer {
+        asset: bahaa_types::AssetId::Token(network.id.clone(), network.tokens[0].contract),
+        ..noted
+    };
+    assert_eq!(
+        chain.prepare(&tokens).await.unwrap_err(),
+        ChainError::Unsupported("memos on token transfers")
+    );
+}
+
+#[tokio::test]
 async fn a_confirmed_base_transfer_counts_the_l1_and_operator_fees_it_paid() {
     let id = TxId::new(format!("0x{}", "ab".repeat(32))).unwrap();
     let gas = 21_000 * (BASE_FEE + TIP);
@@ -322,6 +369,7 @@ async fn live_base_and_optimism_quotes_include_the_l1_fee() {
             asset: id.parse().unwrap(),
             amount: wei(1),
             max: false,
+            memo: None,
         };
         let (_, quote) = chain.prepare(&transfer).await.unwrap();
         let items: Vec<&FeeItem> = quote.lines().iter().map(|line| &line.item).collect();

@@ -431,6 +431,7 @@ pub(crate) mod tests {
                 units: U256::from(units),
                 query_id: 5,
             }),
+            memo: None,
         }
     }
 
@@ -538,6 +539,52 @@ pub(crate) mod tests {
         let deployed = done(emulator.run(&ton(FRESH), &[], forwarded).unwrap());
         assert!(deployed.success, "{deployed:?}");
         assert_eq!(deployed.charged_gas_fees, 66_668);
+    }
+
+    #[test]
+    fn a_memo_reaches_the_recipient_through_the_real_usdt_wallets() {
+        let emulator = emulator();
+        let mut order = order(1_000_000, 50_000_000);
+        order.memo = Some("deposit 4417".to_owned());
+        let message = wallet::delivered(&order).unwrap();
+        let first = done(emulator.run(&ton(OURS), &state(OURS), &message).unwrap());
+        assert!(first.success, "{first:?}");
+        let [forwarded] = first.out.as_slice() else {
+            panic!("one forwarded transfer expected");
+        };
+        let second = done(
+            emulator
+                .run(&ton(THEIRS), &state(THEIRS), forwarded)
+                .unwrap(),
+        );
+        assert!(second.success, "{second:?}");
+        let theirs: [u8; 32] = unhex(THEIRS).try_into().unwrap();
+        let received = crate::transaction::single(&second.transaction, &theirs).unwrap();
+        assert_eq!(
+            received.tokens.unwrap().memo.as_deref(),
+            Some("deposit 4417")
+        );
+        let notified = second
+            .out
+            .iter()
+            .find(|message| destination(message).unwrap().0 == ton(OWNER))
+            .unwrap();
+        let root = tonlib_core::cell::BagOfCells::parse(notified)
+            .unwrap()
+            .single_root()
+            .unwrap();
+        let message = <tonlib_core::tlb_types::block::message::Message as tonlib_core::tlb_types::tlb::TLB>::from_cell(&root).unwrap();
+        let mut body = message.body.value.parser();
+        assert_eq!(body.load_u32(32).unwrap(), 0x7362_d09c);
+        body.load_u64(64).unwrap();
+        body.load_coins().unwrap();
+        body.load_address().unwrap();
+        assert!(body.load_bit().unwrap());
+        let payload = body.next_reference().unwrap();
+        assert_eq!(
+            crate::comment::text(&payload).as_deref(),
+            Some("deposit 4417")
+        );
     }
 
     #[test]
