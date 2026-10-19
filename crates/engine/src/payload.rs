@@ -4,8 +4,9 @@ use zeroize::Zeroizing;
 
 use crate::KeyringError;
 
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 const FIRST_VERSION: u8 = 1;
+const CONTRACT_VERSION: u8 = 3;
 const MAX_WALLETS: usize = 64;
 const MAX_PASSPHRASE: usize = 1024;
 const BIP39: u8 = 0;
@@ -17,11 +18,26 @@ pub enum Phrase {
     Bip39 {
         mnemonic: Mnemonic,
         passphrase: SecretString,
+        contract: TonContract,
     },
     Ton {
         mnemonic: TonMnemonic,
         contract: TonContract,
     },
+}
+
+impl Phrase {
+    pub fn contract(&self) -> TonContract {
+        match self {
+            Self::Bip39 { contract, .. } | Self::Ton { contract, .. } => *contract,
+        }
+    }
+
+    pub fn contract_mut(&mut self) -> &mut TonContract {
+        match self {
+            Self::Bip39 { contract, .. } | Self::Ton { contract, .. } => contract,
+        }
+    }
 }
 
 pub struct Entry {
@@ -49,21 +65,22 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
             Phrase::Bip39 {
                 mnemonic,
                 passphrase,
+                ..
             } => {
                 out.push(BIP39);
                 bip39(&mut out, mnemonic, passphrase)?;
             }
-            Phrase::Ton { mnemonic, contract } => {
+            Phrase::Ton { mnemonic, .. } => {
                 out.push(TON);
                 for index in mnemonic.expose_indices() {
                     out.extend_from_slice(&index.to_be_bytes());
                 }
-                out.push(match contract {
-                    TonContract::W5 => W5,
-                    TonContract::V4R2 => V4R2,
-                });
             }
         }
+        out.push(match entry.phrase.contract() {
+            TonContract::W5 => W5,
+            TonContract::V4R2 => V4R2,
+        });
     }
     Ok(out)
 }
@@ -106,7 +123,7 @@ pub fn decode(bytes: &[u8]) -> Result<Contents, KeyringError> {
             reader.take(1)?[0]
         };
         let phrase = match kind {
-            BIP39 => read_bip39(&mut reader)?,
+            BIP39 => read_bip39(&mut reader, version)?,
             TON => read_ton(&mut reader)?,
             _ => return Err(KeyringError::Damaged),
         };
@@ -121,7 +138,7 @@ pub fn decode(bytes: &[u8]) -> Result<Contents, KeyringError> {
     Ok(Contents { next_id, entries })
 }
 
-fn read_bip39(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
+fn read_bip39(reader: &mut Reader<'_>, version: u8) -> Result<Phrase, KeyringError> {
     let entropy_len = usize::from(reader.take(1)?[0]);
     let mnemonic =
         Mnemonic::from_entropy(reader.take(entropy_len)?).map_err(|_| KeyringError::Damaged)?;
@@ -133,9 +150,15 @@ fn read_bip39(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
     let text = std::str::from_utf8(raw).map_err(|_| KeyringError::Damaged)?;
     let mut owned = String::with_capacity(text.len());
     owned.push_str(text);
+    let contract = if version >= CONTRACT_VERSION {
+        read_contract(reader)?
+    } else {
+        TonContract::W5
+    };
     Ok(Phrase::Bip39 {
         mnemonic,
         passphrase: SecretString::from(owned),
+        contract,
     })
 }
 
@@ -145,12 +168,18 @@ fn read_ton(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
         *index = u16::from_be_bytes(reader.array()?);
     }
     let mnemonic = TonMnemonic::from_indices(&*indices).map_err(|_| KeyringError::Damaged)?;
-    let contract = match reader.take(1)?[0] {
-        W5 => TonContract::W5,
-        V4R2 => TonContract::V4R2,
-        _ => return Err(KeyringError::Damaged),
-    };
-    Ok(Phrase::Ton { mnemonic, contract })
+    Ok(Phrase::Ton {
+        mnemonic,
+        contract: read_contract(reader)?,
+    })
+}
+
+fn read_contract(reader: &mut Reader<'_>) -> Result<TonContract, KeyringError> {
+    match reader.take(1)?[0] {
+        W5 => Ok(TonContract::W5),
+        V4R2 => Ok(TonContract::V4R2),
+        _ => Err(KeyringError::Damaged),
+    }
 }
 
 pub fn check_passphrase(passphrase: &str) -> Result<(), KeyringError> {
@@ -190,12 +219,13 @@ mod tests {
         }
     }
 
-    fn multi() -> Entry {
+    fn multi(contract: TonContract) -> Entry {
         Entry {
             id: 1,
             phrase: Phrase::Bip39 {
                 mnemonic: Mnemonic::from_entropy(&[7; 16]).unwrap(),
                 passphrase: SecretString::from("extra".to_owned()),
+                contract,
             },
         }
     }
@@ -215,12 +245,28 @@ mod tests {
         let Phrase::Bip39 {
             mnemonic,
             passphrase,
+            contract,
         } = &contents.entries[0].phrase
         else {
             panic!("an old vault holds multi-chain phrases");
         };
         assert_eq!(mnemonic.expose_entropy(), [7; 16]);
         assert_eq!(passphrase.expose_secret(), "pw");
+        assert_eq!(*contract, TonContract::W5);
+    }
+
+    #[test]
+    fn a_second_version_vault_keeps_w5_for_multi_chain_phrases() {
+        let mut old = vec![2];
+        old.extend_from_slice(&5u32.to_be_bytes());
+        old.extend_from_slice(&1u16.to_be_bytes());
+        old.extend_from_slice(&3u32.to_be_bytes());
+        old.push(BIP39);
+        old.push(16);
+        old.extend_from_slice(&[7; 16]);
+        old.extend_from_slice(&0u16.to_be_bytes());
+        let contents = decode(&old).unwrap();
+        assert_eq!(contents.entries[0].phrase.contract(), TonContract::W5);
     }
 
     #[test]
@@ -228,7 +274,7 @@ mod tests {
         for contract in [TonContract::W5, TonContract::V4R2] {
             let contents = Contents {
                 next_id: 3,
-                entries: vec![multi(), ton(contract)],
+                entries: vec![multi(contract), ton(contract)],
             };
             let decoded = decode(&encode(&contents).unwrap()).unwrap();
             assert_eq!(decoded.next_id, 3);
@@ -243,7 +289,8 @@ mod tests {
             assert_eq!(mnemonic.phrase().expose_secret(), TON);
             assert!(matches!(
                 &decoded.entries[0].phrase,
-                Phrase::Bip39 { passphrase, .. } if passphrase.expose_secret() == "extra"
+                Phrase::Bip39 { passphrase, contract: read, .. }
+                    if passphrase.expose_secret() == "extra" && *read == contract
             ));
         }
     }

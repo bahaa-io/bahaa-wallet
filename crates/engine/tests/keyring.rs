@@ -287,13 +287,15 @@ fn a_ton_phrase_becomes_a_ton_only_wallet_that_survives_a_restart() {
             wallets[0].id,
             wallets[0].words,
             wallets[0].passphrase,
-            wallets[0].kind
+            wallets[0].kind,
+            wallets[0].ton
         ),
         (
             id,
             WordCount::TwentyFour,
             false,
-            WalletKind::Ton(TonContract::W5)
+            WalletKind::Ton,
+            TonContract::W5
         )
     );
     assert_eq!(keyring.reveal(id, PASSWORD).unwrap().expose_secret(), TON);
@@ -342,7 +344,7 @@ fn words_that_fit_both_standards_wait_for_the_users_choice() {
     let ton = keyring.import_as(BOTH, "", PhraseKind::Ton).unwrap();
     assert_ne!(multi, ton);
     let kinds: Vec<WalletKind> = keyring.wallets().unwrap().iter().map(|w| w.kind).collect();
-    assert_eq!(kinds, [WalletKind::Bip39, WalletKind::Ton(TonContract::W5)]);
+    assert_eq!(kinds, [WalletKind::Bip39, WalletKind::Ton]);
     assert_eq!(keyring.seed(multi).unwrap().kind(), SeedKind::Bip39);
     assert_eq!(keyring.seed(ton).unwrap().kind(), SeedKind::Ton);
     let with_passphrase = keyring.import(BOTH, "extra").unwrap();
@@ -353,24 +355,29 @@ fn words_that_fit_both_standards_wait_for_the_users_choice() {
 }
 
 #[test]
-fn a_ton_wallet_keeps_the_contract_it_was_found_on() {
+fn every_wallet_keeps_the_ton_contract_it_was_found_on() {
     let scratch = Scratch::new();
     let mut keyring = scratch.keyring();
     keyring.create(PASSWORD).unwrap();
     let ton = keyring.import(TON, "").unwrap();
     let multi = keyring.import(HARDHAT, "").unwrap();
+    keyring.import(BOTH, "extra").unwrap();
     keyring.set_ton_contract(ton, TonContract::V4R2).unwrap();
-    assert_eq!(
-        keyring
-            .set_ton_contract(multi, TonContract::V4R2)
-            .unwrap_err(),
-        KeyringError::NotTon
-    );
+    keyring.set_ton_contract(multi, TonContract::V4R2).unwrap();
     let keyring = reopened(&scratch);
-    let kinds: Vec<WalletKind> = keyring.wallets().unwrap().iter().map(|w| w.kind).collect();
+    let kept: Vec<(WalletKind, TonContract)> = keyring
+        .wallets()
+        .unwrap()
+        .iter()
+        .map(|w| (w.kind, w.ton))
+        .collect();
     assert_eq!(
-        kinds,
-        [WalletKind::Ton(TonContract::V4R2), WalletKind::Bip39]
+        kept,
+        [
+            (WalletKind::Ton, TonContract::V4R2),
+            (WalletKind::Bip39, TonContract::V4R2),
+            (WalletKind::Bip39, TonContract::W5)
+        ]
     );
 }
 

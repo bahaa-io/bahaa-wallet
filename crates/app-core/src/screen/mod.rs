@@ -256,7 +256,7 @@ pub(crate) fn wallet_kind(wallet: &WalletInfo) -> String {
     };
     match wallet.kind {
         WalletKind::Bip39 => text::multi_chain(words, wallet.passphrase),
-        WalletKind::Ton(contract) => text::ton_wallet(contract),
+        WalletKind::Ton => text::ton_wallet(wallet.ton),
     }
 }
 

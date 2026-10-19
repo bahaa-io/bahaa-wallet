@@ -909,11 +909,11 @@ impl Worker {
                     Some(kind) => keyring.import_as(phrase, passphrase, kind),
                     None => keyring.import(phrase, passphrase),
                 }?;
-                let ton = keyring
+                let ton_only = keyring
                     .wallets()?
                     .iter()
-                    .any(|wallet| wallet.id == id && matches!(wallet.kind, WalletKind::Ton(_)));
-                let addresses = match chains::ton_mainnet(&chains).filter(|_| ton) {
+                    .any(|wallet| wallet.id == id && wallet.kind == WalletKind::Ton);
+                let addresses = match chains::ton_mainnet(&chains) {
                     Some(chain) => {
                         let seed = keyring.seed(id)?;
                         Some((
@@ -923,12 +923,14 @@ impl Worker {
                     }
                     None => None,
                 };
-                Ok::<_, EngineError>((id, addresses))
+                Ok::<_, EngineError>((id, ton_only, addresses))
             })
             .await;
         let result = match imported {
-            Ok((id, Some(addresses))) => self.settle_contract(id, addresses).await,
-            Ok((id, None)) => Ok(id),
+            Ok((id, ton_only, Some(addresses))) => {
+                self.settle_contract(id, addresses, ton_only).await
+            }
+            Ok((id, _, None)) => Ok(id),
             Err(err) => Err(err),
         };
         self.after_change(result.is_ok()).await;
@@ -939,6 +941,7 @@ impl Worker {
         &mut self,
         id: WalletId,
         (w5, v4r2): (Address, Address),
+        ton_only: bool,
     ) -> Result<WalletId, EngineError> {
         let chains = Arc::clone(&self.chains);
         let used = match chains::ton_mainnet(&chains) {
@@ -955,6 +958,7 @@ impl Worker {
                     .await?;
                 Ok(id)
             }
+            Err(_) if !ton_only => Ok(id),
             Err(err) => {
                 let _ = self.keyring(move |keyring| keyring.remove(id)).await;
                 Err(EngineError::Chain(err))
@@ -983,7 +987,7 @@ impl Worker {
             .iter()
             .map(|wallet| {
                 let kept = match wallet.kind {
-                    WalletKind::Ton(_) => vec![0],
+                    WalletKind::Ton => vec![0],
                     WalletKind::Bip39 => self
                         .store
                         .account_indexes(wallet.id.value())
@@ -997,10 +1001,6 @@ impl Worker {
                 let mut accounts = Vec::new();
                 for wallet in keyring.wallets()? {
                     let seed = keyring.seed(wallet.id)?;
-                    let contract = match wallet.kind {
-                        WalletKind::Ton(contract) => contract,
-                        WalletKind::Bip39 => TonContract::W5,
-                    };
                     let kept = indexes
                         .iter()
                         .find(|(id, _)| *id == wallet.id)
@@ -1011,7 +1011,7 @@ impl Worker {
                             derived.push((
                                 chain.family(),
                                 chain.network().id.clone(),
-                                chain.derive(seed, index, contract)?,
+                                chain.derive(seed, index, wallet.ton)?,
                             ));
                         }
                         accounts.extend(chains::accounts(wallet.id, index, &derived));

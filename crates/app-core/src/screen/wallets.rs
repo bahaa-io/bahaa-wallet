@@ -109,36 +109,34 @@ impl Screen for Wallet {
             .collect();
         let mut buttons = vec![button(text::SAVE_NAME, Action::Submit)];
         let mut form = vec![input(Field::Name, text::NAME, &self.name).into()];
-        match wallet.kind {
-            WalletKind::Bip39 => {
-                buttons.push(button(text::ADD_ACCOUNT, Action::Pick(Pick::AddAccount)));
-                if indexes.len() > 1 {
-                    buttons.extend(indexes.iter().map(|index| {
-                        button(
-                            text::remove_account(*index),
-                            Action::Pick(Pick::RemoveAccount(*index)),
-                        )
-                    }));
-                }
+        form.push(
+            group(
+                text::TON_CONTRACT,
+                vec![
+                    choice(
+                        text::W5,
+                        Action::Pick(Pick::Contract(Contract::W5)),
+                        wallet.ton == TonContract::W5,
+                    ),
+                    choice(
+                        text::V4R2,
+                        Action::Pick(Pick::Contract(Contract::V4R2)),
+                        wallet.ton == TonContract::V4R2,
+                    ),
+                ],
+            )
+            .into(),
+        );
+        if wallet.kind == WalletKind::Bip39 {
+            buttons.push(button(text::ADD_ACCOUNT, Action::Pick(Pick::AddAccount)));
+            if indexes.len() > 1 {
+                buttons.extend(indexes.iter().map(|index| {
+                    button(
+                        text::remove_account(*index),
+                        Action::Pick(Pick::RemoveAccount(*index)),
+                    )
+                }));
             }
-            WalletKind::Ton(contract) => form.push(
-                group(
-                    text::TON_CONTRACT,
-                    vec![
-                        choice(
-                            text::W5,
-                            Action::Pick(Pick::Contract(Contract::W5)),
-                            contract == TonContract::W5,
-                        ),
-                        choice(
-                            text::V4R2,
-                            Action::Pick(Pick::Contract(Contract::V4R2)),
-                            contract == TonContract::V4R2,
-                        ),
-                    ],
-                )
-                .into(),
-            ),
         }
         buttons.push(button(text::SHOW_PHRASE, Action::Go(Go::Reveal)));
         buttons.push(button(text::REMOVE_WALLET, Action::Go(Go::RemoveWallet)));

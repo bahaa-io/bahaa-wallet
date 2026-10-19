@@ -40,12 +40,13 @@ pub struct WalletInfo {
     pub words: WordCount,
     pub passphrase: bool,
     pub kind: WalletKind,
+    pub ton: TonContract,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WalletKind {
     Bip39,
-    Ton(TonContract),
+    Ton,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,8 +99,6 @@ pub enum KeyringError {
     Ambiguous,
     #[error("TON recovery phrases with a password are not supported yet")]
     TonPassphrase,
-    #[error("this wallet does not come from a TON recovery phrase")]
-    NotTon,
     #[error(transparent)]
     TonPhrase(#[from] TonPhraseError),
     #[error(transparent)]
@@ -206,24 +205,27 @@ impl Keyring {
             .contents
             .entries
             .iter()
-            .map(|entry| match &entry.phrase {
-                Phrase::Bip39 {
-                    mnemonic,
+            .map(|entry| {
+                let (words, passphrase, kind) = match &entry.phrase {
+                    Phrase::Bip39 {
+                        mnemonic,
+                        passphrase,
+                        ..
+                    } => (
+                        mnemonic.word_count(),
+                        !passphrase.expose_secret().is_empty(),
+                        WalletKind::Bip39,
+                    ),
+                    Phrase::Ton { .. } => (WordCount::TwentyFour, false, WalletKind::Ton),
+                };
+                WalletInfo {
+                    id: WalletId(entry.id),
+                    name: None,
+                    words,
                     passphrase,
-                } => WalletInfo {
-                    id: WalletId(entry.id),
-                    name: None,
-                    words: mnemonic.word_count(),
-                    passphrase: !passphrase.expose_secret().is_empty(),
-                    kind: WalletKind::Bip39,
-                },
-                Phrase::Ton { contract, .. } => WalletInfo {
-                    id: WalletId(entry.id),
-                    name: None,
-                    words: WordCount::TwentyFour,
-                    passphrase: false,
-                    kind: WalletKind::Ton(*contract),
-                },
+                    kind,
+                    ton: entry.phrase.contract(),
+                }
             })
             .collect())
     }
@@ -263,17 +265,12 @@ impl Keyring {
         let path = self.path.clone();
         let session = self.session_mut()?;
         let index = session.index(id)?;
-        let Phrase::Ton {
-            contract: current, ..
-        } = &mut session.contents.entries[index].phrase
-        else {
-            return Err(KeyringError::NotTon);
-        };
-        let previous = std::mem::replace(current, contract);
+        let previous = std::mem::replace(
+            session.contents.entries[index].phrase.contract_mut(),
+            contract,
+        );
         if let Err(err) = persist(&path, session) {
-            if let Phrase::Ton { contract, .. } = &mut session.contents.entries[index].phrase {
-                *contract = previous;
-            }
+            *session.contents.entries[index].phrase.contract_mut() = previous;
             return Err(err);
         }
         Ok(())
@@ -438,6 +435,7 @@ fn bip39(mnemonic: Mnemonic, passphrase: &str) -> Result<Phrase, KeyringError> {
     Ok(Phrase::Bip39 {
         mnemonic,
         passphrase: SecretString::from(owned),
+        contract: TonContract::W5,
     })
 }
 
@@ -446,6 +444,7 @@ fn seed(phrase: &Phrase) -> Result<Seed, KeyringError> {
         Phrase::Bip39 {
             mnemonic,
             passphrase,
+            ..
         } => Ok(mnemonic.to_seed(passphrase.expose_secret())),
         Phrase::Ton { mnemonic, .. } => mnemonic.to_seed().map_err(|_| KeyringError::Damaged),
     }
