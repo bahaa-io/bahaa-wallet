@@ -451,7 +451,7 @@ async fn broadcasting_follows_what_the_node_says() {
         (
             json!({"result": false, "code": "DUP_TRANSACTION_ERROR"}),
             Err(ChainError::Network(
-                "the node has already seen this transaction".to_owned(),
+                "network problem: the node has already seen this transaction".to_owned(),
             )),
         ),
         (
@@ -493,6 +493,27 @@ async fn a_busy_node_hands_the_broadcast_to_the_next_endpoint() {
     assert_eq!(chain.broadcast(&signed).await.unwrap(), signed.id);
     assert_eq!(busy.asked("/wallet/broadcasthex").len(), 1);
     assert_eq!(calm.asked("/wallet/broadcasthex").len(), 1);
+}
+
+#[tokio::test]
+async fn a_broadcast_reaches_every_node_and_one_acceptance_is_enough() {
+    let (first, second) = (
+        Ledger::new(5_000_000, 0, json!({"freeNetLimit": 600})),
+        Ledger::new(5_000_000, 0, json!({"freeNetLimit": 600})),
+    );
+    let chain = TronChain::new(tron_on(&[serve(&first).await, serve(&second).await])).unwrap();
+    let signed = signed(&chain).await;
+    assert_eq!(chain.broadcast(&signed).await.unwrap(), signed.id);
+    assert_eq!(first.asked("/wallet/broadcasthex").len(), 1);
+    assert_eq!(second.asked("/wallet/broadcasthex").len(), 1);
+    *first.broadcast.lock().unwrap() = json!({"result": false, "code": "DUP_TRANSACTION_ERROR"});
+    assert_eq!(chain.broadcast(&signed).await.unwrap(), signed.id);
+    *second.broadcast.lock().unwrap() =
+        json!({"result": false, "code": "TAPOS_ERROR", "message": "Tapos check error"});
+    assert_eq!(
+        chain.broadcast(&signed).await,
+        Err(ChainError::Rejected("Tapos check error".to_owned()))
+    );
 }
 
 #[tokio::test]

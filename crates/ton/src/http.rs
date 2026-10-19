@@ -195,7 +195,7 @@ impl Http {
         let encoded = encoded.as_str();
         Ok(self
             .pool
-            .call(None, |endpoint| async move {
+            .call_all(None, |endpoint| async move {
                 let base = &endpoint.url;
                 if endpoint.protocol == Protocol::TonLiteservers {
                     return self.lite.send(base, boc).await;

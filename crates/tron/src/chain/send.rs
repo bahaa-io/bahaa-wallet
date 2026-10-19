@@ -1,4 +1,4 @@
-use bahaa_chain::{ChainError, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus};
+use bahaa_chain::{ChainError, Failure, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
@@ -239,34 +239,14 @@ impl TronChain {
     }
 
     pub(super) async fn push(&self, signed: &Signed) -> Result<TxId, ChainError> {
-        let reply = self
-            .http
-            .post(
+        self.http
+            .post_all(
                 "wallet/broadcasthex",
                 json!({"transaction": hex(&signed.bytes)}),
+                |reply| accepted(reply, &signed.id),
             )
             .await?;
-        if reply["result"] == true {
-            let same = reply["txid"]
-                .as_str()
-                .is_some_and(|id| id.eq_ignore_ascii_case(signed.id.as_str()));
-            if !same {
-                return Err(ChainError::Network(
-                    "the node answered with another transaction id".to_owned(),
-                ));
-            }
-            return Ok(signed.id.clone());
-        }
-        if reply["code"] == "DUP_TRANSACTION_ERROR" {
-            return Err(ChainError::Network(
-                "the node has already seen this transaction".to_owned(),
-            ));
-        }
-        let reason = match reply.get("message") {
-            Some(message) if message.is_string() => node_text(message),
-            _ => node_text(&reply["code"]),
-        };
-        Err(ChainError::Rejected(reason))
+        Ok(signed.id.clone())
     }
 
     pub(super) async fn lookup(&self, id: &TxId) -> Result<TxStatus, ChainError> {
@@ -306,6 +286,30 @@ impl TronChain {
             fee: Some(amount(U256::from(fee), self.network.native.decimals)?),
         })
     }
+}
+
+fn accepted(reply: &Value, id: &TxId) -> Result<(), Failure<ChainError>> {
+    if reply["result"] == true {
+        let same = reply["txid"]
+            .as_str()
+            .is_some_and(|txid| txid.eq_ignore_ascii_case(id.as_str()));
+        if !same {
+            return Err(Failure::Retry(ChainError::Network(
+                "the node answered with another transaction id".to_owned(),
+            )));
+        }
+        return Ok(());
+    }
+    if reply["code"] == "DUP_TRANSACTION_ERROR" {
+        return Err(Failure::Unsupported(ChainError::Network(
+            "the node has already seen this transaction".to_owned(),
+        )));
+    }
+    let reason = match reply.get("message") {
+        Some(message) if message.is_string() => node_text(message),
+        _ => node_text(&reply["code"]),
+    };
+    Err(Failure::Fatal(ChainError::Rejected(reason)))
 }
 
 fn failure(outcome: Option<&str>, message: &Value) -> String {

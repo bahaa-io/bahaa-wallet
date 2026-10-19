@@ -5,15 +5,15 @@ use std::sync::{Mutex, PoisonError};
 use alloy_consensus::TxEip1559;
 use alloy_primitives::TxKind;
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId,
-    TxStatus, abi_text,
+    Balance, Chain, ChainError, Decoded, Failure, FeeItem, FeeLine, FeeQuote, Signed, Transfer,
+    TxId, TxStatus, abi_text,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
 use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use ruint::aliases::U256;
-use serde_json::json;
+use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
 
 mod logs;
@@ -517,24 +517,28 @@ impl Chain for EvmChain {
     }
 
     async fn broadcast(&self, signed: &Signed) -> Result<TxId, ChainError> {
-        match self
-            .rpc
-            .call("eth_sendRawTransaction", json!([hex(&signed.bytes)]))
-            .await
-        {
-            Ok(reply) => {
-                if reply.as_str().map(str::to_ascii_lowercase).as_deref()
-                    != Some(signed.id.as_str())
-                {
-                    return Err(ChainError::Network(
+        let ours = |reply: &Value| {
+            reply.as_str().map(str::to_ascii_lowercase).as_deref() == Some(signed.id.as_str())
+        };
+        self.rpc
+            .call_all(
+                "eth_sendRawTransaction",
+                json!([hex(&signed.bytes)]),
+                |reply| match reply {
+                    Ok(reply) if ours(&reply) => Ok(()),
+                    Ok(_) => Err(Failure::Retry(ChainError::Network(
                         "the node answered with another transaction id".to_owned(),
-                    ));
-                }
-                Ok(signed.id.clone())
-            }
-            Err(ChainError::Rejected(message)) if already_known(&message) => Ok(signed.id.clone()),
-            Err(err) => Err(err),
-        }
+                    ))),
+                    Err(Failure::Fatal(ChainError::Rejected(message)))
+                        if already_known(&message) =>
+                    {
+                        Ok(())
+                    }
+                    Err(other) => Err(other),
+                },
+            )
+            .await?;
+        Ok(signed.id.clone())
     }
 
     async fn status(

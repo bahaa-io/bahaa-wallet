@@ -95,3 +95,45 @@ async fn live_bsc_status_of_a_real_transfer() {
     assert_eq!(block, Some(0x07a4_d222));
     assert!(fee.is_some_and(|fee| !fee.is_zero()));
 }
+
+fn relays(answer: Option<&'static str>) -> impl Fn(&str, &Value) -> (u16, Value) + Send + Sync {
+    move |method, _| match (method, answer) {
+        ("eth_chainId", _) => result(&json!("0x38")),
+        ("eth_sendRawTransaction", None) => result(&json!(format!("0x{}", "cd".repeat(32)))),
+        ("eth_sendRawTransaction", Some(message)) => (
+            200,
+            json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": message}}),
+        ),
+        _ => (502, json!("bad gateway")),
+    }
+}
+
+#[tokio::test]
+async fn a_broadcast_reaches_every_endpoint_and_one_acceptance_is_enough() {
+    let signed = bahaa_chain::Signed {
+        id: TxId::new(format!("0x{}", "cd".repeat(32))).unwrap(),
+        bytes: vec![0x02, 0xf8, 0x01],
+    };
+    let cases = [
+        (None, Some("already known"), true),
+        (Some("nonce too low"), None, true),
+        (Some("already known"), Some("already known"), true),
+        (Some("nonce too low"), Some("insufficient funds"), false),
+    ];
+    for (first, second, accepted) in cases {
+        let (one, two) = (Log::default(), Log::default());
+        let urls = [
+            node(Arc::clone(&one), relays(first)).await,
+            node(Arc::clone(&two), relays(second)).await,
+        ];
+        let chain = EvmChain::new(bsc_on(&urls)).unwrap();
+        let outcome = chain.broadcast(&signed).await;
+        assert_eq!(
+            outcome.is_ok(),
+            accepted,
+            "{first:?} {second:?}: {outcome:?}"
+        );
+        assert_eq!(count(&one, "eth_sendRawTransaction"), 1);
+        assert_eq!(count(&two, "eth_sendRawTransaction"), 1);
+    }
+}

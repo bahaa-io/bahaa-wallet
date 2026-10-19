@@ -54,6 +54,21 @@ impl Http {
         self.request(None, path, Request::Post(&body)).await
     }
 
+    pub(crate) async fn post_all<T>(
+        &self,
+        path: &str,
+        body: Value,
+        judge: impl Fn(&Value) -> Result<T, Failure<ChainError>>,
+    ) -> Result<T, ChainError> {
+        let (judge, body) = (&judge, &body);
+        Ok(self
+            .pool
+            .call_all(None, |endpoint| async move {
+                judge(&self.attempt(endpoint, path, Request::Post(body)).await?)
+            })
+            .await?)
+    }
+
     pub(crate) async fn history(
         &self,
         path: &str,

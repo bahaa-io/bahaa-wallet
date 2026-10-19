@@ -59,6 +59,22 @@ impl Rpc {
             .await?)
     }
 
+    pub(crate) async fn call_all<T>(
+        &self,
+        method: &str,
+        params: Value,
+        judge: impl Fn(Result<Value, Failure<ChainError>>) -> Result<T, Failure<ChainError>>,
+    ) -> Result<T, ChainError> {
+        let judge = &judge;
+        Ok(self
+            .pool
+            .call_all(None, |endpoint| {
+                let attempt = self.attempt(endpoint, method, params.clone());
+                async move { judge(attempt.await) }
+            })
+            .await?)
+    }
+
     async fn attempt(
         &self,
         endpoint: Endpoint,

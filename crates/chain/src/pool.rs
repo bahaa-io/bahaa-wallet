@@ -77,6 +77,31 @@ impl Pool {
         F: Fn(Endpoint) -> Fut,
         Fut: Future<Output = Result<T, Failure<E>>>,
     {
+        self.dispatch(need, op, false).await
+    }
+
+    pub async fn call_all<T, E, F, Fut>(
+        &self,
+        need: Option<Feature>,
+        op: F,
+    ) -> Result<T, PoolError<E>>
+    where
+        F: Fn(Endpoint) -> Fut,
+        Fut: Future<Output = Result<T, Failure<E>>>,
+    {
+        self.dispatch(need, op, true).await
+    }
+
+    async fn dispatch<T, E, F, Fut>(
+        &self,
+        need: Option<Feature>,
+        op: F,
+        every: bool,
+    ) -> Result<T, PoolError<E>>
+    where
+        F: Fn(Endpoint) -> Fut,
+        Fut: Future<Output = Result<T, Failure<E>>>,
+    {
         let candidates: Vec<&Slot> = self
             .slots
             .iter()
@@ -94,17 +119,25 @@ impl Pool {
             .collect();
         let mut last = None;
         let mut failed = false;
+        let mut accepted = None;
+        let mut refused = None;
         for slot in ready {
             sleep_until(slot.reserve(history)).await;
             let started = Instant::now();
             match op(slot.endpoint.clone()).await {
                 Ok(value) => {
                     slot.succeeded(started.elapsed(), history);
-                    return Ok(value);
+                    if !every {
+                        return Ok(value);
+                    }
+                    accepted = accepted.or(Some(value));
                 }
                 Err(Failure::Fatal(err)) => {
                     slot.succeeded(started.elapsed(), history);
-                    return Err(PoolError::Fatal(err));
+                    if !every {
+                        return Err(PoolError::Fatal(err));
+                    }
+                    refused = refused.or(Some(err));
                 }
                 Err(Failure::Retry(err)) => {
                     slot.failed(None, history);
@@ -121,6 +154,12 @@ impl Pool {
                     last = Some(err);
                 }
             }
+        }
+        if let Some(value) = accepted {
+            return Ok(value);
+        }
+        if let Some(err) = refused {
+            return Err(PoolError::Fatal(err));
         }
         if let Some(err) = last {
             return Err(if failed {
@@ -273,6 +312,40 @@ mod tests {
         let log = Log::default();
         assert_eq!(run(&pool, &log, |_| Ok(7)).await, Ok(7));
         assert_eq!(taken(&log), ["a"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_broadcast_reaches_every_endpoint_and_any_acceptance_wins() {
+        let pool = pool(&["a", "b", "c"]);
+        let log = Log::default();
+        let all = |outcome: fn(&str) -> Result<u32, Failure<&'static str>>| {
+            let log = Arc::clone(&log);
+            let pool = &pool;
+            async move {
+                pool.call_all(None, |endpoint| {
+                    let host = endpoint.url.host_str().unwrap().to_owned();
+                    log.lock().unwrap().push(host.clone());
+                    let result = outcome(&host);
+                    async move { result }
+                })
+                .await
+            }
+        };
+        assert_eq!(all(|_| Ok(1)).await, Ok(1));
+        assert_eq!(taken(&log), ["a", "b", "c"]);
+        let refused_then_taken = |host: &str| match host {
+            "a" => Err(Failure::Fatal("stale state")),
+            "b" => Err(Failure::Retry("down")),
+            _ => Ok(3),
+        };
+        assert_eq!(all(refused_then_taken).await, Ok(3));
+        assert_eq!(taken(&log), ["a", "b", "c"]);
+        let refused = |host: &str| match host {
+            "c" => Err(Failure::Fatal("bad signature")),
+            _ => Err(Failure::Unsupported("no sending")),
+        };
+        assert_eq!(all(refused).await, Err(PoolError::Fatal("bad signature")));
+        assert_eq!(taken(&log), ["a", "c"]);
     }
 
     #[tokio::test(start_paused = true)]

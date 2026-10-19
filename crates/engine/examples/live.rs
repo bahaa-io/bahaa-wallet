@@ -10,8 +10,9 @@ use bahaa_config::{Network, Registry};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_engine::{
     Account, CustomToken, Draft, Engine, EngineConfig, Event, NewPhrase, PhraseKind, SendRequest,
-    SentTx, Spend, WalletId,
+    SentStatus, SentTx, Spend, WalletId,
 };
+use bahaa_market::Status;
 use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, TonContract, TonForm};
 use tokio::sync::broadcast::{self, error::RecvError};
 
@@ -23,6 +24,7 @@ const VAULT: &str = "vault.bin";
 const LETTERS: &str = "abcdefgh";
 const SETTLE: Duration = Duration::from_mins(20);
 const FRESH: Duration = Duration::from_mins(4);
+const PRICES: Duration = Duration::from_secs(30);
 const LONGEST_LOCK: u16 = 1_440;
 
 const USAGE: &str = "commands:
@@ -307,6 +309,22 @@ impl Live {
         })
         .await
         .map_err(|_| "the refresh did not finish in time")?;
+        let _ = tokio::time::timeout(PRICES, async {
+            loop {
+                let priced = {
+                    let current = portfolio.borrow_and_update();
+                    matches!(current.prices, Status::Live | Status::Polling)
+                        && current
+                            .holdings
+                            .iter()
+                            .any(|holding| holding.value.is_some())
+                };
+                if priced || portfolio.changed().await.is_err() {
+                    return;
+                }
+            }
+        })
+        .await;
         Ok(())
     }
 
@@ -625,7 +643,7 @@ async fn settle(events: &mut broadcast::Receiver<Event>, sent: &SentTx) -> Outco
         loop {
             match events.recv().await {
                 Ok(Event::TxUpdated(tx)) if tx.id == sent.id && tx.network == sent.network => {
-                    if tx.status != last {
+                    if tx.status != last && tx.status != SentStatus::Sending {
                         println!("  now {:?}", tx.status);
                         last = tx.status.clone();
                     }

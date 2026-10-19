@@ -111,3 +111,28 @@ async fn tonapi_and_ton_center_hand_transfers_over_and_name_refusals() {
     assert!(chain.broadcast(&signed(unhex(SENT))).await.is_ok());
     assert!(log.lock().unwrap().contains(&"/v2/sendBoc".to_owned()));
 }
+
+#[tokio::test]
+async fn a_transfer_is_handed_to_every_endpoint() {
+    let (api_log, center_log) = (Log::default(), Log::default());
+    let tonapi = node(Arc::clone(&api_log), tonapi_send).await;
+    let center = node(Arc::clone(&center_log), |path, body| {
+        center_send(path, body, true)
+    })
+    .await;
+    let chain = TonChain::new(network(&[
+        (Protocol::TonApi, &tonapi),
+        (Protocol::TonCenter, &center),
+    ]))
+    .unwrap();
+    assert!(chain.broadcast(&signed(unhex(SENT))).await.is_ok());
+    let sent = |log: &Log, path: &str| {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|seen| *seen == path)
+            .count()
+    };
+    assert_eq!(sent(&api_log, "/liteserver/send_message"), 1);
+    assert_eq!(sent(&center_log, "/v2/sendBoc"), 1);
+}
