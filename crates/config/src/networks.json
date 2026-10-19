@@ -2,6 +2,7 @@
   {
     "id": "bsc",
     "name": "BNB Smart Chain",
+    "color": "#f0b90b",
     "family": "evm",
     "chain_id": 56,
     "fee": "standard",
@@ -10,7 +11,8 @@
       "symbol": "BNB",
       "name": "BNB",
       "decimals": 18,
-      "price": "crypto/BNB"
+      "price": "crypto/BNB",
+      "color": "#f0b90b"
     },
     "tokens": [
       {
@@ -18,14 +20,16 @@
         "symbol": "USDT",
         "name": "Tether USD",
         "decimals": 18,
-        "price": "crypto/USDT"
+        "price": "crypto/USDT",
+        "color": "#26a17b"
       },
       {
         "contract": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
         "symbol": "USDC",
         "name": "USD Coin",
         "decimals": 18,
-        "price": "crypto/USDC"
+        "price": "crypto/USDC",
+        "color": "#3a86e0"
       }
     ],
     "endpoints": [
@@ -55,6 +59,7 @@
   {
     "id": "ethereum",
     "name": "Ethereum",
+    "color": "#7086f0",
     "family": "evm",
     "chain_id": 1,
     "fee": "standard",
@@ -63,7 +68,8 @@
       "symbol": "ETH",
       "name": "Ether",
       "decimals": 18,
-      "price": "crypto/ETH"
+      "price": "crypto/ETH",
+      "color": "#7086f0"
     },
     "tokens": [
       {
@@ -71,14 +77,16 @@
         "symbol": "USDT",
         "name": "Tether USD",
         "decimals": 6,
-        "price": "crypto/USDT"
+        "price": "crypto/USDT",
+        "color": "#26a17b"
       },
       {
         "contract": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
         "symbol": "USDC",
         "name": "USD Coin",
         "decimals": 6,
-        "price": "crypto/USDC"
+        "price": "crypto/USDC",
+        "color": "#3a86e0"
       }
     ],
     "endpoints": [
@@ -108,6 +116,7 @@
   {
     "id": "polygon",
     "name": "Polygon",
+    "color": "#9b6cf0",
     "family": "evm",
     "chain_id": 137,
     "fee": "standard",
@@ -116,7 +125,8 @@
       "symbol": "POL",
       "name": "Polygon",
       "decimals": 18,
-      "price": "crypto/POLYG"
+      "price": "crypto/POLYG",
+      "color": "#9b6cf0"
     },
     "tokens": [
       {
@@ -124,14 +134,16 @@
         "symbol": "USDT",
         "name": "Tether USD",
         "decimals": 6,
-        "price": "crypto/USDT"
+        "price": "crypto/USDT",
+        "color": "#26a17b"
       },
       {
         "contract": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
         "symbol": "USDC",
         "name": "USD Coin",
         "decimals": 6,
-        "price": "crypto/USDC"
+        "price": "crypto/USDC",
+        "color": "#3a86e0"
       }
     ],
     "endpoints": [
@@ -161,6 +173,7 @@
   {
     "id": "arbitrum",
     "name": "Arbitrum One",
+    "color": "#2da4f2",
     "family": "evm",
     "chain_id": 42161,
     "fee": "standard",
@@ -169,7 +182,8 @@
       "symbol": "ETH",
       "name": "Ether",
       "decimals": 18,
-      "price": "crypto/ETH"
+      "price": "crypto/ETH",
+      "color": "#7086f0"
     },
     "tokens": [
       {
@@ -177,14 +191,16 @@
         "symbol": "USDT",
         "name": "Tether USD",
         "decimals": 6,
-        "price": "crypto/USDT"
+        "price": "crypto/USDT",
+        "color": "#26a17b"
       },
       {
         "contract": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
         "symbol": "USDC",
         "name": "USD Coin",
         "decimals": 6,
-        "price": "crypto/USDC"
+        "price": "crypto/USDC",
+        "color": "#3a86e0"
       }
     ],
     "endpoints": [
@@ -214,6 +230,7 @@
   {
     "id": "avalanche",
     "name": "Avalanche C-Chain",
+    "color": "#e84142",
     "family": "evm",
     "chain_id": 43114,
     "fee": "standard",
@@ -222,7 +239,8 @@
       "symbol": "AVAX",
       "name": "Avalanche",
       "decimals": 18,
-      "price": "crypto/AVAX"
+      "price": "crypto/AVAX",
+      "color": "#e84142"
     },
     "tokens": [
       {
@@ -230,14 +248,16 @@
         "symbol": "USDT",
         "name": "Tether USD",
         "decimals": 6,
-        "price": "crypto/USDT"
+        "price": "crypto/USDT",
+        "color": "#26a17b"
       },
       {
         "contract": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
         "symbol": "USDC",
         "name": "USD Coin",
         "decimals": 6,
-        "price": "crypto/USDC"
+        "price": "crypto/USDC",
+        "color": "#3a86e0"
       }
     ],
     "endpoints": [
@@ -272,6 +292,7 @@
   {
     "id": "base",
     "name": "Base",
+    "color": "#3d7bff",
     "family": "evm",
     "chain_id": 8453,
     "fee": "op-stack",
@@ -280,7 +301,8 @@
       "symbol": "ETH",
       "name": "Ether",
       "decimals": 18,
-      "price": "crypto/ETH"
+      "price": "crypto/ETH",
+      "color": "#7086f0"
     },
     "tokens": [
       {
@@ -288,7 +310,8 @@
         "symbol": "USDC",
         "name": "USD Coin",
         "decimals": 6,
-        "price": "crypto/USDC"
+        "price": "crypto/USDC",
+        "color": "#3a86e0"
       }
     ],
     "endpoints": [
@@ -323,6 +346,7 @@
   {
     "id": "optimism",
     "name": "OP Mainnet",
+    "color": "#ff3346",
     "family": "evm",
     "chain_id": 10,
     "fee": "op-stack",
@@ -331,7 +355,8 @@
       "symbol": "ETH",
       "name": "Ether",
       "decimals": 18,
-      "price": "crypto/ETH"
+      "price": "crypto/ETH",
+      "color": "#7086f0"
     },
     "tokens": [
       {
@@ -339,14 +364,16 @@
         "symbol": "USDT",
         "name": "Tether USD",
         "decimals": 6,
-        "price": "crypto/USDT"
+        "price": "crypto/USDT",
+        "color": "#26a17b"
       },
       {
         "contract": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
         "symbol": "USDC",
         "name": "USD Coin",
         "decimals": 6,
-        "price": "crypto/USDC"
+        "price": "crypto/USDC",
+        "color": "#3a86e0"
       }
     ],
     "endpoints": [
@@ -378,6 +405,7 @@
   {
     "id": "tron",
     "name": "Tron",
+    "color": "#ff3b3b",
     "family": "tron",
     "genesis": "00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc",
     "testnet": false,
@@ -385,7 +413,8 @@
       "symbol": "TRX",
       "name": "Tron",
       "decimals": 6,
-      "price": "crypto/TRX"
+      "price": "crypto/TRX",
+      "color": "#ff3b3b"
     },
     "tokens": [
       {
@@ -393,7 +422,8 @@
         "symbol": "USDT",
         "name": "Tether USD",
         "decimals": 6,
-        "price": "crypto/USDT"
+        "price": "crypto/USDT",
+        "color": "#26a17b"
       }
     ],
     "endpoints": [
@@ -420,6 +450,7 @@
   {
     "id": "ton",
     "name": "TON",
+    "color": "#0098ea",
     "family": "ton",
     "global_id": -239,
     "zero_state": "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321fb05569",
@@ -433,7 +464,8 @@
       "symbol": "GRAM",
       "name": "Gram",
       "decimals": 9,
-      "price": "crypto/GRAM"
+      "price": "crypto/GRAM",
+      "color": "#0098ea"
     },
     "tokens": [
       {
@@ -441,7 +473,8 @@
         "symbol": "USDT",
         "name": "Tether USD",
         "decimals": 6,
-        "price": "crypto/USDT"
+        "price": "crypto/USDT",
+        "color": "#26a17b"
       }
     ],
     "endpoints": [
@@ -475,6 +508,7 @@
   {
     "id": "bsc-testnet",
     "name": "BNB Smart Chain Testnet",
+    "color": "#f0b90b",
     "family": "evm",
     "chain_id": 97,
     "fee": "standard",
@@ -482,7 +516,8 @@
     "native": {
       "symbol": "tBNB",
       "name": "Testnet BNB",
-      "decimals": 18
+      "decimals": 18,
+      "color": "#f0b90b"
     },
     "tokens": [],
     "endpoints": [
@@ -500,13 +535,15 @@
   {
     "id": "tron-nile",
     "name": "Tron Nile Testnet",
+    "color": "#ff3b3b",
     "family": "tron",
     "genesis": "0000000000000000d698d4192c56cb6be724a558448e2684802de4d6cd8690dc",
     "testnet": true,
     "native": {
       "symbol": "tTRX",
       "name": "Nile TRX",
-      "decimals": 6
+      "decimals": 6,
+      "color": "#ff3b3b"
     },
     "tokens": [],
     "endpoints": [
@@ -525,6 +562,7 @@
   {
     "id": "ton-testnet",
     "name": "TON Testnet",
+    "color": "#0098ea",
     "family": "ton",
     "global_id": -3,
     "zero_state": "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879e95a128",
@@ -537,7 +575,8 @@
     "native": {
       "symbol": "tGRAM",
       "name": "Testnet Gram",
-      "decimals": 9
+      "decimals": 9,
+      "color": "#0098ea"
     },
     "tokens": [],
     "endpoints": [

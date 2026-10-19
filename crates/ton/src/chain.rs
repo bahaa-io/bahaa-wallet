@@ -176,6 +176,7 @@ impl TonChain {
             name,
             decimals,
             price: None,
+            color: None,
         })
     }
 

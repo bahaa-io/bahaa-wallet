@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
+use crate::Color;
+
 const MAX_NAME: usize = 40;
 const MAX_SYMBOL: usize = 11;
 const MAX_GAP_MS: u32 = 60_000;
@@ -92,6 +94,8 @@ pub struct Coin {
     pub decimals: u8,
     #[serde(default)]
     pub price: Option<PriceId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Color>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,6 +149,7 @@ impl Explorer {
 pub struct Network {
     pub id: NetworkId,
     pub name: String,
+    pub color: Color,
     pub kind: ChainKind,
     pub testnet: bool,
     pub native: Coin,
@@ -222,6 +227,7 @@ impl Registry {
 struct Spec {
     id: NetworkId,
     name: String,
+    color: Color,
     family: ChainFamily,
     #[serde(default)]
     chain_id: Option<u64>,
@@ -270,6 +276,8 @@ struct TokenSpec {
     decimals: u8,
     #[serde(default)]
     price: Option<PriceId>,
+    #[serde(default)]
+    color: Option<Color>,
 }
 
 impl Spec {
@@ -373,6 +381,7 @@ impl Spec {
                 name: spec.name,
                 decimals: spec.decimals,
                 price: spec.price,
+                color: spec.color,
             };
             coin.check()
                 .map_err(|text| problem(&format!("token {text}")))?;
@@ -381,6 +390,7 @@ impl Spec {
         Ok(Network {
             id: self.id,
             name: self.name,
+            color: self.color,
             kind,
             testnet: self.testnet,
             native: self.native,
@@ -660,10 +670,26 @@ mod tests {
                 "bsc",
                 Box::new(|n| n["endpoints"][0]["history_gap_ms"] = 60_001.into()),
             ),
+            ("bsc", Box::new(|n| n["color"] = Value::Null)),
+            ("bsc", Box::new(|n| n["color"] = "yellow".into())),
+            (
+                "bsc",
+                Box::new(|n| n["tokens"][0]["color"] = "#26a17".into()),
+            ),
         ];
         for (index, (id, edit)) in cases.into_iter().enumerate() {
             assert!(edited(id, edit).is_err(), "case {index} was accepted");
         }
+    }
+
+    #[test]
+    fn builtin_coins_have_colors() {
+        assert!(
+            builtin()
+                .networks()
+                .flat_map(Network::assets)
+                .all(|(_, coin)| coin.color.is_some())
+        );
     }
 
     #[test]

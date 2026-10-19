@@ -383,6 +383,7 @@ async fn fetch_network(
             problem: None,
             history_problem: None,
             checked_at: 0,
+            updated_at: None,
         },
         scans: Vec::new(),
     };
@@ -415,6 +416,9 @@ async fn fetch_network(
         }
     }
     result.health.checked_at = bahaa_chain::now();
+    if result.health.problem.is_none() {
+        result.health.updated_at = Some(result.health.checked_at);
+    }
     result
 }
 

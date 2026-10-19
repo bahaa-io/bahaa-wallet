@@ -117,6 +117,7 @@ impl Worker {
                     name
                 },
                 price: None,
+                color: None,
                 ..coin
             },
             asset,

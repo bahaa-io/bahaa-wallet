@@ -670,6 +670,7 @@ impl Chain for EvmChain {
             name,
             decimals,
             price: None,
+            color: None,
         })
     }
 

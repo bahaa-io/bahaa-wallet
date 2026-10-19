@@ -88,6 +88,7 @@ fn cake() -> CustomToken {
             name: "PancakeSwap Token".to_owned(),
             decimals: 18,
             price: None,
+            color: None,
         },
     }
 }

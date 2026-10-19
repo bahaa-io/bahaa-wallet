@@ -1073,8 +1073,35 @@ impl Worker {
             return;
         }
         self.refreshing = None;
-        self.held = fetched.held;
-        self.health = fetched.health;
+        let mut held = fetched.held;
+        let mut health = fetched.health;
+        for network in health
+            .iter_mut()
+            .filter(|network| network.problem.is_some())
+        {
+            network.updated_at = self
+                .health
+                .iter()
+                .find(|old| old.network == network.network)
+                .and_then(|old| old.updated_at);
+            let kept: Vec<Held> = self
+                .held
+                .iter()
+                .filter(|old| {
+                    old.asset.network() == &network.network
+                        && self.accounts.iter().any(|account| {
+                            account.wallet == old.wallet && account.address == old.address
+                        })
+                        && !held
+                            .iter()
+                            .any(|new| new.address == old.address && new.asset == old.asset)
+                })
+                .cloned()
+                .collect();
+            held.extend(kept);
+        }
+        self.held = held;
+        self.health = health;
         self.record_scans(fetched.scans);
         self.record_trusted();
         self.next_refresh = Some(Instant::now() + self.refresh_every);

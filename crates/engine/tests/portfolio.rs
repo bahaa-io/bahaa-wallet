@@ -2,6 +2,7 @@
 
 mod common;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -115,6 +116,61 @@ async fn unlocking_shows_balances_from_every_reachable_network() {
     })
     .await
     .unwrap();
+}
+
+fn bsc(portfolio: &Portfolio) -> &NetworkHealth {
+    portfolio
+        .networks
+        .iter()
+        .find(|health| health.network.as_str() == "bsc")
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_failed_refresh_keeps_the_last_balances() {
+    let scratch = Scratch::new();
+    let down = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&down);
+    let url = common::node(move |call| {
+        let method = call["method"].as_str().unwrap();
+        if method != "eth_chainId" && flag.load(Ordering::SeqCst) {
+            return (common::failure(-32000, "server is down"), Duration::ZERO);
+        }
+        let reply = match method {
+            "eth_chainId" => json!("0x38"),
+            "eth_getBalance" => json!("0x14d1120d7b160000"),
+            "eth_call" => json!(format!("0x{:064x}", 0)),
+            _ => Value::Null,
+        };
+        (common::result(reply), Duration::ZERO)
+    })
+    .await;
+    let engine = Engine::start(config(&scratch, registry(url), None)).unwrap();
+    let mut portfolio = engine.portfolio();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    let good = until(&mut portfolio, |p| {
+        p.networks
+            .iter()
+            .any(|health| health.network.as_str() == "bsc" && health.problem.is_none())
+            && !p.holdings.is_empty()
+    })
+    .await;
+    let updated = bsc(&good).updated_at;
+    assert!(updated.is_some());
+    down.store(true, Ordering::SeqCst);
+    engine.refresh();
+    let failed = until(&mut portfolio, |p| {
+        p.networks
+            .iter()
+            .any(|health| health.network.as_str() == "bsc" && health.problem.is_some())
+    })
+    .await;
+    assert_eq!(amount(&failed, "BNB"), "1.5");
+    assert_eq!(bsc(&failed).updated_at, updated);
 }
 
 #[tokio::test]

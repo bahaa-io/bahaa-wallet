@@ -320,6 +320,7 @@ impl Chain for TronChain {
             name,
             decimals,
             price: None,
+            color: None,
         })
     }
 

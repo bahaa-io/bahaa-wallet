@@ -37,6 +37,7 @@ pub struct NetworkHealth {
     pub problem: Option<String>,
     pub history_problem: Option<String>,
     pub checked_at: u64,
+    pub updated_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -311,6 +312,7 @@ mod tests {
                 name: "PancakeSwap".to_owned(),
                 decimals: 18,
                 price: Some("crypto/CAKE".parse().unwrap()),
+                color: None,
             },
         }];
         let held = [

@@ -7,7 +7,7 @@ mod portfolio;
 
 pub use bahaa_chain::{ChainError, FeeItem, FeeLine, FeeQuote, MAX_MEMO, Replace, Transfer, now};
 pub use bahaa_config::{
-    ChainKind, Coin, ConfigError, Explorer, Fiat, Network, Registry, Settings, Token,
+    ChainKind, Coin, Color, ConfigError, Explorer, Fiat, Network, Registry, Settings, Token,
 };
 pub use bahaa_crypto::{
     ExposeSecret, MnemonicError, SecretString, TonPhraseError, WordCount, english_words,

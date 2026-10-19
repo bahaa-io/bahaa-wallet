@@ -73,6 +73,7 @@ fn token() -> CustomToken {
             name: "PancakeSwap".to_owned(),
             decimals: 18,
             price: Some("crypto/CAKE".parse().unwrap()),
+            color: None,
         },
     }
 }
