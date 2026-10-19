@@ -250,7 +250,7 @@ async fn receiving_shows_the_address_and_a_payment_link() {
         .unwrap()
         .choices
         .iter()
-        .position(|choice| choice.label.contains("BNB Smart Chain"))
+        .position(|choice| choice.label == "BNB Smart Chain")
         .unwrap();
     app.act(Action::Pick(Pick::Target(evm)));
     let shown = until(&mut view, |current| current.page.headline.is_some()).await;

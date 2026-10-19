@@ -95,15 +95,24 @@ impl Screen for Receive {
     }
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
-        let targets = Self::targets(ctx)
+        let targets = Self::targets(ctx);
+        let single = targets
+            .windows(2)
+            .all(|pair| (pair[0].wallet, pair[0].index) == (pair[1].wallet, pair[1].index));
+        let targets = targets
             .into_iter()
             .enumerate()
             .map(|(position, target)| {
-                let label = text::target(
-                    &ctx.wallet_name(target.wallet),
-                    &text::account(target.index),
-                    &ctx.network_name(&target.network),
-                );
+                let network = ctx.network_name(&target.network);
+                let label = if single {
+                    network
+                } else {
+                    text::target(
+                        &ctx.wallet_name(target.wallet),
+                        &text::account(target.index),
+                        &network,
+                    )
+                };
                 choice(
                     label,
                     Action::Pick(Pick::Target(position)),
