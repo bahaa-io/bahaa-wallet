@@ -9,10 +9,8 @@ impl Worker {
     pub(super) fn contacts(&self) -> Result<Vec<Contact>, EngineError> {
         self.ensure_unlocked()?;
         let mut contacts = self.store.contacts()?;
-        contacts.sort_by(|a, b| {
-            (a.name.to_lowercase(), a.network.as_str())
-                .cmp(&(b.name.to_lowercase(), b.network.as_str()))
-        });
+        contacts
+            .sort_by_cached_key(|contact| (contact.name.to_lowercase(), contact.network.clone()));
         Ok(contacts)
     }
 

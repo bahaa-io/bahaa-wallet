@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
+use std::time::Instant;
 
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus,
@@ -8,6 +9,7 @@ use bahaa_chain::{
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
 use bahaa_types::{Address, AssetId, MAX_DECIMALS, hex};
+use futures_util::future::{try_join, try_join_all, try_join3};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
@@ -16,6 +18,7 @@ mod send;
 
 pub use send::TronPlan;
 
+use crate::fees::Prices;
 use crate::http::{Http, node_text};
 use crate::tx::{self, Action};
 
@@ -30,6 +33,7 @@ pub struct TronChain {
     network: Network,
     http: Http,
     decimals: Mutex<HashMap<[u8; 20], u8>>,
+    prices: Mutex<Option<(Instant, Prices)>>,
 }
 
 impl TronChain {
@@ -42,6 +46,7 @@ impl TronChain {
             network,
             http,
             decimals: Mutex::new(HashMap::new()),
+            prices: Mutex::new(None),
         })
     }
 
@@ -183,11 +188,13 @@ impl Chain for TronChain {
         assets: &[AssetId],
     ) -> Result<Vec<Balance>, ChainError> {
         let owner = bytes(address)?;
-        let mut balances = Vec::with_capacity(assets.len());
-        for asset in assets {
-            if asset.network() != &self.network.id {
-                return Err(ChainError::Invalid("an asset belongs to another network"));
-            }
+        if assets
+            .iter()
+            .any(|asset| asset.network() != &self.network.id)
+        {
+            return Err(ChainError::Invalid("an asset belongs to another network"));
+        }
+        try_join_all(assets.iter().map(|asset| async {
             let (amount, staked) = match asset.contract() {
                 None => {
                     let decimals = self.network.native.decimals;
@@ -199,20 +206,21 @@ impl Chain for TronChain {
                 }
                 Some(contract) => {
                     let contract = bytes(contract)?;
-                    let decimals = self.token_decimals(&owner, &contract).await?;
-                    let units = self
-                        .call(&owner, &contract, BALANCE_OF, &word(&owner))
-                        .await?;
+                    let (decimals, units) = try_join(
+                        self.token_decimals(&owner, &contract),
+                        self.call(&owner, &contract, BALANCE_OF, &word(&owner)),
+                    )
+                    .await?;
                     (amount(units, decimals)?, None)
                 }
             };
-            balances.push(Balance {
+            Ok(Balance {
                 asset: asset.clone(),
                 amount,
                 staked,
-            });
-        }
-        Ok(balances)
+            })
+        }))
+        .await
     }
 
     async fn prepare(&self, transfer: &Transfer) -> Result<(TronPlan, FeeQuote), ChainError> {
@@ -301,9 +309,12 @@ impl Chain for TronChain {
 
     async fn token(&self, contract: &Address) -> Result<Coin, ChainError> {
         let contract = bytes(contract)?;
-        let decimals = self.token_decimals(&contract, &contract).await?;
-        let symbol = self.call_text(&contract, SYMBOL).await?;
-        let name = self.call_text(&contract, NAME).await?;
+        let (decimals, symbol, name) = try_join3(
+            self.token_decimals(&contract, &contract),
+            self.call_text(&contract, SYMBOL),
+            self.call_text(&contract, NAME),
+        )
+        .await?;
         Ok(Coin {
             symbol,
             name,

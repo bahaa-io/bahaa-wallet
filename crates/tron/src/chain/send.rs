@@ -1,3 +1,6 @@
+use std::sync::PoisonError;
+use std::time::{Duration, Instant};
+
 use bahaa_chain::{ChainError, Failure, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus};
 use bahaa_types::hex;
 use ruint::aliases::U256;
@@ -10,6 +13,7 @@ use crate::proto::Raw;
 use crate::tx::{self, Anchor};
 
 const STALE_AFTER_MS: i64 = 60_000;
+const PRICES_FOR: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TronPlan {
@@ -134,6 +138,12 @@ impl TronChain {
     }
 
     async fn prices(&self) -> Result<Prices, ChainError> {
+        let cached = *self.prices.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((at, prices)) = cached
+            && at.elapsed() < PRICES_FOR
+        {
+            return Ok(prices);
+        }
         let reply = self
             .http
             .post("wallet/getchainparameters", json!({}))
@@ -148,14 +158,17 @@ impl TronChain {
                 .ok_or_else(ChainError::malformed)?;
             count(entry, "value")
         };
-        Ok(Prices {
+        let prices = Prices {
             per_byte: find("getTransactionFee")?,
             per_energy: find("getEnergyFee")?,
             create_account: find("getCreateAccountFee")?,
             activation: find("getCreateNewAccountFeeInSystemContract")?,
             max_fee_limit: find("getMaxFeeLimit")?,
             memo: find("getMemoFee").unwrap_or(0),
-        })
+        };
+        *self.prices.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((Instant::now(), prices));
+        Ok(prices)
     }
 
     async fn resources(&self, owner: &[u8; 20]) -> Result<Resources, ChainError> {

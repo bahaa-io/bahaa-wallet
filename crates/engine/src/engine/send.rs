@@ -482,7 +482,12 @@ impl Worker {
 
     pub(super) fn schedule_tracking(&mut self) {
         let waiting = self.tracking.is_none() && self.next_track.is_none();
-        if self.unlocked() && waiting && !self.trackable().is_empty() {
+        let open = self.history.iter().any(|tx| {
+            tx.status.is_open()
+                && !self.broadcasting.contains(&tx.id)
+                && self.chain_index(&tx.network).is_some()
+        });
+        if self.unlocked() && waiting && open {
             self.next_track = Some(Instant::now() + self.track_every);
         }
     }

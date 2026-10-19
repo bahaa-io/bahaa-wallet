@@ -96,7 +96,8 @@ impl EvmChain {
             self.add_rollup_fees(&replacement, estimate, &mut fees)
                 .await?;
         }
-        self.funds(&from, &transfer, &route, fees.max).await?;
+        let held = self.held(&from, route.token.as_ref()).await?;
+        self.funds(&held, &transfer, &route, fees.max)?;
         Ok((
             EvmPlan {
                 transfer,

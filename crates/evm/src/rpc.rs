@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use bahaa_chain::{ChainError, Failure, Pool};
@@ -22,6 +22,7 @@ pub(crate) struct Rpc {
     http: reqwest::Client,
     chain_id: u64,
     verified: Mutex<BTreeSet<String>>,
+    verifying: Mutex<HashMap<String, Arc<futures_util::lock::Mutex<()>>>>,
     refused: Mutex<HashMap<(String, String), Instant>>,
 }
 
@@ -37,6 +38,7 @@ impl Rpc {
             http,
             chain_id,
             verified: Mutex::new(BTreeSet::new()),
+            verifying: Mutex::new(HashMap::new()),
             refused: Mutex::new(HashMap::new()),
         })
     }
@@ -89,18 +91,21 @@ impl Rpc {
             ))));
         }
         if !self.is_verified(&key) {
-            let reported = quantity(&self.send(&endpoint.url, "eth_chainId", json!([])).await?)
-                .map_err(Failure::Retry)?;
-            if reported != U256::from(self.chain_id) {
-                return Err(Failure::Retry(ChainError::Network(format!(
-                    "an endpoint reports chain {reported}, expected {}",
-                    self.chain_id
-                ))));
+            let turn = Arc::clone(
+                self.verifying
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .entry(key.clone())
+                    .or_default(),
+            );
+            let _turn = turn.lock().await;
+            if !self.is_verified(&key) {
+                self.verify(&endpoint.url).await?;
+                self.verified
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(key);
             }
-            self.verified
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(key);
         }
         let result = self.send(&endpoint.url, method, params).await;
         if let Err(Failure::Unsupported(err)) = &result
@@ -112,6 +117,19 @@ impl Rpc {
                 .insert(refusal, Instant::now() + REFUSAL_MEMORY);
         }
         result
+    }
+
+    async fn verify(&self, url: &Url) -> Result<(), Failure<ChainError>> {
+        let reported =
+            quantity(&self.send(url, "eth_chainId", json!([])).await?).map_err(Failure::Retry)?;
+        if reported == U256::from(self.chain_id) {
+            Ok(())
+        } else {
+            Err(Failure::Retry(ChainError::Network(format!(
+                "an endpoint reports chain {reported}, expected {}",
+                self.chain_id
+            ))))
+        }
     }
 
     fn refused_recently(&self, refusal: &(String, String)) -> bool {

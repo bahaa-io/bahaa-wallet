@@ -100,7 +100,13 @@ impl Market {
     }
 
     pub fn want(&self, request: Request) {
-        self.want.send_replace(request);
+        self.want.send_if_modified(|current| {
+            let changed = *current != request;
+            if changed {
+                *current = request;
+            }
+            changed
+        });
     }
 
     pub fn subscribe(&self) -> watch::Receiver<Snapshot> {
@@ -272,8 +278,10 @@ impl Worker {
             }
             "rates" if frame.ours() => {
                 let quotes = protocol::quotes(frame.result, &request.base, &request.wanted);
-                self.publish
-                    .send_modify(|snapshot| snapshot.quotes.extend(quotes));
+                if !quotes.is_empty() {
+                    self.publish
+                        .send_modify(|snapshot| snapshot.quotes.extend(quotes));
+                }
                 Reply::Nothing
             }
             "removed" if frame.ours() => {

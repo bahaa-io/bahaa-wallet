@@ -22,6 +22,7 @@ use bahaa_store::{
 };
 use bahaa_types::{Address, AssetId, NetworkId, TonContract};
 use bahaa_vault::KdfParams;
+use futures_util::future::join;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -891,7 +892,7 @@ impl Worker {
     ) -> Result<WalletId, EngineError> {
         let chains = Arc::clone(&self.chains);
         let used = match chains::ton_mainnet(&chains) {
-            Some(chain) => match (chain.last_used(&w5).await, chain.last_used(&v4r2).await) {
+            Some(chain) => match join(chain.last_used(&w5), chain.last_used(&v4r2)).await {
                 (Ok(w5), Ok(v4r2)) => Ok(keyring::used_contract(w5, v4r2)),
                 (Err(err), _) | (_, Err(err)) => Err(err),
             },
@@ -1088,7 +1089,13 @@ impl Worker {
             &snapshot,
             self.settings.fiat,
         );
-        self.portfolio.send_replace(portfolio);
+        self.portfolio.send_if_modified(|current| {
+            let changed = *current != portfolio;
+            if changed {
+                *current = portfolio;
+            }
+            changed
+        });
     }
 
     fn refresh_prices(&self) {

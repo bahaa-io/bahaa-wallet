@@ -21,10 +21,9 @@ pub(super) struct TokenRead {
 impl Worker {
     pub(super) fn tokens(&self) -> Result<Vec<CustomToken>, EngineError> {
         self.ensure_unlocked()?;
-        let mut tokens = self.store.tokens()?;
-        tokens.sort_by(|a, b| {
-            (a.coin.symbol.to_lowercase(), a.asset.to_string())
-                .cmp(&(b.coin.symbol.to_lowercase(), b.asset.to_string()))
+        let mut tokens = self.custom.to_vec();
+        tokens.sort_by_cached_key(|token| {
+            (token.coin.symbol.to_lowercase(), token.asset.to_string())
         });
         Ok(tokens)
     }

@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
-use std::sync::{Mutex, PoisonError};
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use bahaa_chain::{ChainError, Failure, Pool};
@@ -32,6 +32,7 @@ pub(crate) struct Http {
     client: reqwest::Client,
     genesis: String,
     verified: Mutex<BTreeSet<String>>,
+    verifying: Mutex<HashMap<String, Arc<futures_util::lock::Mutex<()>>>>,
 }
 
 impl Http {
@@ -46,6 +47,7 @@ impl Http {
             client,
             genesis: hex::encode(genesis),
             verified: Mutex::new(BTreeSet::new()),
+            verifying: Mutex::new(HashMap::new()),
         })
     }
 
@@ -97,28 +99,44 @@ impl Http {
     ) -> Result<Value, Failure<ChainError>> {
         let key = endpoint.url.to_string();
         if !self.is_verified(&key) {
-            let first = self
-                .send(
-                    &endpoint.url,
-                    "wallet/getblockbynum",
-                    Request::Post(&json!({"num": 0})),
-                )
-                .await?;
-            let same = first["blockID"]
-                .as_str()
-                .is_some_and(|id| id.eq_ignore_ascii_case(&self.genesis));
-            if !same {
-                return Err(Failure::Retry(ChainError::Network(
-                    "an endpoint serves another Tron network".to_owned(),
-                )));
+            let turn = Arc::clone(
+                self.verifying
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .entry(key.clone())
+                    .or_default(),
+            );
+            let _turn = turn.lock().await;
+            if !self.is_verified(&key) {
+                self.verify(&endpoint).await?;
+                self.verified
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(key);
+                tokio::time::sleep(Duration::from_millis(u64::from(endpoint.min_gap_ms))).await;
             }
-            self.verified
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(key);
-            tokio::time::sleep(Duration::from_millis(u64::from(endpoint.min_gap_ms))).await;
         }
         self.send(&endpoint.url, path, request).await
+    }
+
+    async fn verify(&self, endpoint: &Endpoint) -> Result<(), Failure<ChainError>> {
+        let first = self
+            .send(
+                &endpoint.url,
+                "wallet/getblockbynum",
+                Request::Post(&json!({"num": 0})),
+            )
+            .await?;
+        let same = first["blockID"]
+            .as_str()
+            .is_some_and(|id| id.eq_ignore_ascii_case(&self.genesis));
+        if same {
+            Ok(())
+        } else {
+            Err(Failure::Retry(ChainError::Network(
+                "an endpoint serves another Tron network".to_owned(),
+            )))
+        }
     }
 
     fn is_verified(&self, key: &str) -> bool {

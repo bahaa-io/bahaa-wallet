@@ -1,6 +1,7 @@
 use alloy_consensus::{SignableTransaction, TxEip1559};
 use bahaa_chain::{ChainError, FeeItem};
 use bahaa_config::{ChainKind, FeeModel};
+use futures_util::future::try_join3;
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
@@ -32,17 +33,16 @@ impl EvmChain {
         fees: &mut Fees,
     ) -> Result<(), ChainError> {
         let latest = json!("latest");
-        let l1 = self
-            .oracle(&l1_fee_call(&tx.encoded_for_signing()), &latest)
-            .await?;
+        let (l1, operator, operator_max) = try_join3(
+            self.oracle(&l1_fee_call(&tx.encoded_for_signing()), &latest),
+            self.oracle(&operator_fee_call(estimate), &latest),
+            self.oracle(&operator_fee_call(tx.gas_limit), &latest),
+        )
+        .await?;
         let l1_max = l1
             .checked_mul(U256::from(L1_MARGIN))
             .ok_or_else(ChainError::overflow)?;
         fees.add(FeeItem::L1Data, l1, l1_max)?;
-        let operator = self.oracle(&operator_fee_call(estimate), &latest).await?;
-        let operator_max = self
-            .oracle(&operator_fee_call(tx.gas_limit), &latest)
-            .await?;
         if !operator_max.is_zero() {
             fees.add(FeeItem::Operator, operator, operator_max)?;
         }

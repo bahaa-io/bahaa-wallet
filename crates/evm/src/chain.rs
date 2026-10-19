@@ -10,6 +10,7 @@ use bahaa_chain::{
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed, secp256k1_address};
 use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS, is_plain_text};
+use futures_util::future::{try_join, try_join_all, try_join3};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
@@ -32,6 +33,11 @@ pub struct EvmChain {
     chain_id: u64,
     rpc: Rpc,
     decimals: Mutex<HashMap<[u8; 20], u8>>,
+}
+
+struct Held {
+    native: U256,
+    token: U256,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,17 +160,17 @@ impl EvmChain {
     }
 
     async fn fees(&self) -> Result<(U256, U256), ChainError> {
-        let history = self
-            .rpc
-            .call("eth_feeHistory", json!(["0x1", "latest", []]))
-            .await?;
+        let (history, tip) = try_join(
+            self.rpc
+                .call("eth_feeHistory", json!(["0x1", "latest", []])),
+            self.rpc.call("eth_maxPriorityFeePerGas", json!([])),
+        )
+        .await?;
         let next = history["baseFeePerGas"]
             .as_array()
             .and_then(|fees| fees.last())
             .ok_or(ChainError::Unsupported("networks without EIP-1559 fees"))?;
-        let base = quantity(next)?;
-        let tip = quantity(&self.rpc.call("eth_maxPriorityFeePerGas", json!([])).await?)?;
-        Ok((base, tip))
+        Ok((quantity(next)?, quantity(&tip)?))
     }
 }
 
@@ -185,20 +191,30 @@ impl EvmChain {
         }
     }
 
-    async fn resolve(&self, from: &[u8; 20], transfer: &Transfer) -> Result<Transfer, ChainError> {
+    async fn held(&self, from: &[u8; 20], token: Option<&[u8; 20]>) -> Result<Held, ChainError> {
+        let native = self.native_balance(from);
+        match token {
+            None => Ok(Held {
+                native: native.await?,
+                token: U256::ZERO,
+            }),
+            Some(contract) => {
+                let (native, token) = try_join(native, self.token_balance(from, contract)).await?;
+                Ok(Held { native, token })
+            }
+        }
+    }
+
+    async fn resolve(&self, held: &Held, transfer: &Transfer) -> Result<Transfer, ChainError> {
         let mut transfer = transfer.clone();
         if !transfer.max {
             return Ok(transfer);
         }
-        self.serves(&transfer.asset)?;
-        let held = match transfer.asset.contract().map(bytes).transpose()? {
-            None => self.native(self.native_balance(from).await?)?,
-            Some(contract) => amount(
-                self.token_balance(from, &contract).await?,
-                self.token_decimals(&contract).await?,
-            )?,
+        let all = match transfer.asset.contract().map(bytes).transpose()? {
+            None => self.native(held.native)?,
+            Some(contract) => amount(held.token, self.token_decimals(&contract).await?)?,
         };
-        transfer.take_all(held)?;
+        transfer.take_all(all)?;
         Ok(transfer)
     }
 
@@ -223,7 +239,15 @@ impl EvmChain {
         Ok(())
     }
 
+    fn memo_allowed(transfer: &Transfer) -> Result<(), ChainError> {
+        if transfer.memo.is_some() && transfer.asset.contract().is_some() {
+            return Err(ChainError::Unsupported("memos on token transfers"));
+        }
+        Ok(())
+    }
+
     async fn route(&self, transfer: &Transfer) -> Result<Route, ChainError> {
+        Self::memo_allowed(transfer)?;
         let to = bytes(&transfer.to)?;
         let units = transfer.amount.units();
         let route = match transfer.asset.contract().map(bytes).transpose()? {
@@ -237,9 +261,6 @@ impl EvmChain {
                 token: None,
                 decimals: self.network.native.decimals,
             },
-            Some(_) if transfer.memo.is_some() => {
-                return Err(ChainError::Unsupported("memos on token transfers"));
-            }
             Some(contract) => Route {
                 call_to: contract,
                 value: U256::ZERO,
@@ -335,14 +356,14 @@ impl EvmChain {
         FeeQuote::new(self.native(fees.max)?, self.native(fees.expected)?, lines)
     }
 
-    async fn funds(
+    fn funds(
         &self,
-        from: &[u8; 20],
+        held: &Held,
         transfer: &Transfer,
         route: &Route,
         max: U256,
     ) -> Result<(), ChainError> {
-        let native = self.native_balance(from).await?;
+        let native = held.native;
         let native_decimals = self.network.native.decimals;
         let native_symbol = || self.network.native.symbol.clone();
         let units = transfer.amount.units();
@@ -359,12 +380,11 @@ impl EvmChain {
                 }
             }
             Some(contract) => {
-                let held = self.token_balance(from, &contract).await?;
-                if held < units {
+                if held.token < units {
                     return Err(insufficient(
                         self.symbol(&contract),
                         units,
-                        held,
+                        held.token,
                         route.decimals,
                     )?);
                 }
@@ -422,41 +442,51 @@ impl Chain for EvmChain {
         assets: &[AssetId],
     ) -> Result<Vec<Balance>, ChainError> {
         let owner = bytes(address)?;
-        let mut balances = Vec::with_capacity(assets.len());
-        for asset in assets {
-            if asset.network() != &self.network.id {
-                return Err(ChainError::Invalid("an asset belongs to another network"));
-            }
+        if assets
+            .iter()
+            .any(|asset| asset.network() != &self.network.id)
+        {
+            return Err(ChainError::Invalid("an asset belongs to another network"));
+        }
+        try_join_all(assets.iter().map(|asset| async {
             let amount = match asset.contract() {
                 None => self.native(self.native_balance(&owner).await?)?,
                 Some(contract) => {
                     let contract = bytes(contract)?;
-                    let decimals = self.token_decimals(&contract).await?;
-                    amount(self.token_balance(&owner, &contract).await?, decimals)?
+                    let (decimals, units) = try_join(
+                        self.token_decimals(&contract),
+                        self.token_balance(&owner, &contract),
+                    )
+                    .await?;
+                    amount(units, decimals)?
                 }
             };
-            balances.push(Balance {
+            Ok(Balance {
                 asset: asset.clone(),
                 amount,
                 staked: None,
-            });
-        }
-        Ok(balances)
+            })
+        }))
+        .await
     }
 
     async fn prepare(&self, transfer: &Transfer) -> Result<(EvmPlan, FeeQuote), ChainError> {
         let from = bytes(&transfer.from)?;
-        let mut transfer = self.resolve(&from, transfer).await?;
+        self.serves(&transfer.asset)?;
+        Self::memo_allowed(transfer)?;
+        let token = transfer.asset.contract().map(bytes).transpose()?;
+        let (held, nonce) = try_join(
+            self.held(&from, token.as_ref()),
+            self.rpc
+                .call("eth_getTransactionCount", json!([hex(&from), "pending"])),
+        )
+        .await?;
+        let nonce = u64::try_from(quantity(&nonce)?)
+            .map_err(|_| ChainError::Invalid("impossible nonce"))?;
+        let mut transfer = self.resolve(&held, transfer).await?;
         self.sendable(&transfer)?;
         let route = self.route(&transfer).await?;
-        let nonce = u64::try_from(quantity(
-            &self
-                .rpc
-                .call("eth_getTransactionCount", json!([hex(&from), "pending"]))
-                .await?,
-        )?)
-        .map_err(|_| ChainError::Invalid("impossible nonce"))?;
-        self.funds(&from, &transfer, &route, U256::ZERO).await?;
+        self.funds(&held, &transfer, &route, U256::ZERO)?;
         let estimate = self.estimate(&from, &route).await?;
         let gas_limit = if route.data.is_empty() && estimate == PLAIN_GAS {
             estimate
@@ -482,7 +512,7 @@ impl Chain for EvmChain {
         if transfer.max && route.token.is_none() {
             self.leave_fees(&mut transfer, &mut tx, fees.max)?;
         }
-        self.funds(&from, &transfer, &route, fees.max).await?;
+        self.funds(&held, &transfer, &route, fees.max)?;
         Ok((EvmPlan { transfer, tx }, self.fee_quote(fees)?))
     }
 
@@ -629,9 +659,12 @@ impl Chain for EvmChain {
 
     async fn token(&self, contract: &Address) -> Result<Coin, ChainError> {
         let contract = bytes(contract)?;
-        let decimals = self.token_decimals(&contract).await?;
-        let symbol = self.call_text(&contract, SYMBOL).await?;
-        let name = self.call_text(&contract, NAME).await?;
+        let (decimals, symbol, name) = try_join3(
+            self.token_decimals(&contract),
+            self.call_text(&contract, SYMBOL),
+            self.call_text(&contract, NAME),
+        )
+        .await?;
         Ok(Coin {
             symbol,
             name,
