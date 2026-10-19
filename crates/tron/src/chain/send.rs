@@ -387,6 +387,27 @@ mod tests {
         };
         let named = format!("account [{}] does not exist", Address::Tron(from));
         assert!(reason.contains(&named), "{reason}");
+        let noted = tx::raw(
+            tx::coins(&from, &[0x27; 20], 1_002),
+            &anchor,
+            0,
+            Some("deposit 4417"),
+        )
+        .unwrap();
+        let (bytes, id) = tx::sign(noted, &super::super::key(&seed, 0).unwrap()).unwrap();
+        let noted = Signed {
+            id: TxId::new(hex(&id)).unwrap(),
+            bytes,
+        };
+        assert_eq!(
+            chain.decode(&noted).unwrap().memo.as_deref(),
+            Some("deposit 4417")
+        );
+        let refused = chain.push(&noted).await.unwrap_err();
+        let ChainError::Rejected(reason) = &refused else {
+            panic!("{refused:?}");
+        };
+        assert!(reason.contains(&named), "{reason}");
         let stranger = k256::SecretKey::from_slice(&[0x42; 32]).unwrap();
         let other = tx::raw(tx::coins(&from, &[0x27; 20], 1_001), &anchor, 0, None).unwrap();
         let (forged, id) = tx::sign(other, &stranger).unwrap();
