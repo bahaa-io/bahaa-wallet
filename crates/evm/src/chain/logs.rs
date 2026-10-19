@@ -54,17 +54,19 @@ impl EvmChain {
         tokens: &[AssetId],
         cursor: Option<ScanCursor>,
     ) -> Result<Option<Scanned>, ChainError> {
-        let ours = bytes(owner)?;
         let head = block_number(&self.logs_call("eth_blockNumber", json!([])).await?)?;
         let mut times = HashMap::new();
         let stale = match cursor {
             Some(cursor) if cursor.next.saturating_add(REACH) <= head => {
-                let since = self.block_time(cursor.next, &mut times).await?;
-                now().saturating_sub(since) > BACKLOG
+                match self.block_time(cursor.next, &mut times).await {
+                    Ok(since) => now().saturating_sub(since) > BACKLOG,
+                    Err(ChainError::Pruned) => true,
+                    Err(err) => return Err(err),
+                }
             }
             _ => false,
         };
-        let Some(range) = plan(cursor, head, stale) else {
+        let Some(mut range) = plan(cursor, head, stale) else {
             return Ok(None);
         };
         let tokens: Vec<(&AssetId, [u8; 20])> = tokens
@@ -72,13 +74,43 @@ impl EvmChain {
             .filter(|asset| asset.network() == &self.network.id)
             .filter_map(|asset| Some((asset, bytes(asset.contract()?).ok()?)))
             .collect();
+        let (found, sent) = match self.transfers(owner, &tokens, &range, &mut times).await {
+            Err(ChainError::Pruned) if !range.reset => {
+                range = plan(cursor, head, true).ok_or(ChainError::Pruned)?;
+                self.transfers(owner, &tokens, &range, &mut times).await?
+            }
+            moved => moved?,
+        };
+        let (complete_from, complete_since) = match cursor {
+            Some(cursor) if !range.reset => (cursor.complete_from, cursor.complete_since),
+            _ => (range.from, self.block_time(range.from, &mut times).await?),
+        };
+        Ok(Some(Scanned {
+            cursor: ScanCursor {
+                next: range.until + 1,
+                complete_from,
+                complete_since,
+            },
+            found,
+            sent,
+        }))
+    }
+
+    async fn transfers(
+        &self,
+        owner: &Address,
+        tokens: &[(&AssetId, [u8; 20])],
+        range: &Range,
+        times: &mut HashMap<u64, u64>,
+    ) -> Result<(Vec<Incoming>, Vec<Outgoing>), ChainError> {
+        let ours = bytes(owner)?;
         let (mut found, mut sent) = (Vec::new(), Vec::new());
         if !tokens.is_empty() {
             let mut from = range.from;
             while from <= range.until {
                 let until = range.until.min(from.saturating_add(CHUNK - 1));
                 for side in [Side::Received, Side::Sent] {
-                    for log in self.logs(&tokens, &ours, side, from, until).await? {
+                    for log in self.logs(tokens, &ours, side, from, until).await? {
                         let Some((asset, contract)) = tokens
                             .iter()
                             .find(|(_, contract)| *contract == log.contract)
@@ -88,7 +120,7 @@ impl EvmChain {
                         let decimals = self.token_decimals(contract).await?;
                         let time = match log.time {
                             Some(time) => time,
-                            None => self.block_time(log.block, &mut times).await?,
+                            None => self.block_time(log.block, times).await?,
                         };
                         let (id, asset, amount) = (
                             TxId::new(log.id)?,
@@ -124,19 +156,7 @@ impl EvmChain {
                 from = until + 1;
             }
         }
-        let (complete_from, complete_since) = match cursor {
-            Some(cursor) if !range.reset => (cursor.complete_from, cursor.complete_since),
-            _ => (range.from, self.block_time(range.from, &mut times).await?),
-        };
-        Ok(Some(Scanned {
-            cursor: ScanCursor {
-                next: range.until + 1,
-                complete_from,
-                complete_since,
-            },
-            found,
-            sent,
-        }))
+        Ok((found, sent))
     }
 
     async fn logs(

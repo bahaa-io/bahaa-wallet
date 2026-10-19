@@ -495,7 +495,14 @@ impl Live {
                     ),
                 ),
             };
-            println!("{}  {label}  {network:<12} {line}", activity.time);
+            let memo = match &activity.kind {
+                ActivityKind::Sent(tx) => tx.memo.as_ref(),
+                ActivityKind::SentElsewhere(tx) => tx.memo.as_ref(),
+                ActivityKind::Received(arrival) => arrival.received.memo.as_ref(),
+            }
+            .map(|memo| format!(" memo {memo:?}"))
+            .unwrap_or_default();
+            println!("{}  {label}  {network:<12} {line}{memo}", activity.time);
         }
         Ok(())
     }

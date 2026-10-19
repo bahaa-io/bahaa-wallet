@@ -12,6 +12,8 @@ pub const MAX_MEMO: usize = 120;
 pub enum ChainError {
     #[error("network problem: {0}")]
     Network(String),
+    #[error("the public servers no longer keep this part of the history")]
+    Pruned,
     #[error("the network refused the transaction: {0}")]
     Rejected(String),
     #[error("not enough {symbol}: this needs {needed}, the balance is {available}")]
@@ -34,6 +36,9 @@ impl From<PoolError<ChainError>> for ChainError {
     fn from(err: PoolError<ChainError>) -> Self {
         match err {
             PoolError::Fatal(err) => err,
+            PoolError::Exhausted(Self::Pruned) | PoolError::Unserved(Self::Pruned) => Self::Pruned,
+            PoolError::Exhausted(Self::Network(text))
+            | PoolError::Unserved(Self::Network(text)) => Self::Network(text),
             PoolError::Exhausted(err) | PoolError::Unserved(err) => Self::Network(err.to_string()),
             PoolError::Unavailable(_) | PoolError::NoEndpoint => Self::Network(err.to_string()),
         }

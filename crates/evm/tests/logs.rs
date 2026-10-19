@@ -274,3 +274,79 @@ async fn live_bsc_incoming_usdt() {
         assert!((scanned.cursor.complete_from..scanned.cursor.next).contains(&entry.block));
     }
 }
+
+#[tokio::test]
+async fn a_catch_up_past_what_public_servers_keep_restarts_from_recent_blocks() {
+    const HEAD: u64 = 100_000;
+    const KEPT: u64 = HEAD - 5_000;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let (log, asked) = (Log::default(), Asked::default());
+    let seen = Arc::clone(&asked);
+    let url = node(log, move |method, params| match method {
+        "eth_chainId" => result(&json!("0x38")),
+        "eth_blockNumber" => result(&json!(format!("0x{HEAD:x}"))),
+        "eth_getBlockByNumber" => {
+            let block = number(&params[0]);
+            result(&json!({"timestamp": format!("0x{:x}", now - (HEAD - block))}))
+        }
+        "eth_getLogs" => {
+            let filter = params[0].clone();
+            let (from, to) = (number(&filter["fromBlock"]), number(&filter["toBlock"]));
+            seen.lock().unwrap().push(filter.clone());
+            if from < KEPT {
+                return (
+                    200,
+                    json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32602,
+                        "message": "Archive requests require a personal token. Get one at: https://www.allnodes.com/publicnode"}}),
+                );
+            }
+            let receiving = filter["topics"][2] == json!(padded(common::OWNER));
+            let logs: Vec<Value> = [92_000, 96_500]
+                .into_iter()
+                .filter(|block| receiving && (from..=to).contains(block))
+                .map(|block| transfer_log(block, 1_000_000_000_000_000_000, true))
+                .collect();
+            result(&json!(logs))
+        }
+        _ => (200, json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "no such method"}})),
+    })
+    .await;
+    let chain = EvmChain::new(bsc_on(&[url])).unwrap();
+    let behind = ScanCursor {
+        next: 90_000,
+        complete_from: 80_000,
+        complete_since: now - 20_000,
+    };
+    let scanned = chain
+        .scan(&owner(), &assets(&TOKENS), Some(behind))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        scanned.cursor,
+        ScanCursor {
+            next: 99_989,
+            complete_from: 95_989,
+            complete_since: now - 4_011,
+        }
+    );
+    let blocks: Vec<u64> = scanned.found.iter().map(|entry| entry.block).collect();
+    assert_eq!(blocks, [96_500]);
+    {
+        let asked = asked.lock().unwrap();
+        assert_eq!(number(&asked[0]["fromBlock"]), 90_000);
+        assert!(
+            asked[1..]
+                .iter()
+                .all(|filter| number(&filter["fromBlock"]) >= 95_989)
+        );
+    }
+    let next = chain
+        .scan(&owner(), &assets(&TOKENS), Some(scanned.cursor))
+        .await
+        .unwrap();
+    assert_eq!(next, None);
+}

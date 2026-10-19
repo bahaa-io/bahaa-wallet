@@ -1215,7 +1215,7 @@ async fn later_scans_read_only_what_is_new() {
     assert_eq!(
         chain.scan(&ton(SENDER), &[custom], None).await,
         Err(ChainError::Network(
-            "network problem: a liteserver refused with code -400: unknown".to_owned()
+            "a liteserver refused with code -400: unknown".to_owned()
         ))
     );
     let lying = tracking_chain(Behaviour {
@@ -1408,7 +1408,7 @@ async fn a_usdt_quote_emulates_both_token_wallets() {
     assert_eq!(
         chain.prepare(&custom).await.map(|_| ()),
         Err(ChainError::Network(
-            "network problem: a liteserver refused with code -400: unknown".to_owned()
+            "a liteserver refused with code -400: unknown".to_owned()
         ))
     );
 }

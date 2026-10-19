@@ -87,7 +87,7 @@ async fn custom_tokens_need_liteservers_and_foreign_addresses_are_refused() {
     assert_eq!(
         chain.balances(&holder(), &[custom]).await,
         Err(ChainError::Network(
-            "network problem: an endpoint does not serve this request".to_owned()
+            "an endpoint does not serve this request".to_owned()
         ))
     );
     assert!(matches!(

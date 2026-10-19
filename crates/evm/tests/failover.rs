@@ -9,8 +9,7 @@ use bahaa_evm::EvmChain;
 use common::{Log, assets, bsc_on, node, owner, result};
 use serde_json::{Value, json};
 
-const ARCHIVE: &str =
-    "Archive requests require a personal token. Get one at: https://www.allnodes.com/publicnode";
+const NO_RECEIPTS: &str = "the method eth_getTransactionReceipt does not exist/is not available";
 
 fn receipt() -> Value {
     json!({"status": "0x1", "blockNumber": "0x10", "gasUsed": "0x5208", "effectiveGasPrice": "0x3b9aca00"})
@@ -23,7 +22,7 @@ fn serves(receipts: bool) -> impl Fn(&str, &Value) -> (u16, Value) + Send + Sync
         "eth_getTransactionReceipt" if receipts => result(&receipt()),
         "eth_getTransactionReceipt" => (
             403,
-            json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": ARCHIVE}}),
+            json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": NO_RECEIPTS}}),
         ),
         _ => (502, json!("bad gateway")),
     }

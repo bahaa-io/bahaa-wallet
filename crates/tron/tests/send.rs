@@ -495,7 +495,7 @@ async fn broadcasting_follows_what_the_node_says() {
         (
             json!({"result": false, "code": "DUP_TRANSACTION_ERROR"}),
             Err(ChainError::Network(
-                "network problem: the node has already seen this transaction".to_owned(),
+                "the node has already seen this transaction".to_owned(),
             )),
         ),
         (

@@ -451,6 +451,32 @@ mod tests {
     }
 
     #[test]
+    fn a_memo_sent_on_mainnet_reads_back_with_its_transfer() {
+        let raw = crate::http::unhex(concat!(
+            "0a02396b2208045d51e04a2dc2b940988b999c953452154261686161206d656d6f20746573743a2054",
+            "726f6e5a67080112630a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54",
+            "72616e73666572436f6e747261637412320a15414a7fd4bbed722bbe2fef1ac2f08bcc48e1b0435d12",
+            "1541adc0b79c8c5b86a6d842ba408082cb26e289a59c18a0c21e70b8e3869c9534",
+        ))
+        .unwrap();
+        let read = coins_in(&raw).unwrap();
+        assert_eq!(
+            crate::http::hex(&read.id),
+            "9064ca5098cb0429804eb4603c7c5e0f5700c40283ff357ad28be21a840cd1e5"
+        );
+        assert_eq!(
+            crate::http::hex(&read.from),
+            "4a7fd4bbed722bbe2fef1ac2f08bcc48e1b0435d"
+        );
+        assert_eq!(
+            crate::http::hex(&read.to),
+            "adc0b79c8c5b86a6d842ba408082cb26e289a59c"
+        );
+        assert_eq!(read.sun, 500_000);
+        assert_eq!(read.memo.as_deref(), Some("Bahaa memo test: Tron"));
+    }
+
+    #[test]
     fn only_plain_transfers_signed_by_their_owner_are_accepted() {
         let key = key(6);
         let from = owner(&key);

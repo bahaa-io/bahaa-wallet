@@ -422,10 +422,22 @@ fn pool_errors_become_chain_errors() {
     assert!(matches!(exhausted, ChainError::Network(_)));
     let unserved: ChainError =
         PoolError::Unserved(ChainError::Network("archive only".to_owned())).into();
+    assert_eq!(unserved, ChainError::Network("archive only".to_owned()));
     assert_eq!(
-        unserved,
-        ChainError::Network("network problem: archive only".to_owned())
+        unserved.to_string(),
+        "network problem: archive only",
+        "the prefix is said once"
     );
+    let rejected: ChainError =
+        PoolError::Exhausted(ChainError::Rejected("nonce too low".to_owned())).into();
+    assert_eq!(
+        rejected,
+        ChainError::Network("the network refused the transaction: nonce too low".to_owned())
+    );
+    let pruned: ChainError = PoolError::Unserved(ChainError::Pruned).into();
+    assert_eq!(pruned, ChainError::Pruned);
+    let pruned: ChainError = PoolError::Exhausted(ChainError::Pruned).into();
+    assert_eq!(pruned, ChainError::Pruned);
     let waiting: ChainError = PoolError::<ChainError>::Unavailable(Duration::from_secs(12)).into();
     assert!(waiting.to_string().contains("12 s"));
 }

@@ -103,7 +103,9 @@ impl Rpc {
                 .insert(key);
         }
         let result = self.send(&endpoint.url, method, params).await;
-        if let Err(Failure::Unsupported(_)) = &result {
+        if let Err(Failure::Unsupported(err)) = &result
+            && *err != ChainError::Pruned
+        {
             self.refused
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -210,10 +212,14 @@ pub(crate) fn classify(code: i64, message: &str) -> Failure<ChainError> {
     if limited {
         return Failure::RateLimited(ChainError::Network(message), None);
     }
+    if ["archive", "personal token", "pruned", "missing trie node"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        return Failure::Unsupported(ChainError::Pruned);
+    }
     let unsupported = code == -32601
         || [
-            "archive",
-            "personal token",
             "block range",
             "blocks range",
             "free plan",
@@ -251,6 +257,7 @@ mod tests {
             Failure::Retry(_) => "retry",
             Failure::RateLimited(..) => "limited",
             Failure::Unreachable(_) => "unreachable",
+            Failure::Unsupported(ChainError::Pruned) => "pruned",
             Failure::Unsupported(_) => "unsupported",
             Failure::Fatal(_) => "fatal",
         }
@@ -279,8 +286,14 @@ mod tests {
             (
                 -32602,
                 "Archive requests require a personal token. Get one at: https://www.allnodes.com/publicnode",
+                "pruned",
+            ),
+            (
+                -32701,
+                "Please specify an address in your request or, to remove restrictions, order a dedicated full node here: https://www.allnodes.com/bnb/host",
                 "unsupported",
             ),
+            (-32000, "missing trie node 5e1a", "pruned"),
             (-32701, "exceed maximum block range: 10000", "unsupported"),
             (
                 -32602,
