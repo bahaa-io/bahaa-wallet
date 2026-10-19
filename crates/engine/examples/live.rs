@@ -33,6 +33,8 @@ const USAGE: &str = "commands:
   status                              refresh, then balances, sends and receipts
   send <wallet> <asset> <to> <amount|max>
                                       quote, sign, broadcast and wait until settled
+  quote <wallet> <asset> <to> <amount|max>
+                                      only show what send would do
   watch <seconds>                     print what the engine reports
   track                               wait until every open send is settled
   testnets <on|off>                   include the test networks
@@ -60,7 +62,8 @@ async fn run(args: &[String]) -> Outcome {
     let result = match words.as_slice() {
         ["addresses"] => live.addresses().await,
         ["status"] => live.status().await,
-        ["send", from, asset, to, amount] => live.send(from, asset, to, amount).await,
+        ["send", from, asset, to, amount] => live.send(from, asset, to, amount, true).await,
+        ["quote", from, asset, to, amount] => live.send(from, asset, to, amount, false).await,
         ["watch", seconds] => live.watch(Duration::from_secs(seconds.parse()?)).await,
         ["track"] => live.track().await,
         ["testnets", choice @ ("on" | "off")] => live.testnets(*choice == "on").await,
@@ -458,7 +461,14 @@ impl Live {
         Ok(())
     }
 
-    async fn send(&self, from: &str, asset: &str, to: &str, amount: &str) -> Outcome {
+    async fn send(
+        &self,
+        from: &str,
+        asset: &str,
+        to: &str,
+        amount: &str,
+        confirm: bool,
+    ) -> Outcome {
         let wallet = self.wallet(from).await?;
         let (asset, decimals) = self.asset(asset).await?;
         let network = self.network(asset.network())?.clone();
@@ -468,6 +478,9 @@ impl Live {
         } else {
             Spend::Exact(Amount::parse(amount, decimals)?)
         };
+        if !confirm {
+            self.fresh().await?;
+        }
         let started = Instant::now();
         let draft = self
             .engine
@@ -480,6 +493,9 @@ impl Live {
             .await?;
         println!("quoted in {:.1?}", started.elapsed());
         self.print_draft(&draft, &network).await?;
+        if !confirm {
+            return Ok(());
+        }
         let mut events = self.engine.events();
         let started = Instant::now();
         let sent = self.engine.confirm_send(draft.id, self.secret()).await?;
