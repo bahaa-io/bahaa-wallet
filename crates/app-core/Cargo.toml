@@ -14,9 +14,5 @@ ruint.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 zeroize.workspace = true
 
-[dev-dependencies]
-getrandom.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
-
 [lints]
 workspace = true
