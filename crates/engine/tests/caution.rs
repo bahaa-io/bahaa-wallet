@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Arrival, Caution, Engine, Event, SendRequest, WalletId};
+use bahaa_engine::{Arrival, Caution, Engine, Event, SendRequest, Spend, WalletId};
 use bahaa_market::{MarketConfig, Status};
 use bahaa_types::{Address, Amount, ChainFamily};
 use common::{HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, USDT, config, result, until};
@@ -118,7 +118,7 @@ fn bnb(wallet: WalletId, to: &str) -> SendRequest {
         wallet,
         asset: "bsc".parse().unwrap(),
         to: Address::parse(ChainFamily::Evm, to).unwrap(),
-        amount: Amount::parse("0.1", 18).unwrap(),
+        amount: Spend::Exact(Amount::parse("0.1", 18).unwrap()),
     }
 }
 

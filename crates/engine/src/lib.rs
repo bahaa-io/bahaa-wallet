@@ -10,7 +10,8 @@ pub use bahaa_store::{
 };
 pub use caution::{Arrival, Caution};
 pub use engine::{
-    Draft, DraftId, Engine, EngineConfig, EngineError, Event, IncomingHistory, SendRequest, State,
+    Draft, DraftId, Engine, EngineConfig, EngineError, Event, IncomingHistory, SendRequest, Spend,
+    State,
 };
 pub use keyring::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, WalletKind};
 pub use portfolio::{Account, Holding, NetworkHealth, Portfolio};

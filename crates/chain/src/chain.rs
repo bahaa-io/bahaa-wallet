@@ -24,6 +24,8 @@ pub trait Chain: Send + Sync {
         transfer: &Transfer,
     ) -> impl Future<Output = Result<(Self::Plan, FeeQuote), ChainError>> + Send;
 
+    fn planned<'a>(&self, plan: &'a Self::Plan) -> &'a Transfer;
+
     fn sign(&self, plan: &Self::Plan, seed: &Seed) -> Result<Signed, ChainError>;
 
     fn decode(&self, signed: &Signed) -> Result<Decoded, ChainError>;

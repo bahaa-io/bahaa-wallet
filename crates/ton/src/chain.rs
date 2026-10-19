@@ -287,6 +287,10 @@ impl Chain for TonChain {
         self.plan(transfer).await
     }
 
+    fn planned<'a>(&self, plan: &'a TonPlan) -> &'a Transfer {
+        &plan.transfer
+    }
+
     fn sign(&self, plan: &TonPlan, seed: &Seed) -> Result<Signed, ChainError> {
         self.sign_plan(plan, seed)
     }

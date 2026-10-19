@@ -23,13 +23,12 @@ impl TronChain {
     ) -> Result<(TronPlan, FeeQuote), ChainError> {
         self.sendable(transfer)?;
         let (from, to) = (bytes(&transfer.from)?, bytes(&transfer.to)?);
-        let units = transfer.amount.units();
         let token = transfer.asset.contract().map(bytes).transpose()?;
         let decimals = match &token {
             None => self.network.native.decimals,
             Some(contract) => self.token_decimals(&from, contract).await?,
         };
-        if transfer.amount.decimals() != decimals {
+        if !transfer.max && transfer.amount.decimals() != decimals {
             return Err(ChainError::Invalid(
                 "the amount uses the wrong number of decimals",
             ));
@@ -42,11 +41,15 @@ impl TronChain {
             None => None,
             Some(contract) => Some(self.call(&from, contract, BALANCE_OF, &word(&from)).await?),
         };
+        let mut transfer = transfer.clone();
+        if transfer.max {
+            transfer.take_all(amount(held.unwrap_or(balance), decimals)?)?;
+        }
         let native = (
             self.network.native.symbol.clone(),
             self.network.native.decimals,
         );
-        let funds = |max: U256| -> Result<(), ChainError> {
+        let funds = |units: U256, max: U256| -> Result<(), ChainError> {
             if let (Some(contract), Some(held)) = (token, held) {
                 if held < units {
                     return Err(insufficient(self.symbol(&contract), units, held, decimals)?);
@@ -62,51 +65,64 @@ impl TronChain {
             }
             Ok(())
         };
-        funds(U256::ZERO)?;
+        funds(transfer.amount.units(), U256::ZERO)?;
         let prices = self.prices().await?;
         let resources = self.resources(&from).await?;
-        let (contract, energy, new_account) = match token {
+        let (raw, quote) = match token {
             None => {
-                let sun = i64::try_from(units)
-                    .map_err(|_| ChainError::Invalid("the amount is too large"))?;
                 let new_account = self.account(&to).await?.is_none();
-                (tx::coins(&from, &to, sun), None, new_account)
+                let anchor = self.anchor().await?;
+                let coins = |sun: u64| -> Result<(Raw, Quote), ChainError> {
+                    let sun = i64::try_from(sun)
+                        .map_err(|_| ChainError::Invalid("the amount is too large"))?;
+                    let raw = tx::raw(tx::coins(&from, &to, sun), &anchor, 0)?;
+                    let quote =
+                        fees::quote(tx::bandwidth(&raw), None, new_account, &resources, &prices)?;
+                    Ok((raw, quote))
+                };
+                let mut sun = u64::try_from(transfer.amount.units())
+                    .map_err(|_| ChainError::Invalid("the amount is too large"))?;
+                if transfer.max {
+                    let Some(most) = fees::most(sun, |sun| Ok(coins(sun)?.1.max))? else {
+                        let fee = coins(sun)?.1.max;
+                        let needed = fee.checked_add(1).ok_or_else(overflow)?;
+                        return Err(insufficient(
+                            native.0.clone(),
+                            U256::from(needed),
+                            balance,
+                            native.1,
+                        )?);
+                    };
+                    sun = most;
+                    transfer.amount = amount(U256::from(sun), decimals)?;
+                }
+                coins(sun)?
             }
             Some(contract) => {
-                let data = tx::transfer_data(&to, units);
+                let data = tx::transfer_data(&to, transfer.amount.units());
                 let energy = self.simulate(&from, &contract, &data).await?;
                 let limit = fees::fee_limit(energy, &prices)?;
-                (
-                    tx::token(&from, &contract, data),
+                let anchor = self.anchor().await?;
+                let raw = tx::raw(tx::token(&from, &contract, data), &anchor, limit)?;
+                let quote = fees::quote(
+                    tx::bandwidth(&raw),
                     Some((energy, limit)),
                     false,
-                )
+                    &resources,
+                    &prices,
+                )?;
+                (raw, quote)
             }
         };
-        let anchor = self.anchor().await?;
-        let raw = tx::raw(contract, &anchor, energy.map_or(0, |(_, limit)| limit))?;
-        let quote = fees::quote(
-            tx::bandwidth(&raw),
-            energy,
-            new_account,
-            &resources,
-            &prices,
-        )?;
-        funds(U256::from(quote.max))?;
-        Ok((
-            TronPlan {
-                transfer: transfer.clone(),
-                raw,
-            },
-            self.fee_quote(quote)?,
-        ))
+        funds(transfer.amount.units(), U256::from(quote.max))?;
+        Ok((TronPlan { transfer, raw }, self.fee_quote(quote)?))
     }
 
     fn sendable(&self, transfer: &Transfer) -> Result<(), ChainError> {
         if transfer.asset.network() != &self.network.id {
             return Err(ChainError::Invalid("the asset belongs to another network"));
         }
-        if transfer.amount.is_zero() {
+        if !transfer.max && transfer.amount.is_zero() {
             return Err(ChainError::Invalid("send more than zero"));
         }
         if transfer.asset.contract().is_none() && transfer.from == transfer.to {
@@ -344,6 +360,7 @@ mod tests {
                 to: Address::Tron([0x27; 20]),
                 asset: "tron-nile".parse().unwrap(),
                 amount: amount(U256::from(1_000u16), 6).unwrap(),
+                max: false,
             },
             raw,
         };

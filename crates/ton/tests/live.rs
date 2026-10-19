@@ -149,6 +149,7 @@ async fn live_v5r1_quote_follows_the_network_fee_settings() {
         },
         asset: "ton".parse().unwrap(),
         amount: bahaa_types::Amount::parse("0.01", 9).unwrap(),
+        max: false,
     };
     let nano = |text: &str| bahaa_types::Amount::parse(text, 9).unwrap();
     let mut seen = Vec::new();
@@ -454,6 +455,7 @@ async fn live_usdt_quotes_match_what_the_network_charged() {
         to: Address::parse(ChainFamily::Ton, HOLDER).unwrap(),
         asset: format!("ton/{USDT}").parse().unwrap(),
         amount: Amount::parse("1", 6).unwrap(),
+        max: false,
     };
     let mut seen = Vec::new();
     for protocol in [Some(Protocol::TonLiteservers), None] {
@@ -506,6 +508,7 @@ async fn live_v4r2_quotes_charge_the_gas_the_network_charges() {
         to: Address::parse(ChainFamily::Ton, HOLDER).unwrap(),
         asset: "ton".parse().unwrap(),
         amount: Amount::parse("0.000000001", 9).unwrap(),
+        max: false,
     };
     let (_, quote) = on(&ton, Some(Protocol::TonLiteservers))
         .prepare(&transfer)
@@ -613,4 +616,35 @@ async fn live_custom_jettons_report_their_details_and_balances() {
     let asset: AssetId = format!("ton/{ston}").parse().unwrap();
     let balances = fresh.balances(&holder, &[asset]).await.unwrap();
     assert_eq!(balances[0].amount.to_string(), "37312576");
+}
+
+#[tokio::test]
+#[ignore = "talks to the real TON network"]
+async fn live_custom_jetton_transfers_are_emulated_with_the_real_state_limits() {
+    let registry = Registry::builtin().unwrap();
+    let ton = registry.get(&"ton".parse().unwrap()).unwrap().clone();
+    let chain = on(&ton, None);
+    let parse = |text: &str| Address::parse(ChainFamily::Ton, text).unwrap();
+    let ston = parse("EQA2kCVNwVsil2EM2mB0SkXytxCqQjS4mttjDpnXmwG9T6bO");
+    let coin = chain.token(&ston).await.unwrap();
+    chain.know(&ston, coin.decimals);
+    let transfer = bahaa_chain::Transfer {
+        account: 0,
+        from: parse("0:8da321031371f1242ce05be273abce9f8a23f2e244aa0d7b2f1e1d370686f4f3"),
+        to: parse(SENDER),
+        asset: format!("ton/{ston}").parse().unwrap(),
+        amount: Amount::parse("1", coin.decimals).unwrap(),
+        max: false,
+    };
+    match chain.prepare(&transfer).await {
+        Ok((_, quote)) => assert!(
+            quote
+                .lines()
+                .iter()
+                .any(|line| line.item == bahaa_chain::FeeItem::Contracts),
+            "{quote:?}"
+        ),
+        Err(ChainError::Insufficient { symbol, .. }) => assert_eq!(symbol, "GRAM"),
+        Err(other) => panic!("{other:?}"),
+    }
 }

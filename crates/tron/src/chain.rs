@@ -219,6 +219,10 @@ impl Chain for TronChain {
         self.plan(transfer).await
     }
 
+    fn planned<'a>(&self, plan: &'a TronPlan) -> &'a Transfer {
+        &plan.transfer
+    }
+
     fn sign(&self, plan: &TronPlan, seed: &Seed) -> Result<Signed, ChainError> {
         let key = key(seed, plan.transfer.account)?;
         if Address::Tron(tx::address_of(&key.public_key())) != plan.transfer.from {
@@ -264,6 +268,7 @@ impl Chain for TronChain {
             to: Address::Tron(to),
             asset,
             amount,
+            everything: false,
             sequence: None,
             expires_at: u64::try_from(parsed.expiration_ms).ok().map(|ms| ms / 1000),
         })

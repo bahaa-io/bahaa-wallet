@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bahaa_chain::FeeItem;
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Engine, Event, SendRequest, SentStatus, SentTx};
+use bahaa_engine::{Engine, Event, SendRequest, SentStatus, SentTx, Spend};
 use bahaa_types::{Address, Amount, ChainFamily};
 use common::{HARDHAT, Scratch, TRON_0_HEX, TRON_GENESIS, config};
 use serde_json::{Value, json};
@@ -138,7 +138,7 @@ async fn trx_is_sent_from_the_wallets_tron_account_and_tracked_until_confirmed()
         wallet,
         asset: "tron".parse().unwrap(),
         to: Address::parse(ChainFamily::Tron, TRON_1).unwrap(),
-        amount: Amount::parse("1.5", 6).unwrap(),
+        amount: Spend::Exact(Amount::parse("1.5", 6).unwrap()),
     };
     let draft = engine.prepare_send(request).await.unwrap();
     assert!(matches!(

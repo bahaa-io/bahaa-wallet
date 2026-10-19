@@ -83,6 +83,26 @@ pub(crate) fn quote(
     Ok(quote)
 }
 
+pub(crate) fn most(
+    balance: u64,
+    fee: impl Fn(u64) -> Result<u64, ChainError>,
+) -> Result<Option<u64>, ChainError> {
+    let fits = |sun: u64| -> Result<bool, ChainError> {
+        Ok(sun > 0
+            && fee(sun)?
+                .checked_add(sun)
+                .is_some_and(|total| total <= balance))
+    };
+    let Some(first) = balance.checked_sub(fee(balance)?) else {
+        return Ok(None);
+    };
+    let second = balance.checked_sub(fee(first)?).unwrap_or(first);
+    if second > first && fits(second)? {
+        return Ok(Some(second));
+    }
+    Ok(fits(first)?.then_some(first))
+}
+
 fn overflow() -> ChainError {
     ChainError::Invalid("fee overflow")
 }
@@ -179,6 +199,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!((rich.expected, rich.max), (0, 0));
+    }
+
+    #[test]
+    fn the_most_that_can_be_sent_leaves_exactly_its_own_fee() {
+        let per_byte = |sun: u64| Ok(if sun >= 1 << 35 { 268_000 } else { 267_000 });
+        assert_eq!(most(5_000_000, per_byte), Ok(Some(4_733_000)));
+        assert_eq!(most(5_000_000, |_| Ok(0)), Ok(Some(5_000_000)));
+        assert_eq!(most(267_000, per_byte), Ok(None));
+        assert_eq!(most(267_001, per_byte), Ok(Some(1)));
+        assert_eq!(most(0, |_| Ok(0)), Ok(None));
+        let edge = (1 << 35) + 267_500;
+        assert_eq!(most(edge, per_byte), Ok(Some((1 << 35) - 500)));
+        let above = (1 << 35) + 268_000;
+        assert_eq!(most(above, per_byte), Ok(Some(1 << 35)));
+        let failing = |_| Err(ChainError::Network("down".to_owned()));
+        assert!(most(5_000_000, failing).is_err());
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId};
 use bahaa_crypto::Seed;
-use bahaa_types::{Address, AssetId, TonContract};
+use bahaa_types::{Address, Amount, AssetId, TonContract};
 use ed25519_dalek::{Signature, Signer};
 use ruint::aliases::U256;
 use tonlib_core::cell::BagOfCells;
@@ -47,8 +47,16 @@ impl TonChain {
         {
             self.token_decimals(master).await?;
         }
-        let token = self.sendable(transfer)?;
+        let (token, decimals) = self.sendable(transfer)?;
         let wallet = self.http.account(&transfer.from).await?;
+        let mut transfer = transfer.clone();
+        if transfer.max {
+            let held = match &token {
+                None => wallet.balance,
+                Some(master) => self.jetton_balance(&transfer.from, master).await?,
+            };
+            transfer.take_all(amount(held, decimals)?)?;
+        }
         let (seqno, deploy, contract) = self.sequence(&wallet, &transfer.from)?;
         let now = now();
         let clock =
@@ -64,6 +72,7 @@ impl TonChain {
                 .map_err(|_| ChainError::Invalid("the clock is out of range"))?,
             to: transfer.to,
             nano: transfer.amount.units(),
+            everything: transfer.max && token.is_none(),
             bounce: false,
             token: None,
         };
@@ -79,12 +88,18 @@ impl TonChain {
                     now: clock,
                 };
                 Some(
-                    self.token_order(transfer, &master, &mut order, &wallet, run)
+                    self.token_order(&transfer, &master, &mut order, &wallet, run)
                         .await?,
                 )
             }
         };
-        let fees = estimate(&order, deploy, &wallet, (&settings, &storage), clock)?;
+        let fees = if order.everything {
+            let fees = leave_nothing(&mut order, deploy, &wallet, (&settings, &storage), clock)?;
+            transfer.amount = amount(order.nano, decimals)?;
+            fees
+        } else {
+            estimate(&order, deploy, &wallet, (&settings, &storage), clock)?
+        };
         let own = fees.expected().ok_or_else(overflow)?;
         let own_max = own.checked_mul(2).ok_or_else(overflow)?;
         let attached = u64::try_from(order.nano).map_err(|_| overflow())?;
@@ -95,10 +110,12 @@ impl TonChain {
                 own_max.checked_add(attached).ok_or_else(overflow)?,
             ),
         };
-        let needed = order
-            .nano
-            .checked_add(U256::from(own_max))
-            .ok_or_else(overflow)?;
+        let sent = if order.everything {
+            U256::ZERO
+        } else {
+            order.nano
+        };
+        let needed = sent.checked_add(U256::from(own_max)).ok_or_else(overflow)?;
         let decimals = self.network.native.decimals;
         if wallet.balance < needed {
             return Err(ChainError::Insufficient {
@@ -108,31 +125,10 @@ impl TonChain {
             });
         }
         let gram = |nano: u64| amount(U256::from(nano), decimals);
-        let mut lines = vec![
-            FeeLine {
-                item: FeeItem::Compute {
-                    gas: wallet::transfer_gas(contract),
-                },
-                amount: gram(fees.compute)?,
-            },
-            FeeLine {
-                item: FeeItem::Storage,
-                amount: gram(fees.storage)?,
-            },
-            FeeLine {
-                item: FeeItem::Forwarding,
-                amount: gram(fees.forwarding)?,
-            },
-        ];
-        if let Some(spent) = contracts {
-            lines.push(FeeLine {
-                item: FeeItem::Contracts,
-                amount: gram(spent)?,
-            });
-        }
+        let lines = fee_lines(&fees, contract, contracts, gram)?;
         Ok((
             TonPlan {
-                transfer: transfer.clone(),
+                transfer,
                 order,
                 deploy,
             },
@@ -140,11 +136,11 @@ impl TonChain {
         ))
     }
 
-    fn sendable(&self, transfer: &Transfer) -> Result<Option<Address>, ChainError> {
+    fn sendable(&self, transfer: &Transfer) -> Result<(Option<Address>, u8), ChainError> {
         if transfer.asset.network() != &self.network.id {
             return Err(ChainError::Invalid("the asset belongs to another network"));
         }
-        if transfer.amount.is_zero() {
+        if !transfer.max && transfer.amount.is_zero() {
             return Err(ChainError::Invalid("send more than zero"));
         }
         let decimals = match transfer.asset.contract() {
@@ -153,7 +149,7 @@ impl TonChain {
                 .known_decimals(master)
                 .ok_or(ChainError::Invalid("this token is not known yet"))?,
         };
-        if transfer.amount.decimals() != decimals {
+        if !transfer.max && transfer.amount.decimals() != decimals {
             return Err(ChainError::Invalid(
                 "the amount uses the wrong number of decimals",
             ));
@@ -162,7 +158,7 @@ impl TonChain {
         if !ton(&transfer.from) || !ton(&transfer.to) {
             return Err(ChainError::Invalid("not a TON address"));
         }
-        Ok(transfer.asset.contract().copied())
+        Ok((transfer.asset.contract().copied(), decimals))
     }
 
     fn sequence(
@@ -261,10 +257,42 @@ impl TonChain {
             to: parsed.order.to,
             asset,
             amount: value,
+            everything: parsed.order.everything,
             sequence: Some(u64::from(parsed.order.seqno)),
             expires_at: Some(u64::from(parsed.order.valid_until)),
         })
     }
+}
+
+fn fee_lines(
+    fees: &Estimate,
+    contract: TonContract,
+    contracts: Option<u64>,
+    gram: impl Fn(u64) -> Result<Amount, ChainError>,
+) -> Result<Vec<FeeLine>, ChainError> {
+    let mut lines = vec![
+        FeeLine {
+            item: FeeItem::Compute {
+                gas: wallet::transfer_gas(contract),
+            },
+            amount: gram(fees.compute)?,
+        },
+        FeeLine {
+            item: FeeItem::Storage,
+            amount: gram(fees.storage)?,
+        },
+        FeeLine {
+            item: FeeItem::Forwarding,
+            amount: gram(fees.forwarding)?,
+        },
+    ];
+    if let Some(spent) = contracts {
+        lines.push(FeeLine {
+            item: FeeItem::Contracts,
+            amount: gram(spent)?,
+        });
+    }
+    Ok(lines)
 }
 
 fn bounces(status: &Status) -> bool {
@@ -299,6 +327,23 @@ pub(crate) fn estimate(
     })
 }
 
+fn leave_nothing(
+    order: &mut Order,
+    deploy: bool,
+    wallet: &Account,
+    prices: (&Settings, &Storage),
+    now: u32,
+) -> Result<Estimate, ChainError> {
+    order.nano = wallet.balance;
+    let mut fees = estimate(order, deploy, wallet, prices, now)?;
+    for _ in 0..2 {
+        let own = U256::from(fees.expected().ok_or_else(overflow)?);
+        order.nano = wallet.balance.saturating_sub(own);
+        fees = estimate(order, deploy, wallet, prices, now)?;
+    }
+    Ok(fees)
+}
+
 fn prices(config: &Config) -> Result<(Settings, Storage), ChainError> {
     let unreadable = || ChainError::Network("the fee settings cannot be read".to_owned());
     Ok((
@@ -322,7 +367,6 @@ mod tests {
     use bahaa_chain::Chain;
     use bahaa_config::Registry;
     use bahaa_crypto::Mnemonic;
-    use bahaa_types::Amount;
     use num_bigint::BigUint;
     use tonlib_core::cell::{Cell, CellBuilder};
     use tonlib_core::tlb_types::block::coins::{CurrencyCollection, Grams};
@@ -337,6 +381,7 @@ mod tests {
     use tonlib_core::{TonAddress, TonHash};
 
     use super::*;
+    use crate::emulate::{self, tests::NOW, tests::done};
 
     fn chain(id: &str) -> TonChain {
         let registry = Registry::builtin().unwrap();
@@ -367,6 +412,7 @@ mod tests {
                 to,
                 asset: "ton".parse().unwrap(),
                 amount,
+                max: false,
             },
             order: Order {
                 wallet: from,
@@ -376,6 +422,7 @@ mod tests {
                 valid_until: 1_792_400_000,
                 to,
                 nano: amount.units(),
+                everything: false,
                 bounce: !deploy,
                 token: None,
             },
@@ -608,8 +655,158 @@ mod tests {
         assert!(matches!(ton.decode(&signed), Err(ChainError::Invalid(_))));
     }
 
+    fn stored(ton: &TonChain, owner: &Address, contract: TonContract, deploy: bool) -> Vec<u8> {
+        use tycho_types::boc::Boc;
+        use tycho_types::cell::HashBytes;
+        use tycho_types::dict::Dict;
+        use tycho_types::models::{
+            Account as Stored, AccountState, IntAddr, OptionalAccount, StateInit, StdAddr,
+            StorageExtra, StorageInfo, StorageUsed,
+        };
+        use tycho_types::num::VarUint56;
+        let Address::Ton { workchain, hash } = owner else {
+            panic!("not a TON wallet");
+        };
+        let tycho = |cell: &Cell| {
+            Boc::decode(
+                BagOfCells::from_root(cell.clone())
+                    .serialize(false)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let version = match contract {
+            TonContract::W5 => WalletVersion::V5R1,
+            TonContract::V4R2 => WalletVersion::V4R2,
+        };
+        let state = if deploy {
+            AccountState::Uninit
+        } else {
+            let keys = tonlib_core::wallet::mnemonic::KeyPair {
+                public_key: key(&seed(), 0).unwrap().verifying_key().to_bytes().to_vec(),
+                secret_key: Vec::new(),
+            };
+            let data = VersionHelper::get_data(version, &keys, ton.subwallet(contract)).unwrap();
+            AccountState::Active(StateInit {
+                split_depth: None,
+                special: None,
+                code: Some(tycho(VersionHelper::get_code(version).unwrap())),
+                data: Some(tycho(&data)),
+                libraries: Dict::new(),
+            })
+        };
+        let account = Stored {
+            address: IntAddr::Std(StdAddr::new(*workchain, HashBytes(*hash))),
+            storage_stat: StorageInfo {
+                used: StorageUsed {
+                    cells: VarUint56::new(3),
+                    bits: VarUint56::new(1_300),
+                },
+                storage_extra: StorageExtra::None,
+                last_paid: NOW - 86_400,
+                due_payment: None,
+            },
+            last_trans_lt: 0,
+            balance: tycho_types::models::CurrencyCollection::new(BALANCE),
+            state,
+        };
+        Boc::encode(
+            tycho_types::cell::CellBuilder::build_from(OptionalAccount(Some(account))).unwrap(),
+        )
+    }
+
+    fn carried(message: &[u8]) -> (u128, u128) {
+        let parsed = tycho_types::boc::Boc::decode(message)
+            .unwrap()
+            .parse::<tycho_types::models::OwnedMessage>()
+            .unwrap();
+        let tycho_types::models::MsgInfo::Int(info) = parsed.info else {
+            panic!("an internal message expected");
+        };
+        (info.value.tokens.into_inner(), info.fwd_fee.into_inner())
+    }
+
+    const BALANCE: u128 = 2_000_000_000;
+
     #[test]
-    fn only_a_single_plain_transfer_in_mode_three_is_accepted() {
+    fn sending_everything_empties_the_wallet_on_the_real_executor() {
+        let ton = chain("ton");
+        let (settings, storage) = prices(&emulate::tests::config()).unwrap();
+        let emulator = emulate::tests::emulator();
+        let to = Address::Ton {
+            workchain: 0,
+            hash: [0x5c; 32],
+        };
+        for contract in [TonContract::W5, TonContract::V4R2] {
+            for deploy in [true, false] {
+                let from = ton.derive_as(&seed(), 0, contract).unwrap();
+                let state = stored(&ton, &from, contract, deploy);
+                let wallet = crate::cells::account(&state, &from).unwrap();
+                let mut order = Order {
+                    wallet: from,
+                    contract,
+                    wallet_id: ton.subwallet(contract),
+                    seqno: 0,
+                    valid_until: NOW + 300,
+                    to,
+                    nano: U256::ZERO,
+                    everything: true,
+                    bounce: false,
+                    token: None,
+                };
+                let fees =
+                    leave_nothing(&mut order, deploy, &wallet, (&settings, &storage), NOW).unwrap();
+                let mut transfer = Transfer {
+                    account: 0,
+                    from,
+                    to,
+                    asset: "ton".parse().unwrap(),
+                    amount: amount(order.nano, 9).unwrap(),
+                    max: true,
+                };
+                let plan = TonPlan {
+                    transfer: transfer.clone(),
+                    order,
+                    deploy,
+                };
+                let signed = ton.sign(&plan, &seed()).unwrap();
+                let decoded = ton.decode(&signed).unwrap();
+                assert!(decoded.everything);
+                bahaa_chain::check_signed(&transfer, &decoded).unwrap();
+                transfer.max = false;
+                assert_eq!(
+                    bahaa_chain::check_signed(&transfer, &decoded),
+                    Err(ChainError::Mismatch("the amount"))
+                );
+                let hop = done(emulator.run_external(&from, &state, &signed.bytes).unwrap());
+                let case = format!("{contract:?}, deploy {deploy}: {hop:?}");
+                assert!(hop.success, "{case}");
+                let [sent] = hop.out.as_slice() else {
+                    panic!("one transfer expected: {case}");
+                };
+                let (value, forward) = carried(sent);
+                assert_eq!(value + forward + u128::from(hop.fees), BALANCE, "{case}");
+                assert_eq!(U256::from(value), order.nano, "{case}");
+                assert_eq!(
+                    u128::from(fees.expected().unwrap()),
+                    BALANCE - value,
+                    "{case}"
+                );
+                let late = emulate::tests::emulator_at(NOW + 120);
+                let late = done(late.run_external(&from, &state, &signed.bytes).unwrap());
+                assert!(late.success, "{case}");
+                let [sent] = late.out.as_slice() else {
+                    panic!("one late transfer expected: {case}");
+                };
+                let (later, forward) = carried(sent);
+                assert_eq!(later + forward + u128::from(late.fees), BALANCE, "{case}");
+                assert!(later < value, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_single_plain_transfer_in_mode_three_or_send_all_is_accepted() {
         let ton = chain("ton");
         let wallet = ton.derive(&seed(), 0).unwrap();
         let empty = CellBuilder::new().build().unwrap();
@@ -624,13 +821,27 @@ mod tests {
             msgs,
         };
         let plain = with_body(&body(vec![transfer(true, empty.clone())], vec![3]), &wallet);
-        assert!(wallet::parse(&plain).is_ok());
+        assert!(!wallet::parse(&plain).unwrap().order.everything);
+        let all = with_body(
+            &body(vec![transfer(true, empty.clone())], vec![130]),
+            &wallet,
+        );
+        assert!(wallet::parse(&all).unwrap().order.everything);
+        let mut tokens = token_plan(&ton).order;
+        tokens.wallet = wallet;
+        tokens.everything = true;
+        let draining =
+            WalletExtMsgBodyV5::from_cell(&wallet::unsigned(&tokens).unwrap().to_arc()).unwrap();
+        assert_eq!(draining.msgs_modes, [130]);
         let cases = [
+            draining,
             body(
                 vec![transfer(true, empty.clone()), transfer(true, empty.clone())],
                 vec![3, 3],
             ),
             body(vec![transfer(true, empty.clone())], vec![128]),
+            body(vec![transfer(true, empty.clone())], vec![2]),
+            body(vec![transfer(true, empty.clone())], vec![131]),
             body(vec![transfer(true, note)], vec![3]),
             body(Vec::new(), Vec::new()),
         ];

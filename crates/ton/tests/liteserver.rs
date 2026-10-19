@@ -686,6 +686,7 @@ fn send(amount: &str) -> bahaa_chain::Transfer {
         to: ton([0x5c; 32]),
         asset: gram(),
         amount: bahaa_types::Amount::parse(amount, 9).unwrap(),
+        max: false,
     }
 }
 
@@ -724,6 +725,40 @@ async fn a_v5r1_quote_is_computed_from_proven_state_and_fee_settings() {
         (symbol.as_str(), available.to_string()),
         ("GRAM", "1.848793222".to_owned())
     );
+}
+
+fn everything(mut transfer: bahaa_chain::Transfer) -> bahaa_chain::Transfer {
+    transfer.amount = bahaa_types::Amount::default();
+    transfer.max = true;
+    transfer
+}
+
+#[tokio::test]
+async fn a_max_send_carries_everything_but_the_fee() {
+    let chain = quote_chain_for(Tamper::Nothing).await;
+    let (plan, quote) = chain.prepare(&everything(send("1"))).await.unwrap();
+    let planned = chain.planned(&plan);
+    assert!(planned.max);
+    assert_eq!(
+        planned
+            .amount
+            .checked_add(quote.expected())
+            .unwrap()
+            .to_string(),
+        "1.848793222"
+    );
+    assert_eq!(
+        quote.max().units(),
+        quote.expected().units() * ruint::aliases::U256::from(2u8)
+    );
+    assert!(format!("{plan:?}").contains("everything: true"));
+    let tokens = tracking_chain(GOOD).await;
+    let (plan, _) = tokens
+        .prepare(&everything(usdt_send("1", OWNER)))
+        .await
+        .unwrap();
+    assert_eq!(tokens.planned(&plan).amount.to_string(), "163442.252078");
+    assert!(format!("{plan:?}").contains("everything: false"));
 }
 
 #[tokio::test]
@@ -1276,6 +1311,7 @@ fn usdt_send(amount: &str, to: [u8; 32]) -> bahaa_chain::Transfer {
         to: ton(to),
         asset: assets()[1].clone(),
         amount: bahaa_types::Amount::parse(amount, 6).unwrap(),
+        max: false,
     }
 }
 

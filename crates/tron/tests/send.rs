@@ -193,6 +193,7 @@ fn send(to: &str, asset: &str, amount: &str) -> Transfer {
         to: tron(to),
         asset: asset.parse().unwrap(),
         amount: Amount::parse(amount, 6).unwrap(),
+        max: false,
     }
 }
 
@@ -345,6 +346,81 @@ async fn a_usdt_quote_simulates_the_exact_call_and_caps_energy() {
     );
 }
 
+fn everything(to: &str, asset: &str) -> Transfer {
+    Transfer {
+        amount: Amount::default(),
+        max: true,
+        ..send(to, asset, "1")
+    }
+}
+
+async fn most(trx_held: u64, usdt_held: u64, resources: Value, transfer: &Transfer) -> Transfer {
+    let ledger = Ledger::new(trx_held, usdt_held, resources);
+    let chain = chain(&ledger).await;
+    let (plan, quote) = chain.prepare(transfer).await.unwrap();
+    let planned = chain.planned(&plan).clone();
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    let decoded = chain.decode(&signed).unwrap();
+    check_signed(&planned, &decoded).unwrap();
+    assert!(planned.max && !decoded.everything);
+    assert_eq!(
+        u64::try_from(signed.bytes.len()).unwrap() + 64,
+        bandwidth_of(&quote)
+    );
+    if planned.asset.contract().is_none() {
+        assert_eq!(planned.amount.checked_add(quote.max()), Ok(trx(trx_held)));
+    }
+    planned
+}
+
+#[tokio::test]
+async fn a_max_send_leaves_exactly_the_fee_behind() {
+    let free = json!({"freeNetLimit": 600, "freeNetUsed": 100});
+    let rides_free = most(5_000_000, 0, free.clone(), &everything(KNOWN, "tron")).await;
+    assert_eq!(rides_free.amount, trx(5_000_000));
+    let burns = most(5_000_000, 0, json!({}), &everything(KNOWN, "tron")).await;
+    assert!(
+        (4_700_000..4_750_000).contains(&u64::try_from(burns.amount.units()).unwrap()),
+        "{burns:?}"
+    );
+    let activates = most(5_000_000, 0, free.clone(), &everything(FRESH, "tron")).await;
+    assert_eq!(activates.amount, trx(3_900_000));
+    let usdt = format!("tron/{USDT}");
+    let tokens = most(
+        20_000_000,
+        2_500_000,
+        free.clone(),
+        &everything(FRESH, &usdt),
+    )
+    .await;
+    assert_eq!(tokens.amount, trx(2_500_000));
+    let refused = |trx_held: u64, usdt_held: u64, transfer: Transfer| {
+        let resources = free.clone();
+        async move {
+            let ledger = Ledger::new(trx_held, usdt_held, resources);
+            chain(&ledger).await.prepare(&transfer).await.unwrap_err()
+        }
+    };
+    assert_eq!(
+        refused(1_100_000, 0, everything(FRESH, "tron")).await,
+        ChainError::Insufficient {
+            symbol: "TRX".to_owned(),
+            needed: trx(1_100_001),
+            available: trx(1_100_000)
+        }
+    );
+    let nothing = ChainError::Invalid("there is nothing to send");
+    assert_eq!(refused(0, 0, everything(KNOWN, "tron")).await, nothing);
+    assert_eq!(
+        refused(5_000_000, 0, everything(KNOWN, &usdt)).await,
+        nothing
+    );
+    assert!(matches!(
+        refused(5_000_000, 0, everything(OWNER, "tron")).await,
+        ChainError::Invalid(_)
+    ));
+}
+
 #[tokio::test]
 async fn a_stale_head_block_is_not_used_as_the_anchor() {
     let mut ledger = Ledger::new(5_000_000, 0, json!({"freeNetLimit": 600}));
@@ -488,6 +564,7 @@ async fn live_tron_quotes_for_a_new_recipient() {
         to: fresh,
         asset: "tron".parse().unwrap(),
         amount: Amount::parse("1", 6).unwrap(),
+        max: false,
     };
     let (_, quote) = chain.prepare(&coins).await.unwrap();
     let items: Vec<&FeeItem> = quote.lines().iter().map(|line| &line.item).collect();
@@ -510,4 +587,13 @@ async fn live_tron_quotes_for_a_new_recipient() {
         "{quote:?}"
     );
     assert!(quote.expected() <= quote.max(), "{quote:?}");
+    let everything = Transfer {
+        amount: Amount::default(),
+        max: true,
+        ..coins
+    };
+    let (plan, quote) = chain.prepare(&everything).await.unwrap();
+    let planned = chain.planned(&plan);
+    assert!(planned.max && !planned.amount.is_zero(), "{planned:?}");
+    assert!(quote.max() >= Amount::parse("1", 6).unwrap(), "{quote:?}");
 }

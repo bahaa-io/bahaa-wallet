@@ -30,7 +30,7 @@ use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, 
 
 pub use incoming::IncomingHistory;
 use send::{Delivered, Prepared, Quoted};
-pub use send::{Draft, DraftId, SendRequest};
+pub use send::{Draft, DraftId, SendRequest, Spend};
 use tokens::TokenRead;
 
 const VAULT_FILE: &str = "vault.bin";

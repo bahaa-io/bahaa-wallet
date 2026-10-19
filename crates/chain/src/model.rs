@@ -80,6 +80,17 @@ pub struct Transfer {
     pub to: Address,
     pub asset: AssetId,
     pub amount: Amount,
+    pub max: bool,
+}
+
+impl Transfer {
+    pub fn take_all(&mut self, held: Amount) -> Result<(), ChainError> {
+        if held.is_zero() {
+            return Err(ChainError::Invalid("there is nothing to send"));
+        }
+        self.amount = held;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +173,7 @@ pub struct Decoded {
     pub to: Address,
     pub asset: AssetId,
     pub amount: Amount,
+    pub everything: bool,
     pub sequence: Option<u64>,
     pub expires_at: Option<u64>,
 }
@@ -249,6 +261,7 @@ pub fn check_signed(transfer: &Transfer, decoded: &Decoded) -> Result<(), ChainE
         (decoded.to == transfer.to, "the recipient"),
         (decoded.asset == transfer.asset, "the asset"),
         (decoded.amount == transfer.amount, "the amount"),
+        (transfer.max || !decoded.everything, "the amount"),
     ];
     match checks.into_iter().find(|(same, _)| !same) {
         Some((_, field)) => Err(ChainError::Mismatch(field)),

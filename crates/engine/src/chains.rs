@@ -104,19 +104,22 @@ impl AnyChain {
     pub(crate) async fn prepare(
         &self,
         transfer: &Transfer,
-    ) -> Result<(AnyPlan, FeeQuote), ChainError> {
+    ) -> Result<(AnyPlan, Transfer, FeeQuote), ChainError> {
         match self {
             Self::Evm(chain) => {
                 let (plan, fee) = chain.prepare(transfer).await?;
-                Ok((AnyPlan::Evm(plan), fee))
+                let planned = chain.planned(&plan).clone();
+                Ok((AnyPlan::Evm(plan), planned, fee))
             }
             Self::Tron(chain) => {
                 let (plan, fee) = chain.prepare(transfer).await?;
-                Ok((AnyPlan::Tron(plan), fee))
+                let planned = chain.planned(&plan).clone();
+                Ok((AnyPlan::Tron(plan), planned, fee))
             }
             Self::Ton(chain) => {
                 let (plan, fee) = chain.prepare(transfer).await?;
-                Ok((AnyPlan::Ton(plan), fee))
+                let planned = chain.planned(&plan).clone();
+                Ok((AnyPlan::Ton(plan), planned, fee))
             }
         }
     }

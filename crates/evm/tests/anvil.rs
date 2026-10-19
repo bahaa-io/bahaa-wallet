@@ -113,6 +113,7 @@ fn transfer(chain: &EvmChain, asset: AssetId, amount: Amount) -> Transfer {
         to: chain.derive(&seed(), 1).unwrap(),
         asset,
         amount,
+        max: false,
     }
 }
 
@@ -178,6 +179,48 @@ async fn sends_native_coins_end_to_end() {
     let (second, _, _) = send(&chain, &transfer).await;
     confirmed(&chain, &second).await;
     assert_ne!(second, id);
+}
+
+#[tokio::test]
+#[ignore = "needs a local anvil: BAHAA_ANVIL=/path/to/anvil"]
+async fn a_max_send_leaves_only_the_fee_room_it_did_not_use() {
+    let anvil = Anvil::start("bsc", &[]);
+    anvil.ready().await;
+    let chain = anvil.chain();
+    let bnb: AssetId = "bsc".parse().unwrap();
+    let mut transfer = transfer(&chain, bnb.clone(), Amount::default());
+    transfer.account = 2;
+    transfer.from = chain.derive(&seed(), 2).unwrap();
+    transfer.max = true;
+    let start = Amount::parse("1", 18).unwrap();
+    let http = reqwest::Client::new();
+    anvil
+        .rpc(
+            &http,
+            "anvil_setBalance",
+            json!([transfer.from.to_string(), format!("{:#x}", start.units())]),
+        )
+        .await
+        .unwrap();
+    let before_to = balance(&chain, &transfer.to, &bnb).await;
+    let (plan, quote) = chain.prepare(&transfer).await.unwrap();
+    let planned = chain.planned(&plan).clone();
+    assert_eq!(planned.amount.checked_add(quote.max()), Ok(start));
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    check_signed(&planned, &chain.decode(&signed).unwrap()).unwrap();
+    let id = chain.broadcast(&signed).await.unwrap();
+    let paid = confirmed(&chain, &id).await;
+    assert_eq!(
+        balance(&chain, &transfer.to, &bnb).await,
+        before_to.checked_add(planned.amount).unwrap()
+    );
+    let left = balance(&chain, &transfer.from, &bnb).await;
+    assert_eq!(left, quote.max().checked_sub(paid).unwrap());
+    assert!(left < quote.expected(), "{left} left of {quote:?}");
+    assert!(matches!(
+        chain.prepare(&transfer).await,
+        Err(ChainError::Insufficient { .. })
+    ));
 }
 
 #[tokio::test]
@@ -260,6 +303,23 @@ async fn sends_real_bsc_usdt_on_a_forked_chain() {
     assert_eq!(
         balance(&chain, &transfer.from, &usdt).await,
         funded.checked_sub(amount).unwrap()
+    );
+    let everything = Transfer {
+        amount: Amount::default(),
+        max: true,
+        ..transfer.clone()
+    };
+    let (plan, _) = chain.prepare(&everything).await.unwrap();
+    let planned = chain.planned(&plan).clone();
+    assert_eq!(planned.amount, funded.checked_sub(amount).unwrap());
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    check_signed(&planned, &chain.decode(&signed).unwrap()).unwrap();
+    let rest = chain.broadcast(&signed).await.unwrap();
+    confirmed(&chain, &rest).await;
+    assert!(balance(&chain, &transfer.from, &usdt).await.is_zero());
+    assert_eq!(
+        chain.prepare(&everything).await.unwrap_err(),
+        ChainError::Invalid("there is nothing to send")
     );
     anvil
         .rpc(&http, "anvil_mine", json!(["0xc"]))

@@ -90,6 +90,7 @@ fn send_eth(network: &str) -> Transfer {
         to: Address::Evm([9; 20]),
         asset: network.parse().unwrap(),
         amount: Amount::new(U256::from(AMOUNT), 18).unwrap(),
+        max: false,
     }
 }
 
@@ -189,6 +190,59 @@ async fn the_balance_must_cover_the_rollup_fees_too() {
 }
 
 #[tokio::test]
+async fn a_max_send_keeps_back_the_most_the_fees_can_cost() {
+    let gas_limit = ESTIMATE + ESTIMATE / 5;
+    let max = gas_limit * (2 * BASE_FEE + TIP) + 2 * L1_FEE + gas_limit * OPERATOR_PER_GAS;
+    let seed = Mnemonic::parse("test test test test test test test test test test test junk")
+        .unwrap()
+        .to_seed("");
+    let everything = |network: &str| Transfer {
+        amount: Amount::default(),
+        max: true,
+        ..send_eth(network)
+    };
+    for (network, id, kept) in [
+        ("base", "0x2105", max),
+        ("bsc", "0x38", gas_limit * (2 * BASE_FEE + TIP)),
+    ] {
+        let (url, _) = fake(id, AMOUNT, Value::Null).await;
+        let chain = EvmChain::new(network_on(network, &[url])).unwrap();
+        let (plan, quote) = chain.prepare(&everything(network)).await.unwrap();
+        let planned = chain.planned(&plan);
+        assert!(planned.max, "{network}");
+        assert_eq!(planned.amount, wei(AMOUNT - kept), "{network}");
+        assert_eq!(quote.max(), wei(kept), "{network}");
+        let signed = chain.sign(&plan, &seed).unwrap();
+        let envelope = TxEnvelope::decode_2718(&mut &signed.bytes[..]).unwrap();
+        assert_eq!(
+            envelope.as_eip1559().unwrap().tx().value,
+            U256::from(AMOUNT - kept)
+        );
+        let decoded = chain.decode(&signed).unwrap();
+        assert!(!decoded.everything);
+        bahaa_chain::check_signed(planned, &decoded).unwrap();
+    }
+    for (balance, refusal) in [
+        (
+            max,
+            ChainError::Insufficient {
+                symbol: "ETH".to_owned(),
+                needed: wei(max + 1),
+                available: wei(max),
+            },
+        ),
+        (0, ChainError::Invalid("there is nothing to send")),
+    ] {
+        let (url, _) = fake("0x2105", balance, Value::Null).await;
+        let chain = EvmChain::new(network_on("base", &[url])).unwrap();
+        assert_eq!(
+            chain.prepare(&everything("base")).await.unwrap_err(),
+            refusal
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_confirmed_base_transfer_counts_the_l1_and_operator_fees_it_paid() {
     let id = TxId::new(format!("0x{}", "ab".repeat(32))).unwrap();
     let gas = 21_000 * (BASE_FEE + TIP);
@@ -265,6 +319,7 @@ async fn live_base_and_optimism_quotes_include_the_l1_fee() {
             to: evm("0x000000000000000000000000000000000000dEaD"),
             asset: id.parse().unwrap(),
             amount: wei(1),
+            max: false,
         };
         let (_, quote) = chain.prepare(&transfer).await.unwrap();
         let items: Vec<&FeeItem> = quote.lines().iter().map(|line| &line.item).collect();

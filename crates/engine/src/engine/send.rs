@@ -22,12 +22,18 @@ const MAX_REASON: usize = 200;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DraftId(u64);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spend {
+    Exact(Amount),
+    Max,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SendRequest {
     pub wallet: WalletId,
     pub asset: AssetId,
     pub to: Address,
-    pub amount: Amount,
+    pub amount: Spend,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,8 +58,7 @@ pub(super) struct Quoted {
     session: u64,
     wallet: WalletId,
     chain: usize,
-    transfer: Transfer,
-    result: Result<(AnyPlan, FeeQuote), ChainError>,
+    result: Result<(AnyPlan, Transfer, FeeQuote), ChainError>,
     reply: Reply<Draft>,
 }
 
@@ -88,7 +93,6 @@ impl Worker {
                 session,
                 wallet,
                 chain,
-                transfer,
                 result,
                 reply,
             };
@@ -129,7 +133,11 @@ impl Worker {
                 from,
                 to: request.to,
                 asset: request.asset.clone(),
-                amount: request.amount,
+                amount: match request.amount {
+                    Spend::Exact(amount) => amount,
+                    Spend::Max => Amount::default(),
+                },
+                max: request.amount == Spend::Max,
             },
         ))
     }
@@ -139,7 +147,6 @@ impl Worker {
             session,
             wallet,
             chain,
-            transfer,
             result,
             reply,
         } = quoted;
@@ -147,7 +154,7 @@ impl Worker {
             let _ = reply.send(Err(KeyringError::Locked.into()));
             return;
         }
-        let (plan, fee) = match result {
+        let (plan, transfer, fee) = match result {
             Ok(quote) => quote,
             Err(err) => {
                 let _ = reply.send(Err(err.into()));

@@ -99,22 +99,24 @@ impl Chain for FakeChain {
                 amount: fee,
             }],
         )?;
-        let needed = transfer.amount.checked_add(fee).unwrap();
         let available = self.balance(&transfer.from);
-        if available < needed {
+        let mut transfer = transfer.clone();
+        if transfer.max {
+            transfer.amount = available.checked_sub(fee).unwrap_or(fee);
+        }
+        let needed = transfer.amount.checked_add(fee).unwrap();
+        if available < needed || transfer.amount.is_zero() {
             return Err(ChainError::Insufficient {
                 symbol: self.network.native.symbol.clone(),
                 needed,
                 available,
             });
         }
-        Ok((
-            Plan {
-                transfer: transfer.clone(),
-                fee,
-            },
-            quote,
-        ))
+        Ok((Plan { transfer, fee }, quote))
+    }
+
+    fn planned<'a>(&self, plan: &'a Plan) -> &'a Transfer {
+        &plan.transfer
     }
 
     fn sign(&self, plan: &Plan, seed: &Seed) -> Result<Signed, ChainError> {
@@ -165,6 +167,7 @@ impl Chain for FakeChain {
             asset: AssetId::Native(self.network.id.clone()),
             amount: Amount::new(ruint::aliases::U256::from_be_bytes(units), 18)
                 .map_err(|_| bad())?,
+            everything: false,
             sequence: None,
             expires_at: None,
         })
@@ -216,7 +219,7 @@ impl Chain for FakeChain {
 async fn send<C: Chain>(chain: &C, transfer: &Transfer, seed: &Seed) -> Result<TxId, ChainError> {
     let (plan, _quote) = chain.prepare(transfer).await?;
     let signed = chain.sign(&plan, seed)?;
-    check_signed(transfer, &chain.decode(&signed)?)?;
+    check_signed(chain.planned(&plan), &chain.decode(&signed)?)?;
     chain.broadcast(&signed).await
 }
 
@@ -236,6 +239,7 @@ fn setup() -> (FakeChain, Seed, Transfer) {
         to,
         asset: AssetId::Native(chain.network().id.clone()),
         amount: native("0.25"),
+        max: false,
     };
     (chain, seed, transfer)
 }
@@ -318,6 +322,37 @@ async fn a_signed_transaction_that_differs_from_the_request_is_caught() {
         check_signed(&transfer, &wrong_asset),
         Err(ChainError::Mismatch("the asset"))
     );
+    let sweeping = Decoded {
+        everything: true,
+        ..chain.decode(&chain.sign(&plan, &seed).unwrap()).unwrap()
+    };
+    assert_eq!(
+        check_signed(&transfer, &sweeping),
+        Err(ChainError::Mismatch("the amount"))
+    );
+    let asked = Transfer {
+        max: true,
+        ..transfer
+    };
+    assert_eq!(check_signed(&asked, &sweeping), Ok(()));
+}
+
+#[tokio::test]
+async fn a_max_transfer_sends_the_balance_less_the_fee() {
+    let (chain, seed, mut transfer) = setup();
+    transfer.max = true;
+    transfer.amount = Amount::default();
+    let (plan, quote) = chain.prepare(&transfer).await.unwrap();
+    let planned = chain.planned(&plan);
+    assert_eq!(planned.amount, native("0.999979"));
+    assert_eq!(planned.amount.checked_add(quote.max()), Ok(native("1")));
+    assert!(planned.max);
+    send(&chain, &transfer, &seed).await.unwrap();
+    assert_eq!(chain.balance(&transfer.from), native("0"));
+    assert!(matches!(
+        chain.prepare(&transfer).await,
+        Err(ChainError::Insufficient { .. })
+    ));
 }
 
 #[tokio::test]

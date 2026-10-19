@@ -176,12 +176,55 @@ impl EvmChain {
 
 impl EvmChain {
     fn sendable(&self, transfer: &Transfer) -> Result<(), ChainError> {
-        if transfer.asset.network() != &self.network.id {
-            return Err(ChainError::Invalid("the asset belongs to another network"));
-        }
+        self.serves(&transfer.asset)?;
         if transfer.amount.is_zero() {
             return Err(ChainError::Invalid("send more than zero"));
         }
+        Ok(())
+    }
+
+    fn serves(&self, asset: &AssetId) -> Result<(), ChainError> {
+        if asset.network() == &self.network.id {
+            Ok(())
+        } else {
+            Err(ChainError::Invalid("the asset belongs to another network"))
+        }
+    }
+
+    async fn resolve(&self, from: &[u8; 20], transfer: &Transfer) -> Result<Transfer, ChainError> {
+        let mut transfer = transfer.clone();
+        if !transfer.max {
+            return Ok(transfer);
+        }
+        self.serves(&transfer.asset)?;
+        let held = match transfer.asset.contract().map(bytes).transpose()? {
+            None => self.native(self.native_balance(from).await?)?,
+            Some(contract) => amount(
+                self.token_balance(from, &contract).await?,
+                self.token_decimals(&contract).await?,
+            )?,
+        };
+        transfer.take_all(held)?;
+        Ok(transfer)
+    }
+
+    fn leave_fees(
+        &self,
+        transfer: &mut Transfer,
+        tx: &mut TxEip1559,
+        max: U256,
+    ) -> Result<(), ChainError> {
+        let balance = tx.value;
+        let Some(left) = balance.checked_sub(max).filter(|left| !left.is_zero()) else {
+            return Err(insufficient(
+                self.network.native.symbol.clone(),
+                max.checked_add(U256::from(1u8)).ok_or_else(overflow)?,
+                balance,
+                self.network.native.decimals,
+            )?);
+        };
+        tx.value = left;
+        transfer.amount = self.native(left)?;
         Ok(())
     }
 
@@ -372,9 +415,10 @@ impl Chain for EvmChain {
     }
 
     async fn prepare(&self, transfer: &Transfer) -> Result<(EvmPlan, FeeQuote), ChainError> {
-        self.sendable(transfer)?;
         let from = bytes(&transfer.from)?;
-        let route = self.route(transfer).await?;
+        let mut transfer = self.resolve(&from, transfer).await?;
+        self.sendable(&transfer)?;
+        let route = self.route(&transfer).await?;
         let nonce = u64::try_from(quantity(
             &self
                 .rpc
@@ -382,7 +426,7 @@ impl Chain for EvmChain {
                 .await?,
         )?)
         .map_err(|_| ChainError::Invalid("impossible nonce"))?;
-        self.funds(&from, transfer, &route, U256::ZERO).await?;
+        self.funds(&from, &transfer, &route, U256::ZERO).await?;
         let estimate = self.estimate(&from, &route).await?;
         let gas_limit = if route.data.is_empty() && estimate == PLAIN_GAS {
             estimate
@@ -390,7 +434,7 @@ impl Chain for EvmChain {
             estimate.saturating_add(estimate / 5)
         };
         let mut fees = self.quote(estimate, gas_limit).await?;
-        let tx = TxEip1559 {
+        let mut tx = TxEip1559 {
             chain_id: self.chain_id,
             nonce,
             gas_limit,
@@ -404,14 +448,15 @@ impl Chain for EvmChain {
         if self.is_rollup() {
             self.add_rollup_fees(&tx, estimate, &mut fees).await?;
         }
-        self.funds(&from, transfer, &route, fees.max).await?;
-        Ok((
-            EvmPlan {
-                transfer: transfer.clone(),
-                tx,
-            },
-            self.fee_quote(fees)?,
-        ))
+        if transfer.max && route.token.is_none() {
+            self.leave_fees(&mut transfer, &mut tx, fees.max)?;
+        }
+        self.funds(&from, &transfer, &route, fees.max).await?;
+        Ok((EvmPlan { transfer, tx }, self.fee_quote(fees)?))
+    }
+
+    fn planned<'a>(&self, plan: &'a EvmPlan) -> &'a Transfer {
+        &plan.transfer
     }
 
     fn sign(&self, plan: &EvmPlan, seed: &Seed) -> Result<Signed, ChainError> {
@@ -465,6 +510,7 @@ impl Chain for EvmChain {
             to: Address::Evm(to),
             asset,
             amount,
+            everything: false,
             sequence: Some(parsed.tx.nonce),
             expires_at: None,
         })
@@ -687,6 +733,7 @@ mod tests {
                 to: Address::Evm(to),
                 asset: AssetId::Native(chain.network.id.clone()),
                 amount: chain.native(value).unwrap(),
+                max: false,
             },
             tx: TxEip1559 {
                 chain_id: chain.chain_id,

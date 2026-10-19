@@ -17,6 +17,7 @@ use tonlib_core::wallet::wallet_version::WalletVersion;
 use tonlib_core::{TonAddress, TonHash};
 
 pub(crate) const SEND_MODE: u8 = 3;
+pub(crate) const SEND_ALL: u8 = 130;
 pub(crate) const TOKEN_TRANSFER: u32 = 0x0f8a_7ea5;
 pub(crate) const FORWARD_NANO: u8 = 1;
 pub(crate) const V4R2_WALLET_ID: i32 = 0x29a9_a317;
@@ -38,6 +39,7 @@ pub(crate) struct Order {
     pub valid_until: u32,
     pub to: Address,
     pub nano: U256,
+    pub everything: bool,
     pub bounce: bool,
     pub token: Option<Token>,
 }
@@ -119,6 +121,14 @@ pub(crate) fn transfer_gas(contract: TonContract) -> u64 {
     }
 }
 
+fn mode(order: &Order) -> u8 {
+    if order.everything {
+        SEND_ALL
+    } else {
+        SEND_MODE
+    }
+}
+
 pub(crate) fn unsigned(order: &Order) -> Result<Cell, ChainError> {
     let broken = |_| ChainError::Invalid("cannot build the wallet message");
     let transfer = outgoing(order, None)?.to_arc();
@@ -127,7 +137,7 @@ pub(crate) fn unsigned(order: &Order) -> Result<Cell, ChainError> {
             wallet_id: order.wallet_id,
             valid_until: order.valid_until,
             msg_seqno: order.seqno,
-            msgs_modes: vec![SEND_MODE],
+            msgs_modes: vec![mode(order)],
             msgs: vec![transfer],
         }
         .to_cell(),
@@ -136,7 +146,7 @@ pub(crate) fn unsigned(order: &Order) -> Result<Cell, ChainError> {
             valid_until: order.valid_until,
             msg_seqno: order.seqno,
             opcode: 0,
-            msgs_modes: vec![SEND_MODE],
+            msgs_modes: vec![mode(order)],
             msgs: vec![transfer],
         }
         .to_cell(),
@@ -280,9 +290,12 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
     ) else {
         return Err(invalid());
     };
-    let ([transfer], [SEND_MODE]) = (request.msgs.as_slice(), request.modes.as_slice()) else {
+    let ([transfer], [mode @ (SEND_MODE | SEND_ALL)]) =
+        (request.msgs.as_slice(), request.modes.as_slice())
+    else {
         return Err(ChainError::Invalid("not a single plain transfer"));
     };
+    let everything = *mode == SEND_ALL;
     let inner = Message::from_cell(transfer).map_err(|_| invalid())?;
     let CommonMsgInfo::Int(sent) = &inner.info else {
         return Err(invalid());
@@ -300,6 +313,7 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
         (destination, None)
     } else {
         let (to, token) = token_transfer(payload, destination)
+            .filter(|_| !everything)
             .ok_or(ChainError::Invalid("not a single plain transfer"))?;
         (to, Some(token))
     };
@@ -313,6 +327,7 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
         valid_until: request.valid_until,
         to,
         nano,
+        everything,
         bounce: sent.bounce,
         token,
     };
@@ -537,6 +552,7 @@ mod tests {
                 hash: [0x5c; 32],
             },
             nano: U256::from(5u8),
+            everything: false,
             bounce: false,
             token: None,
         };

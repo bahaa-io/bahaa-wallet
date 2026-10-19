@@ -10,7 +10,7 @@ use bahaa_chain::ChainError;
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
 use bahaa_engine::{
-    Engine, EngineConfig, EngineError, Event, KeyringError, SendRequest, SentStatus, SentTx,
+    Engine, EngineConfig, EngineError, Event, KeyringError, SendRequest, SentStatus, SentTx, Spend,
     WalletId,
 };
 use bahaa_types::{Address, Amount, ChainFamily};
@@ -107,7 +107,7 @@ fn bnb(wallet: WalletId, amount: &str) -> SendRequest {
         wallet,
         asset: "bsc".parse().unwrap(),
         to: Address::parse(ChainFamily::Evm, HARDHAT_1).unwrap(),
-        amount: Amount::parse(amount, 18).unwrap(),
+        amount: Spend::Exact(Amount::parse(amount, 18).unwrap()),
     }
 }
 
@@ -173,6 +173,33 @@ async fn a_send_needs_the_password_and_is_tracked_until_confirmed() {
     assert_eq!(done.fee_paid.unwrap().to_string(), "0.000042");
     assert_eq!(done.amount.to_string(), "0.25");
     assert_eq!(engine.history().await.unwrap(), [done]);
+    assert_eq!(ledger.lock().unwrap().accepted.len(), 1);
+}
+
+#[tokio::test]
+async fn a_max_send_is_drafted_with_the_amount_it_really_sends() {
+    let scratch = Scratch::new();
+    let ledger = Shared::default();
+    let (engine, wallet) = setup(&scratch, &ledger, |_| {}).await;
+    let everything = SendRequest {
+        amount: Spend::Max,
+        ..bnb(wallet, "1")
+    };
+    let draft = engine.prepare_send(everything).await.unwrap();
+    assert!(draft.transfer.max);
+    assert_eq!(
+        (
+            draft.transfer.amount.to_string(),
+            draft.fee.max().to_string()
+        ),
+        ("9.999937".to_owned(), "0.000063".to_owned())
+    );
+    let sent = engine
+        .confirm_send(draft.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    assert_eq!(sent.amount, draft.transfer.amount);
+    assert_eq!(sent.fee_max, draft.fee.max());
     assert_eq!(ledger.lock().unwrap().accepted.len(), 1);
 }
 

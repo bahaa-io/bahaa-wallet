@@ -8,17 +8,21 @@ use tycho_types::cell::{Cell, CellBuilder, CellSlice, HashBytes, Lazy, Load};
 use tycho_types::dict::{Dict, RawDict};
 use tycho_types::models::{
     AccountState, BlockchainConfig, BlockchainConfigParams, ComputePhase, LibDescr,
-    OptionalAccount, ShardAccount, StdAddr, TxInfo,
+    OptionalAccount, ShardAccount, SizeLimitsConfig, StdAddr, TxInfo,
 };
 
 use crate::fees::Settings;
 
 const CONFIG_ADDRESS: i32 = 0;
 const WORKCHAINS: i32 = 12;
+const SIZE_LIMITS: i32 = 43;
 const PRECOMPILED: i32 = 45;
 const WORKCHAIN_V1: u8 = 0xa6;
 const WORKCHAIN_V2: u8 = 0xa7;
 const PRECOMPILED_SMC: u8 = 0xb0;
+const SIZE_LIMITS_V2: u8 = 0x02;
+const SIZE_LIMITS_V3: u8 = 0x03;
+const MAX_CELL_BITS: u32 = 1023;
 const WORKCHAIN_HEAD_BITS: u16 = 8 + 32 + 24 + 16 + 512 + 32;
 const BASIC_FORMAT_BITS: u16 = 4 + 32 + 64;
 const EXTENDED_FORMAT_BITS: u16 = 4 + 12 + 12 + 12 + 32;
@@ -65,6 +69,7 @@ impl Emulator {
                     cell
                 }
                 WORKCHAINS => workchains_v1(&cell)?,
+                SIZE_LIMITS => size_limits(&cell)?,
                 PRECOMPILED => {
                     precompiled = gas_overrides(&cell)?;
                     cell
@@ -104,7 +109,7 @@ impl Emulator {
         state: &[u8],
         message: &[u8],
     ) -> Result<Emulated, ChainError> {
-        self.run_from(address, state, message, false)
+        self.run_from(address, state, message, (false, false))
     }
 
     pub(crate) fn run_settled(
@@ -113,7 +118,17 @@ impl Emulator {
         state: &[u8],
         message: &[u8],
     ) -> Result<Emulated, ChainError> {
-        self.run_from(address, state, message, true)
+        self.run_from(address, state, message, (true, false))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn run_external(
+        &self,
+        address: &Address,
+        state: &[u8],
+        message: &[u8],
+    ) -> Result<Emulated, ChainError> {
+        self.run_from(address, state, message, (false, true))
     }
 
     fn run_from(
@@ -121,7 +136,7 @@ impl Emulator {
         address: &Address,
         state: &[u8],
         message: &[u8],
-        settled: bool,
+        (settled, external): (bool, bool),
     ) -> Result<Emulated, ChainError> {
         let unreadable = || ChainError::Network("a transfer cannot be emulated".to_owned());
         let Address::Ton { workchain, hash } = address else {
@@ -154,7 +169,7 @@ impl Emulator {
             .with_min_lt(last_lt.saturating_add(1))
             .begin_ordinary_ext(
                 &StdAddr::new(*workchain, HashBytes(*hash)),
-                false,
+                external,
                 message,
                 &shard,
                 Some(&mut inspector),
@@ -241,6 +256,36 @@ fn workchains_v1(param: &Cell) -> Option<Cell> {
     CellBuilder::build_from(&converted).ok()
 }
 
+fn size_limits(param: &Cell) -> Option<Cell> {
+    let mut slice = param.as_slice().ok()?;
+    if !matches!(slice.load_u8().ok()?, SIZE_LIMITS_V2 | SIZE_LIMITS_V3) {
+        return None;
+    }
+    let max_msg_bits = slice.load_u32().ok()?;
+    let max_msg_cells = slice.load_u32().ok()?;
+    let max_library_cells = slice.load_u32().ok()?;
+    let max_vm_data_depth = slice.load_u16().ok()?;
+    let max_ext_msg_size = slice.load_u32().ok()?;
+    let max_ext_msg_depth = slice.load_u16().ok()?;
+    let max_acc_state_cells = slice.load_u32().ok()?;
+    slice.load_u32().ok()?;
+    let max_acc_public_libraries = slice.load_u32().ok()?;
+    let defer_out_queue_size_limit = slice.load_u32().ok()?;
+    CellBuilder::build_from(SizeLimitsConfig {
+        max_msg_bits,
+        max_msg_cells,
+        max_library_cells,
+        max_vm_data_depth,
+        max_ext_msg_size,
+        max_ext_msg_depth,
+        max_acc_state_cells,
+        max_acc_state_bits: max_acc_state_cells.saturating_mul(MAX_CELL_BITS),
+        max_acc_public_libraries,
+        defer_out_queue_size_limit,
+    })
+    .ok()
+}
+
 fn gas_overrides(param: &Cell) -> Option<HashMap<[u8; 32], u64>> {
     let mut slice = param.as_slice().ok()?;
     slice.load_u8().ok()?;
@@ -282,6 +327,7 @@ pub(crate) mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::fees::Config;
     use crate::lite::proven_config;
     use crate::tl::{self, Answer};
     use crate::wallet::{self, Order, Token};
@@ -334,11 +380,23 @@ pub(crate) mod tests {
         emulator_with(true)
     }
 
-    pub(crate) fn emulator_with(library: bool) -> Emulator {
+    pub(crate) fn config() -> Config {
         let Some(Answer::Ok(info)) = tl::config_info(&recorded(&["config"])) else {
             panic!("a config expected");
         };
-        let config = proven_config(&info.block.clone(), &info).unwrap();
+        proven_config(&info.block.clone(), &info).unwrap()
+    }
+
+    pub(crate) fn emulator_with(library: bool) -> Emulator {
+        built(library, NOW)
+    }
+
+    pub(crate) fn emulator_at(now: u32) -> Emulator {
+        built(true, now)
+    }
+
+    fn built(library: bool, now: u32) -> Emulator {
+        let config = config();
         let Some(Answer::Ok(entries)) = tl::library_result(&recorded(&["libraries", LIBRARY]))
         else {
             panic!("a library expected");
@@ -352,7 +410,7 @@ pub(crate) mod tests {
             &config.encoded().unwrap(),
             &libraries,
             config.settings().unwrap(),
-            NOW,
+            now,
         )
         .unwrap()
     }
@@ -366,6 +424,7 @@ pub(crate) mod tests {
             valid_until: NOW + 300,
             to: ton(OWNER),
             nano: U256::from(attached),
+            everything: false,
             bounce: true,
             token: Some(Token {
                 wallet: ton(OURS),
@@ -409,6 +468,27 @@ pub(crate) mod tests {
             gas_overrides(&find(PRECOMPILED)).unwrap(),
             HashMap::from([(unhex(USDT_CODE).try_into().unwrap(), 1_000)])
         );
+        let limits: SizeLimitsConfig = size_limits(&find(SIZE_LIMITS)).unwrap().parse().unwrap();
+        assert_eq!(
+            limits,
+            SizeLimitsConfig {
+                max_msg_bits: 1 << 21,
+                max_msg_cells: 1 << 13,
+                max_library_cells: 200,
+                max_vm_data_depth: 512,
+                max_ext_msg_size: 65_535,
+                max_ext_msg_depth: 512,
+                max_acc_state_cells: 1 << 16,
+                max_acc_state_bits: (1 << 16) * 1023,
+                max_acc_public_libraries: 256,
+                defer_out_queue_size_limit: 256,
+            }
+        );
+        let misread: SizeLimitsConfig = find(SIZE_LIMITS).parse().unwrap();
+        assert_eq!(misread.max_acc_state_bits, 2048);
+        let mut legacy = CellBuilder::new();
+        legacy.store_u8(0x01).unwrap();
+        assert_eq!(size_limits(&legacy.build().unwrap()), None);
     }
 
     #[test]

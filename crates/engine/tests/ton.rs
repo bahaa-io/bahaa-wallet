@@ -7,7 +7,7 @@ use std::time::Duration;
 use bahaa_chain::ChainError;
 use bahaa_config::{ChainKind, Network, Registry};
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Arrival, Engine, EngineError, Event, Received, SendRequest};
+use bahaa_engine::{Arrival, Engine, EngineError, Event, Received, SendRequest, Spend};
 use bahaa_types::{Amount, ChainFamily, NetworkId};
 use common::{
     Asked, GET_ACCOUNT_STATE, GET_BLOCK_PROOF, HARDHAT, HARDHAT_0, Scratch, config, until,
@@ -99,7 +99,7 @@ async fn ton_accounts_follow_each_networks_wallet_id_and_show_gram() {
         wallet,
         asset: "ton".parse().unwrap(),
         to: test,
-        amount: Amount::parse("1", 9).unwrap(),
+        amount: Spend::Exact(Amount::parse("1", 9).unwrap()),
     };
     assert!(matches!(
         engine.prepare_send(request).await,
@@ -212,7 +212,7 @@ async fn ton_token_sends_are_quoted_from_proven_contract_state() {
         wallet,
         asset: bahaa_types::AssetId::Token("ton".parse().unwrap(), usdt),
         to: bahaa_types::Address::parse(ChainFamily::Ton, TON_0).unwrap(),
-        amount: Amount::parse("1", 6).unwrap(),
+        amount: Spend::Exact(Amount::parse("1", 6).unwrap()),
     };
     assert_eq!(
         engine.prepare_send(request).await,
@@ -328,7 +328,7 @@ async fn a_ton_phrase_opens_only_its_ton_accounts() {
         wallet,
         asset: "bsc".parse().unwrap(),
         to: bahaa_types::Address::parse(ChainFamily::Evm, HARDHAT_0).unwrap(),
-        amount: Amount::parse("1", 18).unwrap(),
+        amount: Spend::Exact(Amount::parse("1", 18).unwrap()),
     };
     assert_eq!(
         engine.prepare_send(bnb).await,

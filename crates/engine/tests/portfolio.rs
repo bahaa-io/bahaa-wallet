@@ -9,7 +9,7 @@ use bahaa_chain::ChainError;
 use bahaa_config::{Fiat, Registry, Settings};
 use bahaa_crypto::SecretString;
 use bahaa_engine::{
-    Engine, EngineError, KeyringError, NetworkHealth, NewPhrase, Portfolio, SendRequest,
+    Engine, EngineError, KeyringError, NetworkHealth, NewPhrase, Portfolio, SendRequest, Spend,
 };
 use bahaa_market::{MarketConfig, Status};
 use bahaa_types::{Address, Amount, ChainFamily};
@@ -372,7 +372,7 @@ async fn tron_holdings_join_the_portfolio_under_the_wallets_tron_account() {
         wallet,
         asset: "tron".parse().unwrap(),
         to: Address::parse(ChainFamily::Tron, TRON_0).unwrap(),
-        amount: Amount::parse("1", 6).unwrap(),
+        amount: Spend::Exact(Amount::parse("1", 6).unwrap()),
     };
     assert_eq!(
         engine.prepare_send(request).await,

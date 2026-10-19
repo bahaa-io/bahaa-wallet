@@ -7,7 +7,7 @@ use thiserror::Error;
 
 pub const MAX_DECIMALS: u8 = 77;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(into = "Stored", try_from = "Stored")]
 pub struct Amount {
     units: U256,
