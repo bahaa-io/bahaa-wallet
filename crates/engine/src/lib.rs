@@ -5,6 +5,7 @@ mod keyring;
 mod payload;
 mod portfolio;
 
+pub use bahaa_chain::Replace;
 pub use bahaa_store::{
     Contact, CustomToken, Outgoing, Received, Scan, SentStatus, SentTx, StoreError,
 };

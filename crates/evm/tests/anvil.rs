@@ -255,6 +255,61 @@ async fn a_memo_is_carried_on_chain_by_a_coin_transfer() {
 
 #[tokio::test]
 #[ignore = "needs a local anvil: BAHAA_ANVIL=/path/to/anvil"]
+async fn a_waiting_transfer_is_sped_up_or_cancelled_in_the_mempool() {
+    let anvil = Anvil::start("bsc", &["--no-mining"]);
+    anvil.ready().await;
+    let chain = anvil.chain();
+    let http = reqwest::Client::new();
+    let bnb: AssetId = "bsc".parse().unwrap();
+    for how in [bahaa_chain::Replace::SpeedUp, bahaa_chain::Replace::Cancel] {
+        let transfer = transfer(&chain, bnb.clone(), Amount::parse("0.1", 18).unwrap());
+        let before_to = balance(&chain, &transfer.to, &bnb).await;
+        let (plan, _) = chain.prepare(&transfer).await.unwrap();
+        let original = chain.sign(&plan, &seed()).unwrap();
+        chain.broadcast(&original).await.unwrap();
+        assert_eq!(
+            chain
+                .status(&original.id, &transfer.from, None)
+                .await
+                .unwrap(),
+            TxStatus::Pending
+        );
+        let (plan, _) = chain.replace(&original, 0, how).await.unwrap();
+        let replacement = chain.sign(&plan, &seed()).unwrap();
+        check_signed(chain.planned(&plan), &chain.decode(&replacement).unwrap()).unwrap();
+        chain.broadcast(&replacement).await.unwrap();
+        anvil
+            .rpc(&http, "anvil_mine", json!(["0x1"]))
+            .await
+            .unwrap();
+        assert!(matches!(
+            chain
+                .status(&replacement.id, &transfer.from, None)
+                .await
+                .unwrap(),
+            TxStatus::Confirmed { .. }
+        ));
+        assert_eq!(
+            chain
+                .status(&original.id, &transfer.from, None)
+                .await
+                .unwrap(),
+            TxStatus::NotFound
+        );
+        let arrived = balance(&chain, &transfer.to, &bnb)
+            .await
+            .checked_sub(before_to)
+            .unwrap();
+        let expected = match how {
+            bahaa_chain::Replace::SpeedUp => transfer.amount,
+            bahaa_chain::Replace::Cancel => Amount::zero(18).unwrap(),
+        };
+        assert_eq!(arrived, expected, "{how:?}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a local anvil: BAHAA_ANVIL=/path/to/anvil"]
 async fn refuses_to_overspend_and_knows_unknown_ids() {
     let anvil = Anvil::start("bsc", &[]);
     anvil.ready().await;

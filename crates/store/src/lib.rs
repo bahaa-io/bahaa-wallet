@@ -81,6 +81,8 @@ pub struct SentTx {
     pub transaction: Option<String>,
     #[serde(default)]
     pub memo: Option<String>,
+    #[serde(default)]
+    pub replaces: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

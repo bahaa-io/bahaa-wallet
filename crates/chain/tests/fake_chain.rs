@@ -119,6 +119,15 @@ impl Chain for FakeChain {
         &plan.transfer
     }
 
+    async fn replace(
+        &self,
+        _original: &Signed,
+        _account: u32,
+        _how: bahaa_chain::Replace,
+    ) -> Result<(Plan, FeeQuote), ChainError> {
+        Err(ChainError::Unsupported("replacing a transfer"))
+    }
+
     fn sign(&self, plan: &Plan, seed: &Seed) -> Result<Signed, ChainError> {
         if self.derive(seed, plan.transfer.account)? != plan.transfer.from {
             return Err(ChainError::Invalid(

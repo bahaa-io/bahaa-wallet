@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Incoming, ScanCursor, Scanned, Signed, Transfer,
-    TxId, TxStatus,
+    Balance, Chain, ChainError, Decoded, FeeQuote, Incoming, Replace, ScanCursor, Scanned, Signed,
+    Transfer, TxId, TxStatus,
 };
 use bahaa_config::{Coin, Network, Registry};
 use bahaa_crypto::{Seed, SeedKind};
@@ -118,6 +118,31 @@ impl AnyChain {
             }
             Self::Ton(chain) => {
                 let (plan, fee) = chain.prepare(transfer).await?;
+                let planned = chain.planned(&plan).clone();
+                Ok((AnyPlan::Ton(plan), planned, fee))
+            }
+        }
+    }
+
+    pub(crate) async fn replace(
+        &self,
+        original: &Signed,
+        account: u32,
+        how: Replace,
+    ) -> Result<(AnyPlan, Transfer, FeeQuote), ChainError> {
+        match self {
+            Self::Evm(chain) => {
+                let (plan, fee) = chain.replace(original, account, how).await?;
+                let planned = chain.planned(&plan).clone();
+                Ok((AnyPlan::Evm(plan), planned, fee))
+            }
+            Self::Tron(chain) => {
+                let (plan, fee) = chain.replace(original, account, how).await?;
+                let planned = chain.planned(&plan).clone();
+                Ok((AnyPlan::Tron(plan), planned, fee))
+            }
+            Self::Ton(chain) => {
+                let (plan, fee) = chain.replace(original, account, how).await?;
                 let planned = chain.planned(&plan).clone();
                 Ok((AnyPlan::Ton(plan), planned, fee))
             }

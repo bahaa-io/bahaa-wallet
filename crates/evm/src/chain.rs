@@ -5,8 +5,8 @@ use std::sync::{Mutex, PoisonError};
 use alloy_consensus::TxEip1559;
 use alloy_primitives::TxKind;
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, Failure, FeeItem, FeeLine, FeeQuote, MAX_MEMO, Signed,
-    Transfer, TxId, TxStatus, abi_text,
+    Balance, Chain, ChainError, Decoded, Failure, FeeItem, FeeLine, FeeQuote, MAX_MEMO, Replace,
+    Signed, Transfer, TxId, TxStatus, abi_text,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
 
 mod logs;
+mod replace;
 mod rollup;
 
 use crate::rpc::{Rpc, quantity};
@@ -287,11 +288,21 @@ impl EvmChain {
 
     async fn quote(&self, estimate: u64, gas_limit: u64) -> Result<Fees, ChainError> {
         let (base, tip) = self.fees().await?;
-        let price = base.checked_add(tip).ok_or_else(overflow)?;
         let max_fee = base
             .checked_mul(U256::from(2u8))
             .and_then(|fee| fee.checked_add(tip))
             .ok_or_else(overflow)?;
+        self.priced((estimate, gas_limit), base, tip, max_fee)
+    }
+
+    fn priced(
+        &self,
+        (estimate, gas_limit): (u64, u64),
+        base: U256,
+        tip: U256,
+        max_fee: U256,
+    ) -> Result<Fees, ChainError> {
+        let price = base.checked_add(tip).ok_or_else(overflow)?.min(max_fee);
         let max = U256::from(gas_limit)
             .checked_mul(max_fee)
             .ok_or_else(overflow)?;
@@ -476,6 +487,15 @@ impl Chain for EvmChain {
 
     fn planned<'a>(&self, plan: &'a EvmPlan) -> &'a Transfer {
         &plan.transfer
+    }
+
+    async fn replace(
+        &self,
+        original: &Signed,
+        account: u32,
+        how: Replace,
+    ) -> Result<(EvmPlan, FeeQuote), ChainError> {
+        self.replacement(original, account, how).await
     }
 
     fn sign(&self, plan: &EvmPlan, seed: &Seed) -> Result<Signed, ChainError> {

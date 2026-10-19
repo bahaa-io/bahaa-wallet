@@ -2,7 +2,9 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bahaa_chain::{ChainError, FeeQuote, MAX_MEMO, Signed, Transfer, TxId, TxStatus, check_signed};
+use bahaa_chain::{
+    ChainError, FeeQuote, MAX_MEMO, Replace, Signed, Transfer, TxId, TxStatus, check_signed,
+};
 use bahaa_crypto::{DeriveError, ExposeSecret, SecretString};
 use bahaa_store::{Received, SentStatus, SentTx};
 use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text, to_plain_text};
@@ -44,6 +46,7 @@ pub struct Draft {
     pub fee: FeeQuote,
     pub valid_for: Duration,
     pub cautions: Vec<Caution>,
+    pub replaces: Option<String>,
 }
 
 pub(super) struct Prepared {
@@ -53,6 +56,7 @@ pub(super) struct Prepared {
     fee: FeeQuote,
     plan: AnyPlan,
     expires: Instant,
+    replaces: Option<String>,
 }
 
 pub(super) struct Quoted {
@@ -61,6 +65,7 @@ pub(super) struct Quoted {
     chain: usize,
     result: Result<(AnyPlan, Transfer, FeeQuote), ChainError>,
     reply: Reply<Draft>,
+    replaces: Option<String>,
 }
 
 pub(super) struct Delivered {
@@ -96,9 +101,78 @@ impl Worker {
                 chain,
                 result,
                 reply,
+                replaces: None,
             };
             let _ = notices.send(Notice::Quoted(Box::new(quoted))).await;
         });
+    }
+
+    pub(super) fn replace_send(
+        &mut self,
+        network: &NetworkId,
+        id: &str,
+        how: Replace,
+        reply: Reply<Draft>,
+    ) {
+        let (chain, wallet, account, original) = match self.replace_target(network, id) {
+            Ok(target) => target,
+            Err(err) => {
+                let _ = reply.send(Err(err));
+                return;
+            }
+        };
+        let chains = Arc::clone(&self.chains);
+        let notices = self.notices_tx.clone();
+        let session = self.session;
+        let replaces = Some(id.to_owned());
+        tokio::spawn(async move {
+            let result = chains[chain].replace(&original, account, how).await;
+            let quoted = Quoted {
+                session,
+                wallet,
+                chain,
+                result,
+                reply,
+                replaces,
+            };
+            let _ = notices.send(Notice::Quoted(Box::new(quoted))).await;
+        });
+    }
+
+    fn replace_target(
+        &self,
+        network: &NetworkId,
+        id: &str,
+    ) -> Result<(usize, WalletId, u32, Signed), EngineError> {
+        if !self.unlocked() {
+            return Err(KeyringError::Locked.into());
+        }
+        let tx = self
+            .history
+            .iter()
+            .find(|tx| tx.network == *network && tx.id == id)
+            .ok_or(ChainError::Invalid("there is no such transfer"))?;
+        let bytes = tx
+            .raw
+            .as_deref()
+            .and_then(from_hex)
+            .filter(|_| tx.status.is_open())
+            .ok_or(ChainError::Invalid(
+                "only a transfer still on its way can be replaced",
+            ))?;
+        let chain = self
+            .chain_index(network)
+            .ok_or(EngineError::UnknownNetwork)?;
+        let account = self
+            .accounts
+            .iter()
+            .find(|account| account.address == tx.from)
+            .ok_or(KeyringError::UnknownWallet)?;
+        let original = Signed {
+            id: TxId::new(tx.id.clone())?,
+            bytes,
+        };
+        Ok((chain, account.wallet, account.index, original))
     }
 
     fn send_target(&self, request: &SendRequest) -> Result<(usize, Transfer), EngineError> {
@@ -160,6 +234,7 @@ impl Worker {
             chain,
             result,
             reply,
+            replaces,
         } = quoted;
         if session != self.session || !self.unlocked() {
             let _ = reply.send(Err(KeyringError::Locked.into()));
@@ -186,6 +261,7 @@ impl Worker {
             fee: fee.clone(),
             plan,
             expires: now + self.draft_ttl,
+            replaces: replaces.clone(),
         };
         self.drafts.insert(id, prepared);
         let senders: Vec<Received> = self
@@ -201,6 +277,7 @@ impl Worker {
             fee,
             valid_for: self.draft_ttl,
             cautions,
+            replaces,
         }));
     }
 
@@ -247,15 +324,27 @@ impl Worker {
             other => other?,
         };
         let network = self.chains[chain].network().id.clone();
-        let reused = decoded.sequence.is_some()
-            && self.history.iter().any(|tx| {
-                tx.status.is_open()
-                    && tx.network == network
+        if let Some(replaced) = &draft.replaces {
+            let same = self.history.iter().any(|tx| {
+                tx.network == network
+                    && tx.id == *replaced
                     && tx.from == decoded.from
                     && tx.sequence == decoded.sequence
             });
-        if reused {
-            return Err(EngineError::StillSending);
+            if !same {
+                return Err(ChainError::Mismatch("the replaced transfer").into());
+            }
+        } else {
+            let reused = decoded.sequence.is_some()
+                && self.history.iter().any(|tx| {
+                    tx.status.is_open()
+                        && tx.network == network
+                        && tx.from == decoded.from
+                        && tx.sequence == decoded.sequence
+                });
+            if reused {
+                return Err(EngineError::StillSending);
+            }
         }
         let record = SentTx {
             id: signed.id.to_string(),
@@ -274,6 +363,7 @@ impl Worker {
             raw: Some(to_hex(&signed.bytes)),
             transaction: None,
             memo: decoded.memo,
+            replaces: draft.replaces.clone(),
         };
         self.save(record.clone())?;
         Ok((chain, record, signed))
@@ -362,13 +452,40 @@ impl Worker {
                 .is_some_and(|tx| tx.status.is_open());
             if still_open && !self.broadcasting.contains(&update.id) {
                 settled |= !update.status.is_open();
+                let rivals = if update.status == SentStatus::Confirmed {
+                    self.rivals(&update)
+                } else {
+                    Vec::new()
+                };
                 let _ = self.save(update);
+                for rival in rivals {
+                    let _ = self.save(rival);
+                }
             }
         }
         if settled {
             self.restart_refresh();
         }
         self.schedule_tracking();
+    }
+
+    fn rivals(&self, confirmed: &SentTx) -> Vec<SentTx> {
+        self.history
+            .iter()
+            .filter(|tx| {
+                tx.status.is_open()
+                    && tx.id != confirmed.id
+                    && tx.network == confirmed.network
+                    && tx.from == confirmed.from
+                    && confirmed.sequence.is_some()
+                    && tx.sequence == confirmed.sequence
+            })
+            .map(|tx| SentTx {
+                status: SentStatus::Dropped,
+                raw: None,
+                ..tx.clone()
+            })
+            .collect()
     }
 
     pub(super) fn schedule_tracking(&mut self) {
@@ -545,6 +662,7 @@ mod tests {
             raw: Some("02f801".to_owned()),
             transaction: None,
             memo: None,
+            replaces: None,
         }
     }
 

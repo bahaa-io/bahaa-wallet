@@ -3,7 +3,8 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus, abi_text,
+    Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus,
+    abi_text,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
@@ -221,6 +222,17 @@ impl Chain for TronChain {
 
     fn planned<'a>(&self, plan: &'a TronPlan) -> &'a Transfer {
         &plan.transfer
+    }
+
+    fn replace(
+        &self,
+        _original: &Signed,
+        _account: u32,
+        _how: Replace,
+    ) -> impl Future<Output = Result<(TronPlan, FeeQuote), ChainError>> + Send {
+        std::future::ready(Err(ChainError::Unsupported(
+            "replacing a transfer, it expires on its own within minutes",
+        )))
     }
 
     fn sign(&self, plan: &TronPlan, seed: &Seed) -> Result<Signed, ChainError> {

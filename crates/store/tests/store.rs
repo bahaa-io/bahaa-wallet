@@ -182,6 +182,7 @@ fn sent(id: &str, status: SentStatus) -> SentTx {
         raw,
         transaction: None,
         memo: None,
+        replaces: None,
     }
 }
 

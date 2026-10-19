@@ -95,6 +95,12 @@ impl Transfer {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Replace {
+    SpeedUp,
+    Cancel,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FeeItem {
     Gas { units: u64, price: Amount },

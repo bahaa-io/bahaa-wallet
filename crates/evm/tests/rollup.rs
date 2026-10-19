@@ -290,6 +290,52 @@ async fn a_memo_is_priced_on_l1_and_never_sent_to_contract_code() {
 }
 
 #[tokio::test]
+async fn a_stuck_transfer_is_replaced_with_the_same_nonce_and_higher_fees() {
+    let (url, _) = fake("0x38", AMOUNT * 2, Value::Null).await;
+    let chain = EvmChain::new(network_on("bsc", &[url])).unwrap();
+    let seed = Mnemonic::parse("test test test test test test test test test test test junk")
+        .unwrap()
+        .to_seed("");
+    let (plan, _) = chain.prepare(&send_eth("bsc")).await.unwrap();
+    let original = chain.sign(&plan, &seed).unwrap();
+    let old = TxEnvelope::decode_2718(&mut &original.bytes[..]).unwrap();
+    let old = old.as_eip1559().unwrap().tx().clone();
+    for how in [bahaa_chain::Replace::SpeedUp, bahaa_chain::Replace::Cancel] {
+        let (plan, quote) = chain.replace(&original, 0, how).await.unwrap();
+        let signed = chain.sign(&plan, &seed).unwrap();
+        let new = TxEnvelope::decode_2718(&mut &signed.bytes[..]).unwrap();
+        let new = new.as_eip1559().unwrap().tx().clone();
+        assert_eq!(new.nonce, old.nonce, "{how:?}");
+        assert!(
+            new.max_fee_per_gas * 8 >= old.max_fee_per_gas * 9,
+            "{how:?}"
+        );
+        assert!(
+            new.max_priority_fee_per_gas * 8 >= old.max_priority_fee_per_gas * 9,
+            "{how:?}"
+        );
+        let decoded = chain.decode(&signed).unwrap();
+        bahaa_chain::check_signed(chain.planned(&plan), &decoded).unwrap();
+        assert_eq!(
+            quote.max().units(),
+            U256::from(new.gas_limit) * U256::from(new.max_fee_per_gas)
+        );
+        match how {
+            bahaa_chain::Replace::SpeedUp => {
+                assert_eq!((new.to, new.value), (old.to, old.value));
+                assert_eq!(decoded.to, Address::Evm([9; 20]));
+            }
+            bahaa_chain::Replace::Cancel => {
+                assert_eq!(new.value, U256::ZERO);
+                assert_eq!(new.gas_limit, 21_000);
+                assert_eq!(decoded.to, decoded.from);
+                assert!(decoded.amount.is_zero());
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_confirmed_base_transfer_counts_the_l1_and_operator_fees_it_paid() {
     let id = TxId::new(format!("0x{}", "ab".repeat(32))).unwrap();
     let gas = 21_000 * (BASE_FEE + TIP);

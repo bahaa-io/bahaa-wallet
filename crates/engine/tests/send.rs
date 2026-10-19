@@ -10,8 +10,8 @@ use bahaa_chain::ChainError;
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
 use bahaa_engine::{
-    ActivityKind, Engine, EngineConfig, EngineError, Event, KeyringError, SendRequest, SentStatus,
-    SentTx, Spend, WalletId,
+    ActivityKind, Engine, EngineConfig, EngineError, Event, KeyringError, Replace, SendRequest,
+    SentStatus, SentTx, Spend, WalletId,
 };
 use bahaa_types::{Address, Amount, ChainFamily};
 use common::{HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, USDT, config, result};
@@ -247,6 +247,48 @@ async fn a_memo_is_sent_recorded_and_checked() {
             "{bad:?}: {refused:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_waiting_send_is_sped_up_and_the_original_is_dropped() {
+    let scratch = Scratch::new();
+    let ledger = Shared::default();
+    ledger.lock().unwrap().hold = true;
+    let (engine, wallet) = setup(&scratch, &ledger, |_| {}).await;
+    let mut events = engine.events();
+    let first = send(&engine, wallet, "0.25").await.unwrap();
+    assert_eq!(first.status, SentStatus::Pending);
+    let bsc: bahaa_types::NetworkId = "bsc".parse().unwrap();
+    let draft = engine
+        .replace(bsc.clone(), first.id.clone(), Replace::SpeedUp)
+        .await
+        .unwrap();
+    assert_eq!(draft.replaces.as_deref(), Some(first.id.as_str()));
+    assert_eq!(draft.transfer.amount, first.amount);
+    assert!(draft.fee.max() > first.fee_max);
+    let faster = engine
+        .confirm_send(draft.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    assert_eq!(faster.sequence, first.sequence);
+    assert_eq!(faster.replaces.as_deref(), Some(first.id.as_str()));
+    {
+        let mut ledger = ledger.lock().unwrap();
+        ledger.known.remove(&first.id);
+        ledger.hold = false;
+    }
+    let done = settled(&mut events, &faster.id).await;
+    assert_eq!(done.status, SentStatus::Confirmed);
+    let history = engine.history().await.unwrap();
+    let original = history.iter().find(|tx| tx.id == first.id).unwrap();
+    assert_eq!(
+        (&original.status, &original.raw),
+        (&SentStatus::Dropped, &None)
+    );
+    assert!(matches!(
+        engine.replace(bsc, first.id, Replace::Cancel).await,
+        Err(EngineError::Chain(ChainError::Invalid(_)))
+    ));
 }
 
 #[tokio::test]

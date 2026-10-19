@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bahaa_chain::ChainError;
+use bahaa_chain::{ChainError, Replace};
 use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
@@ -137,6 +137,7 @@ enum Command {
     Settings(Reply<Settings>),
     SetSettings(Settings, Reply<()>),
     PrepareSend(SendRequest, Reply<Draft>),
+    Replace(NetworkId, String, Replace, Reply<Draft>),
     ConfirmSend(DraftId, SecretString, Reply<SentTx>),
     History(Reply<Vec<SentTx>>),
     Incoming(Reply<IncomingHistory>),
@@ -408,6 +409,16 @@ impl Engine {
         self.ask(|reply| Command::PrepareSend(request, reply)).await
     }
 
+    pub async fn replace(
+        &self,
+        network: NetworkId,
+        id: String,
+        how: Replace,
+    ) -> Result<Draft, EngineError> {
+        self.ask(|reply| Command::Replace(network, id, how, reply))
+            .await
+    }
+
     pub async fn confirm_send(
         &self,
         draft: DraftId,
@@ -594,6 +605,9 @@ impl Worker {
             }
             Command::Refresh => self.start_refresh(),
             Command::PrepareSend(request, reply) => self.prepare_send(&request, reply),
+            Command::Replace(network, id, how, reply) => {
+                self.replace_send(&network, &id, how, reply);
+            }
             Command::ConfirmSend(id, password, reply) => {
                 self.confirm_send(id, password, reply).await;
             }

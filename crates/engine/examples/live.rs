@@ -10,7 +10,7 @@ use bahaa_config::{Network, Registry};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_engine::{
     Account, ActivityKind, CustomToken, Draft, Engine, EngineConfig, Event, NewPhrase, PhraseKind,
-    SendRequest, SentStatus, SentTx, Spend, WalletId,
+    Replace, SendRequest, SentStatus, SentTx, Spend, WalletId,
 };
 use bahaa_market::Status;
 use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, TonContract, TonForm};
@@ -38,6 +38,8 @@ const USAGE: &str = "commands:
                                       only show what send would do
   watch <seconds>                     print what the engine reports
   track                               wait until every open send is settled
+  replace <network> <tx> <speedup|cancel>
+                                      resend a waiting EVM transfer with higher fees
   testnets <on|off>                   include the test networks
   tokens | token add <asset> | token remove <asset>
   ton-contract <wallet> <w5|v4r2>     choose the contract of a TON phrase
@@ -74,6 +76,9 @@ async fn run(args: &[String]) -> Outcome {
         }
         ["watch", seconds] => live.watch(Duration::from_secs(seconds.parse()?)).await,
         ["track"] => live.track().await,
+        ["replace", network, id, how @ ("speedup" | "cancel")] => {
+            live.replace(network, id, how).await
+        }
         ["testnets", choice @ ("on" | "off")] => live.testnets(*choice == "on").await,
         ["tokens"] => live.tokens().await,
         ["token", "add", asset] => live.add_token(asset).await,
@@ -628,6 +633,25 @@ impl Live {
             }
             other => println!("{other:?}"),
         }
+    }
+
+    async fn replace(&self, network: &str, id: &str, how: &str) -> Outcome {
+        let network = self.network(&network.parse()?)?.clone();
+        let how = if how == "cancel" {
+            Replace::Cancel
+        } else {
+            Replace::SpeedUp
+        };
+        let draft = self
+            .engine
+            .replace(network.id.clone(), id.to_owned(), how)
+            .await?;
+        self.print_draft(&draft, &network).await?;
+        let mut events = self.engine.events();
+        let sent = self.engine.confirm_send(draft.id, self.secret()).await?;
+        println!("sent {:?}: {}", sent.status, sent.id);
+        let done = settle(&mut events, &sent).await?;
+        self.print_sent(&done).await
     }
 
     async fn track(&self) -> Outcome {

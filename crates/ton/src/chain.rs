@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Signed, Transfer, TxId, TxStatus,
+    Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus,
 };
 use bahaa_config::{ChainKind, Checkpoint, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed, SeedKind};
@@ -289,6 +289,17 @@ impl Chain for TonChain {
 
     fn planned<'a>(&self, plan: &'a TonPlan) -> &'a Transfer {
         &plan.transfer
+    }
+
+    fn replace(
+        &self,
+        _original: &Signed,
+        _account: u32,
+        _how: Replace,
+    ) -> impl Future<Output = Result<(TonPlan, FeeQuote), ChainError>> + Send {
+        std::future::ready(Err(ChainError::Unsupported(
+            "replacing a transfer, it expires on its own within minutes",
+        )))
     }
 
     fn sign(&self, plan: &TonPlan, seed: &Seed) -> Result<Signed, ChainError> {

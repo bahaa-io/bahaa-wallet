@@ -204,6 +204,7 @@ mod tests {
             raw: None,
             transaction: None,
             memo: None,
+            replaces: None,
         }
     }
 

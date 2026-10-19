@@ -3,7 +3,8 @@ use bahaa_crypto::Seed;
 use bahaa_types::{Address, AssetId};
 
 use crate::{
-    Balance, ChainError, Cursor, Decoded, FeeQuote, HistoryPage, Signed, Transfer, TxId, TxStatus,
+    Balance, ChainError, Cursor, Decoded, FeeQuote, HistoryPage, Replace, Signed, Transfer, TxId,
+    TxStatus,
 };
 
 pub trait Chain: Send + Sync {
@@ -25,6 +26,13 @@ pub trait Chain: Send + Sync {
     ) -> impl Future<Output = Result<(Self::Plan, FeeQuote), ChainError>> + Send;
 
     fn planned<'a>(&self, plan: &'a Self::Plan) -> &'a Transfer;
+
+    fn replace(
+        &self,
+        original: &Signed,
+        account: u32,
+        how: Replace,
+    ) -> impl Future<Output = Result<(Self::Plan, FeeQuote), ChainError>> + Send;
 
     fn sign(&self, plan: &Self::Plan, seed: &Seed) -> Result<Signed, ChainError>;
 
