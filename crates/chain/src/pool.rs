@@ -2,11 +2,13 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use bahaa_config::{Endpoint, Feature};
-use futures_util::future::join_all;
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use thiserror::Error;
-use tokio::time::{Instant, sleep_until};
+use tokio::time::{Instant, sleep_until, timeout_at};
 
 pub const COOLDOWN_BASE: Duration = Duration::from_secs(5);
+pub const GRACE: Duration = Duration::from_secs(1);
 pub const COOLDOWN_MAX: Duration = Duration::from_secs(300);
 const MAX_DOUBLINGS: u32 = 10;
 
@@ -123,13 +125,33 @@ impl Pool {
             ready,
             history,
         } = self.ready(need)?;
-        let seen = join_all(ready.iter().map(|slot| slot.attempt(&op, history))).await;
+        let mut pending: FuturesUnordered<_> = ready
+            .iter()
+            .map(|slot| slot.attempt(&op, history))
+            .collect();
+        let mut accepted = None;
+        let mut until = None;
         let mut last = None;
         let mut failed = false;
         let mut refused = None;
-        for outcome in seen {
+        loop {
+            let next = match until {
+                Some(until) => match timeout_at(until, pending.next()).await {
+                    Ok(next) => next,
+                    Err(_) => break,
+                },
+                None => pending.next().await,
+            };
+            let Some(outcome) = next else {
+                break;
+            };
             match outcome {
-                Seen::Accepted(value) => return Ok(value),
+                Seen::Accepted(value) => {
+                    if accepted.is_none() {
+                        accepted = Some(value);
+                        until = Some(Instant::now() + GRACE);
+                    }
+                }
                 Seen::Refused(err) => refused = refused.or(Some(err)),
                 Seen::Failed(err) => {
                     failed = true;
@@ -137,6 +159,9 @@ impl Pool {
                 }
                 Seen::Skipped(err) => last = Some(err),
             }
+        }
+        if let Some(value) = accepted {
+            return Ok(value);
         }
         if let Some(err) = refused {
             return Err(PoolError::Fatal(err));
@@ -424,6 +449,40 @@ mod tests {
             .await;
         assert_eq!(outcome, Ok(1));
         assert_eq!(started.elapsed(), Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_endpoint_gets_a_moment_after_the_first_acceptance_not_more() {
+        let pool = pool(&["a", "b", "slow"]);
+        let log = Log::default();
+        let started = Instant::now();
+        let outcome: Result<u32, PoolError<&str>> = pool
+            .call_all(None, |endpoint| {
+                let host = endpoint.url.host_str().unwrap().to_owned();
+                log.lock().unwrap().push(host.clone());
+                async move {
+                    let wait = if host == "slow" { 30_000 } else { 100 };
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                    Ok(1)
+                }
+            })
+            .await;
+        assert_eq!(outcome, Ok(1));
+        assert_eq!(started.elapsed(), Duration::from_millis(100) + GRACE);
+        assert_eq!(taken(&log), ["a", "b", "slow"]);
+        let refused_first = pool
+            .call_all(None, |endpoint| {
+                let host = endpoint.url.host_str().unwrap().to_owned();
+                async move {
+                    if host == "a" {
+                        return Err(Failure::Fatal("stale"));
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    Ok(2)
+                }
+            })
+            .await;
+        assert_eq!(refused_first, Ok(2));
     }
 
     #[tokio::test(start_paused = true)]
