@@ -5,20 +5,19 @@ use bahaa_chain::{
     ChainError, FeeQuote, MAX_MEMO, Replace, Signed, Transfer, TxId, TxStatus, check_signed,
 };
 use bahaa_crypto::{DeriveError, ExposeSecret, SecretString};
-use bahaa_store::{Received, SentStatus, SentTx};
+use bahaa_store::{MAX_REASON, SentStatus, SentTx};
 use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text, to_plain_text};
 use futures_util::future::join_all;
 use tokio::time::Instant;
 
 use super::{EngineError, Event, Notice, Reply, Worker};
-use crate::caution::{self, Caution};
+use crate::caution::Caution;
 use crate::chains::{AnyChain, AnyPlan};
 use crate::{KeyringError, WalletId};
 
 const MAX_DRAFTS: usize = 8;
 const DROP_AFTER_SECS: u64 = 600;
 const EXPIRY_GRACE_SECS: u64 = 120;
-const MAX_REASON: usize = 200;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DraftId(u64);
@@ -144,9 +143,7 @@ impl Worker {
         network: &NetworkId,
         id: &str,
     ) -> Result<(usize, WalletId, u32, Signed), EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
+        self.ensure_unlocked()?;
         let tx = self
             .history
             .iter()
@@ -176,9 +173,7 @@ impl Worker {
     }
 
     fn send_target(&self, request: &SendRequest) -> Result<(usize, Transfer), EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
+        self.ensure_unlocked()?;
         let chain = self
             .chain_index(request.asset.network())
             .ok_or(ChainError::Unsupported("sending in this version"))?;
@@ -270,13 +265,7 @@ impl Worker {
             replaces: replaces.clone(),
         };
         self.drafts.insert(id, prepared);
-        let senders: Vec<Received> = self
-            .received
-            .iter()
-            .filter(|entry| entry.from == transfer.to)
-            .cloned()
-            .collect();
-        let cautions = caution::recipient(&transfer.to, &self.known(), &self.arrivals(&senders));
+        let cautions = self.recipient_cautions(&transfer.to);
         let _ = reply.send(Ok(Draft {
             id,
             transfer,
@@ -419,11 +408,8 @@ impl Worker {
     }
 
     pub(super) fn history(&self) -> Result<Vec<SentTx>, EngineError> {
-        if self.unlocked() {
-            Ok(self.history.clone())
-        } else {
-            Err(KeyringError::Locked.into())
-        }
+        self.ensure_unlocked()?;
+        Ok(self.history.clone())
     }
 
     pub(super) fn start_tracking(&mut self) {

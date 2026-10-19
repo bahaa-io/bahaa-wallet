@@ -106,10 +106,6 @@ impl Market {
     pub fn subscribe(&self) -> watch::Receiver<Snapshot> {
         self.snapshot.clone()
     }
-
-    pub fn current(&self) -> Snapshot {
-        self.snapshot.borrow().clone()
-    }
 }
 
 impl Drop for Market {

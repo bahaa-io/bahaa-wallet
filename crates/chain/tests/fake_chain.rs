@@ -382,7 +382,7 @@ async fn only_the_owning_seed_can_sign() {
 #[test]
 fn fee_quotes_must_add_up() {
     let line = |text: &str| FeeLine {
-        item: FeeItem::Network,
+        item: FeeItem::Storage,
         amount: native(text),
     };
     assert!(FeeQuote::new(native("2"), native("1.5"), vec![line("1"), line("0.5")]).is_ok());

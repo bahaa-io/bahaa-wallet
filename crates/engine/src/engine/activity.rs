@@ -23,12 +23,7 @@ impl Worker {
     pub(super) fn activities(&self) -> Result<Vec<Activity>, EngineError> {
         let elsewhere = self.outgoing()?;
         let received = self.incoming()?.transfers;
-        let owner = |address: &Address| {
-            self.accounts
-                .iter()
-                .find(|account| account.address == *address)
-                .map(|account| account.wallet)
-        };
+        let owner = |address: &Address| self.owner(address);
         let sent = self.history.iter().filter_map(|tx| {
             Some(Activity {
                 wallet: owner(&tx.from)?,

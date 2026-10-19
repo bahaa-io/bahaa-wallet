@@ -50,9 +50,7 @@ impl Worker {
     }
 
     async fn kind_of(&mut self, wallet: WalletId) -> Result<WalletKind, EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
+        self.ensure_unlocked()?;
         let wallets = self.keyring(|keyring| keyring.wallets()).await?;
         wallets
             .into_iter()

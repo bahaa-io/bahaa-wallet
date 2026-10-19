@@ -20,9 +20,7 @@ pub(super) struct TokenRead {
 
 impl Worker {
     pub(super) fn tokens(&self) -> Result<Vec<CustomToken>, EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
+        self.ensure_unlocked()?;
         let mut tokens = self.store.tokens()?;
         tokens.sort_by(|a, b| {
             (a.coin.symbol.to_lowercase(), a.asset.to_string())
@@ -56,9 +54,7 @@ impl Worker {
     }
 
     fn token_target(&self, asset: &AssetId) -> Result<(usize, Address), EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
+        self.ensure_unlocked()?;
         let AssetId::Token(network, contract) = asset else {
             return Err(ChainError::Invalid("a network's own coin is always shown").into());
         };
@@ -136,9 +132,7 @@ impl Worker {
     }
 
     pub(super) fn remove_token(&mut self, asset: &AssetId) -> Result<bool, EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
+        self.ensure_unlocked()?;
         let removed = self.store.remove_token(asset)?;
         if removed {
             self.held.retain(|held| held.asset != *asset);

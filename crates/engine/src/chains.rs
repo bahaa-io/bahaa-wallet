@@ -2,7 +2,7 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Incoming, Replace, ScanCursor, Scanned, Signed,
+    Balance, Chain, ChainError, Decoded, FeeQuote, Movement, Replace, ScanCursor, Scanned, Signed,
     Transfer, TxId, TxStatus,
 };
 use bahaa_config::{Coin, Network, Registry};
@@ -119,20 +119,18 @@ impl AnyChain {
         shielded(async {
             match self {
                 Self::Evm(chain) => {
-                    let (plan, fee) = chain.prepare(transfer).await?;
-                    let planned = chain.planned(&plan).clone();
-                    Ok((AnyPlan::Evm(plan), planned, fee))
+                    Ok(planned(chain, chain.prepare(transfer).await?, AnyPlan::Evm))
                 }
-                Self::Tron(chain) => {
-                    let (plan, fee) = chain.prepare(transfer).await?;
-                    let planned = chain.planned(&plan).clone();
-                    Ok((AnyPlan::Tron(plan), planned, fee))
-                }
-                Self::Ton(chain) => {
-                    let (plan, fee) = chain.prepare(transfer).await?;
-                    let planned = chain.planned(&plan).clone();
-                    Ok((AnyPlan::Ton(plan), planned, fee))
-                }
+                Self::Tron(chain) => Ok(planned(
+                    chain,
+                    chain.prepare(transfer).await?,
+                    AnyPlan::Tron,
+                )),
+                Self::Ton(chain) => Ok(planned(
+                    &**chain,
+                    chain.prepare(transfer).await?,
+                    AnyPlan::Ton,
+                )),
             }
         })
         .await
@@ -146,21 +144,21 @@ impl AnyChain {
     ) -> Result<(AnyPlan, Transfer, FeeQuote), ChainError> {
         shielded(async {
             match self {
-                Self::Evm(chain) => {
-                    let (plan, fee) = chain.replace(original, account, how).await?;
-                    let planned = chain.planned(&plan).clone();
-                    Ok((AnyPlan::Evm(plan), planned, fee))
-                }
-                Self::Tron(chain) => {
-                    let (plan, fee) = chain.replace(original, account, how).await?;
-                    let planned = chain.planned(&plan).clone();
-                    Ok((AnyPlan::Tron(plan), planned, fee))
-                }
-                Self::Ton(chain) => {
-                    let (plan, fee) = chain.replace(original, account, how).await?;
-                    let planned = chain.planned(&plan).clone();
-                    Ok((AnyPlan::Ton(plan), planned, fee))
-                }
+                Self::Evm(chain) => Ok(planned(
+                    chain,
+                    chain.replace(original, account, how).await?,
+                    AnyPlan::Evm,
+                )),
+                Self::Tron(chain) => Ok(planned(
+                    chain,
+                    chain.replace(original, account, how).await?,
+                    AnyPlan::Tron,
+                )),
+                Self::Ton(chain) => Ok(planned(
+                    &**chain,
+                    chain.replace(original, account, how).await?,
+                    AnyPlan::Ton,
+                )),
             }
         })
         .await
@@ -210,6 +208,15 @@ impl AnyChain {
         })
         .await
     }
+}
+
+fn planned<C: Chain>(
+    chain: &C,
+    (plan, fee): (C::Plan, FeeQuote),
+    wrap: fn(C::Plan) -> AnyPlan,
+) -> (AnyPlan, Transfer, FeeQuote) {
+    let planned = chain.planned(&plan).clone();
+    (wrap(plan), planned, fee)
 }
 
 async fn shielded<T>(work: impl Future<Output = Result<T, ChainError>>) -> Result<T, ChainError> {
@@ -431,38 +438,20 @@ fn scan_of(
         complete_from: scanned.cursor.complete_from,
         complete_since: scanned.cursor.complete_since,
     };
-    let found = scanned
-        .found
-        .into_iter()
-        .map(|incoming: Incoming| Received {
-            id: incoming.id.to_string(),
-            index: incoming.index,
-            network: network.clone(),
-            from: incoming.from,
-            to: incoming.to,
-            asset: incoming.asset,
-            amount: incoming.amount,
-            block: incoming.block,
-            time: incoming.time,
-            memo: incoming.memo,
-        })
-        .collect();
-    let sent = scanned
-        .sent
-        .into_iter()
-        .map(|outgoing: bahaa_chain::Outgoing| Outgoing {
-            id: outgoing.id.to_string(),
-            index: outgoing.index,
-            network: network.clone(),
-            from: outgoing.from,
-            to: outgoing.to,
-            asset: outgoing.asset,
-            amount: outgoing.amount,
-            block: outgoing.block,
-            time: outgoing.time,
-            memo: outgoing.memo,
-        })
-        .collect();
+    let kept = |moved: Movement| bahaa_store::Movement {
+        id: moved.id.to_string(),
+        index: moved.index,
+        network: network.clone(),
+        from: moved.from,
+        to: moved.to,
+        asset: moved.asset,
+        amount: moved.amount,
+        block: moved.block,
+        time: moved.time,
+        memo: moved.memo,
+    };
+    let found = scanned.found.into_iter().map(kept).collect();
+    let sent = scanned.sent.into_iter().map(kept).collect();
     (scan, found, sent)
 }
 

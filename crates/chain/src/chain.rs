@@ -2,10 +2,7 @@ use bahaa_config::{Coin, Network};
 use bahaa_crypto::Seed;
 use bahaa_types::{Address, AssetId};
 
-use crate::{
-    Balance, ChainError, Cursor, Decoded, FeeQuote, HistoryPage, Replace, Signed, Transfer, TxId,
-    TxStatus,
-};
+use crate::{Balance, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus};
 
 pub trait Chain: Send + Sync {
     type Plan: Send + Sync;
@@ -50,12 +47,4 @@ pub trait Chain: Send + Sync {
     fn token(&self, contract: &Address) -> impl Future<Output = Result<Coin, ChainError>> + Send;
 
     fn know(&self, contract: &Address, decimals: u8);
-}
-
-pub trait HistoryProvider: Send + Sync {
-    fn history(
-        &self,
-        address: &Address,
-        before: Option<&Cursor>,
-    ) -> impl Future<Output = Result<HistoryPage, ChainError>> + Send;
 }

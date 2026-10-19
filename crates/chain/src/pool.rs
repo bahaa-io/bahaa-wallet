@@ -7,9 +7,9 @@ use futures_util::stream::FuturesUnordered;
 use thiserror::Error;
 use tokio::time::{Instant, sleep_until, timeout_at};
 
-pub const COOLDOWN_BASE: Duration = Duration::from_secs(5);
-pub const GRACE: Duration = Duration::from_secs(1);
-pub const COOLDOWN_MAX: Duration = Duration::from_secs(300);
+const COOLDOWN_BASE: Duration = Duration::from_secs(5);
+const GRACE: Duration = Duration::from_secs(1);
+const COOLDOWN_MAX: Duration = Duration::from_secs(300);
 const MAX_DOUBLINGS: u32 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +35,7 @@ pub enum PoolError<E> {
     NoEndpoint,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EndpointStatus {
     pub url: String,
@@ -201,6 +202,7 @@ impl Pool {
         })
     }
 
+    #[cfg(test)]
     pub fn status(&self) -> Vec<EndpointStatus> {
         let now = Instant::now();
         self.slots

@@ -209,7 +209,7 @@ impl Engine {
         crate::keyring::private_dir(&data_dir)?;
         let store = Store::open(&data_dir.join(STORE_FILE))?;
         let settings = store.settings()?;
-        let saved = prices::saved(&store, settings.fiat.price_base());
+        let saved = prices::empty(settings.fiat.price_base());
         let registry = match registry {
             Some(registry) => registry,
             None => Registry::builtin()?,
@@ -771,6 +771,21 @@ impl Worker {
         self.keyring.as_ref().is_some_and(Keyring::is_unlocked)
     }
 
+    fn owner(&self, address: &Address) -> Option<WalletId> {
+        self.accounts
+            .iter()
+            .find(|account| account.address == *address)
+            .map(|account| account.wallet)
+    }
+
+    fn ensure_unlocked(&self) -> Result<(), EngineError> {
+        if self.unlocked() {
+            Ok(())
+        } else {
+            Err(KeyringError::Locked.into())
+        }
+    }
+
     async fn opened(&mut self, result: Result<StoreKey, EngineError>, reply: Reply<()>) {
         let result = result.and_then(|key| self.open_store(key));
         match result {
@@ -795,7 +810,7 @@ impl Worker {
         let mut received = self.store.received()?;
         incoming::sort(&mut received);
         let mut outgoing = self.store.outgoing()?;
-        incoming::sort_sent(&mut outgoing);
+        incoming::sort(&mut outgoing);
         chains::know(&self.chains, &custom);
         self.custom = Arc::new(custom);
         self.history = history;
@@ -816,7 +831,7 @@ impl Worker {
         self.scans.clear();
         self.received.clear();
         self.outgoing.clear();
-        self.saved = prices::saved(&self.store, self.settings.fiat.price_base());
+        self.saved = prices::empty(self.settings.fiat.price_base());
         self.saved_at = None;
         self.unsaved = false;
     }
@@ -1081,15 +1096,10 @@ impl Worker {
             return;
         };
         let wanted = if self.unlocked() {
-            let ours = |address: &Address| {
-                self.accounts
-                    .iter()
-                    .any(|account| account.address == *address)
-            };
             let received = self
                 .received
                 .iter()
-                .filter(|entry| ours(&entry.to))
+                .filter(|entry| self.owner(&entry.to).is_some())
                 .map(|entry| &entry.asset);
             portfolio::wanted(&self.registry, &self.custom, &self.held, received)
         } else {

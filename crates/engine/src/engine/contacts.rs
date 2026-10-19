@@ -1,16 +1,13 @@
 use bahaa_chain::ChainError;
-use bahaa_store::{Contact, Received};
+use bahaa_store::Contact;
 use bahaa_types::{Address, NetworkId};
 
 use super::{EngineError, Event, Worker};
-use crate::KeyringError;
-use crate::caution::{self, Caution};
+use crate::caution::Caution;
 
 impl Worker {
     pub(super) fn contacts(&self) -> Result<Vec<Contact>, EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
+        self.ensure_unlocked()?;
         let mut contacts = self.store.contacts()?;
         contacts.sort_by(|a, b| {
             (a.name.to_lowercase(), a.network.as_str())
@@ -20,9 +17,7 @@ impl Worker {
     }
 
     pub(super) fn save_contact(&mut self, contact: &Contact) -> Result<(), EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
+        self.ensure_unlocked()?;
         let network = self
             .registry
             .get(&contact.network)
@@ -39,9 +34,7 @@ impl Worker {
         network: &NetworkId,
         address: &Address,
     ) -> Result<bool, EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
+        self.ensure_unlocked()?;
         let removed = self.store.remove_contact(network, address)?;
         if removed {
             self.contacts_changed()?;
@@ -50,20 +43,8 @@ impl Worker {
     }
 
     pub(super) fn cautions(&self, address: &Address) -> Result<Vec<Caution>, EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
-        let senders: Vec<Received> = self
-            .received
-            .iter()
-            .filter(|entry| entry.from == *address)
-            .cloned()
-            .collect();
-        Ok(caution::recipient(
-            address,
-            &self.known(),
-            &self.arrivals(&senders),
-        ))
+        self.ensure_unlocked()?;
+        Ok(self.recipient_cautions(address))
     }
 
     fn contacts_changed(&self) -> Result<(), EngineError> {

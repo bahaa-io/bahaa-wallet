@@ -239,7 +239,7 @@ async fn stays_idle_and_offline_from_the_network_when_nothing_is_held() {
     market.want(request(&[], "USDT"));
     let attempt = tokio::time::timeout(Duration::from_millis(300), listener.accept()).await;
     assert!(attempt.is_err());
-    assert_eq!(market.current().status, Status::Idle);
+    assert_eq!(market.subscribe().borrow().status, Status::Idle);
 }
 
 #[tokio::test]

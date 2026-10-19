@@ -19,8 +19,8 @@ const SCHEMA_KEY: &str = "schema";
 const SETTINGS_KEY: &str = "settings";
 const MAX_CONTACT_NAME: usize = 40;
 const MAX_TX_ID: usize = 128;
-const MAX_REASON: usize = 200;
-const MAX_QUOTES: usize = 512;
+pub const MAX_REASON: usize = 200;
+pub const MAX_QUOTES: usize = 512;
 const MAX_MEMO: usize = 120;
 
 const META: TableDefinition<'static, &str, u64> = TableDefinition::new("meta");
@@ -122,7 +122,7 @@ impl SentStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Received {
+pub struct Movement {
     pub id: String,
     pub index: u64,
     pub network: NetworkId,
@@ -136,21 +136,8 @@ pub struct Received {
     pub memo: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Outgoing {
-    pub id: String,
-    pub index: u64,
-    pub network: NetworkId,
-    pub from: Address,
-    pub to: Address,
-    pub asset: AssetId,
-    pub amount: Amount,
-    pub block: u64,
-    pub time: u64,
-    #[serde(default)]
-    pub memo: Option<String>,
-}
+pub type Received = Movement;
+pub type Outgoing = Movement;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -427,61 +414,69 @@ impl Store {
         found: &[Received],
         sent: &[Outgoing],
     ) -> Result<(), StoreError> {
+        Self::check_scan(scan, found, sent)?;
+        self.save_scans(&[(scan, found, sent)])
+    }
+
+    pub fn check_scan(
+        scan: &Scan,
+        found: &[Received],
+        sent: &[Outgoing],
+    ) -> Result<(), StoreError> {
         if scan.complete_from > scan.next {
             return Err(StoreError::Invalid(
                 "a scan cannot be complete beyond where it stopped",
             ));
         }
-        for entry in found {
+        let found = found.iter().map(|entry| (entry, &entry.to));
+        let sent = sent.iter().map(|entry| (entry, &entry.from));
+        for (entry, ours) in found.chain(sent) {
             if !is_plain_text(&entry.id, MAX_TX_ID) {
                 return Err(StoreError::Invalid("not a transaction id"));
             }
             if !memo_ok(entry.memo.as_ref()) {
                 return Err(StoreError::Invalid("a memo must be short plain text"));
             }
-            if entry.network != scan.network || entry.to != scan.address {
+            if entry.network != scan.network || *ours != scan.address {
                 return Err(StoreError::Invalid(
                     "a transfer must belong to the scan that found it",
                 ));
             }
         }
-        for entry in sent {
-            if !is_plain_text(&entry.id, MAX_TX_ID) {
-                return Err(StoreError::Invalid("not a transaction id"));
-            }
-            if !memo_ok(entry.memo.as_ref()) {
-                return Err(StoreError::Invalid("a memo must be short plain text"));
-            }
-            if entry.network != scan.network || entry.from != scan.address {
-                return Err(StoreError::Invalid(
-                    "a transfer must belong to the scan that found it",
-                ));
-            }
+        Ok(())
+    }
+
+    pub fn save_scans(
+        &self,
+        scans: &[(&Scan, &[Received], &[Outgoing])],
+    ) -> Result<(), StoreError> {
+        for (scan, found, sent) in scans {
+            Self::check_scan(scan, found, sent)?;
         }
         let txn = self.db.begin_write().map_err(database)?;
         {
             let mut received = txn.open_table(RECEIVED).map_err(database)?;
-            for entry in found {
-                let key = format!("{}/{}/{}", entry.network, entry.id, entry.index);
-                let (name, value) = self.entry(RECEIVED, &key, &encode(entry)?)?;
-                received
-                    .insert(name.as_str(), value.as_slice())
-                    .map_err(database)?;
-            }
             let mut outgoing = txn.open_table(OUTGOING).map_err(database)?;
-            for entry in sent {
-                let key = format!("{}/{}/{}", entry.network, entry.id, entry.index);
-                let (name, value) = self.entry(OUTGOING, &key, &encode(entry)?)?;
-                outgoing
+            let mut cursors = txn.open_table(SCANS).map_err(database)?;
+            for (scan, found, sent) in scans {
+                for (table, opened, entries) in [
+                    (RECEIVED, &mut received, *found),
+                    (OUTGOING, &mut outgoing, *sent),
+                ] {
+                    for entry in entries {
+                        let key = format!("{}/{}/{}", entry.network, entry.id, entry.index);
+                        let (name, value) = self.entry(table, &key, &encode(entry)?)?;
+                        opened
+                            .insert(name.as_str(), value.as_slice())
+                            .map_err(database)?;
+                    }
+                }
+                let key = address_key(&scan.network, &scan.address);
+                let (name, value) = self.entry(SCANS, &key, &encode(scan)?)?;
+                cursors
                     .insert(name.as_str(), value.as_slice())
                     .map_err(database)?;
             }
-            let key = address_key(&scan.network, &scan.address);
-            let (name, value) = self.entry(SCANS, &key, &encode(scan)?)?;
-            txn.open_table(SCANS)
-                .map_err(database)?
-                .insert(name.as_str(), value.as_slice())
-                .map_err(database)?;
         }
         txn.commit().map_err(database)
     }
@@ -501,9 +496,7 @@ impl Store {
 
     pub fn prices(&self, base: &str) -> Result<Option<SavedPrices>, StoreError> {
         match self.get(PRICES, base)? {
-            Some(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|err| StoreError::Corrupt(err.to_string())),
+            Some(bytes) => decode(&bytes).map(Some),
             None => Ok(None),
         }
     }
@@ -521,9 +514,7 @@ impl Store {
 
     pub fn account_indexes(&self, wallet: u32) -> Result<Vec<u32>, StoreError> {
         match self.get(ACCOUNTS, &wallet.to_string())? {
-            Some(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|err| StoreError::Corrupt(err.to_string()))
-            }
+            Some(bytes) => decode(&bytes),
             None => Ok(vec![0]),
         }
     }
@@ -558,10 +549,7 @@ impl Store {
                     meta.insert(SCHEMA_KEY, SCHEMA).map_err(database)?;
                 }
             }
-            for table in [
-                SETTINGS, CONTACTS, TOKENS, SENT, RECEIVED, SCANS, TRUSTED, OUTGOING, PRICES,
-                ACCOUNTS, SEAL,
-            ] {
+            for table in SEALED.into_iter().chain([SETTINGS, TRUSTED, SEAL]) {
                 txn.open_table(table).map_err(database)?;
             }
         }
@@ -638,13 +626,9 @@ impl Store {
             .map_err(database)?
             .map(|entry| {
                 let (name, value) = entry.map_err(database)?;
-                let read = |bytes: &[u8]| {
-                    serde_json::from_slice(bytes)
-                        .map_err(|err| StoreError::Corrupt(err.to_string()))
-                };
                 match seal {
-                    Some(seal) => read(&seal.open(table.name(), name.value(), value.value())?),
-                    None => read(value.value()),
+                    Some(seal) => decode(&seal.open(table.name(), name.value(), value.value())?),
+                    None => decode(value.value()),
                 }
             })
             .collect()
@@ -665,6 +649,10 @@ fn address_key(network: &NetworkId, address: &Address) -> String {
 
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, StoreError> {
     serde_json::to_vec(value).map_err(|err| StoreError::Corrupt(err.to_string()))
+}
+
+fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, StoreError> {
+    serde_json::from_slice(bytes).map_err(|err| StoreError::Corrupt(err.to_string()))
 }
 
 fn database(err: impl Into<redb::Error>) -> StoreError {

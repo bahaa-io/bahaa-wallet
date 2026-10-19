@@ -1,13 +1,19 @@
 use std::time::Duration;
 
 use bahaa_market::{Quote, Snapshot};
-use bahaa_store::{SavedPrices, SavedQuote, Store};
+use bahaa_store::{MAX_QUOTES, SavedPrices, SavedQuote, Store};
 use tokio::time::Instant;
 
 use super::Worker;
 
 const SAVE_EVERY: Duration = Duration::from_mins(1);
-const MAX_SAVED: usize = 512;
+
+pub(super) fn empty(base: &str) -> Snapshot {
+    Snapshot {
+        base: base.to_owned(),
+        ..Snapshot::default()
+    }
+}
 
 pub(super) fn saved(store: &Store, base: &str) -> Snapshot {
     let quotes = store
@@ -39,9 +45,6 @@ impl Worker {
     pub(super) fn quotes(&self) -> Snapshot {
         let live = self.prices.borrow().clone();
         let base = self.settings.fiat.price_base();
-        if self.saved.base != base {
-            return live;
-        }
         let mut merged = Snapshot {
             base: base.to_owned(),
             quotes: self.saved.quotes.clone(),
@@ -59,12 +62,9 @@ impl Worker {
         if live.base != base || live.quotes.is_empty() || !self.store.is_unlocked() {
             return;
         }
-        if self.saved.base != base {
-            self.saved = saved(&self.store, base);
-        }
         let before = self.saved.quotes.clone();
         self.saved.quotes.extend(live.quotes);
-        while self.saved.quotes.len() > MAX_SAVED {
+        while self.saved.quotes.len() > MAX_QUOTES {
             let oldest = self
                 .saved
                 .quotes

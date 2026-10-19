@@ -35,6 +35,7 @@ pub(crate) struct Hop {
     pub charged_gas_fees: u64,
     pub fees: u64,
     pub out: Vec<Vec<u8>>,
+    #[cfg(test)]
     pub transaction: Vec<u8>,
 }
 
@@ -170,7 +171,6 @@ impl Emulator {
         if let Some(missing) = inspector.missing_library {
             return Ok(Emulated::Missing(missing.0));
         }
-        let raw = Boc::encode(output.transaction.inner());
         let transaction = output.transaction.load().map_err(|_| unreadable())?;
         let TxInfo::Ordinary(info) = transaction.load_info().map_err(|_| unreadable())? else {
             return Err(unreadable());
@@ -206,7 +206,8 @@ impl Emulator {
             charged_gas_fees,
             fees: u64::try_from(transaction.total_fees.tokens.into_inner()).unwrap_or(u64::MAX),
             out,
-            transaction: raw,
+            #[cfg(test)]
+            transaction: Boc::encode(output.transaction.inner()),
         }))
     }
 }

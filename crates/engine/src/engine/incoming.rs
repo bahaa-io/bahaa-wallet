@@ -1,11 +1,10 @@
 use std::cmp::Reverse;
 
-use bahaa_store::{Outgoing, Received, Scan, SentTx};
+use bahaa_store::{Movement, Outgoing, Received, Scan, SentTx, Store};
 use bahaa_types::Address;
 
 use super::{EngineError, Event, Worker};
-use crate::KeyringError;
-use crate::caution::{self, Arrival};
+use crate::caution::{self, Arrival, Caution};
 use crate::portfolio;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -18,12 +17,20 @@ impl Worker {
     pub(super) fn record_scans(&mut self, scans: Vec<(Scan, Vec<Received>, Vec<Outgoing>)>) {
         let mut fresh = Vec::new();
         let mut departed = Vec::new();
-        for (scan, found, sent) in scans {
-            if self.store.save_scan(&scan, &found, &sent).is_err() {
-                continue;
-            }
+        let valid: Vec<_> = scans
+            .into_iter()
+            .filter(|(scan, found, sent)| Store::check_scan(scan, found, sent).is_ok())
+            .collect();
+        let batch: Vec<_> = valid
+            .iter()
+            .map(|(scan, found, sent)| (scan, found.as_slice(), sent.as_slice()))
+            .collect();
+        if self.store.save_scans(&batch).is_err() {
+            return;
+        }
+        for (scan, found, sent) in valid {
             for entry in sent {
-                if !self.outgoing.iter().any(|known| same_sent(known, &entry)) {
+                if !self.outgoing.iter().any(|known| same(known, &entry)) {
                     self.outgoing.push(entry.clone());
                     departed.push(entry);
                 }
@@ -50,37 +57,25 @@ impl Worker {
         }
         let departed = elsewhere(&departed, &self.history);
         if !departed.is_empty() {
-            sort_sent(&mut self.outgoing);
+            sort(&mut self.outgoing);
             let _ = self.events.send(Event::SentElsewhere(departed));
         }
     }
 
     pub(super) fn outgoing(&self) -> Result<Vec<Outgoing>, EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
+        self.ensure_unlocked()?;
         let mine: Vec<Outgoing> = self
             .outgoing
             .iter()
-            .filter(|entry| {
-                self.accounts
-                    .iter()
-                    .any(|account| account.address == entry.from)
-            })
+            .filter(|entry| self.owner(&entry.from).is_some())
             .cloned()
             .collect();
         Ok(elsewhere(&mine, &self.history))
     }
 
     pub(super) fn incoming(&self) -> Result<IncomingHistory, EngineError> {
-        if !self.unlocked() {
-            return Err(KeyringError::Locked.into());
-        }
-        let ours = |address| {
-            self.accounts
-                .iter()
-                .any(|account| account.address == address)
-        };
+        self.ensure_unlocked()?;
+        let ours = |address: Address| self.owner(&address).is_some();
         let mine: Vec<Received> = self
             .received
             .iter()
@@ -117,8 +112,22 @@ impl Worker {
         known
     }
 
-    pub(super) fn arrivals(&self, entries: &[Received]) -> Vec<Arrival> {
+    pub(super) fn recipient_cautions(&self, to: &Address) -> Vec<Caution> {
         let known = self.known();
+        let senders: Vec<Received> = self
+            .received
+            .iter()
+            .filter(|entry| entry.from == *to)
+            .cloned()
+            .collect();
+        caution::recipient(to, &known, &self.arrivals_among(&senders, &known))
+    }
+
+    pub(super) fn arrivals(&self, entries: &[Received]) -> Vec<Arrival> {
+        self.arrivals_among(entries, &self.known())
+    }
+
+    fn arrivals_among(&self, entries: &[Received], known: &[Address]) -> Vec<Arrival> {
         let snapshot = self.quotes();
         entries
             .iter()
@@ -131,25 +140,17 @@ impl Worker {
                     &entry.asset,
                     entry.amount,
                 );
-                caution::arrival(entry.clone(), &known, value)
+                caution::arrival(entry.clone(), known, value)
             })
             .collect()
     }
 }
 
-pub(super) fn sort(entries: &mut [Received]) {
+pub(super) fn sort(entries: &mut [Movement]) {
     entries.sort_by_key(|entry| Reverse((entry.time, entry.block, entry.index)));
 }
 
-fn same(a: &Received, b: &Received) -> bool {
-    a.network == b.network && a.id == b.id && a.index == b.index
-}
-
-pub(super) fn sort_sent(entries: &mut [Outgoing]) {
-    entries.sort_by_key(|entry| Reverse((entry.time, entry.block, entry.index)));
-}
-
-fn same_sent(a: &Outgoing, b: &Outgoing) -> bool {
+fn same(a: &Movement, b: &Movement) -> bool {
     a.network == b.network && a.id == b.id && a.index == b.index
 }
 

@@ -118,7 +118,6 @@ pub enum FeeItem {
     Compute { gas: u64 },
     Storage,
     Forwarding,
-    Network,
     Contracts,
     Memo,
 }
@@ -214,7 +213,7 @@ pub struct ScanCursor {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Incoming {
+pub struct Movement {
     pub id: TxId,
     pub index: u64,
     pub from: Address,
@@ -226,52 +225,14 @@ pub struct Incoming {
     pub memo: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Outgoing {
-    pub id: TxId,
-    pub index: u64,
-    pub from: Address,
-    pub to: Address,
-    pub asset: AssetId,
-    pub amount: Amount,
-    pub block: u64,
-    pub time: u64,
-    pub memo: Option<String>,
-}
+pub type Incoming = Movement;
+pub type Outgoing = Movement;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scanned {
     pub cursor: ScanCursor,
     pub found: Vec<Incoming>,
     pub sent: Vec<Outgoing>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Direction {
-    Incoming,
-    Outgoing,
-    ToSelf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HistoryEntry {
-    pub id: TxId,
-    pub time: u64,
-    pub direction: Direction,
-    pub counterparty: Option<Address>,
-    pub asset: AssetId,
-    pub amount: Amount,
-    pub fee: Option<Amount>,
-    pub status: TxStatus,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Cursor(pub String);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HistoryPage {
-    pub entries: Vec<HistoryEntry>,
-    pub next: Option<Cursor>,
 }
 
 impl ChainError {

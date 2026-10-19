@@ -54,10 +54,6 @@ impl EvmChain {
         })
     }
 
-    pub fn chain_id(&self) -> u64 {
-        self.chain_id
-    }
-
     fn native(&self, units: U256) -> Result<Amount, ChainError> {
         amount(units, self.network.native.decimals)
     }

@@ -30,6 +30,10 @@ pub enum PriceError {
 }
 
 impl Price {
+    pub fn is_zero(&self) -> bool {
+        self.digits.is_zero()
+    }
+
     pub fn parse(text: &str) -> Result<Self, PriceError> {
         if text.is_empty() {
             return Err(PriceError::Empty);
@@ -63,10 +67,6 @@ impl Price {
             )
         };
         Self::normalized(digits, scale)
-    }
-
-    pub fn is_zero(&self) -> bool {
-        self.digits.is_zero()
     }
 
     pub fn value_of(&self, amount: Amount, places: u8) -> Result<Amount, PriceError> {

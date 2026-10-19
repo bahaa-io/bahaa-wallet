@@ -71,7 +71,6 @@ pub(crate) struct ConfigInfo {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TransactionList {
-    pub ids: Vec<BlockId>,
     pub transactions: Vec<u8>,
 }
 
@@ -497,11 +496,10 @@ pub(crate) fn transaction_list(answer: &[u8]) -> Option<Answer<TransactionList>>
         if count > crate::transaction::MAX_LISTED {
             return None;
         }
-        let ids = (0..count)
-            .map(|_| reader.block())
-            .collect::<Option<Vec<_>>>()?;
+        for _ in 0..count {
+            reader.block()?;
+        }
         Some(TransactionList {
-            ids,
             transactions: reader.bytes()?.to_vec(),
         })
     })
@@ -871,7 +869,6 @@ mod tests {
         assert_eq!(
             transaction_list(&listed(16)),
             Some(Answer::Ok(TransactionList {
-                ids: vec![block(); 16],
                 transactions: b"txs".to_vec()
             }))
         );
