@@ -93,10 +93,20 @@ pub(crate) fn button(label: impl Into<String>, action: Action) -> Button {
 }
 
 pub(crate) fn choice(label: impl Into<String>, action: Action, selected: bool) -> Choice {
+    toned_choice(label, action, selected, Tone::Plain)
+}
+
+pub(crate) fn toned_choice(
+    label: impl Into<String>,
+    action: Action,
+    selected: bool,
+    tone: Tone,
+) -> Choice {
     Choice {
         label: label.into(),
         action,
         selected,
+        tone,
     }
 }
 
@@ -265,10 +275,11 @@ pub(crate) fn network_group(ctx: &Ctx<'_>, selected: Option<&NetworkId>) -> Grou
         .iter()
         .enumerate()
         .map(|(position, network)| {
-            choice(
+            toned_choice(
                 &network.name,
                 Action::Pick(Pick::Network(position)),
                 selected == Some(&network.id),
+                Tone::Brand(network.color),
             )
         })
         .collect();

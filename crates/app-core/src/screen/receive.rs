@@ -1,6 +1,6 @@
 use bahaa_engine::{Address, AssetId, Holding, MAX_MEMO, NetworkId, WalletId, is_plain_text};
 
-use super::{Screen, button, choice, group, input, network_line, note, toned_line};
+use super::{Screen, button, group, input, network_line, note, toned_choice, toned_line};
 use crate::action::{Action, Field, Pick};
 use crate::core::{Ctx, Reply};
 use crate::view::{Level, Page, PageId, Request};
@@ -113,10 +113,11 @@ impl Screen for Receive {
                         &network,
                     )
                 };
-                choice(
+                toned_choice(
                     label,
                     Action::Pick(Pick::Target(position)),
                     self.target.as_ref() == Some(&target),
+                    ctx.network_tone(&target.network),
                 )
             })
             .collect();

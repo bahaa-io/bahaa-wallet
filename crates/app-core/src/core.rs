@@ -300,6 +300,7 @@ impl Core {
                         label: text::tab(tab).to_owned(),
                         action: Action::Go(Go::Tab(tab)),
                         selected: tab == self.tab,
+                        tone: Tone::Plain,
                     })
                     .collect()
             } else {

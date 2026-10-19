@@ -5,7 +5,8 @@ use bahaa_engine::{
 
 use super::activity::Transfer;
 use super::{
-    Screen, button, choice, group, hidden, input, line, network_line, note, status_tone, toned_line,
+    Screen, button, choice, group, hidden, input, line, network_line, note, status_tone,
+    toned_choice, toned_line,
 };
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
@@ -292,10 +293,11 @@ impl Send {
                     &ctx.network_name(source.asset.network()),
                     &ctx.wallet_name(source.wallet),
                 );
-                choice(
+                toned_choice(
                     label,
                     Action::Pick(Pick::Source(position)),
                     self.source.as_ref() == Some(&source),
+                    ctx.coin_tone(&source.asset),
                 )
             })
             .collect();

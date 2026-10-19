@@ -142,6 +142,7 @@ pub struct Choice {
     pub label: String,
     pub action: Action,
     pub selected: bool,
+    pub tone: Tone,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
