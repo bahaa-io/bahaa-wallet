@@ -285,6 +285,23 @@ fn malformed() -> ChainError {
     ChainError::Network("an endpoint sent a malformed log reply".to_owned())
 }
 
+#[cfg(fuzzing)]
+pub(super) fn fuzz(value: &Value) {
+    let _ = block_number(value);
+    for log in value
+        .as_array()
+        .map_or(std::slice::from_ref(value), Vec::as_slice)
+    {
+        for (topic, side) in [(2, Side::Received), (1, Side::Sent)] {
+            let owner = log["topics"][topic]
+                .as_str()
+                .and_then(padded_address)
+                .unwrap_or_default();
+            let _ = parse(log, &owner, side, 0, u64::MAX);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

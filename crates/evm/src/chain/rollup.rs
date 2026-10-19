@@ -99,6 +99,13 @@ fn operator_fee_call(gas: u64) -> Vec<u8> {
     data
 }
 
+#[cfg(fuzzing)]
+pub(super) fn fuzz(receipt: &Value) {
+    for field in ["l1Fee", "operatorFeeScalar", "operatorFeeConstant"] {
+        let _ = optional(receipt, field);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

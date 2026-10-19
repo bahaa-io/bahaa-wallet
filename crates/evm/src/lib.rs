@@ -1,4 +1,7 @@
 mod chain;
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz;
 mod rpc;
 mod tx;
 

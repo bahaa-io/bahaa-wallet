@@ -4,6 +4,9 @@ mod chain;
 mod comment;
 mod emulate;
 mod fees;
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz;
 mod http;
 mod lite;
 mod metadata;

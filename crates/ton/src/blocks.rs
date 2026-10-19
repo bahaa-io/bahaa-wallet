@@ -277,6 +277,27 @@ fn node_id(key: &[u8; 32]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(boc: &[u8]) {
+    let Ok(root) = Boc::decode(boc) else {
+        return;
+    };
+    let cell = root
+        .parse_exotic::<MerkleProof>()
+        .map_or(root, |proof| proof.cell);
+    let block = BlockId {
+        workchain: -1,
+        shard: i64::MIN,
+        seqno: 1,
+        root_hash: [0; 32],
+        file_hash: [0; 32],
+    };
+    let _ = header(&cell, &block);
+    if let Some((validators, shuffle)) = key_validators(&cell) {
+        let _ = validators.compute_mc_subset(1, shuffle);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,6 +2,8 @@ use bahaa_types::Address;
 use ruint::aliases::U256;
 use tonlib_core::TonAddress;
 use tonlib_core::cell::{ArcCell, BagOfCells, CellParser};
+use tycho_types::boc::de::{BocHeader, Options};
+use tycho_types::cell::{Cell as Checked, CellFamily};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Status {
@@ -41,11 +43,19 @@ impl Account {
     }
 }
 
+pub(crate) fn bag(boc: &[u8]) -> Option<BagOfCells> {
+    BocHeader::decode(boc, &Options::default())
+        .ok()?
+        .finalize(Checked::empty_context())
+        .ok()?;
+    BagOfCells::parse(boc).ok()
+}
+
 pub(crate) fn account(boc: &[u8], owner: &Address) -> Option<Account> {
     if boc.is_empty() {
         return Some(Account::missing());
     }
-    let root = BagOfCells::parse(boc).ok()?.single_root().ok()?;
+    let root = bag(boc)?.single_root().ok()?;
     let mut parser = root.parser();
     if !parser.load_bit().ok()? {
         return Some(Account::missing());
@@ -239,6 +249,16 @@ mod tests {
         BagOfCells::from_root(builder.build().unwrap())
             .serialize(false)
             .unwrap()
+    }
+
+    #[test]
+    fn a_bag_whose_cells_point_past_the_end_is_refused_not_trusted() {
+        let hostile = [0xb5, 0xee, 0x9c, 0x72, 1, 1, 1, 1, 0, 3, 0, 1, 0, 5];
+        assert!(bag(&hostile).is_none());
+        assert!(crate::transaction::linked(&hostile, &[0; 32], ([0; 32], 0)).is_none());
+        assert!(crate::wallet::parse(&hostile).is_err());
+        let fine = [0xb5, 0xee, 0x9c, 0x72, 1, 1, 1, 1, 0, 2, 0, 0, 0];
+        assert_eq!(bag(&fine).map(|bag| bag.roots.len()), Some(1));
     }
 
     #[test]

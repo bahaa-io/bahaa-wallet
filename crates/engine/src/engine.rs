@@ -7,6 +7,7 @@ mod send;
 mod tokens;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -749,13 +750,21 @@ impl Worker {
     ) -> Result<T, EngineError> {
         let mut keyring = self.keyring.take().ok_or(EngineError::Stopped)?;
         let (keyring, result) = tokio::task::spawn_blocking(move || {
-            let result = work(&mut keyring);
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(&mut keyring)));
+            if result.is_err() {
+                keyring.lock();
+            }
             (keyring, result)
         })
         .await
         .map_err(|_| EngineError::Stopped)?;
         self.keyring = Some(keyring);
-        result.map_err(Into::into)
+        if let Ok(result) = result {
+            result.map_err(Into::into)
+        } else {
+            self.lock();
+            Err(KeyringError::Locked.into())
+        }
     }
 
     fn unlocked(&self) -> bool {

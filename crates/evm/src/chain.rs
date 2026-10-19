@@ -719,6 +719,18 @@ fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {
     Amount::new(units, decimals).map_err(|_| ChainError::Invalid("impossible decimals"))
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(value: &Value) {
+    logs::fuzz(value);
+    rollup::fuzz(value);
+    let _ = already_known(value["message"].as_str().unwrap_or_default());
+}
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz_input(input: &[u8]) {
+    let _ = memo(input);
+}
+
 #[cfg(test)]
 mod tests {
     use bahaa_config::Registry;

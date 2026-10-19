@@ -348,6 +348,14 @@ fn overflow() -> ChainError {
     ChainError::Invalid("fee overflow")
 }
 
+#[cfg(fuzzing)]
+pub(super) fn fuzz(value: &Value) {
+    if let Some(Ok(id)) = value["txid"].as_str().map(TxId::new) {
+        let _ = accepted(value, &id);
+    }
+    let _ = failure(value["receipt"]["result"].as_str(), &value["resMessage"]);
+}
+
 #[cfg(test)]
 mod tests {
     use bahaa_chain::Chain;

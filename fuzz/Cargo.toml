@@ -1,0 +1,82 @@
+[package]
+name = "bahaa-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+bahaa-crypto = { path = "../crates/crypto" }
+bahaa-evm = { path = "../crates/evm" }
+bahaa-market = { path = "../crates/market" }
+bahaa-ton = { path = "../crates/ton" }
+bahaa-tron = { path = "../crates/tron" }
+bahaa-types = { path = "../crates/types" }
+libfuzzer-sys = "0.4.10"
+
+[workspace]
+
+[[bin]]
+name = "ton_answer"
+path = "fuzz_targets/ton_answer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ton_boc"
+path = "fuzz_targets/ton_boc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ton_json"
+path = "fuzz_targets/ton_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tron_raw"
+path = "fuzz_targets/tron_raw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tron_json"
+path = "fuzz_targets/tron_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_raw"
+path = "fuzz_targets/evm_raw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_json"
+path = "fuzz_targets/evm_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "market"
+path = "fuzz_targets/market.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
+test = false
+doc = false
+bench = false

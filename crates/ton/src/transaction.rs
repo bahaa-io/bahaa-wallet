@@ -2,7 +2,7 @@ use bahaa_chain::memo_text;
 use bahaa_types::Address;
 use ruint::aliases::U256;
 use tonlib_core::TonAddress;
-use tonlib_core::cell::{ArcCell, BagOfCells, Cell, CellParser};
+use tonlib_core::cell::{ArcCell, Cell, CellParser};
 
 use crate::cells::{from_ton, var_uint};
 use crate::comment;
@@ -68,7 +68,7 @@ pub(crate) fn linked(
     account: &[u8; 32],
     from: ([u8; 32], u64),
 ) -> Option<Vec<Transaction>> {
-    let roots = BagOfCells::parse(boc).ok()?.roots;
+    let roots = crate::cells::bag(boc)?.roots;
     if roots.is_empty() || roots.len() > usize::try_from(MAX_LISTED).ok()? {
         return None;
     }
@@ -87,7 +87,7 @@ pub(crate) fn linked(
 
 #[cfg(test)]
 pub(crate) fn single(boc: &[u8], account: &[u8; 32]) -> Option<Transaction> {
-    read(&BagOfCells::parse(boc).ok()?.single_root().ok()?, account)
+    read(&crate::cells::bag(boc)?.single_root().ok()?, account)
 }
 
 fn read(root: &ArcCell, account: &[u8; 32]) -> Option<Transaction> {
@@ -432,12 +432,37 @@ fn status_change(parser: &mut CellParser<'_>) -> Option<()> {
     Some(())
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(boc: &[u8]) {
+    let Some(bag) = crate::cells::bag(boc) else {
+        return;
+    };
+    for root in bag.roots.iter().take(16) {
+        let mut parser = root.parser();
+        let Ok(_) = parser.load_u8(4) else {
+            continue;
+        };
+        let Some(account) = parser
+            .load_bits(256)
+            .ok()
+            .and_then(|bits| <[u8; 32]>::try_from(bits).ok())
+        else {
+            continue;
+        };
+        if let Some(transaction) = read(root, &account) {
+            let _ = transaction.succeeded();
+            let _ = transaction.outcome();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tonlib_core::cell::CellBuilder;
     use tonlib_core::{TonAddress, TonHash};
 
     use super::*;
+    use tonlib_core::cell::BagOfCells;
 
     const REAL: &str = include_str!("../tests/fixtures/transaction.txt");
 

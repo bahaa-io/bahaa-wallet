@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::{
@@ -11,6 +13,7 @@ use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock};
 use bahaa_ton::{TonChain, TonPlan};
 use bahaa_tron::{TronChain, TronPlan};
 use bahaa_types::{Address, AssetId, ChainFamily, NetworkId, TonContract};
+use futures_util::FutureExt;
 use futures_util::future::join_all;
 
 use crate::WalletId;
@@ -64,19 +67,25 @@ impl AnyChain {
         address: &Address,
         assets: &[AssetId],
     ) -> Result<Vec<Balance>, ChainError> {
-        match self {
-            Self::Evm(chain) => chain.balances(address, assets).await,
-            Self::Tron(chain) => chain.balances(address, assets).await,
-            Self::Ton(chain) => chain.balances(address, assets).await,
-        }
+        shielded(async {
+            match self {
+                Self::Evm(chain) => chain.balances(address, assets).await,
+                Self::Tron(chain) => chain.balances(address, assets).await,
+                Self::Ton(chain) => chain.balances(address, assets).await,
+            }
+        })
+        .await
     }
 
     pub(crate) async fn token(&self, contract: &Address) -> Result<Coin, ChainError> {
-        match self {
-            Self::Evm(chain) => chain.token(contract).await,
-            Self::Tron(chain) => chain.token(contract).await,
-            Self::Ton(chain) => chain.token(contract).await,
-        }
+        shielded(async {
+            match self {
+                Self::Evm(chain) => chain.token(contract).await,
+                Self::Tron(chain) => chain.token(contract).await,
+                Self::Ton(chain) => chain.token(contract).await,
+            }
+        })
+        .await
     }
 
     pub(crate) fn know(&self, contract: &Address, decimals: u8) {
@@ -93,35 +102,41 @@ impl AnyChain {
         assets: &[AssetId],
         cursor: Option<ScanCursor>,
     ) -> Result<Option<Scanned>, ChainError> {
-        match self {
-            Self::Evm(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
-            Self::Tron(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
-            Self::Ton(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
-            Self::Evm(_) | Self::Tron(_) | Self::Ton(_) => Ok(None),
-        }
+        shielded(async {
+            match self {
+                Self::Evm(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
+                Self::Tron(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
+                Self::Ton(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
+                Self::Evm(_) | Self::Tron(_) | Self::Ton(_) => Ok(None),
+            }
+        })
+        .await
     }
 
     pub(crate) async fn prepare(
         &self,
         transfer: &Transfer,
     ) -> Result<(AnyPlan, Transfer, FeeQuote), ChainError> {
-        match self {
-            Self::Evm(chain) => {
-                let (plan, fee) = chain.prepare(transfer).await?;
-                let planned = chain.planned(&plan).clone();
-                Ok((AnyPlan::Evm(plan), planned, fee))
+        shielded(async {
+            match self {
+                Self::Evm(chain) => {
+                    let (plan, fee) = chain.prepare(transfer).await?;
+                    let planned = chain.planned(&plan).clone();
+                    Ok((AnyPlan::Evm(plan), planned, fee))
+                }
+                Self::Tron(chain) => {
+                    let (plan, fee) = chain.prepare(transfer).await?;
+                    let planned = chain.planned(&plan).clone();
+                    Ok((AnyPlan::Tron(plan), planned, fee))
+                }
+                Self::Ton(chain) => {
+                    let (plan, fee) = chain.prepare(transfer).await?;
+                    let planned = chain.planned(&plan).clone();
+                    Ok((AnyPlan::Ton(plan), planned, fee))
+                }
             }
-            Self::Tron(chain) => {
-                let (plan, fee) = chain.prepare(transfer).await?;
-                let planned = chain.planned(&plan).clone();
-                Ok((AnyPlan::Tron(plan), planned, fee))
-            }
-            Self::Ton(chain) => {
-                let (plan, fee) = chain.prepare(transfer).await?;
-                let planned = chain.planned(&plan).clone();
-                Ok((AnyPlan::Ton(plan), planned, fee))
-            }
-        }
+        })
+        .await
     }
 
     pub(crate) async fn replace(
@@ -130,23 +145,26 @@ impl AnyChain {
         account: u32,
         how: Replace,
     ) -> Result<(AnyPlan, Transfer, FeeQuote), ChainError> {
-        match self {
-            Self::Evm(chain) => {
-                let (plan, fee) = chain.replace(original, account, how).await?;
-                let planned = chain.planned(&plan).clone();
-                Ok((AnyPlan::Evm(plan), planned, fee))
+        shielded(async {
+            match self {
+                Self::Evm(chain) => {
+                    let (plan, fee) = chain.replace(original, account, how).await?;
+                    let planned = chain.planned(&plan).clone();
+                    Ok((AnyPlan::Evm(plan), planned, fee))
+                }
+                Self::Tron(chain) => {
+                    let (plan, fee) = chain.replace(original, account, how).await?;
+                    let planned = chain.planned(&plan).clone();
+                    Ok((AnyPlan::Tron(plan), planned, fee))
+                }
+                Self::Ton(chain) => {
+                    let (plan, fee) = chain.replace(original, account, how).await?;
+                    let planned = chain.planned(&plan).clone();
+                    Ok((AnyPlan::Ton(plan), planned, fee))
+                }
             }
-            Self::Tron(chain) => {
-                let (plan, fee) = chain.replace(original, account, how).await?;
-                let planned = chain.planned(&plan).clone();
-                Ok((AnyPlan::Tron(plan), planned, fee))
-            }
-            Self::Ton(chain) => {
-                let (plan, fee) = chain.replace(original, account, how).await?;
-                let planned = chain.planned(&plan).clone();
-                Ok((AnyPlan::Ton(plan), planned, fee))
-            }
-        }
+        })
+        .await
     }
 
     pub(crate) fn sign(&self, plan: &AnyPlan, seed: &Seed) -> Result<Signed, ChainError> {
@@ -159,19 +177,23 @@ impl AnyChain {
     }
 
     pub(crate) fn decode(&self, signed: &Signed) -> Result<Decoded, ChainError> {
-        match self {
+        std::panic::catch_unwind(AssertUnwindSafe(|| match self {
             Self::Evm(chain) => chain.decode(signed),
             Self::Tron(chain) => chain.decode(signed),
             Self::Ton(chain) => chain.decode(signed),
-        }
+        }))
+        .unwrap_or_else(|_| Err(unreadable()))
     }
 
     pub(crate) async fn broadcast(&self, signed: &Signed) -> Result<TxId, ChainError> {
-        match self {
-            Self::Evm(chain) => chain.broadcast(signed).await,
-            Self::Tron(chain) => chain.broadcast(signed).await,
-            Self::Ton(chain) => chain.broadcast(signed).await,
-        }
+        shielded(async {
+            match self {
+                Self::Evm(chain) => chain.broadcast(signed).await,
+                Self::Tron(chain) => chain.broadcast(signed).await,
+                Self::Ton(chain) => chain.broadcast(signed).await,
+            }
+        })
+        .await
     }
 
     pub(crate) async fn status(
@@ -180,12 +202,26 @@ impl AnyChain {
         from: &Address,
         expires_at: Option<u64>,
     ) -> Result<TxStatus, ChainError> {
-        match self {
-            Self::Evm(chain) => chain.status(id, from, expires_at).await,
-            Self::Tron(chain) => chain.status(id, from, expires_at).await,
-            Self::Ton(chain) => chain.status(id, from, expires_at).await,
-        }
+        shielded(async {
+            match self {
+                Self::Evm(chain) => chain.status(id, from, expires_at).await,
+                Self::Tron(chain) => chain.status(id, from, expires_at).await,
+                Self::Ton(chain) => chain.status(id, from, expires_at).await,
+            }
+        })
+        .await
     }
+}
+
+async fn shielded<T>(work: impl Future<Output = Result<T, ChainError>>) -> Result<T, ChainError> {
+    AssertUnwindSafe(work)
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| Err(unreadable()))
+}
+
+fn unreadable() -> ChainError {
+    ChainError::Network("an endpoint sent a reply this wallet cannot read".to_owned())
 }
 
 pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
@@ -478,5 +514,13 @@ mod tests {
         assert!(ton.serves(&id("ton"), ChainFamily::Ton));
         assert!(!ton.serves(&id("ton-testnet"), ChainFamily::Ton));
         assert!(!ton.serves(&id("ton"), ChainFamily::Evm));
+    }
+
+    #[tokio::test]
+    async fn a_reader_that_panics_fails_only_its_own_call() {
+        let hostile: Result<(), ChainError> = shielded(async { panic!("a hostile reply") }).await;
+        assert!(matches!(hostile, Err(ChainError::Network(_))));
+        let fine = shielded(async { Ok::<_, ChainError>(7) }).await;
+        assert_eq!(fine, Ok(7));
     }
 }

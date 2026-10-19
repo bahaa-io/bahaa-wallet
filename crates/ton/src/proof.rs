@@ -1,4 +1,4 @@
-use tonlib_core::cell::{ArcCell, BagOfCells, Cell, CellParser};
+use tonlib_core::cell::{ArcCell, Cell, CellParser};
 
 use crate::tl::BlockId;
 
@@ -77,11 +77,11 @@ pub(crate) fn config(
 }
 
 fn single(boc: &[u8]) -> Option<ArcCell> {
-    BagOfCells::parse(boc).ok()?.single_root().ok()
+    crate::cells::bag(boc)?.single_root().ok()
 }
 
 fn roots(boc: &[u8]) -> Option<(ArcCell, ArcCell)> {
-    let bag = BagOfCells::parse(boc).ok()?;
+    let bag = crate::cells::bag(boc)?;
     match bag.roots.as_slice() {
         [block, state] => Some((block.clone(), state.clone())),
         _ => None,
@@ -262,6 +262,7 @@ mod tests {
     use tonlib_core::cell::CellBuilder;
 
     use super::*;
+    use tonlib_core::cell::BagOfCells;
 
     fn leaf_with(label: &[bool], value: u8) -> ArcCell {
         let mut cell = CellBuilder::new();

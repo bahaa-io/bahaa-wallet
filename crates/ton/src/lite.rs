@@ -15,7 +15,6 @@ use serde_json::Value;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
-use tonlib_core::cell::BagOfCells;
 use url::Url;
 
 use crate::blocks::{self, Trust};
@@ -481,7 +480,7 @@ pub(crate) fn proven_account(
     )
     .ok_or_else(|| retry("a liteserver sent an account proof that does not hold"))?;
     let root = (!state.state.is_empty())
-        .then(|| BagOfCells::parse(&state.state).ok()?.single_root().ok())
+        .then(|| crate::cells::bag(&state.state)?.single_root().ok())
         .flatten();
     let last = match (proven, &root) {
         (Proven::Present { account, last }, Some(root))
@@ -637,11 +636,26 @@ fn missing(text: &str) -> Failure<ChainError> {
     Failure::Unsupported(ChainError::Network(text.to_owned()))
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz_answer(answer: &[u8]) {
+    let _ = kept_history(answer);
+    let _ = kept_libraries(answer);
+    let _ = send_answer(answer);
+}
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz_list(list: &Value) {
+    for entry in list["liteservers"].as_array().into_iter().flatten() {
+        let _ = server(entry);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
+    use tonlib_core::cell::BagOfCells;
 
     fn lite() -> Lite {
         Lite::new(

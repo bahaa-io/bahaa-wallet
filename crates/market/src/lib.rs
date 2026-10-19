@@ -1,3 +1,6 @@
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz;
 mod protocol;
 mod rest;
 mod service;

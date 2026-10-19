@@ -432,6 +432,32 @@ fn padded_address(word: &str) -> Option<[u8; 20]> {
     bytes.try_into().ok()
 }
 
+#[cfg(fuzzing)]
+pub(super) fn fuzz(value: &Value) {
+    if let Some(entries) = value.as_array() {
+        let _ = latest(entries);
+    }
+    let log = &value["log"][0];
+    let contract = log["address"]
+        .as_str()
+        .map(|text| text.strip_prefix("41").unwrap_or(text))
+        .and_then(crate::http::unhex)
+        .and_then(|bytes| <[u8; 20]>::try_from(bytes).ok())
+        .unwrap_or_default();
+    for topic in [1, 2] {
+        let owner = log["topics"][topic]
+            .as_str()
+            .and_then(padded_address)
+            .unwrap_or_default();
+        let id = value["id"].as_str().unwrap_or_default();
+        let _ = transfers(value, id, &contract, &owner);
+    }
+    if let Some(raw) = value["raw_data_hex"].as_str().and_then(crate::http::unhex) {
+        let _ = tx::coins_in(&raw);
+    }
+    let _ = fingerprint_ok(value["fingerprint"].as_str().unwrap_or_default());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

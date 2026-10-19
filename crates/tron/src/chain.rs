@@ -436,6 +436,16 @@ fn malformed() -> ChainError {
     ChainError::Network("an endpoint sent a malformed reply".to_owned())
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(value: &Value) {
+    let _ = succeeded(value);
+    let _ = constant_word(value);
+    let _ = count(value, "free_net_usage");
+    let _ = staked(value);
+    incoming::fuzz(value);
+    send::fuzz(value);
+}
+
 #[cfg(test)]
 mod tests {
     use bahaa_config::Registry;

@@ -296,8 +296,8 @@ pub(crate) fn external(
 
 pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
     let invalid = || ChainError::Invalid("not a signed wallet transfer");
-    let root = BagOfCells::parse(boc)
-        .map_err(|_| invalid())?
+    let root = crate::cells::bag(boc)
+        .ok_or_else(invalid)?
         .single_root()
         .map_err(|_| invalid())?;
     let message = Message::from_cell(&root).map_err(|_| invalid())?;
@@ -488,7 +488,7 @@ fn hash_of(cell: &ArcCell) -> Result<[u8; 32], ChainError> {
 }
 
 pub(crate) fn read_address(boc: &[u8]) -> Option<Address> {
-    let root = BagOfCells::parse(boc).ok()?.single_root().ok()?;
+    let root = crate::cells::bag(boc)?.single_root().ok()?;
     let mut parser = root.parser();
     let address = parser.load_address().ok()?;
     parser.ensure_empty().ok()?;
