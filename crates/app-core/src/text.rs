@@ -65,7 +65,7 @@ pub(crate) const NO_ASSETS: &str = "Nothing here yet. Receive coins to see them.
 pub(crate) const NETWORK: &str = "Network";
 pub(crate) const PRICE: &str = "Price";
 pub(crate) const ASSET: &str = "Asset";
-pub(crate) const PRICES_OFFLINE: &str = "Prices are unavailable right now";
+pub(crate) const PRICES_OFFLINE: &str = "Prices offline";
 pub(crate) const OTHER: &str = "Other";
 pub(crate) const CHECKING: &str = "Checking networks…";
 pub(crate) const CONNECTED: &str = "Connected";
@@ -357,9 +357,9 @@ pub(crate) fn dropped(amount: &str) -> String {
 
 pub(crate) fn unreachable(networks: &[String]) -> String {
     match networks {
-        [one] => format!("Can't reach {one} right now"),
-        [one, two] => format!("Can't reach {one} and {two} right now"),
-        many => format!("Can't reach {} networks right now", many.len()),
+        [one] => format!("Can't reach {one}"),
+        [one, two] => format!("Can't reach {one} and {two}"),
+        many => format!("Can't reach {} networks", many.len()),
     }
 }
 
