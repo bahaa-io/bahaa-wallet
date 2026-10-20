@@ -1,0 +1,140 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Tag matches the version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "The tag $GITHUB_REF_NAME does not match version $version in Cargo.toml" >&2
+            exit 1
+          fi
+      - name: Test
+        run: cargo test --workspace --locked
+
+  build:
+    name: Build ${{ matrix.asset }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: bahaa-wallet-tui-linux-x86_64
+            binary: bahaa-wallet
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: bahaa-wallet-tui-linux-aarch64
+            binary: bahaa-wallet
+          - os: macos-15
+            target: aarch64-apple-darwin
+            asset: bahaa-wallet-tui-macos-aarch64
+            binary: bahaa-wallet
+          - os: macos-15
+            target: x86_64-apple-darwin
+            asset: bahaa-wallet-tui-macos-x86_64
+            binary: bahaa-wallet
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            asset: bahaa-wallet-tui-windows-x86_64.exe
+            binary: bahaa-wallet.exe
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Add the target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p bahaa-tui --target ${{ matrix.target }}
+      - name: Name the file
+        shell: bash
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.asset }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum bahaa-wallet-tui-* > SHA256SUMS
+      - name: Sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          TRUSTED_KEY: c8568734fcbd2dc44eab8bbb1d27751011a7b6fe5aa3b79ac19549467e57fb28
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/release-signing-key.pem"
+          public="$RUNNER_TEMP/release-public-key.pem"
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
+          found=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n')
+          if [ "$found" != "$TRUSTED_KEY" ]; then
+            rm -f "$key"
+            echo "RELEASE_SIGNING_KEY is not the key the app trusts" >&2
+            exit 1
+          fi
+          openssl pkeyutl -sign -inkey "$key" -rawin -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+          openssl pkey -in "$key" -pubout -out "$public"
+          rm -f "$key"
+          openssl pkeyutl -verify -pubin -inkey "$public" -rawin -in dist/SHA256SUMS -sigfile dist/SHA256SUMS.sig
+      - name: Changes since the last release
+        run: |
+          previous=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          if [ -n "$previous" ]; then
+            range="$previous..$GITHUB_REF_NAME"
+          else
+            range="$GITHUB_REF_NAME"
+          fi
+          git log --no-merges --max-count=200 --pretty='- %s' "$range" > "$RUNNER_TEMP/notes.md"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          case "$GITHUB_REF_NAME" in
+            *-*) flags+=(--prerelease) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --title "Bahaa Wallet ${GITHUB_REF_NAME#v}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            "${flags[@]}"
