@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["apps/tui", "crates/*"]
 
 [workspace.package]
 version = "0.4.0"
@@ -11,6 +11,12 @@ repository = "https://github.com/bahaa-io/bahaa-wallet"
 publish = false
 
 [workspace.dependencies]
+adnl = "2.0.0"
+alloy-consensus = { version = "2.5.0", features = ["k256"] }
+alloy-eips = "2.5.0"
+alloy-primitives = "1.7.3"
+arboard = { version = "3.7.0", default-features = false }
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 bahaa-app-core = { path = "crates/app-core" }
 bahaa-chain = { path = "crates/chain" }
 bahaa-config = { path = "crates/config" }
@@ -23,29 +29,32 @@ bahaa-ton = { path = "crates/ton" }
 bahaa-tron = { path = "crates/tron" }
 bahaa-types = { path = "crates/types" }
 bahaa-vault = { path = "crates/vault" }
-adnl = "2.0.0"
-alloy-consensus = { version = "2.5.0", features = ["k256"] }
-alloy-eips = "2.5.0"
-alloy-primitives = "1.7.3"
-argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 base64 = "0.23.1"
 bs58 = { version = "0.5.1", features = ["check"] }
 bytes = "1.12.1"
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+directories = "6.0.0"
 ed25519-dalek = "3.0.0"
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
 hmac = "0.12.1"
 k256 = "0.13.4"
 num-bigint = "0.4.8"
+open = "5.4.4"
 pbkdf2 = "0.12.2"
 prost = "0.14.4"
+qrcode = { version = "0.14.1", default-features = false }
+ratatui = "0.30.2"
 redb = "~4.3.0"
 reqwest = { version = "0.13.5", features = ["json"] }
 ruint = "1.20.1"
 rustls = "0.23.46"
 rustls-platform-verifier = "0.7.1"
 secrecy = "0.10.3"
+self-replace = "1.5.0"
+semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
@@ -58,6 +67,7 @@ tycho-executor = "0.3.7"
 tycho-types = { version = "0.3.6", default-features = false, features = ["models"] }
 tycho-vm = "0.3.7"
 unicode-normalization = "0.1.26"
+unicode-width = "0.2.2"
 url = { version = "2.5.8", features = ["serde"] }
 zeroize = "1.9.1"
 
