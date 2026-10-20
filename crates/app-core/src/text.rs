@@ -202,7 +202,7 @@ pub(crate) const FEE_DETAILS: &str = "Fee details when sending";
 pub(crate) const DATA_FOLDER: &str = "Data folder";
 pub(crate) const REMOVE_WALLET: &str = "Remove wallet";
 pub(crate) const REVEAL_TEXT: &str =
-    "Anyone who sees these words can take your funds. Make sure no one is watching.";
+    "Anyone who sees this can take your funds. Make sure no one is watching.";
 pub(crate) const REMOVE_TEXT: &str = "The wallet leaves this device. You can only bring it back with its recovery phrase, so make sure you have it.";
 pub(crate) const WALLET_REMOVED: &str = "Wallet removed";
 
