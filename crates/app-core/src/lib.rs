@@ -15,7 +15,7 @@ pub use action::{
 };
 pub use app::{App, AppConfig};
 pub use bahaa_engine::{
-    ChainFamily, Color, EngineConfig, EngineError, KdfParams, Registry, hex, to_plain_text,
+    ChainFamily, Color, EngineConfig, EngineError, KdfParams, Registry, to_plain_text,
 };
 pub use screen::completions;
 pub use view::{
