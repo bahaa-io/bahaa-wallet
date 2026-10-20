@@ -20,7 +20,7 @@ use bahaa_store::{
     Contact, CustomToken, Outgoing, Received, Scan, SentTx, Store, StoreError, StoreKey,
     TrustedBlock,
 };
-use bahaa_types::{Address, AssetId, NetworkId, TonContract};
+use bahaa_types::{Address, AssetId, ChainFamily, NetworkId, TonContract};
 use bahaa_vault::KdfParams;
 use futures_util::future::join;
 use thiserror::Error;
@@ -134,6 +134,7 @@ enum Command {
         Option<PhraseKind>,
         Reply<WalletId>,
     ),
+    ImportKey(SecretString, ChainFamily, Reply<WalletId>),
     Remove(WalletId, Reply<()>),
     AddAccount(WalletId, Reply<Vec<Account>>),
     RemoveAccount(WalletId, u32, Reply<()>),
@@ -368,6 +369,15 @@ impl Engine {
         kind: PhraseKind,
     ) -> Result<WalletId, EngineError> {
         self.ask(|reply| Command::Import(phrase, passphrase, Some(kind), reply))
+            .await
+    }
+
+    pub async fn import_key(
+        &self,
+        key: SecretString,
+        family: ChainFamily,
+    ) -> Result<WalletId, EngineError> {
+        self.ask(|reply| Command::ImportKey(key, family, reply))
             .await
     }
 
@@ -659,6 +669,7 @@ impl Worker {
             | Command::Accounts(_)
             | Command::Generate(..)
             | Command::Import(..)
+            | Command::ImportKey(..)
             | Command::Remove(..)
             | Command::AddAccount(..)
             | Command::RemoveAccount(..)
@@ -695,6 +706,13 @@ impl Worker {
             }
             Command::Import(phrase, passphrase, kind, reply) => {
                 self.import(phrase, passphrase, kind, reply).await;
+            }
+            Command::ImportKey(key, family, reply) => {
+                let result = self
+                    .keyring(move |keyring| keyring.import_key(key.expose_secret(), family))
+                    .await;
+                self.after_change(result.is_ok()).await;
+                let _ = reply.send(result);
             }
             Command::Remove(id, reply) => {
                 let result = self.keyring(move |keyring| keyring.remove(id)).await;
@@ -987,7 +1005,7 @@ impl Worker {
             .iter()
             .map(|wallet| {
                 let kept = match wallet.kind {
-                    WalletKind::Ton => vec![0],
+                    WalletKind::Ton | WalletKind::Key(_) => vec![0],
                     WalletKind::Bip39 => self
                         .store
                         .account_indexes(wallet.id.value())
@@ -1007,11 +1025,12 @@ impl Worker {
                         .map_or_else(|| vec![0], |(_, kept)| kept.clone());
                     for index in kept {
                         let mut derived = Vec::with_capacity(chains.len());
-                        for chain in chains.iter().filter(|chain| chain.holds(seed.kind())) {
+                        let contract = wallet.ton.unwrap_or(TonContract::W5);
+                        for chain in chains.iter().filter(|chain| chain.holds(wallet.kind)) {
                             derived.push((
                                 chain.family(),
                                 chain.network().id.clone(),
-                                chain.derive(seed, index, wallet.ton)?,
+                                chain.derive(seed, index, contract)?,
                             ));
                         }
                         accounts.extend(chains::accounts(wallet.id, index, &derived));

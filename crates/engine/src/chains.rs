@@ -6,7 +6,7 @@ use bahaa_chain::{
     Transfer, TxId, TxStatus,
 };
 use bahaa_config::{Coin, Network, Registry};
-use bahaa_crypto::{Seed, SeedKind};
+use bahaa_crypto::Seed;
 use bahaa_evm::{EvmChain, EvmPlan};
 use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock};
 use bahaa_ton::{TonChain, TonPlan};
@@ -15,8 +15,8 @@ use bahaa_types::{Address, AssetId, ChainFamily, NetworkId, TonContract};
 use futures_util::FutureExt;
 use futures_util::future::join_all;
 
-use crate::WalletId;
 use crate::portfolio::{Account, Held, NetworkHealth};
+use crate::{WalletId, WalletKind};
 
 pub(crate) enum AnyChain {
     Evm(EvmChain),
@@ -44,8 +44,12 @@ impl AnyChain {
         self.network().family()
     }
 
-    pub(crate) fn holds(&self, kind: SeedKind) -> bool {
-        matches!(self, Self::Ton(_)) || kind == SeedKind::Bip39
+    pub(crate) fn holds(&self, kind: WalletKind) -> bool {
+        match kind {
+            WalletKind::Bip39 => true,
+            WalletKind::Ton => matches!(self, Self::Ton(_)),
+            WalletKind::Key(family) => self.family() == family,
+        }
     }
 
     pub(crate) fn derive(

@@ -1,6 +1,8 @@
-use bahaa_engine::{Caution, EngineError, FeeItem, Replace, SentStatus, Status, TonContract};
+use bahaa_engine::{
+    Caution, ChainFamily, EngineError, FeeItem, Replace, SentStatus, Status, TonContract,
+};
 
-use crate::action::{Direction, Tab};
+use crate::action::{Channel, Direction, Tab};
 use crate::core::Ctx;
 use crate::format;
 
@@ -17,6 +19,13 @@ pub(crate) const ADD_WALLET: &str = "Add a wallet";
 pub(crate) const CREATE_12: &str = "Create a wallet (12 words)";
 pub(crate) const CREATE_24: &str = "Create a wallet (24 words)";
 pub(crate) const IMPORT: &str = "Import a wallet";
+pub(crate) const IMPORT_KEY: &str = "Import a private key";
+pub(crate) const IMPORT_KEY_TEXT: &str = "Paste a private key exported from another wallet. One key is one account, on EVM networks or on Tron.";
+pub(crate) const PRIVATE_KEY: &str = "Private key";
+pub(crate) const USE_FOR: &str = "Use it for";
+pub(crate) const EVM_NETWORKS: &str = "EVM networks";
+pub(crate) const TRON: &str = "Tron";
+pub(crate) const KEY_OK: &str = "A valid private key";
 pub(crate) const SET_PASSWORD: &str = "Set a password";
 pub(crate) const SET_PASSWORD_TEXT: &str =
     "This password unlocks the wallet on this device. It can't be recovered, so keep it safe.";
@@ -179,6 +188,18 @@ pub(crate) const TON_CONTRACT: &str = "TON contract";
 pub(crate) const W5: &str = "W5 (current)";
 pub(crate) const V4R2: &str = "V4R2 (older)";
 pub(crate) const SHOW_PHRASE: &str = "Show recovery phrase";
+pub(crate) const SHOW_KEY: &str = "Show private key";
+pub(crate) const PRIVACY: &str = "Privacy";
+pub(crate) const HIDE_BALANCES: &str = "Hide balances";
+pub(crate) const HIDDEN: &str = "••••";
+pub(crate) const UPDATES: &str = "Updates";
+pub(crate) const CHECK_UPDATES: &str = "Check for updates";
+pub(crate) const DEVELOPER: &str = "Developer";
+pub(crate) const DEVELOPER_TEXT: &str =
+    "For people who build or test. These options show more detail and never touch your keys.";
+pub(crate) const DEVELOPER_MODE: &str = "Developer mode";
+pub(crate) const FEE_DETAILS: &str = "Fee details when sending";
+pub(crate) const DATA_FOLDER: &str = "Data folder";
 pub(crate) const REMOVE_WALLET: &str = "Remove wallet";
 pub(crate) const REVEAL_TEXT: &str =
     "Anyone who sees these words can take your funds. Make sure no one is watching.";
@@ -397,6 +418,29 @@ pub(crate) fn unreachable(networks: &[String]) -> String {
         [one, two] => format!("Can't reach {one} and {two}"),
         many => format!("Can't reach {} networks", many.len()),
     }
+}
+
+pub(crate) fn hidden_amount(symbol: &str) -> String {
+    format!("{HIDDEN} {symbol}")
+}
+
+pub(crate) fn channel(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Off => "Off",
+        Channel::Stable => "Stable",
+        Channel::Beta => "Beta",
+    }
+}
+
+pub(crate) fn key_wallet(family: ChainFamily) -> String {
+    match family {
+        ChainFamily::Tron => format!("{PRIVATE_KEY}, {TRON}"),
+        ChainFamily::Evm | ChainFamily::Ton => format!("{PRIVATE_KEY}, {EVM_NETWORKS}"),
+    }
+}
+
+pub(crate) fn key_title(wallet: &str) -> String {
+    format!("Private key of {wallet}")
 }
 
 pub(crate) fn reveal_title(wallet: &str) -> String {

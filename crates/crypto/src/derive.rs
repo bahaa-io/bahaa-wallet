@@ -24,6 +24,8 @@ pub enum DeriveError {
     TonOnly,
     #[error("this wallet's keys come from derivation paths")]
     NotTon,
+    #[error("this wallet is a single private key")]
+    KeyOnly,
 }
 
 struct Node {
@@ -32,6 +34,9 @@ struct Node {
 }
 
 pub fn secp256k1(seed: &Seed, path: &DerivationPath) -> Result<SecretKey, DeriveError> {
+    if seed.kind() == SeedKind::Key {
+        return SecretKey::from_slice(seed.expose()).map_err(|_| DeriveError::InvalidKey);
+    }
     let node = secp256k1_node(hd(seed)?, path)?;
     SecretKey::from_bytes(&FieldBytes::from(*node.key)).map_err(|_| DeriveError::InvalidKey)
 }
@@ -64,6 +69,7 @@ fn hd(seed: &Seed) -> Result<&[u8], DeriveError> {
     match seed.kind() {
         SeedKind::Bip39 => Ok(seed.expose()),
         SeedKind::Ton => Err(DeriveError::TonOnly),
+        SeedKind::Key => Err(DeriveError::KeyOnly),
     }
 }
 

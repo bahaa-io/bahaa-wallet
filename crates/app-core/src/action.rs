@@ -22,6 +22,7 @@ pub enum Field {
     Phrase,
     Passphrase,
     Word(usize),
+    Key,
     To,
     Amount,
     Memo,
@@ -68,13 +69,16 @@ pub enum Go {
     SendAsset,
     ReceiveAsset,
     Networks,
+    Developer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {
     Create(Words),
     Import,
+    ImportKey,
     Kind(Kind),
+    Family(Family),
     Wallet(Option<usize>),
     Direction(Direction),
     Source(usize),
@@ -82,6 +86,8 @@ pub enum Pick {
     Network(usize),
     Target(usize),
     Currency(Currency),
+    Channel(Channel),
+    CheckUpdates,
     AutoLock(u16),
     Contract(Contract),
     AddAccount,
@@ -97,6 +103,8 @@ pub enum Toggle {
     Max,
     HideEmpty,
     HideSpam,
+    HideBalances,
+    Developer,
     Testnets,
 }
 
@@ -114,6 +122,13 @@ pub enum Words {
     TwentyFour,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Family {
+    #[default]
+    Evm,
+    Tron,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     MultiChain,
@@ -125,6 +140,13 @@ pub enum Currency {
     Usd,
     Eur,
     Irt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    Off,
+    Stable,
+    Beta,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

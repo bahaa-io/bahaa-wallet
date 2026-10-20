@@ -1,7 +1,7 @@
 use bahaa_engine::{
-    Account, Activity, Address, AssetId, Caution, Contact, CustomToken, Draft, DraftId, Engine,
-    EngineError, NetworkId, NewPhrase, PhraseKind, Replace, SecretString, SendRequest, SentTx,
-    Settings, TonContract, WalletId, WalletInfo,
+    Account, Activity, Address, AssetId, Caution, ChainFamily, Contact, CustomToken, Draft,
+    DraftId, Engine, EngineError, NetworkId, NewPhrase, PhraseKind, Replace, SecretString,
+    SendRequest, SentTx, Settings, TonContract, WalletId, WalletInfo,
 };
 
 pub(crate) enum Call {
@@ -11,6 +11,7 @@ pub(crate) enum Call {
     Refresh,
     Generate(NewPhrase),
     Import(SecretString, SecretString, Option<PhraseKind>),
+    ImportKey(SecretString, ChainFamily),
     Rename(WalletId, String),
     Remove(WalletId),
     CheckPassword(SecretString),
@@ -88,6 +89,7 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
             Some(kind) => engine.import_as(phrase, passphrase, kind).await,
             None => engine.import(phrase, passphrase).await,
         }),
+        Call::ImportKey(key, family) => Outcome::Imported(engine.import_key(key, family).await),
         Call::Rename(wallet, name) => done(engine.rename_wallet(wallet, name).await),
         Call::Remove(wallet) => done(engine.remove(wallet).await),
         Call::CheckPassword(password) => done(engine.check_password(password).await),

@@ -10,7 +10,8 @@ mod text;
 mod view;
 
 pub use action::{
-    Action, Contract, Currency, Direction, Field, Go, Kind, Pick, Tab, Toggle, Words,
+    Action, Channel, Contract, Currency, Direction, Family, Field, Go, Kind, Pick, Tab, Toggle,
+    Words,
 };
 pub use app::{App, AppConfig};
 pub use bahaa_engine::{ChainFamily, Color, EngineConfig, EngineError, KdfParams, Registry};

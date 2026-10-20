@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_engine::{
-    Account, Activity, ActivityKind, Address, AssetId, Coin, Contact, CustomToken, Event, Fiat,
-    Network, NetworkId, Portfolio, Price, Registry, SentStatus, SentTx, Settings, State, Status,
-    WalletId, WalletInfo,
+    Account, Activity, ActivityKind, Address, Amount, AssetId, Coin, Contact, CustomToken, Event,
+    Fiat, Network, NetworkId, Portfolio, Price, Registry, SentStatus, SentTx, Settings, State,
+    Status, WalletId, WalletInfo,
 };
 
 use crate::action::{Action, Go, Tab};
@@ -53,9 +53,15 @@ pub(crate) struct Data {
     pub settings: Settings,
 }
 
+pub(crate) struct Host {
+    pub folder: String,
+    pub updates: bool,
+}
+
 pub(crate) struct Ctx<'a> {
     pub registry: &'a Registry,
     pub data: &'a Data,
+    pub host: &'a Host,
     pub now: u64,
 }
 
@@ -65,6 +71,30 @@ impl Ctx<'_> {
         position
             .and_then(|position| self.data.wallets[position].name.clone())
             .unwrap_or_else(|| text::wallet(position.map_or(0, |position| position + 1)))
+    }
+
+    pub(crate) fn amount(&self, amount: Amount, symbol: &str) -> String {
+        if self.data.settings.hide_balances {
+            text::hidden_amount(symbol)
+        } else {
+            format::amount(amount, symbol)
+        }
+    }
+
+    pub(crate) fn exact(&self, amount: Amount, symbol: &str) -> String {
+        if self.data.settings.hide_balances {
+            text::hidden_amount(symbol)
+        } else {
+            format::exact(amount, symbol)
+        }
+    }
+
+    pub(crate) fn value(&self, value: Option<Amount>) -> String {
+        if self.data.settings.hide_balances {
+            text::HIDDEN.to_owned()
+        } else {
+            format::fiat(value, self.fiat())
+        }
     }
 
     pub(crate) fn coin(&self, asset: &AssetId) -> Option<&Coin> {
@@ -235,6 +265,7 @@ pub(crate) enum Nav {
 
 pub(crate) struct Core {
     registry: Arc<Registry>,
+    host: Host,
     now: u64,
     state: Option<State>,
     onboarding: bool,
@@ -243,15 +274,17 @@ pub(crate) struct Core {
     stack: Vec<Box<dyn Screen>>,
     toasts: Vec<(Toast, u64)>,
     counter: u64,
+    updates_checked: bool,
     pending: Option<u64>,
     clipboard: u64,
     handled: u64,
 }
 
 impl Core {
-    pub(crate) fn new(registry: Arc<Registry>, now: u64) -> Self {
+    pub(crate) fn new(registry: Arc<Registry>, now: u64, host: Host) -> Self {
         Self {
             registry,
+            host,
             now,
             state: None,
             onboarding: false,
@@ -260,6 +293,7 @@ impl Core {
             stack: vec![screen::starting()],
             toasts: Vec::new(),
             counter: GLOBAL,
+            updates_checked: false,
             pending: None,
             clipboard: 0,
             handled: 0,
@@ -284,10 +318,7 @@ impl Core {
             Input::Event(event) => self.event(*event),
             Input::Lagged => self.reload(),
             Input::Done(ticket, outcome) => self.done(ticket, *outcome),
-            Input::Loaded(loaded) => {
-                self.loaded(loaded);
-                Vec::new()
-            }
+            Input::Loaded(loaded) => self.loaded(loaded),
             Input::Timer(Timer::ClearClipboard(generation)) => {
                 if generation == self.clipboard {
                     vec![Effect::Request(Request::ClearClipboard)]
@@ -331,6 +362,7 @@ impl Core {
         Ctx {
             registry: &self.registry,
             data: &self.data,
+            host: &self.host,
             now: self.now,
         }
     }
@@ -341,6 +373,7 @@ impl Core {
             Ctx {
                 registry: &self.registry,
                 data: &self.data,
+                host: &self.host,
                 now: self.now,
             },
         )
@@ -495,15 +528,30 @@ impl Core {
         }
     }
 
-    fn loaded(&mut self, loaded: Loaded) {
+    fn loaded(&mut self, loaded: Loaded) -> Vec<Effect> {
         match loaded {
             Loaded::Wallets(wallets) => self.data.wallets = wallets,
             Loaded::Accounts(accounts) => self.data.accounts = accounts,
             Loaded::Activity(activity) => self.data.activity = activity,
             Loaded::Contacts(contacts) => self.data.contacts = contacts,
             Loaded::Tokens(tokens) => self.data.tokens = tokens,
-            Loaded::Settings(settings) => self.data.settings = settings,
+            Loaded::Settings(settings) => {
+                self.data.settings = settings;
+                return self.check_updates_once();
+            }
         }
+        Vec::new()
+    }
+
+    fn check_updates_once(&mut self) -> Vec<Effect> {
+        if !self.host.updates || self.updates_checked {
+            return Vec::new();
+        }
+        self.updates_checked = true;
+        screen::update_check(&self.data.settings)
+            .map(Effect::Request)
+            .into_iter()
+            .collect()
     }
 
     fn event(&mut self, event: Event) -> Vec<Effect> {
@@ -541,7 +589,7 @@ impl Core {
                     let received = &arrival.received;
                     let ctx = self.ctx();
                     let message = text::received(
-                        &format::amount(received.amount, &ctx.symbol(&received.asset)),
+                        &ctx.amount(received.amount, &ctx.symbol(&received.asset)),
                         &ctx.network_name(&received.network),
                     );
                     self.toast(Level::Success, message);
@@ -558,7 +606,7 @@ impl Core {
         if tx.status.is_open() || before == Some(&tx.status) {
             return;
         }
-        let amount = format::amount(tx.amount, &ctx.symbol(&tx.asset));
+        let amount = ctx.amount(tx.amount, &ctx.symbol(&tx.asset));
         let (level, message) = match &tx.status {
             SentStatus::Confirmed => (Level::Success, text::confirmed(&amount)),
             SentStatus::Failed(reason) => (Level::Error, text::failed(&amount, reason)),

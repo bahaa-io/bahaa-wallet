@@ -1,16 +1,19 @@
-use bahaa_crypto::{ExposeSecret, Mnemonic, SecretString, TON_WORDS, TonMnemonic};
-use bahaa_types::TonContract;
+use bahaa_crypto::{ExposeSecret, KEY_BYTES, Mnemonic, SecretString, TON_WORDS, TonMnemonic};
+use bahaa_types::{ChainFamily, TonContract};
 use zeroize::Zeroizing;
 
 use crate::KeyringError;
 
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 const FIRST_VERSION: u8 = 1;
 const CONTRACT_VERSION: u8 = 3;
 const MAX_WALLETS: usize = 64;
 const MAX_PASSPHRASE: usize = 1024;
 const BIP39: u8 = 0;
 const TON: u8 = 1;
+const KEY: u8 = 2;
+const EVM: u8 = 0;
+const TRON: u8 = 1;
 const W5: u8 = 0;
 const V4R2: u8 = 1;
 
@@ -24,18 +27,24 @@ pub enum Phrase {
         mnemonic: TonMnemonic,
         contract: TonContract,
     },
+    Key {
+        key: Zeroizing<[u8; KEY_BYTES]>,
+        family: ChainFamily,
+    },
 }
 
 impl Phrase {
-    pub fn contract(&self) -> TonContract {
+    pub fn contract(&self) -> Option<TonContract> {
         match self {
-            Self::Bip39 { contract, .. } | Self::Ton { contract, .. } => *contract,
+            Self::Bip39 { contract, .. } | Self::Ton { contract, .. } => Some(*contract),
+            Self::Key { .. } => None,
         }
     }
 
-    pub fn contract_mut(&mut self) -> &mut TonContract {
+    pub fn contract_mut(&mut self) -> Option<&mut TonContract> {
         match self {
-            Self::Bip39 { contract, .. } | Self::Ton { contract, .. } => contract,
+            Self::Bip39 { contract, .. } | Self::Ton { contract, .. } => Some(contract),
+            Self::Key { .. } => None,
         }
     }
 }
@@ -76,11 +85,22 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
                     out.extend_from_slice(&index.to_be_bytes());
                 }
             }
+            Phrase::Key { key, family } => {
+                out.push(KEY);
+                out.push(match family {
+                    ChainFamily::Evm => EVM,
+                    ChainFamily::Tron => TRON,
+                    ChainFamily::Ton => return Err(KeyringError::Damaged),
+                });
+                out.extend_from_slice(&**key);
+            }
         }
-        out.push(match entry.phrase.contract() {
-            TonContract::W5 => W5,
-            TonContract::V4R2 => V4R2,
-        });
+        if let Some(contract) = entry.phrase.contract() {
+            out.push(match contract {
+                TonContract::W5 => W5,
+                TonContract::V4R2 => V4R2,
+            });
+        }
     }
     Ok(out)
 }
@@ -125,6 +145,7 @@ pub fn decode(bytes: &[u8]) -> Result<Contents, KeyringError> {
         let phrase = match kind {
             BIP39 => read_bip39(&mut reader, version)?,
             TON => read_ton(&mut reader)?,
+            KEY => read_key(&mut reader)?,
             _ => return Err(KeyringError::Damaged),
         };
         if id >= next_id || entries.iter().any(|entry: &Entry| entry.id == id) {
@@ -172,6 +193,17 @@ fn read_ton(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
         mnemonic,
         contract: read_contract(reader)?,
     })
+}
+
+fn read_key(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
+    let family = match reader.take(1)?[0] {
+        EVM => ChainFamily::Evm,
+        TRON => ChainFamily::Tron,
+        _ => return Err(KeyringError::Damaged),
+    };
+    let mut key = Zeroizing::new([0u8; KEY_BYTES]);
+    key.copy_from_slice(reader.take(KEY_BYTES)?);
+    Ok(Phrase::Key { key, family })
 }
 
 fn read_contract(reader: &mut Reader<'_>) -> Result<TonContract, KeyringError> {
@@ -266,7 +298,29 @@ mod tests {
         old.extend_from_slice(&[7; 16]);
         old.extend_from_slice(&0u16.to_be_bytes());
         let contents = decode(&old).unwrap();
-        assert_eq!(contents.entries[0].phrase.contract(), TonContract::W5);
+        assert_eq!(contents.entries[0].phrase.contract(), Some(TonContract::W5));
+    }
+
+    #[test]
+    fn private_keys_round_trip_with_their_family() {
+        for family in [ChainFamily::Evm, ChainFamily::Tron] {
+            let contents = Contents {
+                next_id: 4,
+                entries: vec![Entry {
+                    id: 3,
+                    phrase: Phrase::Key {
+                        key: Zeroizing::new([9; KEY_BYTES]),
+                        family,
+                    },
+                }],
+            };
+            let decoded = decode(&encode(&contents).unwrap()).unwrap();
+            assert!(matches!(
+                &decoded.entries[0].phrase,
+                Phrase::Key { key, family: read } if **key == [9; KEY_BYTES] && *read == family
+            ));
+            assert_eq!(decoded.entries[0].phrase.contract(), None);
+        }
     }
 
     #[test]

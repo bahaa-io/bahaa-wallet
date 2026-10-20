@@ -161,7 +161,7 @@ fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
         cells: vec![
             cell(format::ago(activity.time, ctx.now), Tone::Muted),
             cell(
-                format!("{sign}{}", format::amount(amount, &ctx.symbol(asset))),
+                format!("{sign}{}", ctx.amount(amount, &ctx.symbol(asset))),
                 amount_tone,
             ),
             network_cell(ctx, asset.network()),
@@ -275,20 +275,20 @@ impl Screen for Transfer {
                 }
                 (
                     text::SENT_TITLE,
-                    format::exact(tx.amount, &ctx.symbol(&tx.asset)),
+                    ctx.exact(tx.amount, &ctx.symbol(&tx.asset)),
                     lines,
                     Vec::new(),
                 )
             }
             ActivityKind::SentElsewhere(moved) => (
                 text::ELSEWHERE_TITLE,
-                format::exact(moved.amount, &ctx.symbol(&moved.asset)),
+                ctx.exact(moved.amount, &ctx.symbol(&moved.asset)),
                 movement_lines(ctx, moved),
                 Vec::new(),
             ),
             ActivityKind::Received(arrival) => (
                 text::RECEIVED_TITLE,
-                format::exact(
+                ctx.exact(
                     arrival.received.amount,
                     &ctx.symbol(&arrival.received.asset),
                 ),

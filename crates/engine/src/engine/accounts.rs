@@ -11,8 +11,8 @@ impl Worker {
         wallet: WalletId,
     ) -> Result<Vec<Account>, EngineError> {
         let kind = self.kind_of(wallet).await?;
-        if kind == WalletKind::Ton {
-            return Err(ChainError::Invalid("a TON recovery phrase has one account").into());
+        if kind != WalletKind::Bip39 {
+            return Err(ChainError::Invalid("this wallet has one account").into());
         }
         let mut indexes = self.store.account_indexes(wallet.value())?;
         if indexes.len() >= MAX_ACCOUNTS {

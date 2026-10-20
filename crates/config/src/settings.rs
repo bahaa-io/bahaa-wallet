@@ -38,6 +38,15 @@ impl Fiat {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Updates {
+    Off,
+    #[default]
+    Stable,
+    Beta,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -45,6 +54,8 @@ pub struct Settings {
     pub developer_mode: bool,
     pub show_testnets: bool,
     pub lock_after_minutes: u16,
+    pub hide_balances: bool,
+    pub updates: Updates,
 }
 
 impl Default for Settings {
@@ -54,6 +65,8 @@ impl Default for Settings {
             developer_mode: false,
             show_testnets: false,
             lock_after_minutes: 10,
+            hide_balances: false,
+            updates: Updates::Stable,
         }
     }
 }
@@ -85,6 +98,8 @@ mod tests {
         assert_eq!(settings.fiat, Fiat::Irt);
         assert!(!settings.developer_mode);
         assert_eq!(settings.lock_after_minutes, 10);
+        assert!(!settings.hide_balances);
+        assert_eq!(settings.updates, Updates::Stable);
         assert_eq!(Settings::from_json("{}").unwrap(), Settings::default());
     }
 
@@ -95,6 +110,8 @@ mod tests {
             developer_mode: true,
             show_testnets: true,
             lock_after_minutes: 30,
+            hide_balances: true,
+            updates: Updates::Beta,
         };
         assert_eq!(
             Settings::from_json(&settings.to_json().unwrap()).unwrap(),
@@ -107,6 +124,7 @@ mod tests {
         assert!(Settings::from_json(r#"{"lock_after_minutes": 0}"#).is_err());
         assert!(Settings::from_json(r#"{"lock_after_minutes": 1441}"#).is_err());
         assert!(Settings::from_json(r#"{"fiat": "btc"}"#).is_err());
+        assert!(Settings::from_json(r#"{"updates": "nightly"}"#).is_err());
         assert!(Settings::from_json("not json").is_err());
     }
 

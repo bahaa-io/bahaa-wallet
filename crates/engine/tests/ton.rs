@@ -293,7 +293,10 @@ async fn a_ton_phrase_opens_only_its_ton_accounts() {
     let wallets = engine.wallets().await.unwrap();
     assert_eq!(
         (wallets[0].kind, wallets[0].ton),
-        (bahaa_engine::WalletKind::Ton, bahaa_types::TonContract::W5)
+        (
+            bahaa_engine::WalletKind::Ton,
+            Some(bahaa_types::TonContract::W5)
+        )
     );
     let asked = asked.lock().unwrap().clone();
     for hash in [
@@ -439,7 +442,7 @@ async fn a_ton_phrase_can_be_switched_between_its_two_contracts() {
     assert_eq!(
         switched,
         (
-            Some(bahaa_types::TonContract::V4R2),
+            Some(Some(bahaa_types::TonContract::V4R2)),
             Some(vec![v4r2.to_owned()])
         )
     );

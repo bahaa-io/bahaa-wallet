@@ -13,8 +13,8 @@ mod wallets;
 pub use onboarding::completions;
 
 use bahaa_engine::{
-    AssetId, ChainFamily, NetworkId, SecretString, SentStatus, WalletId, WalletInfo, WalletKind,
-    WordCount,
+    AssetId, ChainFamily, NetworkId, SecretString, SentStatus, Settings, TonContract, Updates,
+    WalletId, WalletInfo, WalletKind, WordCount,
 };
 
 use crate::action::{Action, Field, Pick, Tab};
@@ -22,7 +22,8 @@ use crate::call::Outcome;
 use crate::core::{Ctx, Reply};
 use crate::text;
 use crate::view::{
-    Button, Cell, Choice, Group, Input, Item, Level, Line, Note, Page, PageId, Secret, Tone, Value,
+    Button, Cell, Choice, Group, Input, Item, Level, Line, Note, Page, PageId, Request, Secret,
+    Tone, Value,
 };
 
 const MIN_PASSWORD: usize = 8;
@@ -188,6 +189,14 @@ pub(crate) fn wallet_group(ctx: &Ctx<'_>, filter: Option<WalletId>) -> Option<Gr
     ))
 }
 
+pub(crate) fn update_check(settings: &Settings) -> Option<Request> {
+    match settings.updates {
+        Updates::Off => None,
+        Updates::Stable => Some(Request::CheckUpdates { beta: false }),
+        Updates::Beta => Some(Request::CheckUpdates { beta: true }),
+    }
+}
+
 pub(crate) fn several(owners: &[String]) -> bool {
     owners.iter().any(|owner| owner != &owners[0])
 }
@@ -252,7 +261,7 @@ pub(crate) fn password_inputs(password: &Secret, confirm: &Secret) -> Vec<Item> 
 }
 
 pub(crate) fn wallet_kind(wallet: &WalletInfo) -> String {
-    let words = match wallet.words {
+    let words = |count| match count {
         WordCount::Twelve => 12,
         WordCount::Fifteen => 15,
         WordCount::Eighteen => 18,
@@ -260,8 +269,9 @@ pub(crate) fn wallet_kind(wallet: &WalletInfo) -> String {
         WordCount::TwentyFour => 24,
     };
     match wallet.kind {
-        WalletKind::Bip39 => text::multi_chain(words, wallet.passphrase),
-        WalletKind::Ton => text::ton_wallet(wallet.ton),
+        WalletKind::Bip39 => text::multi_chain(wallet.words.map_or(0, words), wallet.passphrase),
+        WalletKind::Ton => text::ton_wallet(wallet.ton.unwrap_or(TonContract::W5)),
+        WalletKind::Key(family) => text::key_wallet(family),
     }
 }
 

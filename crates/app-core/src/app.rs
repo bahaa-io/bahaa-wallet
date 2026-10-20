@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::action::Action;
 use crate::call;
-use crate::core::{Core, Effect, Input};
+use crate::core::{Core, Effect, Host, Input};
 use crate::view::{Request, View};
 
 const TICK: Duration = Duration::from_secs(1);
@@ -17,12 +17,14 @@ const REQUESTS: usize = 64;
 
 pub struct AppConfig {
     pub engine: EngineConfig,
+    pub updates: bool,
 }
 
 impl AppConfig {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             engine: EngineConfig::new(data_dir),
+            updates: false,
         }
     }
 }
@@ -37,8 +39,12 @@ pub struct App {
 
 impl App {
     pub fn start(config: AppConfig) -> Result<(Self, mpsc::Receiver<Request>), EngineError> {
+        let host = Host {
+            folder: config.engine.data_dir.display().to_string(),
+            updates: config.updates,
+        };
         let engine = Engine::start(config.engine)?;
-        let core = Core::new(engine.registry(), bahaa_engine::now());
+        let core = Core::new(engine.registry(), bahaa_engine::now(), host);
         let (actions, inbox) = mpsc::unbounded_channel();
         let (requests_tx, requests) = mpsc::channel(REQUESTS);
         let (publish, view) = watch::channel(Arc::new(core.view()));

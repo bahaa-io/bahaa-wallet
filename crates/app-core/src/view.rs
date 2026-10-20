@@ -58,6 +58,7 @@ pub enum PageId {
     Phrase,
     Verify,
     Import,
+    ImportKey,
     Unlock,
     Portfolio,
     Asset,
@@ -80,6 +81,7 @@ pub enum PageId {
     NewToken,
     ChangePassword,
     Networks,
+    Developer,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -231,6 +233,7 @@ pub enum Request {
     Copy(String),
     ClearClipboard,
     Open(String),
+    CheckUpdates { beta: bool },
     Quit,
 }
 

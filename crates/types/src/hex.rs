@@ -22,7 +22,20 @@ pub fn decode(text: &str) -> Option<Vec<u8>> {
 }
 
 pub fn decode_array<const N: usize>(text: &str) -> Option<[u8; N]> {
-    decode(text)?.try_into().ok()
+    let mut out = [0u8; N];
+    decode_into(text, &mut out)?;
+    Some(out)
+}
+
+pub fn decode_into(text: &str, out: &mut [u8]) -> Option<()> {
+    let (pairs, rest) = text.as_bytes().as_chunks::<2>();
+    if !rest.is_empty() || pairs.len() != out.len() {
+        return None;
+    }
+    for (byte, [high, low]) in out.iter_mut().zip(pairs) {
+        *byte = (nibble(*high)? << 4) | nibble(*low)?;
+    }
+    Some(())
 }
 
 fn nibble(digit: u8) -> Option<u8> {
@@ -52,6 +65,8 @@ mod tests {
             assert_eq!(decode(text), None, "{text:?}");
         }
         assert_eq!(decode_array::<3>("beef"), None);
+        assert_eq!(decode_into("bee", &mut [0; 2]), None);
+        assert_eq!(decode_into("beef", &mut [0; 3]), None);
         assert_eq!(decode_array::<32>(&"+f".repeat(32)), None);
     }
 }

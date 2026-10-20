@@ -1,11 +1,11 @@
-use bahaa_engine::{KeyringError, NewPhrase, PhraseKind, SecretString};
+use bahaa_engine::{ChainFamily, KeyringError, NewPhrase, PhraseKind, SecretString};
 
 use super::{Screen, button, choice, group, hidden, note, password_inputs, password_problem};
-use crate::action::{Action, Field, Kind, Pick, Words};
+use crate::action::{Action, Family, Field, Kind, Pick, Words};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::text;
-use crate::view::{Level, Page, PageId, Secret};
+use crate::view::{Input, Level, Note, Page, PageId, Secret};
 
 const CHECKED_WORDS: usize = 3;
 
@@ -29,6 +29,9 @@ impl Screen for Welcome {
                 Reply::nav(Nav::Push(Box::new(NewPassword::new(Next::Create(*words)))))
             }
             Action::Pick(Pick::Import) => Reply::nav(Nav::Push(Box::new(Import::new(self.adding)))),
+            Action::Pick(Pick::ImportKey) => {
+                Reply::nav(Nav::Push(Box::new(ImportKey::new(self.adding))))
+            }
             _ => Reply::default(),
         }
     }
@@ -60,6 +63,7 @@ impl Screen for Welcome {
                     Action::Pick(Pick::Create(Words::TwentyFour)),
                 ),
                 button(text::IMPORT, Action::Pick(Pick::Import)),
+                button(text::IMPORT_KEY, Action::Pick(Pick::ImportKey)),
             ],
             ..Page::default()
         }
@@ -69,6 +73,7 @@ impl Screen for Welcome {
 enum Next {
     Create(Words),
     Import(Secret, Secret, Option<PhraseKind>),
+    ImportKey(Secret, Family),
 }
 
 struct NewPassword {
@@ -96,6 +101,7 @@ impl NewPassword {
             Next::Import(phrase, passphrase, kind) => {
                 Call::Import(super::secret(phrase), super::secret(passphrase), *kind)
             }
+            Next::ImportKey(key, family) => Call::ImportKey(super::secret(key), chain(*family)),
         }
     }
 }
@@ -391,6 +397,113 @@ impl Screen for Import {
             buttons: vec![button(text::CONTINUE, Action::Submit)],
             ..Page::default()
         }
+    }
+}
+
+struct ImportKey {
+    adding: bool,
+    key: Secret,
+    family: Family,
+    error: Option<String>,
+}
+
+impl ImportKey {
+    fn new(adding: bool) -> Self {
+        Self {
+            adding,
+            key: Secret::default(),
+            family: Family::default(),
+            error: None,
+        }
+    }
+
+    fn check(&self) -> Option<Note> {
+        if self.key.expose().trim().is_empty() {
+            return None;
+        }
+        Some(match bahaa_engine::check_key(self.key.expose()) {
+            Ok(()) => note(Level::Success, text::KEY_OK),
+            Err(err) => note(Level::Error, text::sentence(&err.to_string())),
+        })
+    }
+}
+
+impl Screen for ImportKey {
+    fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
+        match action {
+            Action::Type(Field::Key, value) => {
+                self.key = Secret::new(value);
+                self.error = None;
+            }
+            Action::Pick(Pick::Family(family)) => self.family = *family,
+            Action::Submit => match bahaa_engine::check_key(self.key.expose()) {
+                Err(err) => self.error = Some(text::sentence(&err.to_string())),
+                Ok(()) if self.adding => {
+                    return Reply::call(Call::ImportKey(
+                        super::secret(&self.key),
+                        chain(self.family),
+                    ));
+                }
+                Ok(()) => {
+                    let next = Next::ImportKey(self.key.clone(), self.family);
+                    return Reply::nav(Nav::Push(Box::new(NewPassword::new(next))));
+                }
+            },
+            _ => {}
+        }
+        Reply::default()
+    }
+
+    fn done(&mut self, outcome: Outcome, _ctx: &Ctx<'_>) -> Reply {
+        match outcome {
+            Outcome::Imported(Ok(_)) => {
+                Reply::nav(Nav::Finish).with_note(Level::Success, text::IMPORTED)
+            }
+            Outcome::Imported(Err(err)) => {
+                self.error = Some(text::error(&err));
+                Reply::default()
+            }
+            _ => Reply::default(),
+        }
+    }
+
+    fn page(&self, _ctx: &Ctx<'_>) -> Page {
+        let families = [
+            (Family::Evm, text::EVM_NETWORKS),
+            (Family::Tron, text::TRON),
+        ]
+        .into_iter()
+        .map(|(family, label)| {
+            choice(
+                label,
+                Action::Pick(Pick::Family(family)),
+                self.family == family,
+            )
+        })
+        .collect();
+        Page {
+            id: PageId::ImportKey,
+            title: text::IMPORT_KEY.to_owned(),
+            text: Some(text::IMPORT_KEY_TEXT.to_owned()),
+            form: vec![
+                Input {
+                    hint: self.check(),
+                    ..hidden(Field::Key, text::PRIVATE_KEY, &self.key)
+                }
+                .into(),
+                group(text::USE_FOR, families).into(),
+            ],
+            error: self.error.clone(),
+            buttons: vec![button(text::CONTINUE, Action::Submit)],
+            ..Page::default()
+        }
+    }
+}
+
+fn chain(family: Family) -> ChainFamily {
+    match family {
+        Family::Evm => ChainFamily::Evm,
+        Family::Tron => ChainFamily::Tron,
     }
 }
 

@@ -3,11 +3,11 @@ use std::fs::DirBuilder;
 use std::path::{Path, PathBuf};
 
 use bahaa_crypto::{
-    ExposeSecret, Mnemonic, MnemonicError, SecretString, Seed, TonMnemonic, TonPhraseError,
-    WordCount,
+    ExposeSecret, KeyError, Mnemonic, MnemonicError, SecretString, Seed, TonMnemonic,
+    TonPhraseError, WordCount,
 };
 use bahaa_store::StoreKey;
-use bahaa_types::TonContract;
+use bahaa_types::{ChainFamily, TonContract, hex};
 use bahaa_vault::{KdfParams, Vault, VaultError};
 use thiserror::Error;
 
@@ -37,16 +37,17 @@ impl fmt::Display for WalletId {
 pub struct WalletInfo {
     pub id: WalletId,
     pub name: Option<String>,
-    pub words: WordCount,
+    pub words: Option<WordCount>,
     pub passphrase: bool,
     pub kind: WalletKind,
-    pub ton: TonContract,
+    pub ton: Option<TonContract>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WalletKind {
     Bip39,
     Ton,
+    Key(ChainFamily),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +100,12 @@ pub enum KeyringError {
     Ambiguous,
     #[error("TON recovery phrases with a password are not supported yet")]
     TonPassphrase,
+    #[error("private keys work for EVM networks or Tron")]
+    KeyFamily,
+    #[error("this wallet has no TON account")]
+    NoTon,
+    #[error(transparent)]
+    Key(#[from] KeyError),
     #[error(transparent)]
     TonPhrase(#[from] TonPhraseError),
     #[error(transparent)]
@@ -206,18 +213,19 @@ impl Keyring {
             .entries
             .iter()
             .map(|entry| {
-                let (words, passphrase, kind) = match &entry.phrase {
+                let (words, passphrase) = match &entry.phrase {
                     Phrase::Bip39 {
                         mnemonic,
                         passphrase,
                         ..
                     } => (
-                        mnemonic.word_count(),
+                        Some(mnemonic.word_count()),
                         !passphrase.expose_secret().is_empty(),
-                        WalletKind::Bip39,
                     ),
-                    Phrase::Ton { .. } => (WordCount::TwentyFour, false, WalletKind::Ton),
+                    Phrase::Ton { .. } => (Some(WordCount::TwentyFour), false),
+                    Phrase::Key { .. } => (None, false),
                 };
+                let kind = kind_of(&entry.phrase);
                 WalletInfo {
                     id: WalletId(entry.id),
                     name: None,
@@ -247,6 +255,19 @@ impl Keyring {
         self.add(parse(phrase, passphrase, None)?)
     }
 
+    pub fn import_key(
+        &mut self,
+        text: &str,
+        family: ChainFamily,
+    ) -> Result<WalletId, KeyringError> {
+        self.session()?;
+        if family == ChainFamily::Ton {
+            return Err(KeyringError::KeyFamily);
+        }
+        let key = bahaa_crypto::private_key(text)?;
+        self.add(Phrase::Key { key, family })
+    }
+
     pub fn import_as(
         &mut self,
         phrase: &str,
@@ -265,12 +286,15 @@ impl Keyring {
         let path = self.path.clone();
         let session = self.session_mut()?;
         let index = session.index(id)?;
-        let previous = std::mem::replace(
-            session.contents.entries[index].phrase.contract_mut(),
-            contract,
-        );
+        let current = session.contents.entries[index]
+            .phrase
+            .contract_mut()
+            .ok_or(KeyringError::NoTon)?;
+        let previous = std::mem::replace(current, contract);
         if let Err(err) = persist(&path, session) {
-            *session.contents.entries[index].phrase.contract_mut() = previous;
+            if let Some(current) = session.contents.entries[index].phrase.contract_mut() {
+                *current = previous;
+            }
             return Err(err);
         }
         Ok(())
@@ -307,6 +331,7 @@ impl Keyring {
         Ok(match &session.contents.entries[index].phrase {
             Phrase::Bip39 { mnemonic, .. } => mnemonic.phrase(),
             Phrase::Ton { mnemonic, .. } => mnemonic.phrase(),
+            Phrase::Key { key, .. } => SecretString::from(hex::encode(&**key)),
         })
     }
 
@@ -329,10 +354,13 @@ impl Keyring {
         let path = self.path.clone();
         let session = self.session_mut()?;
         let seed = seed(&phrase)?;
+        let kind = kind_of(&phrase);
         if session
-            .seeds
+            .contents
+            .entries
             .iter()
-            .any(|known| known.kind() == seed.kind() && known.expose() == seed.expose())
+            .zip(&session.seeds)
+            .any(|(entry, known)| kind_of(&entry.phrase) == kind && known.expose() == seed.expose())
         {
             return Err(KeyringError::Duplicate);
         }
@@ -397,10 +425,24 @@ pub(crate) fn used_contract(w5: Option<u64>, v4r2: Option<u64>) -> TonContract {
 }
 
 pub fn check_phrase(phrase: &str, passphrase: &str) -> Result<PhraseKind, KeyringError> {
-    Ok(match parse(phrase, passphrase, None)? {
-        Phrase::Bip39 { .. } => PhraseKind::Bip39,
-        Phrase::Ton { .. } => PhraseKind::Ton,
-    })
+    match kind_of(&parse(phrase, passphrase, None)?) {
+        WalletKind::Bip39 => Ok(PhraseKind::Bip39),
+        WalletKind::Ton => Ok(PhraseKind::Ton),
+        WalletKind::Key(_) => Err(KeyringError::Damaged),
+    }
+}
+
+pub fn check_key(text: &str) -> Result<(), KeyringError> {
+    bahaa_crypto::private_key(text)?;
+    Ok(())
+}
+
+fn kind_of(phrase: &Phrase) -> WalletKind {
+    match phrase {
+        Phrase::Bip39 { .. } => WalletKind::Bip39,
+        Phrase::Ton { .. } => WalletKind::Ton,
+        Phrase::Key { family, .. } => WalletKind::Key(*family),
+    }
 }
 
 fn parse(phrase: &str, passphrase: &str, kind: Option<PhraseKind>) -> Result<Phrase, KeyringError> {
@@ -447,6 +489,7 @@ fn seed(phrase: &Phrase) -> Result<Seed, KeyringError> {
             ..
         } => Ok(mnemonic.to_seed(passphrase.expose_secret())),
         Phrase::Ton { mnemonic, .. } => mnemonic.to_seed().map_err(|_| KeyringError::Damaged),
+        Phrase::Key { key, .. } => bahaa_crypto::key_seed(key).map_err(|_| KeyringError::Damaged),
     }
 }
 

@@ -5,8 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_app_core::{
-    Action, App, AppConfig, ChainFamily, Currency, Direction, EngineConfig, Field, Go, KdfParams,
-    Kind, Level, Page, PageId, Pick, Registry, Request, Tab, Tone, Value, View, Words,
+    Action, App, AppConfig, ChainFamily, Channel, Currency, Direction, EngineConfig, Field, Go,
+    KdfParams, Kind, Level, Page, PageId, Pick, Registry, Request, Tab, Toggle, Tone, Value, View,
+    Words,
 };
 use serde_json::{Value as Json, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -110,12 +111,13 @@ async fn read_call(socket: &mut tokio::net::TcpStream) -> Option<Json> {
 }
 
 fn start(scratch: &Scratch) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
-    start_with(scratch, offline(|_| true))
+    start_with(scratch, offline(|_| true), false)
 }
 
 fn start_with(
     scratch: &Scratch,
     registry: Registry,
+    updates: bool,
 ) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
     let config = AppConfig {
         engine: EngineConfig {
@@ -128,6 +130,7 @@ fn start_with(
             registry: Some(registry),
             ..EngineConfig::new(scratch.0.join("data"))
         },
+        updates,
     };
     let (app, requests) = App::start(config).unwrap();
     let view = app.view();
@@ -240,14 +243,15 @@ async fn a_new_wallet_is_created_backed_up_and_locked_again() {
 }
 
 async fn imported(scratch: &Scratch) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
-    imported_on(scratch, offline(|_| true)).await
+    imported_on(scratch, offline(|_| true), false).await
 }
 
 async fn imported_on(
     scratch: &Scratch,
     registry: Registry,
+    updates: bool,
 ) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
-    let (app, requests, mut view) = start_with(scratch, registry);
+    let (app, requests, mut view) = start_with(scratch, registry, updates);
     at(&mut view, PageId::Welcome).await;
     app.act(Action::Pick(Pick::Import));
     at(&mut view, PageId::Import).await;
@@ -482,7 +486,7 @@ async fn sending_starts_from_a_list_and_checks_while_typing() {
         }
     }
     registry = Registry::with_networks(networks).unwrap();
-    let (app, _requests, mut view) = imported_on(&scratch, registry).await;
+    let (app, _requests, mut view) = imported_on(&scratch, registry, false).await;
     app.act(Action::Go(Go::Tab(Tab::Send)));
     let list = until(&mut view, |current| {
         current.page.id == PageId::SendFrom
@@ -531,6 +535,116 @@ async fn sending_starts_from_a_list_and_checks_while_typing() {
     app.shutdown().await.unwrap();
 }
 
+async fn next_request(requests: &mut mpsc::Receiver<Request>) -> Request {
+    tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn settings_check_for_updates_hide_balances_and_open_developer_options() {
+    let scratch = Scratch::new();
+    let (app, mut requests, mut view) = imported_on(&scratch, offline(|_| true), true).await;
+    assert_eq!(
+        next_request(&mut requests).await,
+        Request::CheckUpdates { beta: false }
+    );
+    app.act(Action::Go(Go::Tab(Tab::Settings)));
+    at(&mut view, PageId::Settings).await;
+    app.act(Action::Pick(Pick::Channel(Channel::Beta)));
+    assert_eq!(
+        next_request(&mut requests).await,
+        Request::CheckUpdates { beta: true }
+    );
+    app.act(Action::Toggle(Toggle::HideBalances));
+    until(&mut view, |current| {
+        current.page.groups().any(|group| {
+            group.label == "Privacy" && group.choices.iter().all(|choice| choice.selected)
+        })
+    })
+    .await;
+    app.act(Action::Go(Go::Tab(Tab::Portfolio)));
+    until(&mut view, |current| {
+        current.page.id == PageId::Portfolio && current.page.headline.as_deref() == Some("••••")
+    })
+    .await;
+    app.act(Action::Go(Go::Tab(Tab::Settings)));
+    at(&mut view, PageId::Settings).await;
+    app.act(Action::Go(Go::Developer));
+    at(&mut view, PageId::Developer).await;
+    app.act(Action::Toggle(Toggle::Developer));
+    until(&mut view, |current| {
+        current
+            .page
+            .groups()
+            .next()
+            .is_some_and(|group| group.choices[0].selected)
+    })
+    .await;
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_private_key_is_checked_while_typing_and_becomes_a_one_account_wallet() {
+    let scratch = Scratch::new();
+    let (app, _requests, mut view) = start(&scratch);
+    at(&mut view, PageId::Welcome).await;
+    app.act(Action::Pick(Pick::ImportKey));
+    at(&mut view, PageId::ImportKey).await;
+    app.act(Action::Type(Field::Key, "0x12".to_owned()));
+    until(&mut view, |current| {
+        hint(current, Field::Key)
+            == Some((
+                Level::Error,
+                "A private key is 64 hex characters".to_owned(),
+            ))
+    })
+    .await;
+    app.act(Action::Type(
+        Field::Key,
+        "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_owned(),
+    ));
+    until(&mut view, |current| {
+        hint(current, Field::Key) == Some((Level::Success, "A valid private key".to_owned()))
+    })
+    .await;
+    app.act(Action::Submit);
+    at(&mut view, PageId::NewPassword).await;
+    set_password(&app);
+    at(&mut view, PageId::Portfolio).await;
+    app.act(Action::Go(Go::Tab(Tab::Settings)));
+    let settings = until(&mut view, |current| {
+        current.page.id == PageId::Settings
+            && current
+                .page
+                .table
+                .as_ref()
+                .is_some_and(|table| !table.rows.is_empty())
+    })
+    .await;
+    let row = &settings.page.table.as_ref().unwrap().rows[0];
+    assert_eq!(row.cells[1].text, "Private key, EVM networks");
+    app.act(row.open.clone().unwrap());
+    let wallet = at(&mut view, PageId::Wallet).await;
+    assert_eq!(wallet.page.groups().count(), 0);
+    assert!(
+        wallet
+            .page
+            .buttons
+            .iter()
+            .any(|button| button.label == "Show private key")
+    );
+    assert!(
+        !wallet
+            .page
+            .buttons
+            .iter()
+            .any(|button| button.label == "Add account")
+    );
+    app.shutdown().await.unwrap();
+}
+
 async fn import_as_ton(app: &App, view: &mut watch::Receiver<Arc<View>>) {
     at(view, PageId::Welcome).await;
     app.act(Action::Pick(Pick::Import));
@@ -567,7 +681,7 @@ async fn a_ton_import_waits_for_the_network_to_pick_the_contract() {
 async fn words_valid_both_ways_ask_which_wallet_made_them() {
     let scratch = Scratch::new();
     let registry = offline(|family| family != ChainFamily::Ton);
-    let (app, _requests, mut view) = start_with(&scratch, registry);
+    let (app, _requests, mut view) = start_with(&scratch, registry, false);
     import_as_ton(&app, &mut view).await;
     at(&mut view, PageId::Portfolio).await;
     app.act(Action::Go(Go::Tab(Tab::Settings)));

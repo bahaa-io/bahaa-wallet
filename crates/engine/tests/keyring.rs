@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use bahaa_crypto::{ExposeSecret, Mnemonic, SeedKind, TonPhraseError, WordCount};
 use bahaa_engine::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletKind};
-use bahaa_types::TonContract;
+use bahaa_types::{ChainFamily, TonContract};
 use bahaa_vault::{KdfParams, Vault};
 
 const FAST: KdfParams = KdfParams {
@@ -88,7 +88,7 @@ fn a_generated_wallet_survives_a_restart_with_the_same_seed() {
     assert_eq!(wallets.len(), 1);
     assert_eq!(
         (wallets[0].id, wallets[0].words, wallets[0].passphrase),
-        (id, WordCount::Twelve, false)
+        (id, Some(WordCount::Twelve), false)
     );
     assert_eq!(keyring.seed(id).unwrap().expose(), expected.expose());
 }
@@ -101,7 +101,10 @@ fn any_standard_length_can_be_imported_even_though_new_phrases_are_12_or_24() {
     let eighteen = "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal will";
     let id = keyring.import(eighteen, "").unwrap();
     let wallets = keyring.wallets().unwrap();
-    assert_eq!((wallets[0].id, wallets[0].words), (id, WordCount::Eighteen));
+    assert_eq!(
+        (wallets[0].id, wallets[0].words),
+        (id, Some(WordCount::Eighteen))
+    );
     assert_eq!(NewPhrase::default(), NewPhrase::Twelve);
 }
 
@@ -292,10 +295,10 @@ fn a_ton_phrase_becomes_a_ton_only_wallet_that_survives_a_restart() {
         ),
         (
             id,
-            WordCount::TwentyFour,
+            Some(WordCount::TwentyFour),
             false,
             WalletKind::Ton,
-            TonContract::W5
+            Some(TonContract::W5)
         )
     );
     assert_eq!(keyring.reveal(id, PASSWORD).unwrap().expose_secret(), TON);
@@ -365,7 +368,7 @@ fn every_wallet_keeps_the_ton_contract_it_was_found_on() {
     keyring.set_ton_contract(ton, TonContract::V4R2).unwrap();
     keyring.set_ton_contract(multi, TonContract::V4R2).unwrap();
     let keyring = reopened(&scratch);
-    let kept: Vec<(WalletKind, TonContract)> = keyring
+    let kept: Vec<(WalletKind, Option<TonContract>)> = keyring
         .wallets()
         .unwrap()
         .iter()
@@ -374,10 +377,57 @@ fn every_wallet_keeps_the_ton_contract_it_was_found_on() {
     assert_eq!(
         kept,
         [
-            (WalletKind::Ton, TonContract::V4R2),
-            (WalletKind::Bip39, TonContract::V4R2),
-            (WalletKind::Bip39, TonContract::W5)
+            (WalletKind::Ton, Some(TonContract::V4R2)),
+            (WalletKind::Bip39, Some(TonContract::V4R2)),
+            (WalletKind::Bip39, Some(TonContract::W5))
         ]
+    );
+}
+
+#[test]
+fn a_private_key_is_one_account_on_the_family_it_was_imported_for() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    let key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+    let evm = keyring.import_key(key, ChainFamily::Evm).unwrap();
+    assert_eq!(
+        keyring.import_key(&key[2..], ChainFamily::Evm).unwrap_err(),
+        KeyringError::Duplicate
+    );
+    let tron = keyring.import_key(key, ChainFamily::Tron).unwrap();
+    assert_eq!(
+        keyring.import_key(key, ChainFamily::Ton).unwrap_err(),
+        KeyringError::KeyFamily
+    );
+    assert_eq!(
+        keyring.import_key("0x1234", ChainFamily::Evm).unwrap_err(),
+        KeyringError::Key(bahaa_crypto::KeyError::Length)
+    );
+    assert_eq!(
+        keyring
+            .set_ton_contract(evm, TonContract::V4R2)
+            .unwrap_err(),
+        KeyringError::NoTon
+    );
+    let keyring = reopened(&scratch);
+    let wallets: Vec<(WalletKind, Option<WordCount>, Option<TonContract>)> = keyring
+        .wallets()
+        .unwrap()
+        .iter()
+        .map(|w| (w.kind, w.words, w.ton))
+        .collect();
+    assert_eq!(
+        wallets,
+        [
+            (WalletKind::Key(ChainFamily::Evm), None, None),
+            (WalletKind::Key(ChainFamily::Tron), None, None)
+        ]
+    );
+    assert_eq!(keyring.seed(tron).unwrap().kind(), SeedKind::Key);
+    assert_eq!(
+        keyring.reveal(evm, PASSWORD).unwrap().expose_secret(),
+        &key[2..]
     );
 }
 

@@ -118,6 +118,34 @@ async fn unlocking_shows_balances_from_every_reachable_network() {
     .unwrap();
 }
 
+#[tokio::test]
+async fn a_private_key_wallet_holds_only_its_family() {
+    let scratch = Scratch::new();
+    let dead = Url::parse("http://127.0.0.1:9/").unwrap();
+    let registry = Registry::with_networks(vec![
+        common::network("bsc", node(Arc::default(), Duration::ZERO).await),
+        common::tron_network(dead),
+    ])
+    .unwrap();
+    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .import_key(
+            SecretString::from("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"),
+            ChainFamily::Evm,
+        )
+        .await
+        .unwrap();
+    let accounts = engine.accounts().await.unwrap();
+    let shape: Vec<(ChainFamily, String)> = accounts
+        .iter()
+        .map(|account| (account.family, account.address.to_string()))
+        .collect();
+    assert_eq!(shape, [(ChainFamily::Evm, HARDHAT_0.to_owned())]);
+    assert!(engine.add_account(wallet).await.is_err());
+    engine.shutdown().await.unwrap();
+}
+
 fn bsc(portfolio: &Portfolio) -> &NetworkHealth {
     portfolio
         .networks

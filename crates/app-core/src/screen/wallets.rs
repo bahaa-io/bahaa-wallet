@@ -109,24 +109,26 @@ impl Screen for Wallet {
             .collect();
         let mut buttons = vec![button(text::SAVE_NAME, Action::Submit)];
         let mut form = vec![input(Field::Name, text::NAME, &self.name).into()];
-        form.push(
-            group(
-                text::TON_CONTRACT,
-                vec![
-                    choice(
-                        text::W5,
-                        Action::Pick(Pick::Contract(Contract::W5)),
-                        wallet.ton == TonContract::W5,
-                    ),
-                    choice(
-                        text::V4R2,
-                        Action::Pick(Pick::Contract(Contract::V4R2)),
-                        wallet.ton == TonContract::V4R2,
-                    ),
-                ],
-            )
-            .into(),
-        );
+        if let Some(contract) = wallet.ton {
+            form.push(
+                group(
+                    text::TON_CONTRACT,
+                    vec![
+                        choice(
+                            text::W5,
+                            Action::Pick(Pick::Contract(Contract::W5)),
+                            contract == TonContract::W5,
+                        ),
+                        choice(
+                            text::V4R2,
+                            Action::Pick(Pick::Contract(Contract::V4R2)),
+                            contract == TonContract::V4R2,
+                        ),
+                    ],
+                )
+                .into(),
+            );
+        }
         if wallet.kind == WalletKind::Bip39 {
             buttons.push(button(text::ADD_ACCOUNT, Action::Pick(Pick::AddAccount)));
             if indexes.len() > 1 {
@@ -138,7 +140,7 @@ impl Screen for Wallet {
                 }));
             }
         }
-        buttons.push(button(text::SHOW_PHRASE, Action::Go(Go::Reveal)));
+        buttons.push(button(reveal_label(wallet.kind), Action::Go(Go::Reveal)));
         buttons.push(button(text::REMOVE_WALLET, Action::Go(Go::RemoveWallet)));
         Page {
             id: PageId::Wallet,
@@ -202,9 +204,20 @@ impl Screen for Reveal {
     }
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
+        let kind = ctx
+            .data
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == self.id)
+            .map_or(WalletKind::Bip39, |wallet| wallet.kind);
+        let name = ctx.wallet_name(self.id);
+        let title = match kind {
+            WalletKind::Key(_) => text::key_title(&name),
+            WalletKind::Bip39 | WalletKind::Ton => text::reveal_title(&name),
+        };
         let mut page = Page {
             id: PageId::Reveal,
-            title: text::reveal_title(&ctx.wallet_name(self.id)),
+            title,
             text: Some(text::REVEAL_TEXT.to_owned()),
             error: self.error.clone(),
             ..Page::default()
@@ -214,7 +227,7 @@ impl Screen for Reveal {
             page.buttons = vec![button(text::DONE, Action::Submit)];
         } else {
             page.form = vec![hidden(Field::Password, text::PASSWORD, &self.password).into()];
-            page.buttons = vec![button(text::SHOW_PHRASE, Action::Submit)];
+            page.buttons = vec![button(reveal_label(kind), Action::Submit)];
         }
         page
     }
@@ -279,5 +292,12 @@ impl Screen for Remove {
             buttons: vec![button(text::REMOVE_WALLET, Action::Submit)],
             ..Page::default()
         }
+    }
+}
+
+fn reveal_label(kind: WalletKind) -> &'static str {
+    match kind {
+        WalletKind::Key(_) => text::SHOW_KEY,
+        WalletKind::Bip39 | WalletKind::Ton => text::SHOW_PHRASE,
     }
 }

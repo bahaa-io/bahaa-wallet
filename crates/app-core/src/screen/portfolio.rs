@@ -97,8 +97,9 @@ impl Screen for Portfolio {
                         format::price(ctx.price(&summary.asset), ctx.fiat()),
                         Tone::Muted,
                     ),
-                    format::amount(summary.amount, &ctx.symbol(&summary.asset)).into(),
-                    format::fiat(summary.value, ctx.fiat()).into(),
+                    ctx.amount(summary.amount, &ctx.symbol(&summary.asset))
+                        .into(),
+                    ctx.value(summary.value).into(),
                 ],
                 open: Some(Action::Go(Go::Asset(position))),
                 warn: false,
@@ -122,8 +123,10 @@ impl Screen for Portfolio {
         Page {
             id: PageId::Portfolio,
             title: text::PORTFOLIO.to_owned(),
-            headline: Some(format::fiat(total, ctx.fiat())),
-            shares: total.map_or_else(Vec::new, |total| shares(ctx, &summaries, total)),
+            headline: Some(ctx.value(total)),
+            shares: total
+                .filter(|_| !ctx.data.settings.hide_balances)
+                .map_or_else(Vec::new, |total| shares(ctx, &summaries, total)),
             form,
             table: Some(Table {
                 columns: text::PORTFOLIO_COLUMNS.map(str::to_owned).to_vec(),
@@ -189,9 +192,9 @@ impl Screen for Asset {
         let rows = holdings
             .iter()
             .map(|holding| {
-                let amount = format::amount(holding.amount, &symbol);
+                let amount = ctx.amount(holding.amount, &symbol);
                 let amount = match holding.staked {
-                    Some(staked) => text::with_staked(&amount, &format::amount(staked, &symbol)),
+                    Some(staked) => text::with_staked(&amount, &ctx.amount(staked, &symbol)),
                     None => amount,
                 };
                 Row {
@@ -203,7 +206,7 @@ impl Screen for Asset {
                             Tone::Muted,
                         ),
                         amount.into(),
-                        format::fiat(holding.value, ctx.fiat()).into(),
+                        ctx.value(holding.value).into(),
                     ],
                     open: None,
                     warn: false,
@@ -216,7 +219,7 @@ impl Screen for Asset {
                 || symbol.clone(),
                 |coin| text::coin_title(&coin.name, &coin.symbol),
             ),
-            headline: total.map(|total| format::exact(total, &symbol)),
+            headline: total.map(|total| ctx.exact(total, &symbol)),
             lines: vec![
                 network_line(ctx, self.asset.network()),
                 line(text::PRICE, price),

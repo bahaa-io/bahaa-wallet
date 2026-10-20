@@ -83,6 +83,7 @@ pub struct Mnemonic {
 pub enum SeedKind {
     Bip39,
     Ton,
+    Key,
 }
 
 pub struct Seed {

@@ -8,6 +8,7 @@ mod portfolio;
 pub use bahaa_chain::{ChainError, FeeItem, FeeLine, FeeQuote, MAX_MEMO, Replace, Transfer, now};
 pub use bahaa_config::{
     ChainKind, Coin, Color, ConfigError, Explorer, Fiat, Network, Registry, Settings, Token,
+    Updates,
 };
 pub use bahaa_crypto::{
     ExposeSecret, MnemonicError, SecretString, TonPhraseError, WordCount, english_words,
@@ -27,6 +28,7 @@ pub use engine::{
     IncomingHistory, SendRequest, Spend, State,
 };
 pub use keyring::{
-    Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, WalletKind, check_phrase,
+    Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, WalletKind, check_key,
+    check_phrase,
 };
 pub use portfolio::{Account, Holding, NetworkHealth, Portfolio, coin};

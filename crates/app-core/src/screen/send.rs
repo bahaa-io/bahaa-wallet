@@ -307,7 +307,7 @@ impl Send {
             Err(problem) => return Some(note(Level::Error, problem)),
         };
         if amount.partial_cmp(&holding.amount) == Some(Ordering::Greater) {
-            let balance = format::amount(holding.amount, &holding.symbol);
+            let balance = ctx.amount(holding.amount, &holding.symbol);
             return Some(note(Level::Error, text::too_much(&balance)));
         }
         let value = holding
@@ -370,8 +370,8 @@ impl Send {
                 let mut cells = vec![
                     asset_cell(ctx, &holding.asset),
                     network_cell(ctx, holding.asset.network()),
-                    format::amount(holding.amount, &holding.symbol).into(),
-                    format::fiat(holding.value, ctx.fiat()).into(),
+                    ctx.amount(holding.amount, &holding.symbol).into(),
+                    ctx.value(holding.value).into(),
                 ];
                 if several {
                     cells.push(cell(owner, Tone::Muted));
@@ -425,8 +425,8 @@ impl Send {
             lines.push(line(
                 text::BALANCE,
                 text::with_value(
-                    &format::amount(holding.amount, &holding.symbol),
-                    &format::fiat(holding.value, ctx.fiat()),
+                    &ctx.amount(holding.amount, &holding.symbol),
+                    &ctx.value(holding.value),
                 ),
             ));
         }
