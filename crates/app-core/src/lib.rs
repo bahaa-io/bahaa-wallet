@@ -14,7 +14,9 @@ pub use action::{
     Words,
 };
 pub use app::{App, AppConfig};
-pub use bahaa_engine::{ChainFamily, Color, EngineConfig, EngineError, KdfParams, Registry};
+pub use bahaa_engine::{
+    ChainFamily, Color, EngineConfig, EngineError, KdfParams, Registry, hex, to_plain_text,
+};
 pub use screen::completions;
 pub use view::{
     Banner, Button, Cell, Choice, Group, Input, Item, Level, Line, Note, Page, PageId, Request,
