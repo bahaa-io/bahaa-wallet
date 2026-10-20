@@ -189,11 +189,11 @@ pub(crate) fn wallet_group(ctx: &Ctx<'_>, filter: Option<WalletId>) -> Option<Gr
     ))
 }
 
-pub(crate) fn update_check(settings: &Settings) -> Option<Request> {
+pub(crate) fn update_check(settings: &Settings, asked: bool) -> Option<Request> {
     match settings.updates {
         Updates::Off => None,
-        Updates::Stable => Some(Request::CheckUpdates { beta: false }),
-        Updates::Beta => Some(Request::CheckUpdates { beta: true }),
+        Updates::Stable => Some(Request::CheckUpdates { beta: false, asked }),
+        Updates::Beta => Some(Request::CheckUpdates { beta: true, asked }),
     }
 }
 

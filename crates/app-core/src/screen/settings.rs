@@ -39,12 +39,13 @@ impl Screen for Settings {
                     ..current.clone()
                 };
                 Reply {
-                    request: super::update_check(&settings),
+                    request: super::update_check(&settings, true),
                     ..save(settings)
                 }
             }
             Action::Pick(Pick::CheckUpdates) => Reply::request(Request::CheckUpdates {
                 beta: current.updates == Updates::Beta,
+                asked: true,
             }),
             Action::Go(Go::Wallet(row)) => ctx
                 .data

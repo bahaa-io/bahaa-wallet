@@ -233,7 +233,7 @@ pub enum Request {
     Copy(String),
     ClearClipboard,
     Open(String),
-    CheckUpdates { beta: bool },
+    CheckUpdates { beta: bool, asked: bool },
     Quit,
 }
 

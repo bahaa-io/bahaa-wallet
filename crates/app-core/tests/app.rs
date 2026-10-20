@@ -548,14 +548,20 @@ async fn settings_check_for_updates_hide_balances_and_open_developer_options() {
     let (app, mut requests, mut view) = imported_on(&scratch, offline(|_| true), true).await;
     assert_eq!(
         next_request(&mut requests).await,
-        Request::CheckUpdates { beta: false }
+        Request::CheckUpdates {
+            beta: false,
+            asked: false
+        }
     );
     app.act(Action::Go(Go::Tab(Tab::Settings)));
     at(&mut view, PageId::Settings).await;
     app.act(Action::Pick(Pick::Channel(Channel::Beta)));
     assert_eq!(
         next_request(&mut requests).await,
-        Request::CheckUpdates { beta: true }
+        Request::CheckUpdates {
+            beta: true,
+            asked: true
+        }
     );
     app.act(Action::Toggle(Toggle::HideBalances));
     until(&mut view, |current| {

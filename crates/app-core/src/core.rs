@@ -548,7 +548,7 @@ impl Core {
             return Vec::new();
         }
         self.updates_checked = true;
-        screen::update_check(&self.data.settings)
+        screen::update_check(&self.data.settings, false)
             .map(Effect::Request)
             .into_iter()
             .collect()
