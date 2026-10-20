@@ -96,6 +96,7 @@ pub enum Pick {
 pub enum Toggle {
     Max,
     HideEmpty,
+    HideSpam,
     Testnets,
 }
 

@@ -5,7 +5,7 @@ use super::{
     Screen, button, cell, choice, group, line, network_cell, network_line, note, picked_wallet,
     status_tone, toned_line, wallet_group,
 };
-use crate::action::{Action, Direction, Go, Pick};
+use crate::action::{Action, Direction, Go, Pick, Toggle};
 use crate::core::{Ctx, Nav, Reply};
 use crate::view::{Item, Level, Line, Page, PageId, Request, Row, Table, Tone};
 use crate::{format, text};
@@ -14,16 +14,22 @@ use crate::{format, text};
 pub(crate) struct List {
     filter: Option<WalletId>,
     direction: Direction,
+    show_spam: bool,
 }
 
 impl List {
-    fn shows(&self, activity: &Activity) -> bool {
+    fn matches(&self, activity: &Activity) -> bool {
         let direction = match activity.kind {
             ActivityKind::Received(_) => Direction::Received,
             ActivityKind::Sent(_) | ActivityKind::SentElsewhere(_) => Direction::Sent,
         };
         self.filter.is_none_or(|wallet| activity.wallet == wallet)
             && (self.direction == Direction::All || self.direction == direction)
+    }
+
+    fn hidden(&self, activity: &Activity) -> bool {
+        !self.show_spam
+            && matches!(&activity.kind, ActivityKind::Received(arrival) if !arrival.cautions.is_empty())
     }
 }
 
@@ -36,6 +42,10 @@ impl Screen for List {
             }
             Action::Pick(Pick::Direction(direction)) => {
                 self.direction = *direction;
+                Reply::default()
+            }
+            Action::Toggle(Toggle::HideSpam) => {
+                self.show_spam = !self.show_spam;
                 Reply::default()
             }
             Action::Go(Go::Transfer(row)) => ctx
@@ -55,55 +65,40 @@ impl Screen for List {
             .activity
             .iter()
             .enumerate()
-            .filter(|(_, activity)| self.shows(activity))
-            .map(|(position, activity)| {
-                let (sign, moved, party, status, warn) = match &activity.kind {
-                    ActivityKind::Sent(tx) => (
-                        '−',
-                        (tx.amount, &tx.asset),
-                        ctx.party(&tx.to, &tx.network),
-                        cell(text::status(&tx.status), status_tone(&tx.status)),
-                        false,
-                    ),
-                    ActivityKind::SentElsewhere(moved) => (
-                        '−',
-                        (moved.amount, &moved.asset),
-                        ctx.party(&moved.to, &moved.network),
-                        cell(text::ELSEWHERE, Tone::Muted),
-                        false,
-                    ),
-                    ActivityKind::Received(arrival) => {
-                        let warn = !arrival.cautions.is_empty();
-                        (
-                            '+',
-                            (arrival.received.amount, &arrival.received.asset),
-                            ctx.party(&arrival.received.from, &arrival.received.network),
-                            cell(
-                                text::RECEIVED,
-                                if warn { Tone::Warning } else { Tone::Good },
-                            ),
-                            warn,
-                        )
-                    }
-                };
-                let (amount, asset) = moved;
-                let amount_tone = if sign == '+' { Tone::Good } else { Tone::Plain };
-                Row {
-                    cells: vec![
-                        cell(format::ago(activity.time, ctx.now), Tone::Muted),
-                        cell(
-                            format!("{sign}{}", format::amount(amount, &ctx.symbol(asset))),
-                            amount_tone,
-                        ),
-                        network_cell(ctx, asset.network()),
-                        party.into(),
-                        status,
-                    ],
-                    open: Some(Action::Go(Go::Transfer(position))),
-                    warn,
-                }
-            })
+            .filter(|(_, activity)| self.matches(activity) && !self.hidden(activity))
+            .map(|(position, activity)| row(ctx, position, activity))
             .collect();
+        let hidden = ctx
+            .data
+            .activity
+            .iter()
+            .filter(|activity| self.matches(activity) && self.hidden(activity))
+            .count();
+        let empty = if ctx.data.activity.is_empty() {
+            text::NO_ACTIVITY
+        } else {
+            text::NO_MATCHES
+        };
+        Page {
+            id: PageId::Activity,
+            title: text::ACTIVITY.to_owned(),
+            form: self.form(ctx),
+            table: Some(Table {
+                columns: text::ACTIVITY_COLUMNS.map(str::to_owned).to_vec(),
+                rows,
+                empty: empty.to_owned(),
+            }),
+            notes: (hidden > 0)
+                .then(|| note(Level::Info, text::spam_hidden(hidden)))
+                .into_iter()
+                .collect(),
+            ..Page::default()
+        }
+    }
+}
+
+impl List {
+    fn form(&self, ctx: &Ctx<'_>) -> Vec<Item> {
         let directions = [Direction::All, Direction::Received, Direction::Sent]
             .into_iter()
             .map(|direction| {
@@ -114,27 +109,67 @@ impl Screen for List {
                 )
             })
             .collect();
-        let mut form: Vec<Item> = wallet_group(ctx, self.filter)
+        let spam = vec![choice(
+            text::HIDE,
+            Action::Toggle(Toggle::HideSpam),
+            !self.show_spam,
+        )];
+        wallet_group(ctx, self.filter)
             .into_iter()
             .map(Item::from)
-            .collect();
-        form.push(group(text::SHOW, directions).into());
-        let empty = if ctx.data.activity.is_empty() {
-            text::NO_ACTIVITY
-        } else {
-            text::NO_MATCHES
-        };
-        Page {
-            id: PageId::Activity,
-            title: text::ACTIVITY.to_owned(),
-            form,
-            table: Some(Table {
-                columns: text::ACTIVITY_COLUMNS.map(str::to_owned).to_vec(),
-                rows,
-                empty: empty.to_owned(),
-            }),
-            ..Page::default()
+            .chain([
+                group(text::SHOW, directions).into(),
+                group(text::SPAM, spam).into(),
+            ])
+            .collect()
+    }
+}
+
+fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
+    let (sign, moved, party, status, warn) = match &activity.kind {
+        ActivityKind::Sent(tx) => (
+            '−',
+            (tx.amount, &tx.asset),
+            ctx.party(&tx.to, &tx.network),
+            cell(text::status(&tx.status), status_tone(&tx.status)),
+            false,
+        ),
+        ActivityKind::SentElsewhere(moved) => (
+            '−',
+            (moved.amount, &moved.asset),
+            ctx.party(&moved.to, &moved.network),
+            cell(text::ELSEWHERE, Tone::Muted),
+            false,
+        ),
+        ActivityKind::Received(arrival) => {
+            let warn = !arrival.cautions.is_empty();
+            (
+                '+',
+                (arrival.received.amount, &arrival.received.asset),
+                ctx.party(&arrival.received.from, &arrival.received.network),
+                cell(
+                    text::RECEIVED,
+                    if warn { Tone::Warning } else { Tone::Good },
+                ),
+                warn,
+            )
         }
+    };
+    let (amount, asset) = moved;
+    let amount_tone = if sign == '+' { Tone::Good } else { Tone::Plain };
+    Row {
+        cells: vec![
+            cell(format::ago(activity.time, ctx.now), Tone::Muted),
+            cell(
+                format!("{sign}{}", format::amount(amount, &ctx.symbol(asset))),
+                amount_tone,
+            ),
+            network_cell(ctx, asset.network()),
+            party.into(),
+            status,
+        ],
+        open: Some(Action::Go(Go::Transfer(position))),
+        warn,
     }
 }
 

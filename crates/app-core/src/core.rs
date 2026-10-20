@@ -152,6 +152,20 @@ impl Ctx<'_> {
             .map(|account| account.wallet)
     }
 
+    pub(crate) fn owner_label(&self, wallet: WalletId, address: &Address) -> String {
+        let name = self.wallet_name(wallet);
+        let several = self
+            .data
+            .accounts
+            .iter()
+            .filter(|account| account.wallet == wallet)
+            .any(|account| account.index > 0);
+        match self.account_index(wallet, address) {
+            Some(index) if several => text::owner(&name, &text::account(index)),
+            _ => name,
+        }
+    }
+
     pub(crate) fn account_index(&self, wallet: WalletId, address: &Address) -> Option<u32> {
         self.data
             .accounts

@@ -164,7 +164,7 @@ impl Screen for Asset {
                 Reply::nav(Nav::Push(Box::new(Send::new(Some(source)))))
             }
             (Action::Go(Go::ReceiveAsset), Some(holding)) => {
-                Reply::nav(Nav::Push(Box::new(Receive::for_holding(holding, ctx))))
+                Reply::nav(Nav::Push(Box::new(Receive::for_holding(holding))))
             }
             _ => Reply::default(),
         }

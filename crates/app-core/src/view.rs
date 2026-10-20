@@ -63,10 +63,12 @@ pub enum PageId {
     Asset,
     Activity,
     Transfer,
+    SendFrom,
     Compose,
     Review,
     Confirm,
     Sent,
+    ReceiveTo,
     Receive,
     Contacts,
     Contact,
@@ -150,7 +152,7 @@ pub struct Input {
     pub field: Field,
     pub label: String,
     pub value: Value,
-    pub hint: Option<String>,
+    pub hint: Option<Note>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

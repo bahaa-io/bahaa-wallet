@@ -6,6 +6,8 @@ const LIST_DECIMALS: usize = 6;
 const PRICE_DECIMALS: usize = 2;
 const PRICE_DIGITS: usize = 4;
 const SHORT_ENDS: usize = 6;
+const GROUP: usize = 4;
+const HEX_PREFIX: &str = "0x";
 const MINUTE: u64 = 60;
 const HOUR: u64 = 60 * MINUTE;
 const DAY: u64 = 24 * HOUR;
@@ -57,6 +59,18 @@ pub(crate) fn address(address: &Address, network: &Network) -> String {
             testnet: network.testnet,
         })
         .unwrap_or_else(|| address.to_string())
+}
+
+pub(crate) fn grouped(text: &str) -> String {
+    let (prefix, rest) = text
+        .strip_prefix(HEX_PREFIX)
+        .map_or(("", text), |rest| (HEX_PREFIX, rest));
+    let chars: Vec<char> = rest.chars().collect();
+    let groups: Vec<String> = chars
+        .chunks(GROUP)
+        .map(|group| group.iter().collect())
+        .collect();
+    format!("{prefix}{}", groups.join(" "))
 }
 
 pub(crate) fn short(text: &str) -> String {
@@ -150,6 +164,18 @@ mod tests {
 
     fn amount_of(text: &str, decimals: u8) -> Amount {
         Amount::parse(text, decimals).unwrap()
+    }
+
+    #[test]
+    fn addresses_are_shown_in_groups_of_four() {
+        assert_eq!(
+            grouped("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+            "0xf39F d6e5 1aad 88F6 F4ce 6aB8 8272 79cf fFb9 2266"
+        );
+        assert_eq!(
+            grouped("TRovmURrSa5937phqN8yUCpqqiGt7vuTyR"),
+            "TRov mURr Sa59 37ph qN8y UCpq qiGt 7vuT yR"
+        );
     }
 
     #[test]

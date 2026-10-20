@@ -188,6 +188,10 @@ pub(crate) fn wallet_group(ctx: &Ctx<'_>, filter: Option<WalletId>) -> Option<Gr
     ))
 }
 
+pub(crate) fn several(owners: &[String]) -> bool {
+    owners.iter().any(|owner| owner != &owners[0])
+}
+
 pub(crate) fn picked_wallet(ctx: &Ctx<'_>, position: Option<usize>) -> Option<WalletId> {
     position
         .and_then(|position| ctx.data.wallets.get(position))
@@ -235,7 +239,8 @@ pub(crate) fn password_problem(password: &Secret, confirm: &Secret) -> Option<&'
 
 pub(crate) fn password_inputs(password: &Secret, confirm: &Secret) -> Vec<Item> {
     let length = password.expose().chars().count();
-    let hint = (length > 0 && length < GOOD_PASSWORD).then(|| text::PASSWORD_WEAK.to_owned());
+    let hint =
+        (length > 0 && length < GOOD_PASSWORD).then(|| note(Level::Warning, text::PASSWORD_WEAK));
     vec![
         Input {
             hint,

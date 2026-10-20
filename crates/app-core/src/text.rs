@@ -131,8 +131,13 @@ pub(crate) const AMOUNT_COMMA: &str = "Use a dot for decimals, without thousands
 pub(crate) const AMOUNT_ZERO: &str = "Send more than zero";
 
 pub(crate) const RECEIVE: &str = "Receive";
-pub(crate) const RECEIVE_TO: &str = "Receive to";
 pub(crate) const PICK_TARGET: &str = "Choose where to receive";
+pub(crate) const RECEIVE_COLUMNS: [&str; 2] = ["Network", "Address"];
+pub(crate) const BALANCE: &str = "Balance";
+pub(crate) const SEND_COLUMNS: [&str; 4] = ["Asset", "Network", "Amount", "Value"];
+pub(crate) const SPAM: &str = "Spam";
+pub(crate) const HIDE: &str = "Hide";
+pub(crate) const QUOTE_GONE: &str = "This quote has expired. Get a new one to send.";
 pub(crate) const AMOUNT_OPTIONAL: &str = "Amount (optional)";
 pub(crate) const MEMO_OPTIONAL: &str = "Memo (optional)";
 pub(crate) const COPY_ADDRESS: &str = "Copy address";
@@ -308,12 +313,43 @@ pub(crate) fn at_most(fee: &str) -> String {
     format!("at most {fee}")
 }
 
-pub(crate) fn source(amount: &str, network: &str, wallet: &str) -> String {
-    format!("{amount} · {network} · {wallet}")
+pub(crate) fn owner(wallet: &str, account: &str) -> String {
+    format!("{wallet} · {account}")
 }
 
-pub(crate) fn target(wallet: &str, account: &str, network: &str) -> String {
-    format!("{wallet} · {account} · {network}")
+pub(crate) fn send_title(symbol: &str) -> String {
+    format!("Send {symbol}")
+}
+
+pub(crate) fn receive_title(network: &str) -> String {
+    format!("Receive on {network}")
+}
+
+pub(crate) fn valid_address(network: &str) -> String {
+    format!("A valid {network} address")
+}
+
+pub(crate) fn known_address(name: &str) -> String {
+    format!("{name}, from your contacts")
+}
+
+pub(crate) fn own_address(wallet: &str) -> String {
+    format!("Your own {wallet}")
+}
+
+pub(crate) fn approx(value: &str) -> String {
+    format!("≈ {value}")
+}
+
+pub(crate) fn too_much(balance: &str) -> String {
+    format!("More than you have ({balance})")
+}
+
+pub(crate) fn spam_hidden(count: usize) -> String {
+    match count {
+        1 => "1 flagged transfer is hidden".to_owned(),
+        many => format!("{many} flagged transfers are hidden"),
+    }
 }
 
 pub(crate) fn no_funds(symbol: &str) -> String {

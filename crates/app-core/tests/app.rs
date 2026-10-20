@@ -8,6 +8,9 @@ use bahaa_app_core::{
     Action, App, AppConfig, ChainFamily, Currency, Direction, EngineConfig, Field, Go, KdfParams,
     Kind, Level, Page, PageId, Pick, Registry, Request, Tab, Tone, Value, View, Words,
 };
+use serde_json::{Value as Json, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 
 const PASSWORD: &str = "correct horse battery";
@@ -48,6 +51,62 @@ fn offline(keep: impl Fn(ChainFamily) -> bool) -> Registry {
         }
     }
     Registry::with_networks(networks).unwrap()
+}
+
+async fn bsc_node() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let Some(call) = read_call(&mut socket).await else {
+                    return;
+                };
+                let result = match call["method"].as_str() {
+                    Some("eth_chainId") => json!("0x38"),
+                    Some("eth_getBalance") => json!("0x14d1120d7b160000"),
+                    Some("eth_call") => json!(format!("0x{:064x}", 0)),
+                    _ => Json::Null,
+                };
+                let text = json!({"jsonrpc": "2.0", "id": 1, "result": result}).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                    text.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    url
+}
+
+async fn read_call(socket: &mut tokio::net::TcpStream) -> Option<Json> {
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = socket.read(&mut buffer).await.ok()?;
+        if read == 0 {
+            return None;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        let text = String::from_utf8_lossy(&request).to_string();
+        let Some(end) = text.find("\r\n\r\n") else {
+            continue;
+        };
+        let length = text
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length: ")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+            })
+            .unwrap_or(0);
+        if request.len() >= end + 4 + length {
+            return serde_json::from_slice(&request[end + 4..end + 4 + length]).ok();
+        }
+    }
 }
 
 fn start(scratch: &Scratch) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
@@ -181,7 +240,14 @@ async fn a_new_wallet_is_created_backed_up_and_locked_again() {
 }
 
 async fn imported(scratch: &Scratch) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
-    let (app, requests, mut view) = start(scratch);
+    imported_on(scratch, offline(|_| true)).await
+}
+
+async fn imported_on(
+    scratch: &Scratch,
+    registry: Registry,
+) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
+    let (app, requests, mut view) = start_with(scratch, registry);
     at(&mut view, PageId::Welcome).await;
     app.act(Action::Pick(Pick::Import));
     at(&mut view, PageId::Import).await;
@@ -242,19 +308,19 @@ async fn receiving_shows_the_address_and_a_payment_link() {
     let scratch = Scratch::new();
     let (app, mut requests, mut view) = imported(&scratch).await;
     app.act(Action::Go(Go::Tab(Tab::Receive)));
-    let receive = at(&mut view, PageId::Receive).await;
-    let evm = receive
-        .page
-        .groups()
-        .next()
-        .unwrap()
-        .choices
+    let list = at(&mut view, PageId::ReceiveTo).await;
+    let rows = &list.page.table.as_ref().unwrap().rows;
+    let evm = rows
         .iter()
-        .position(|choice| choice.label == "BNB Smart Chain")
+        .position(|row| row.cells[0].text == "BNB Smart Chain")
         .unwrap();
-    app.act(Action::Pick(Pick::Target(evm)));
-    let shown = until(&mut view, |current| current.page.headline.is_some()).await;
-    assert_eq!(shown.page.headline.as_deref(), Some(HARDHAT_0));
+    assert_eq!(rows[evm].cells[1].text, "0xf39F…b92266");
+    app.act(rows[evm].open.clone().unwrap());
+    let shown = at(&mut view, PageId::Receive).await;
+    assert_eq!(
+        shown.page.headline.as_deref(),
+        Some("0xf39F d6e5 1aad 88F6 F4ce 6aB8 8272 79cf fFb9 2266")
+    );
     assert_eq!(shown.page.qr.as_deref(), Some(HARDHAT_0));
     app.act(Action::Type(Field::Amount, "1.5".to_owned()));
     until(&mut view, |current| {
@@ -272,6 +338,8 @@ async fn receiving_shows_the_address_and_a_payment_link() {
             .unwrap(),
         Some(Request::Copy(HARDHAT_0.to_owned()))
     );
+    app.act(Action::Back);
+    at(&mut view, PageId::ReceiveTo).await;
     app.shutdown().await.unwrap();
 }
 
@@ -321,7 +389,7 @@ async fn contacts_and_settings_are_saved() {
     })
     .await;
     app.act(Action::Go(Go::Tab(Tab::Send)));
-    let empty = at(&mut view, PageId::Compose).await;
+    let empty = at(&mut view, PageId::SendFrom).await;
     assert_eq!(empty.page.form.len(), 0);
     assert_eq!(
         empty.page.buttons[0].action,
@@ -368,7 +436,17 @@ async fn the_banner_opens_the_network_status() {
     at(&mut view, PageId::Portfolio).await;
     app.act(Action::Go(Go::Tab(Tab::Activity)));
     let activity = at(&mut view, PageId::Activity).await;
-    assert_eq!(activity.page.groups().count(), 1);
+    let labels: Vec<(&str, bool)> = activity
+        .page
+        .groups()
+        .map(|group| {
+            (
+                group.label.as_str(),
+                group.choices.iter().any(|choice| choice.selected),
+            )
+        })
+        .collect();
+    assert_eq!(labels, [("Show", true), ("Spam", true)]);
     app.act(Action::Pick(Pick::Direction(Direction::Sent)));
     until(&mut view, |current| {
         current.page.groups().next().is_some_and(|group| {
@@ -379,6 +457,77 @@ async fn the_banner_opens_the_network_status() {
         })
     })
     .await;
+    app.shutdown().await.unwrap();
+}
+
+fn hint(view: &View, field: Field) -> Option<(Level, String)> {
+    view.page
+        .inputs()
+        .find(|input| input.field == field)?
+        .hint
+        .as_ref()
+        .map(|hint| (hint.level, hint.text.clone()))
+}
+
+#[tokio::test]
+async fn sending_starts_from_a_list_and_checks_while_typing() {
+    let scratch = Scratch::new();
+    let node = bsc_node().await;
+    let mut registry = offline(|family| family == ChainFamily::Evm);
+    let mut networks: Vec<_> = registry.networks().cloned().collect();
+    for network in &mut networks {
+        if network.id.as_str() == "bsc" {
+            network.endpoints.truncate(1);
+            network.endpoints[0].url = node.parse().unwrap();
+        }
+    }
+    registry = Registry::with_networks(networks).unwrap();
+    let (app, _requests, mut view) = imported_on(&scratch, registry).await;
+    app.act(Action::Go(Go::Tab(Tab::Send)));
+    let list = until(&mut view, |current| {
+        current.page.id == PageId::SendFrom
+            && current
+                .page
+                .table
+                .as_ref()
+                .is_some_and(|table| !table.rows.is_empty())
+    })
+    .await;
+    let row = list.page.table.as_ref().unwrap().rows[0].clone();
+    assert_eq!(
+        row.cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<Vec<_>>(),
+        ["BNB", "BNB Smart Chain", "1.5 BNB", "—"]
+    );
+    app.act(row.open.unwrap());
+    let compose = at(&mut view, PageId::Compose).await;
+    assert_eq!(compose.page.title, "Send BNB");
+    app.act(Action::Type(Field::To, "0x12".to_owned()));
+    until(&mut view, |current| {
+        hint(current, Field::To).is_some_and(|(level, _)| level == Level::Error)
+    })
+    .await;
+    app.act(Action::Type(Field::To, FRIEND.to_owned()));
+    until(&mut view, |current| {
+        hint(current, Field::To)
+            == Some((Level::Success, "A valid BNB Smart Chain address".to_owned()))
+    })
+    .await;
+    app.act(Action::Type(Field::Amount, "2".to_owned()));
+    until(&mut view, |current| {
+        hint(current, Field::Amount)
+            == Some((Level::Error, "More than you have (1.5 BNB)".to_owned()))
+    })
+    .await;
+    app.act(Action::Type(Field::Amount, "1".to_owned()));
+    until(&mut view, |current| {
+        current.page.id == PageId::Compose && hint(current, Field::Amount).is_none()
+    })
+    .await;
+    app.act(Action::Back);
+    at(&mut view, PageId::SendFrom).await;
     app.shutdown().await.unwrap();
 }
 

@@ -1,18 +1,20 @@
+use std::cmp::Ordering;
+
 use bahaa_engine::{
-    Address, Amount, AssetId, Caution, ChainFamily, Contact, Draft, EngineError, MAX_MEMO,
+    Address, Amount, AssetId, Caution, ChainFamily, Contact, Draft, EngineError, Holding, MAX_MEMO,
     NetworkId, Replace, SendRequest, Spend, WalletId, is_plain_text,
 };
 
 use super::activity::Transfer;
 use super::{
-    Screen, button, choice, group, hidden, input, line, network_line, note, status_tone,
-    toned_choice, toned_line,
+    Screen, asset_cell, button, cell, choice, group, hidden, input, line, network_cell,
+    network_line, note, status_tone, toned_line,
 };
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::links::{self, Payment};
-use crate::view::{Level, Page, PageId, Secret, Tone};
+use crate::view::{Input, Level, Note, Page, PageId, Row, Secret, Table, Tone};
 use crate::{format, parse, text};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +25,7 @@ pub(crate) struct Source {
 }
 
 enum Step {
+    Choose,
     Compose,
     Review {
         draft: Draft,
@@ -41,8 +44,10 @@ enum Step {
 
 pub(crate) struct Send {
     source: Option<Source>,
+    picked: bool,
     to_text: String,
     to: Option<Address>,
+    to_problem: Option<String>,
     cautions: Vec<Caution>,
     amount_text: String,
     max: bool,
@@ -54,16 +59,23 @@ pub(crate) struct Send {
 
 impl Send {
     pub(crate) fn new(source: Option<Source>) -> Self {
+        let step = if source.is_some() {
+            Step::Compose
+        } else {
+            Step::Choose
+        };
         Self {
             source,
+            picked: false,
             to_text: String::new(),
             to: None,
+            to_problem: None,
             cautions: Vec::new(),
             amount_text: String::new(),
             max: false,
             memo: String::new(),
             replacing: None,
-            step: Step::Compose,
+            step,
             error: None,
         }
     }
@@ -72,26 +84,36 @@ impl Send {
         let call = Call::Replace(network.clone(), id.clone(), how);
         let screen = Self {
             replacing: Some((network, id, how)),
+            step: Step::Compose,
             ..Self::new(None)
         };
         (screen, call)
     }
 
-    fn sources(ctx: &Ctx<'_>) -> Vec<(Source, Amount)> {
-        ctx.data
+    fn sources<'a>(ctx: &'a Ctx<'_>) -> Vec<&'a Holding> {
+        let mut held: Vec<&Holding> = ctx
+            .data
             .portfolio
             .holdings
             .iter()
             .filter(|holding| !holding.amount.is_zero())
-            .map(|holding| {
-                let source = Source {
-                    wallet: holding.wallet,
-                    address: holding.address,
-                    asset: holding.asset.clone(),
-                };
-                (source, holding.amount)
-            })
-            .collect()
+            .collect();
+        held.sort_by(|a, b| {
+            b.value
+                .partial_cmp(&a.value)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.symbol.cmp(&b.symbol))
+        });
+        held
+    }
+
+    fn held<'a>(&self, ctx: &'a Ctx<'_>) -> Option<&'a Holding> {
+        let source = self.source.as_ref()?;
+        ctx.data.portfolio.holdings.iter().find(|holding| {
+            holding.wallet == source.wallet
+                && holding.address == source.address
+                && holding.asset == source.asset
+        })
     }
 
     fn family(&self, ctx: &Ctx<'_>) -> Option<ChainFamily> {
@@ -125,13 +147,17 @@ impl Send {
 
     fn set_to(&mut self, ctx: &Ctx<'_>) -> Reply {
         self.to = None;
+        self.to_problem = None;
         self.cautions.clear();
         self.error = None;
+        if self.to_text.trim().is_empty() {
+            return Reply::default();
+        }
         if let Some(read) = links::read(&self.to_text, ctx.registry) {
             return match read {
                 Ok(payment) => self.pay(payment, ctx),
                 Err(problem) => {
-                    self.error = Some(problem);
+                    self.to_problem = Some(problem);
                     Reply::default()
                 }
             };
@@ -141,7 +167,10 @@ impl Send {
         };
         match parse::address(&self.to_text, family) {
             Ok(address) => self.recipient(address, ctx),
-            Err(_) => Reply::default(),
+            Err(problem) => {
+                self.to_problem = Some(problem);
+                Reply::default()
+            }
         }
     }
 
@@ -152,7 +181,7 @@ impl Send {
                 .map(|source| source.asset.network().clone())
         });
         let Some(network) = network else {
-            self.error = Some(text::PICK_SOURCE.to_owned());
+            self.to_problem = Some(text::PICK_SOURCE.to_owned());
             return Reply::default();
         };
         let asset = match payment.token {
@@ -160,14 +189,14 @@ impl Send {
             None => AssetId::Native(network),
         };
         if self.source.as_ref().map(|source| &source.asset) != Some(&asset) {
-            let found = Self::sources(ctx)
+            let Some(holding) = Self::sources(ctx)
                 .into_iter()
-                .find(|(source, _)| source.asset == asset);
-            let Some((source, _)) = found else {
-                self.error = Some(text::no_funds(&ctx.symbol(&asset)));
+                .find(|holding| holding.asset == asset)
+            else {
+                self.to_problem = Some(text::no_funds(&ctx.symbol(&asset)));
                 return Reply::default();
             };
-            self.source = Some(source);
+            self.source = Some(source_of(holding));
         }
         if let (Some(units), Some(coin)) = (payment.units, ctx.coin(&asset))
             && let Ok(amount) = Amount::new(units, coin.decimals)
@@ -244,14 +273,54 @@ impl Send {
         }
     }
 
+    fn choose(&mut self, position: usize, ctx: &Ctx<'_>) -> Reply {
+        let Some(holding) = Self::sources(ctx).into_iter().nth(position) else {
+            return Reply::default();
+        };
+        self.source = Some(source_of(holding));
+        self.picked = true;
+        self.step = Step::Compose;
+        self.set_to(ctx)
+    }
+
+    fn to_hint(&self, ctx: &Ctx<'_>) -> Option<Note> {
+        if let Some(problem) = &self.to_problem {
+            return Some(note(Level::Error, problem.clone()));
+        }
+        let (to, network) = (self.to?, self.source.as_ref()?.asset.network());
+        let known = match (ctx.contact(network, &to), ctx.owner(&to)) {
+            (Some(contact), _) => text::known_address(&contact.name),
+            (None, Some(wallet)) => text::own_address(&ctx.owner_label(wallet, &to)),
+            (None, None) => text::valid_address(&ctx.network_name(network)),
+        };
+        Some(note(Level::Success, known))
+    }
+
+    fn amount_hint(&self, ctx: &Ctx<'_>) -> Option<Note> {
+        if self.max || self.amount_text.trim().is_empty() {
+            return None;
+        }
+        let holding = self.held(ctx)?;
+        let decimals = ctx.coin(&holding.asset)?.decimals;
+        let amount = match parse::amount(&self.amount_text, decimals) {
+            Ok(amount) => amount,
+            Err(problem) => return Some(note(Level::Error, problem)),
+        };
+        if amount.partial_cmp(&holding.amount) == Some(Ordering::Greater) {
+            let balance = format::amount(holding.amount, &holding.symbol);
+            return Some(note(Level::Error, text::too_much(&balance)));
+        }
+        let value = holding
+            .price
+            .and_then(|price| price.value_of(amount, ctx.fiat().places()).ok())?;
+        Some(note(
+            Level::Info,
+            text::approx(&format::fiat(Some(value), ctx.fiat())),
+        ))
+    }
+
     fn compose(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
         match action {
-            Action::Pick(Pick::Source(position)) => {
-                if let Some((source, _)) = Self::sources(ctx).into_iter().nth(*position) {
-                    self.source = Some(source);
-                    return self.set_to(ctx);
-                }
-            }
             Action::Type(Field::To, value) => {
                 self.to_text.clone_from(value);
                 return self.set_to(ctx);
@@ -273,6 +342,60 @@ impl Send {
         Reply::default()
     }
 
+    fn choose_page(ctx: &Ctx<'_>) -> Page {
+        let held = Self::sources(ctx);
+        if held.is_empty() {
+            return Page {
+                id: PageId::SendFrom,
+                title: text::SEND.to_owned(),
+                text: Some(text::NOTHING_TO_SEND.to_owned()),
+                buttons: vec![button(text::RECEIVE, Action::Go(Go::Tab(Tab::Receive)))],
+                ..Page::default()
+            };
+        }
+        let owners: Vec<String> = held
+            .iter()
+            .map(|holding| ctx.owner_label(holding.wallet, &holding.address))
+            .collect();
+        let several = super::several(&owners);
+        let mut columns: Vec<String> = text::SEND_COLUMNS.map(str::to_owned).to_vec();
+        if several {
+            columns.push(text::WALLET.to_owned());
+        }
+        let rows = held
+            .iter()
+            .zip(owners)
+            .enumerate()
+            .map(|(position, (holding, owner))| {
+                let mut cells = vec![
+                    asset_cell(ctx, &holding.asset),
+                    network_cell(ctx, holding.asset.network()),
+                    format::amount(holding.amount, &holding.symbol).into(),
+                    format::fiat(holding.value, ctx.fiat()).into(),
+                ];
+                if several {
+                    cells.push(cell(owner, Tone::Muted));
+                }
+                Row {
+                    cells,
+                    open: Some(Action::Pick(Pick::Source(position))),
+                    warn: false,
+                }
+            })
+            .collect();
+        Page {
+            id: PageId::SendFrom,
+            title: text::SEND.to_owned(),
+            text: Some(text::PICK_SOURCE.to_owned()),
+            table: Some(Table {
+                columns,
+                rows,
+                empty: text::NOTHING_TO_SEND.to_owned(),
+            }),
+            ..Page::default()
+        }
+    }
+
     fn compose_page(&self, ctx: &Ctx<'_>) -> Page {
         if let Some((_, _, how)) = &self.replacing {
             return Page {
@@ -284,31 +407,28 @@ impl Send {
                 ..Page::default()
             };
         }
-        let sources: Vec<_> = Self::sources(ctx)
-            .into_iter()
-            .enumerate()
-            .map(|(position, (source, amount))| {
-                let label = text::source(
-                    &format::amount(amount, &ctx.symbol(&source.asset)),
-                    &ctx.network_name(source.asset.network()),
-                    &ctx.wallet_name(source.wallet),
-                );
-                toned_choice(
-                    label,
-                    Action::Pick(Pick::Source(position)),
-                    self.source.as_ref() == Some(&source),
-                    ctx.coin_tone(&source.asset),
-                )
-            })
-            .collect();
-        if sources.is_empty() {
-            return Page {
-                id: PageId::Compose,
-                title: text::SEND.to_owned(),
-                text: Some(text::NOTHING_TO_SEND.to_owned()),
-                buttons: vec![button(text::RECEIVE, Action::Go(Go::Tab(Tab::Receive)))],
-                ..Page::default()
-            };
+        let Some(source) = &self.source else {
+            return Self::choose_page(ctx);
+        };
+        let network = source.asset.network();
+        let mut lines = vec![
+            line(
+                text::FROM,
+                text::owner(
+                    &ctx.owner_label(source.wallet, &source.address),
+                    &format::short(&ctx.shown(&source.address, network)),
+                ),
+            ),
+            network_line(ctx, network),
+        ];
+        if let Some(holding) = self.held(ctx) {
+            lines.push(line(
+                text::BALANCE,
+                text::with_value(
+                    &format::amount(holding.amount, &holding.symbol),
+                    &format::fiat(holding.value, ctx.fiat()),
+                ),
+            ));
         }
         let contacts: Vec<_> = self
             .contacts(ctx)
@@ -319,14 +439,21 @@ impl Send {
             })
             .collect();
         let mut form = vec![
-            group(text::FROM, sources).into(),
-            input(Field::To, text::TO, &self.to_text).into(),
+            Input {
+                hint: self.to_hint(ctx),
+                ..input(Field::To, text::TO, &self.to_text)
+            }
+            .into(),
         ];
         if !contacts.is_empty() {
             form.push(group(text::CONTACTS, contacts).into());
         }
         form.extend([
-            input(Field::Amount, text::AMOUNT, &self.amount_text).into(),
+            Input {
+                hint: self.amount_hint(ctx),
+                ..input(Field::Amount, text::AMOUNT, &self.amount_text)
+            }
+            .into(),
             group(
                 "",
                 vec![choice(
@@ -342,7 +469,8 @@ impl Send {
         }
         Page {
             id: PageId::Compose,
-            title: text::SEND.to_owned(),
+            title: text::send_title(&ctx.symbol(&source.asset)),
+            lines,
             form,
             notes: self
                 .cautions
@@ -366,29 +494,14 @@ impl Send {
                     .value_of(draft.fee.expected(), ctx.fiat().places())
                     .ok()
             });
-        let mut recipient = ctx.shown(&transfer.to, network);
+        let mut recipient = format::grouped(&ctx.shown(&transfer.to, network));
         if let Some(contact) = ctx.contact(network, &transfer.to) {
             recipient = text::with_name(&recipient, &contact.name);
         }
-        let from = format::short(&ctx.shown(&transfer.from, network));
-        let from = match ctx.owner(&transfer.from) {
-            Some(wallet) => text::with_name(&from, &ctx.wallet_name(wallet)),
-            None => from,
-        };
-        let mut lines = vec![
-            line(text::FROM, from),
-            network_line(ctx, network),
-            line(text::TO, recipient),
-        ];
+        let mut lines = vec![line(text::TO, recipient), network_line(ctx, network)];
         if let Some(memo) = &transfer.memo {
             lines.push(line(text::MEMO, memo.clone()));
         }
-        lines.extend(draft.fee.lines().iter().map(|fee| {
-            line(
-                &text::fee_item(&fee.item),
-                format::exact(fee.amount, &fee_symbol),
-            )
-        }));
         lines.push(line(
             text::FEE,
             text::with_value(
@@ -396,22 +509,40 @@ impl Send {
                 &format::fiat(fee_value, ctx.fiat()),
             ),
         ));
-        lines.push(line(
-            text::MOST_FEE,
-            format::exact(draft.fee.max(), &fee_symbol),
-        ));
         let left = remaining(draft, at, ctx.now);
-        lines.push(line(text::QUOTE, text::quote_left(left)));
+        if ctx.data.settings.developer_mode {
+            let from = format::short(&ctx.shown(&transfer.from, network));
+            let from = match ctx.owner(&transfer.from) {
+                Some(wallet) => text::with_name(&from, &ctx.wallet_name(wallet)),
+                None => from,
+            };
+            lines.insert(0, line(text::FROM, from));
+            lines.extend(draft.fee.lines().iter().map(|fee| {
+                line(
+                    &text::fee_item(&fee.item),
+                    format::exact(fee.amount, &fee_symbol),
+                )
+            }));
+            lines.push(line(
+                text::MOST_FEE,
+                format::exact(draft.fee.max(), &fee_symbol),
+            ));
+            lines.push(line(text::QUOTE, text::quote_left(left)));
+        }
+        let mut notes: Vec<Note> = draft
+            .cautions
+            .iter()
+            .map(|caution| note(Level::Warning, text::caution(caution, ctx)))
+            .collect();
+        if left == 0 {
+            notes.push(note(Level::Info, text::QUOTE_GONE));
+        }
         Page {
             id: PageId::Review,
             title: text::REVIEW.to_owned(),
             headline: Some(format::exact(transfer.amount, &ctx.symbol(&transfer.asset))),
             lines,
-            notes: draft
-                .cautions
-                .iter()
-                .map(|caution| note(Level::Warning, text::caution(caution, ctx)))
-                .collect(),
+            notes,
             error: self.error.clone(),
             buttons: vec![button(
                 if left == 0 {
@@ -427,6 +558,10 @@ impl Send {
 
     fn submit(&mut self, ctx: &Ctx<'_>) -> Reply {
         match std::mem::replace(&mut self.step, Step::Compose) {
+            Step::Choose => {
+                self.step = Step::Choose;
+                Reply::default()
+            }
             Step::Compose => self.requote(ctx),
             Step::Review { draft, at } if remaining(&draft, at, ctx.now) == 0 => {
                 self.step = Step::Review { draft, at };
@@ -462,6 +597,14 @@ impl Send {
     }
 }
 
+fn source_of(holding: &Holding) -> Source {
+    Source {
+        wallet: holding.wallet,
+        address: holding.address,
+        asset: holding.asset.clone(),
+    }
+}
+
 fn remaining(draft: &Draft, at: u64, now: u64) -> u64 {
     (at + draft.valid_for.as_secs()).saturating_sub(now)
 }
@@ -469,6 +612,7 @@ fn remaining(draft: &Draft, at: u64, now: u64) -> u64 {
 impl Screen for Send {
     fn act(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
         match (&mut self.step, action) {
+            (Step::Choose, Action::Pick(Pick::Source(position))) => self.choose(*position, ctx),
             (_, Action::Submit) => self.submit(ctx),
             (Step::Confirm { password, .. }, Action::Type(Field::Password, value)) => {
                 *password = Secret::new(value);
@@ -515,7 +659,11 @@ impl Screen for Send {
 
     fn back(&mut self) -> Option<Reply> {
         match &self.step {
-            Step::Compose => None,
+            Step::Compose if self.picked => {
+                self.step = Step::Choose;
+                Some(Reply::default())
+            }
+            Step::Choose | Step::Compose => None,
             Step::Review { .. } if self.replacing.is_some() => None,
             Step::Review { .. } => {
                 self.step = Step::Compose;
@@ -534,6 +682,7 @@ impl Screen for Send {
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
         match &self.step {
+            Step::Choose => Self::choose_page(ctx),
             Step::Compose => self.compose_page(ctx),
             Step::Review { draft, at } => self.review_page(draft, *at, ctx),
             Step::Confirm { password, .. } => Page {
