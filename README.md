@@ -19,6 +19,32 @@ Bahaa Wallet keeps your coins under your control.
 
 Prices come from [Bahaa](https://bahaa.io), and the wallet only asks for the assets you actually hold.
 
+## Install
+
+### Terminal app (TUI)
+
+macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bahaa-io/bahaa-wallet/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/bahaa-io/bahaa-wallet/main/install.ps1 | iex
+```
+
+Then run `bahaa-wallet`. You can also download the `bahaa-wallet-tui-*` file for your system from [Releases](https://github.com/bahaa-io/bahaa-wallet/releases/latest).
+
+## Update
+
+- **In the app:** Settings → Updates (Stable, Beta or Off).
+- **Install command:** run it again.
+- **By hand:** replace the file with the new one from [Releases](https://github.com/bahaa-io/bahaa-wallet/releases/latest).
+
+Your wallets and settings are kept.
+
 ## Networks
 
 | Network | Coin | Built-in tokens |
@@ -37,11 +63,12 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 
 ## Features
 
-- **Wallets:** create or import 12- and 24-word phrases, TON's own phrases too, with several wallets and accounts.
+- **Wallets:** create or import 12- and 24-word phrases, TON's own phrases, or a single private key for EVM networks or Tron, with several wallets and accounts.
 - **Balances:** coins and tokens on every network, valued in USD, EUR or IRT.
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
 - **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks.
-- **Activity:** one timeline of what you sent and received, with spam flagged.
+- **Activity:** one timeline of what you sent and received, with spam flagged and hidden.
+- **Privacy:** hide every balance with one switch.
 
 ## Security
 
@@ -49,6 +76,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Encrypted local data.** Your history, contacts, tokens and accounts are encrypted too, and only open after you unlock. The wallet locks itself after a few idle minutes.
 - **Verified, not trusted.** TON balances and history are checked against validator-signed proofs. Every network reply is size-limited and read strictly.
 - **Built to survive bad data.** The code that reads network data has been fuzzed with more than 100 million hostile inputs. A misbehaving server can at most fail its own request.
+- **Signed updates.** The app only installs releases signed with the Bahaa release key, and checks each file's checksum first.
 - **Pure Rust.** There's no OpenSSL, and unsafe code is forbidden.
 - **Tested with real money** on BNB Smart Chain, Tron and TON: receiving, sending, Max, memos, multiple accounts, and restarts in the middle of a send.
 
