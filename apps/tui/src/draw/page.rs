@@ -5,7 +5,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
 use super::parts::{self, Part, Sink, Sizes};
-use super::qr::Code;
+use super::qr::{Code, Scale};
 use crate::hints;
 use crate::theme;
 use crate::ui::Ui;
@@ -13,6 +13,7 @@ use crate::ui::Ui;
 const MAX_WIDTH: u16 = 104;
 const MIN_TABLE: u16 = 10;
 const BESIDE_QR: u16 = 46;
+const BESIDE_SCALE: Scale = Scale::Half;
 
 struct Plan {
     parts: Vec<(Part, u16, u16)>,
@@ -77,15 +78,17 @@ pub(crate) fn render(
     fill: Style,
 ) {
     let page = &view.page;
-    let code = page.qr.as_deref().and_then(Code::new);
-    let beside = code.as_ref().and_then(|code| {
-        let scale = code.scale(area.width.saturating_sub(BESIDE_QR + 2), area.height)?;
-        Some((code, scale))
+    let beside = page.qr.as_deref().and_then(Code::new).filter(|code| {
+        code.fits(
+            BESIDE_SCALE,
+            area.width.saturating_sub(BESIDE_QR + 2),
+            area.height,
+        )
     });
     let flow = Rect {
-        width: beside.map_or(area.width, |(code, scale)| {
-            area.width - code.width(scale) - 2
-        }),
+        width: beside
+            .as_ref()
+            .map_or(area.width, |code| area.width - code.width(BESIDE_SCALE) - 2),
         ..area
     };
     let width = flow.width.min(MAX_WIDTH);
@@ -148,16 +151,16 @@ pub(crate) fn render(
     if plan.total > scroll + flow.height {
         buffer.set_string(edge, flow.bottom() - 1, hints::MORE_BELOW, theme::accent());
     }
-    if let Some((code, scale)) = beside {
+    if let Some(code) = &beside {
         code.draw(
             buffer,
             Rect::new(
-                area.right() - code.width(scale),
+                area.right() - code.width(BESIDE_SCALE),
                 area.y,
-                code.width(scale),
-                code.height(scale),
+                code.width(BESIDE_SCALE),
+                code.height(BESIDE_SCALE),
             ),
-            scale,
+            BESIDE_SCALE,
         );
     }
     if let Some(cursor) = cursor
