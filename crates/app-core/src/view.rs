@@ -211,6 +211,7 @@ pub struct Note {
 pub struct Button {
     pub label: String,
     pub action: Action,
+    pub section: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

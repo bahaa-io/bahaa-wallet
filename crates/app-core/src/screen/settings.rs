@@ -4,7 +4,7 @@ use super::onboarding::Welcome;
 use super::tokens;
 use super::wallets::Wallet;
 use super::{
-    Screen, button, cell, choice, group, hidden, line, password_inputs, password_problem,
+    Screen, button, cell, choice, group, hidden, line, password_inputs, password_problem, section,
     wallet_kind,
 };
 use crate::action::{Action, Channel, Currency, Field, Go, Pick, Toggle};
@@ -114,11 +114,7 @@ impl Screen for Settings {
                 settings.hide_balances,
             ),
         ];
-        let mut buttons = vec![
-            button(text::ADD_WALLET, Action::Go(Go::AddWallet)),
-            button(text::TOKENS, Action::Go(Go::Tokens)),
-            button(text::NETWORK_STATUS, Action::Go(Go::Networks)),
-        ];
+        let mut app = Vec::new();
         if ctx.host.updates {
             let channels = [Channel::Off, Channel::Stable, Channel::Beta]
                 .into_iter()
@@ -131,16 +127,36 @@ impl Screen for Settings {
                 })
                 .collect();
             form.push(group(text::UPDATES, channels).into());
-            buttons.push(button(
+            app.push(button(
                 text::CHECK_UPDATES,
                 Action::Pick(Pick::CheckUpdates),
             ));
         }
-        buttons.extend([
-            button(text::DEVELOPER, Action::Go(Go::Developer)),
-            button(text::CHANGE_PASSWORD, Action::Go(Go::ChangePassword)),
-            button(text::LOCK_NOW, Action::Lock),
-        ]);
+        app.push(button(text::DEVELOPER, Action::Go(Go::Developer)));
+        let buttons = [
+            (
+                text::WALLETS,
+                vec![button(text::ADD_WALLET, Action::Go(Go::AddWallet))],
+            ),
+            (
+                text::SECURITY,
+                vec![
+                    button(text::CHANGE_PASSWORD, Action::Go(Go::ChangePassword)),
+                    button(text::LOCK_NOW, Action::Lock),
+                ],
+            ),
+            (
+                text::NETWORKS,
+                vec![
+                    button(text::NETWORK_STATUS, Action::Go(Go::Networks)),
+                    button(text::TOKENS, Action::Go(Go::Tokens)),
+                ],
+            ),
+            (text::APP, app),
+        ]
+        .into_iter()
+        .flat_map(|(label, buttons)| section(label, buttons))
+        .collect();
         Page {
             id: PageId::Settings,
             title: text::SETTINGS.to_owned(),

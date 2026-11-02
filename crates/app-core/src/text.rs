@@ -178,6 +178,8 @@ pub(crate) const NO_WALLETS: &str = "No wallets yet";
 pub(crate) const TOKENS: &str = "Tokens";
 pub(crate) const CHANGE_PASSWORD: &str = "Change password";
 pub(crate) const LOCK_NOW: &str = "Lock now";
+pub(crate) const SECURITY: &str = "Security";
+pub(crate) const APP: &str = "App";
 
 pub(crate) const WALLET: &str = "Wallet";
 pub(crate) const KIND: &str = "Type";

@@ -71,13 +71,19 @@ pub(crate) struct Sizes {
     width: u16,
     label: u16,
     group_label: u16,
-    buttons: Vec<(u16, u16)>,
+    buttons: Vec<Rect>,
 }
 
 impl Sizes {
     pub(crate) fn new(page: &Page, width: u16) -> Self {
         let label = column(page.lines.iter().map(|line| line.label.as_str()));
-        let group_label = column(page.groups().map(|group| group.label.as_str()));
+        let group_label = column(
+            page.groups().map(|group| group.label.as_str()).chain(
+                page.buttons
+                    .iter()
+                    .filter_map(|button| button.section.as_deref()),
+            ),
+        );
         let vertical = page
             .form
             .iter()
@@ -89,26 +95,12 @@ impl Sizes {
                 Item::Input(_) => false,
             })
             .collect();
-        let mut place = (0, 0);
-        let buttons = page
-            .buttons
-            .iter()
-            .map(|button| {
-                let size = wrap::width(&button_text(&button.label));
-                if place.0 > 0 && place.0 + size > width {
-                    place = (0, place.1 + 1);
-                }
-                let at = place;
-                place.0 += size + BUTTON_GAP;
-                at
-            })
-            .collect();
         Self {
             vertical,
             width,
             label,
             group_label,
-            buttons,
+            buttons: button_places(page, group_label, width),
         }
     }
 
@@ -186,7 +178,7 @@ pub(crate) fn height(part: Part, page: &Page, ui: &Ui, sizes: &Sizes) -> u16 {
             .map(|note| count(Some(&note.text), width.saturating_sub(2)))
             .sum(),
         Part::Error => count(page.error.as_deref(), width.saturating_sub(2)),
-        Part::Buttons => sizes.buttons.last().map_or(0, |(_, row)| row + 1),
+        Part::Buttons => sizes.buttons.last().map_or(0, |place| place.y + 1),
     }
 }
 
@@ -787,10 +779,58 @@ fn marked(buffer: &mut Buffer, area: Rect, level: Level, text: &str) -> u16 {
     cells(lines.len())
 }
 
+fn button_places(page: &Page, label: u16, width: u16) -> Vec<Rect> {
+    let mut columns: Vec<u16> = Vec::new();
+    for section in page.buttons.chunk_by(same_section) {
+        for (column, button) in section.iter().enumerate() {
+            let size = wrap::width(&button_text(&button.label));
+            match columns.get_mut(column) {
+                Some(widest) => *widest = (*widest).max(size),
+                None => columns.push(size),
+            }
+        }
+    }
+    let mut places = Vec::with_capacity(page.buttons.len());
+    let mut row = 0;
+    for section in page.buttons.chunk_by(same_section) {
+        let labelled = section[0].section.is_some();
+        let start = if labelled { label } else { 0 };
+        let mut x = start;
+        for &size in &columns[..section.len()] {
+            if x > start && x + size > width {
+                row += 1;
+                x = start;
+            }
+            places.push(Rect::new(x, row, size, 1));
+            x += size + BUTTON_GAP;
+        }
+        row += 1 + u16::from(labelled);
+    }
+    places
+}
+
+fn same_section(first: &app::Button, second: &app::Button) -> bool {
+    first.section == second.section
+}
+
 fn buttons(buffer: &mut Buffer, area: Rect, page: &Page, ui: &Ui, sizes: &Sizes, sink: &mut Sink) {
-    for (index, (button, (column, row))) in page.buttons.iter().zip(&sizes.buttons).enumerate() {
-        let (x, y) = (area.x + column, area.y + row);
-        let text = button_text(&button.label);
+    let mut first = 0;
+    for section in page.buttons.chunk_by(same_section) {
+        let range = first..first + section.len();
+        if let Some(label) = &section[0].section {
+            let focused = matches!(ui.focus, Some(Target::Button(index)) if range.contains(&index));
+            let style = if focused {
+                theme::headline()
+            } else {
+                theme::muted()
+            };
+            buffer.set_string(area.x, area.y + sizes.buttons[first].y, label, style);
+        }
+        first = range.end;
+    }
+    for (index, (button, place)) in page.buttons.iter().zip(&sizes.buttons).enumerate() {
+        let (x, y) = (area.x + place.x, area.y + place.y);
+        let text = centered(&button_text(&button.label), place.width);
         let hit = Hit::Button(index);
         let hovered = ui.hovered(&hit);
         let focused = ui.focus == Some(Target::Button(index));
@@ -818,6 +858,12 @@ fn buttons(buffer: &mut Buffer, area: Rect, page: &Page, ui: &Ui, sizes: &Sizes,
 
 fn button_text(label: &str) -> String {
     format!("  {label}  ")
+}
+
+fn centered(text: &str, width: u16) -> String {
+    let room = usize::from(width.saturating_sub(wrap::width(text)));
+    let left = room / 2;
+    format!("{}{text}{}", " ".repeat(left), " ".repeat(room - left))
 }
 
 fn secret(buffer: &mut Buffer, area: Rect, page: &Page, ui: &Ui) {
