@@ -4,7 +4,7 @@ use zeroize::Zeroizing;
 
 use crate::KeyringError;
 
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 const FIRST_VERSION: u8 = 1;
 const CONTRACT_VERSION: u8 = 3;
 const MAX_WALLETS: usize = 64;
@@ -12,8 +12,9 @@ const MAX_PASSPHRASE: usize = 1024;
 const BIP39: u8 = 0;
 const TON: u8 = 1;
 const KEY: u8 = 2;
-const EVM: u8 = 0;
-const TRON: u8 = 1;
+const KEY_EVM: u8 = 0;
+const KEY_TRON: u8 = 1;
+const KEY_TON: u8 = 2;
 const W5: u8 = 0;
 const V4R2: u8 = 1;
 
@@ -31,19 +32,27 @@ pub enum Phrase {
         key: Zeroizing<[u8; KEY_BYTES]>,
         family: ChainFamily,
     },
+    TonKey {
+        key: Zeroizing<[u8; KEY_BYTES]>,
+        contract: TonContract,
+    },
 }
 
 impl Phrase {
     pub fn contract(&self) -> Option<TonContract> {
         match self {
-            Self::Bip39 { contract, .. } | Self::Ton { contract, .. } => Some(*contract),
+            Self::Bip39 { contract, .. }
+            | Self::Ton { contract, .. }
+            | Self::TonKey { contract, .. } => Some(*contract),
             Self::Key { .. } => None,
         }
     }
 
     pub fn contract_mut(&mut self) -> Option<&mut TonContract> {
         match self {
-            Self::Bip39 { contract, .. } | Self::Ton { contract, .. } => Some(contract),
+            Self::Bip39 { contract, .. }
+            | Self::Ton { contract, .. }
+            | Self::TonKey { contract, .. } => Some(contract),
             Self::Key { .. } => None,
         }
     }
@@ -88,10 +97,15 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
             Phrase::Key { key, family } => {
                 out.push(KEY);
                 out.push(match family {
-                    ChainFamily::Evm => EVM,
-                    ChainFamily::Tron => TRON,
+                    ChainFamily::Evm => KEY_EVM,
+                    ChainFamily::Tron => KEY_TRON,
                     ChainFamily::Ton => return Err(KeyringError::Damaged),
                 });
+                out.extend_from_slice(&**key);
+            }
+            Phrase::TonKey { key, .. } => {
+                out.push(KEY);
+                out.push(KEY_TON);
                 out.extend_from_slice(&**key);
             }
         }
@@ -196,14 +210,24 @@ fn read_ton(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
 }
 
 fn read_key(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
-    let family = match reader.take(1)?[0] {
-        EVM => ChainFamily::Evm,
-        TRON => ChainFamily::Tron,
-        _ => return Err(KeyringError::Damaged),
-    };
+    let family = reader.take(1)?[0];
     let mut key = Zeroizing::new([0u8; KEY_BYTES]);
     key.copy_from_slice(reader.take(KEY_BYTES)?);
-    Ok(Phrase::Key { key, family })
+    Ok(match family {
+        KEY_EVM => Phrase::Key {
+            key,
+            family: ChainFamily::Evm,
+        },
+        KEY_TRON => Phrase::Key {
+            key,
+            family: ChainFamily::Tron,
+        },
+        KEY_TON => Phrase::TonKey {
+            key,
+            contract: read_contract(reader)?,
+        },
+        _ => return Err(KeyringError::Damaged),
+    })
 }
 
 fn read_contract(reader: &mut Reader<'_>) -> Result<TonContract, KeyringError> {
@@ -320,6 +344,31 @@ mod tests {
                 Phrase::Key { key, family: read } if **key == [9; KEY_BYTES] && *read == family
             ));
             assert_eq!(decoded.entries[0].phrase.contract(), None);
+        }
+    }
+
+    #[test]
+    fn ton_keys_round_trip_with_their_contract() {
+        for contract in [TonContract::W5, TonContract::V4R2] {
+            let contents = Contents {
+                next_id: 2,
+                entries: vec![Entry {
+                    id: 1,
+                    phrase: Phrase::TonKey {
+                        key: Zeroizing::new([5; KEY_BYTES]),
+                        contract,
+                    },
+                }],
+            };
+            let encoded = encode(&contents).unwrap();
+            let decoded = decode(&encoded).unwrap();
+            assert!(matches!(
+                &decoded.entries[0].phrase,
+                Phrase::TonKey { key, contract: read } if **key == [5; KEY_BYTES] && *read == contract
+            ));
+            let mut unknown = encoded.to_vec();
+            unknown[1 + 4 + 2 + 4 + 1] = 3;
+            assert!(matches!(decode(&unknown), Err(KeyringError::Damaged)));
         }
     }
 

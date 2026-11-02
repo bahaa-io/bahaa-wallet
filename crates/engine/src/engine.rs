@@ -573,6 +573,35 @@ struct Worker {
     track_every: Duration,
 }
 
+struct TonCheck {
+    w5: Address,
+    v4r2: Address,
+    ton_only: bool,
+}
+
+fn ton_check(
+    keyring: &Keyring,
+    chains: &[AnyChain],
+    id: WalletId,
+) -> Result<Option<TonCheck>, EngineError> {
+    let Some(chain) = chains::ton_mainnet(chains) else {
+        return Ok(None);
+    };
+    let wallets = keyring.wallets()?;
+    let Some(wallet) = wallets
+        .iter()
+        .find(|wallet| wallet.id == id && wallet.ton.is_some())
+    else {
+        return Ok(None);
+    };
+    let seed = keyring.seed(id)?;
+    Ok(Some(TonCheck {
+        w5: chain.derive_as(seed, 0, TonContract::W5)?,
+        v4r2: chain.derive_as(seed, 0, TonContract::V4R2)?,
+        ton_only: wallet.kind != WalletKind::Bip39,
+    }))
+}
+
 fn answer<T>(reply: Reply<T>, result: Result<T, EngineError>) {
     let _ = reply.send(result);
 }
@@ -708,11 +737,14 @@ impl Worker {
                 self.import(phrase, passphrase, kind, reply).await;
             }
             Command::ImportKey(key, family, reply) => {
-                let result = self
-                    .keyring(move |keyring| keyring.import_key(key.expose_secret(), family))
+                let chains = Arc::clone(&self.chains);
+                let added = self
+                    .keyring(move |keyring| {
+                        let id = keyring.import_key(key.expose_secret(), family)?;
+                        Ok::<_, EngineError>((id, ton_check(keyring, &chains, id)?))
+                    })
                     .await;
-                self.after_change(result.is_ok()).await;
-                let _ = reply.send(result);
+                self.imported(added, reply).await;
             }
             Command::Remove(id, reply) => {
                 let result = self.keyring(move |keyring| keyring.remove(id)).await;
@@ -920,35 +952,27 @@ impl Worker {
         reply: Reply<WalletId>,
     ) {
         let chains = Arc::clone(&self.chains);
-        let imported = self
+        let added = self
             .keyring(move |keyring| {
                 let (phrase, passphrase) = (phrase.expose_secret(), passphrase.expose_secret());
                 let id = match kind {
                     Some(kind) => keyring.import_as(phrase, passphrase, kind),
                     None => keyring.import(phrase, passphrase),
                 }?;
-                let ton_only = keyring
-                    .wallets()?
-                    .iter()
-                    .any(|wallet| wallet.id == id && wallet.kind == WalletKind::Ton);
-                let addresses = match chains::ton_mainnet(&chains) {
-                    Some(chain) => {
-                        let seed = keyring.seed(id)?;
-                        Some((
-                            chain.derive_as(seed, 0, TonContract::W5)?,
-                            chain.derive_as(seed, 0, TonContract::V4R2)?,
-                        ))
-                    }
-                    None => None,
-                };
-                Ok::<_, EngineError>((id, ton_only, addresses))
+                Ok::<_, EngineError>((id, ton_check(keyring, &chains, id)?))
             })
             .await;
-        let result = match imported {
-            Ok((id, ton_only, Some(addresses))) => {
-                self.settle_contract(id, addresses, ton_only).await
-            }
-            Ok((id, _, None)) => Ok(id),
+        self.imported(added, reply).await;
+    }
+
+    async fn imported(
+        &mut self,
+        added: Result<(WalletId, Option<TonCheck>), EngineError>,
+        reply: Reply<WalletId>,
+    ) {
+        let result = match added {
+            Ok((id, Some(check))) => self.settle_contract(id, check).await,
+            Ok((id, None)) => Ok(id),
             Err(err) => Err(err),
         };
         self.after_change(result.is_ok()).await;
@@ -958,15 +982,16 @@ impl Worker {
     async fn settle_contract(
         &mut self,
         id: WalletId,
-        (w5, v4r2): (Address, Address),
-        ton_only: bool,
+        check: TonCheck,
     ) -> Result<WalletId, EngineError> {
         let chains = Arc::clone(&self.chains);
         let used = match chains::ton_mainnet(&chains) {
-            Some(chain) => match join(chain.last_used(&w5), chain.last_used(&v4r2)).await {
-                (Ok(w5), Ok(v4r2)) => Ok(keyring::used_contract(w5, v4r2)),
-                (Err(err), _) | (_, Err(err)) => Err(err),
-            },
+            Some(chain) => {
+                match join(chain.last_used(&check.w5), chain.last_used(&check.v4r2)).await {
+                    (Ok(w5), Ok(v4r2)) => Ok(keyring::used_contract(w5, v4r2)),
+                    (Err(err), _) | (_, Err(err)) => Err(err),
+                }
+            }
             None => Ok(TonContract::W5),
         };
         match used {
@@ -976,7 +1001,7 @@ impl Worker {
                     .await?;
                 Ok(id)
             }
-            Err(_) if !ton_only => Ok(id),
+            Err(_) if !check.ton_only => Ok(id),
             Err(err) => {
                 let _ = self.keyring(move |keyring| keyring.remove(id)).await;
                 Err(EngineError::Chain(err))

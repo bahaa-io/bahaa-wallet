@@ -421,10 +421,12 @@ impl ImportKey {
         if self.key.expose().trim().is_empty() {
             return None;
         }
-        Some(match bahaa_engine::check_key(self.key.expose()) {
-            Ok(()) => note(Level::Success, text::KEY_OK),
-            Err(err) => note(Level::Error, text::sentence(&err.to_string())),
-        })
+        Some(
+            match bahaa_engine::check_key(self.key.expose(), chain(self.family)) {
+                Ok(()) => note(Level::Success, text::KEY_OK),
+                Err(err) => note(Level::Error, text::sentence(&err.to_string())),
+            },
+        )
     }
 }
 
@@ -436,19 +438,21 @@ impl Screen for ImportKey {
                 self.error = None;
             }
             Action::Pick(Pick::Family(family)) => self.family = *family,
-            Action::Submit => match bahaa_engine::check_key(self.key.expose()) {
-                Err(err) => self.error = Some(text::sentence(&err.to_string())),
-                Ok(()) if self.adding => {
-                    return Reply::call(Call::ImportKey(
-                        super::secret(&self.key),
-                        chain(self.family),
-                    ));
+            Action::Submit => {
+                match bahaa_engine::check_key(self.key.expose(), chain(self.family)) {
+                    Err(err) => self.error = Some(text::sentence(&err.to_string())),
+                    Ok(()) if self.adding => {
+                        return Reply::call(Call::ImportKey(
+                            super::secret(&self.key),
+                            chain(self.family),
+                        ));
+                    }
+                    Ok(()) => {
+                        let next = Next::ImportKey(self.key.clone(), self.family);
+                        return Reply::nav(Nav::Push(Box::new(NewPassword::new(next))));
+                    }
                 }
-                Ok(()) => {
-                    let next = Next::ImportKey(self.key.clone(), self.family);
-                    return Reply::nav(Nav::Push(Box::new(NewPassword::new(next))));
-                }
-            },
+            }
             _ => {}
         }
         Reply::default()

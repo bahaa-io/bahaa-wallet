@@ -100,8 +100,6 @@ pub enum KeyringError {
     Ambiguous,
     #[error("TON recovery phrases with a password are not supported yet")]
     TonPassphrase,
-    #[error("private keys work for EVM networks or Tron")]
-    KeyFamily,
     #[error("this wallet has no TON account")]
     NoTon,
     #[error(transparent)]
@@ -223,7 +221,7 @@ impl Keyring {
                         !passphrase.expose_secret().is_empty(),
                     ),
                     Phrase::Ton { .. } => (Some(WordCount::TwentyFour), false),
-                    Phrase::Key { .. } => (None, false),
+                    Phrase::Key { .. } | Phrase::TonKey { .. } => (None, false),
                 };
                 let kind = kind_of(&entry.phrase);
                 WalletInfo {
@@ -261,11 +259,7 @@ impl Keyring {
         family: ChainFamily,
     ) -> Result<WalletId, KeyringError> {
         self.session()?;
-        if family == ChainFamily::Ton {
-            return Err(KeyringError::KeyFamily);
-        }
-        let key = bahaa_crypto::private_key(text)?;
-        self.add(Phrase::Key { key, family })
+        self.add(key_phrase(text, family)?)
     }
 
     pub fn import_as(
@@ -331,7 +325,9 @@ impl Keyring {
         Ok(match &session.contents.entries[index].phrase {
             Phrase::Bip39 { mnemonic, .. } => mnemonic.phrase(),
             Phrase::Ton { mnemonic, .. } => mnemonic.phrase(),
-            Phrase::Key { key, .. } => SecretString::from(hex::encode(&**key)),
+            Phrase::Key { key, .. } | Phrase::TonKey { key, .. } => {
+                SecretString::from(hex::encode(&**key))
+            }
         })
     }
 
@@ -432,9 +428,21 @@ pub fn check_phrase(phrase: &str, passphrase: &str) -> Result<PhraseKind, Keyrin
     }
 }
 
-pub fn check_key(text: &str) -> Result<(), KeyringError> {
-    bahaa_crypto::private_key(text)?;
-    Ok(())
+pub fn check_key(text: &str, family: ChainFamily) -> Result<(), KeyringError> {
+    key_phrase(text, family).map(drop)
+}
+
+fn key_phrase(text: &str, family: ChainFamily) -> Result<Phrase, KeyringError> {
+    Ok(match family {
+        ChainFamily::Evm | ChainFamily::Tron => Phrase::Key {
+            key: bahaa_crypto::private_key(text)?,
+            family,
+        },
+        ChainFamily::Ton => Phrase::TonKey {
+            key: bahaa_crypto::ton_private_key(text)?,
+            contract: TonContract::W5,
+        },
+    })
 }
 
 fn kind_of(phrase: &Phrase) -> WalletKind {
@@ -442,6 +450,7 @@ fn kind_of(phrase: &Phrase) -> WalletKind {
         Phrase::Bip39 { .. } => WalletKind::Bip39,
         Phrase::Ton { .. } => WalletKind::Ton,
         Phrase::Key { family, .. } => WalletKind::Key(*family),
+        Phrase::TonKey { .. } => WalletKind::Key(ChainFamily::Ton),
     }
 }
 
@@ -490,6 +499,7 @@ fn seed(phrase: &Phrase) -> Result<Seed, KeyringError> {
         } => Ok(mnemonic.to_seed(passphrase.expose_secret())),
         Phrase::Ton { mnemonic, .. } => mnemonic.to_seed().map_err(|_| KeyringError::Damaged),
         Phrase::Key { key, .. } => bahaa_crypto::key_seed(key).map_err(|_| KeyringError::Damaged),
+        Phrase::TonKey { key, .. } => Ok(bahaa_crypto::ton_key_seed(key)),
     }
 }
 

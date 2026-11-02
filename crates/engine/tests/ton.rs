@@ -19,6 +19,8 @@ const TESTNET: &str = "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879
 const TON_0: &str = "0:c73162b34cf19667210af3180d6fcfb88df1678cbbbe731f38642534cc6951e4";
 const RECORDING: &str = include_str!("fixtures/ton.json");
 const TON_PHRASE: &str = "dose ice enrich trigger test dove century still betray gas diet dune use other base gym mad law immense village world example praise game";
+const TON_PHRASE_W5: &str = "0:dbb94cc66ee709eb191e2e3af93b9b3b036bbcc69fb70e5c426cef0b9b7930a1";
+const TON_PHRASE_V4R2: &str = "0:f0cc9cd9b07dab208f52bf892b006221227d76a448428f82d870a6bc8dd5d377";
 
 fn vault(scratch: &Scratch, phrase: &str) -> (bahaa_engine::Keyring, bahaa_engine::WalletId) {
     let mut keyring = bahaa_engine::Keyring::new(
@@ -32,6 +34,14 @@ fn vault(scratch: &Scratch, phrase: &str) -> (bahaa_engine::Keyring, bahaa_engin
     keyring.create(b"pw").unwrap();
     let id = keyring.import(phrase, "").unwrap();
     (keyring, id)
+}
+
+fn ton_phrase_key() -> SecretString {
+    let seed = bahaa_crypto::TonMnemonic::parse(TON_PHRASE)
+        .unwrap()
+        .to_seed()
+        .unwrap();
+    SecretString::from(bahaa_types::hex::encode(seed.expose()))
 }
 
 fn ton(id: &str, config: Url) -> Network {
@@ -355,7 +365,7 @@ async fn a_ton_phrase_opens_only_its_ton_accounts() {
 }
 
 #[tokio::test]
-async fn a_ton_phrase_waits_until_its_wallet_contract_can_be_checked() {
+async fn ton_imports_wait_until_their_wallet_contract_can_be_checked() {
     let scratch = Scratch::new();
     let dead = Url::parse("http://127.0.0.1:9/").unwrap();
     let registry = Registry::with_networks(vec![ton("ton", dead)]).unwrap();
@@ -367,12 +377,68 @@ async fn a_ton_phrase_waits_until_its_wallet_contract_can_be_checked() {
             .await,
         Err(EngineError::Chain(ChainError::Network(_)))
     ));
+    assert!(matches!(
+        engine.import_key(ton_phrase_key(), ChainFamily::Ton).await,
+        Err(EngineError::Chain(ChainError::Network(_)))
+    ));
     assert_eq!(engine.wallets().await.unwrap(), Vec::new());
     assert_eq!(engine.accounts().await.unwrap(), Vec::new());
     engine
         .import(SecretString::from(HARDHAT), SecretString::from(""))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn a_ton_private_key_opens_the_same_wallet_as_its_phrase() {
+    let scratch = Scratch::new();
+    let dead = Url::parse("http://127.0.0.1:9/").unwrap();
+    let asked = Asked::default();
+    let registry = Registry::with_networks(vec![
+        common::network("bsc", dead),
+        ton("ton", common::liteserver(RECORDING, MAINNET, &asked).await),
+    ])
+    .unwrap();
+    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let id = engine
+        .import_key(ton_phrase_key(), ChainFamily::Ton)
+        .await
+        .unwrap();
+    let wallets = engine.wallets().await.unwrap();
+    assert_eq!(
+        (wallets[0].kind, wallets[0].words, wallets[0].ton),
+        (
+            bahaa_engine::WalletKind::Key(ChainFamily::Ton),
+            None,
+            Some(bahaa_types::TonContract::W5)
+        )
+    );
+    let asked = asked.lock().unwrap().clone();
+    for address in [TON_PHRASE_W5, TON_PHRASE_V4R2] {
+        let hash = address.trim_start_matches("0:").to_owned();
+        assert!(asked.contains(&(GET_ACCOUNT_STATE, hash)), "{address}");
+    }
+    let shape = |accounts: Vec<bahaa_engine::Account>| {
+        accounts
+            .iter()
+            .map(|account| (account.family, account.address.to_string()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        shape(engine.accounts().await.unwrap()),
+        [(ChainFamily::Ton, TON_PHRASE_W5.to_owned())]
+    );
+    engine
+        .set_ton_contract(id, bahaa_types::TonContract::V4R2)
+        .await
+        .unwrap();
+    assert_eq!(
+        shape(engine.accounts().await.unwrap()),
+        [(ChainFamily::Ton, TON_PHRASE_V4R2.to_owned())]
+    );
+    assert!(engine.add_account(id).await.is_err());
+    engine.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -389,10 +455,7 @@ async fn a_v4r2_ton_wallet_shows_its_v4r2_address() {
     engine.unlock(SecretString::from("pw")).await.unwrap();
     let accounts = engine.accounts().await.unwrap();
     assert_eq!(accounts.len(), 1);
-    assert_eq!(
-        accounts[0].address.to_string(),
-        "0:f0cc9cd9b07dab208f52bf892b006221227d76a448428f82d870a6bc8dd5d377"
-    );
+    assert_eq!(accounts[0].address.to_string(), TON_PHRASE_V4R2);
 }
 
 #[tokio::test]
@@ -415,8 +478,7 @@ async fn a_ton_phrase_can_be_switched_between_its_two_contracts() {
             .map(|account| account.address.to_string())
             .collect::<Vec<_>>()
     };
-    let w5 = "0:dbb94cc66ee709eb191e2e3af93b9b3b036bbcc69fb70e5c426cef0b9b7930a1";
-    let v4r2 = "0:f0cc9cd9b07dab208f52bf892b006221227d76a448428f82d870a6bc8dd5d377";
+    let (w5, v4r2) = (TON_PHRASE_W5, TON_PHRASE_V4R2);
     assert_eq!(address(&engine.accounts().await.unwrap()), [w5]);
     let mut events = engine.events();
     engine

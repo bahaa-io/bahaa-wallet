@@ -396,13 +396,15 @@ fn a_private_key_is_one_account_on_the_family_it_was_imported_for() {
         KeyringError::Duplicate
     );
     let tron = keyring.import_key(key, ChainFamily::Tron).unwrap();
-    assert_eq!(
-        keyring.import_key(key, ChainFamily::Ton).unwrap_err(),
-        KeyringError::KeyFamily
-    );
+    let gram = keyring.import_key(key, ChainFamily::Ton).unwrap();
+    keyring.set_ton_contract(gram, TonContract::V4R2).unwrap();
     assert_eq!(
         keyring.import_key("0x1234", ChainFamily::Evm).unwrap_err(),
         KeyringError::Key(bahaa_crypto::KeyError::Length)
+    );
+    assert_eq!(
+        keyring.import_key("0x1234", ChainFamily::Ton).unwrap_err(),
+        KeyringError::Key(bahaa_crypto::KeyError::TonLength)
     );
     assert_eq!(
         keyring
@@ -421,13 +423,44 @@ fn a_private_key_is_one_account_on_the_family_it_was_imported_for() {
         wallets,
         [
             (WalletKind::Key(ChainFamily::Evm), None, None),
-            (WalletKind::Key(ChainFamily::Tron), None, None)
+            (WalletKind::Key(ChainFamily::Tron), None, None),
+            (
+                WalletKind::Key(ChainFamily::Ton),
+                None,
+                Some(TonContract::V4R2)
+            )
         ]
     );
     assert_eq!(keyring.seed(tron).unwrap().kind(), SeedKind::Key);
+    assert_eq!(keyring.seed(gram).unwrap().kind(), SeedKind::Ton);
+    for wallet in [evm, gram] {
+        assert_eq!(
+            keyring.reveal(wallet, PASSWORD).unwrap().expose_secret(),
+            &key[2..]
+        );
+    }
+}
+
+#[test]
+fn a_ton_private_key_is_the_key_its_phrase_stands_for() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    let phrase = keyring.import(TON, "").unwrap();
+    let key = bahaa_types::hex::encode(keyring.seed(phrase).unwrap().expose());
+    let imported = keyring.import_key(&key, ChainFamily::Ton).unwrap();
     assert_eq!(
-        keyring.reveal(evm, PASSWORD).unwrap().expose_secret(),
-        &key[2..]
+        keyring.seed(imported).unwrap().expose(),
+        keyring.seed(phrase).unwrap().expose()
+    );
+    assert_eq!(
+        keyring.import_key(&key.to_uppercase(), ChainFamily::Ton),
+        Err(KeyringError::Duplicate)
+    );
+    assert_eq!(bahaa_engine::check_key(&key, ChainFamily::Ton), Ok(()));
+    assert_eq!(
+        bahaa_engine::check_key(&format!("{key}{key}"), ChainFamily::Ton),
+        Err(KeyringError::Key(bahaa_crypto::KeyError::Invalid))
     );
 }
 
