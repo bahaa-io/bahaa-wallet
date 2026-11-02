@@ -16,9 +16,10 @@ pub(crate) const WELCOME: &str = "Welcome to Bahaa Wallet";
 pub(crate) const WELCOME_TEXT: &str =
     "Your keys stay on this device. Create a new wallet or import one you already have.";
 pub(crate) const ADD_WALLET: &str = "Add a wallet";
-pub(crate) const CREATE_12: &str = "Create a wallet (12 words)";
-pub(crate) const CREATE_24: &str = "Create a wallet (24 words)";
-pub(crate) const IMPORT: &str = "Import a wallet";
+pub(crate) const CREATE: &str = "Create";
+pub(crate) const IMPORT: &str = "Import";
+pub(crate) const WORDS_12: &str = "12 words";
+pub(crate) const WORDS_24: &str = "24 words";
 pub(crate) const IMPORT_KEY: &str = "Import a private key";
 pub(crate) const IMPORT_KEY_TEXT: &str = "Paste a private key exported from another wallet. One key is one account, on EVM networks, Tron or TON.";
 pub(crate) const PRIVATE_KEY: &str = "Private key";

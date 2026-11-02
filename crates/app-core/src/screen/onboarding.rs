@@ -1,6 +1,8 @@
 use bahaa_engine::{ChainFamily, KeyringError, NewPhrase, PhraseKind, SecretString};
 
-use super::{Screen, button, choice, group, hidden, note, password_inputs, password_problem};
+use super::{
+    Screen, button, choice, group, hidden, note, password_inputs, password_problem, sections,
+};
 use crate::action::{Action, Family, Field, Kind, Pick, Words};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
@@ -56,15 +58,25 @@ impl Screen for Welcome {
             }
             .to_owned(),
             text: Some(text::WELCOME_TEXT.to_owned()),
-            buttons: vec![
-                button(text::CREATE_12, Action::Pick(Pick::Create(Words::Twelve))),
-                button(
-                    text::CREATE_24,
-                    Action::Pick(Pick::Create(Words::TwentyFour)),
+            buttons: sections([
+                (
+                    text::CREATE,
+                    vec![
+                        button(text::WORDS_12, Action::Pick(Pick::Create(Words::Twelve))),
+                        button(
+                            text::WORDS_24,
+                            Action::Pick(Pick::Create(Words::TwentyFour)),
+                        ),
+                    ],
                 ),
-                button(text::IMPORT, Action::Pick(Pick::Import)),
-                button(text::IMPORT_KEY, Action::Pick(Pick::ImportKey)),
-            ],
+                (
+                    text::IMPORT,
+                    vec![
+                        button(text::PHRASE, Action::Pick(Pick::Import)),
+                        button(text::PRIVATE_KEY, Action::Pick(Pick::ImportKey)),
+                    ],
+                ),
+            ]),
             ..Page::default()
         }
     }

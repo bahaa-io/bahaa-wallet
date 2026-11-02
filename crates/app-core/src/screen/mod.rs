@@ -94,11 +94,15 @@ pub(crate) fn button(label: impl Into<String>, action: Action) -> Button {
     }
 }
 
-pub(crate) fn section(label: &str, buttons: Vec<Button>) -> impl Iterator<Item = Button> {
-    buttons.into_iter().map(move |button| Button {
-        section: Some(label.to_owned()),
-        ..button
-    })
+pub(crate) fn sections(list: impl IntoIterator<Item = (&'static str, Vec<Button>)>) -> Vec<Button> {
+    list.into_iter()
+        .flat_map(|(label, buttons)| {
+            buttons.into_iter().map(move |button| Button {
+                section: Some(label.to_owned()),
+                ..button
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn choice(label: impl Into<String>, action: Action, selected: bool) -> Choice {

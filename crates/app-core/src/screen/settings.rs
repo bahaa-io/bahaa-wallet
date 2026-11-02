@@ -4,7 +4,7 @@ use super::onboarding::Welcome;
 use super::tokens;
 use super::wallets::Wallet;
 use super::{
-    Screen, button, cell, choice, group, hidden, line, password_inputs, password_problem, section,
+    Screen, button, cell, choice, group, hidden, line, password_inputs, password_problem, sections,
     wallet_kind,
 };
 use crate::action::{Action, Channel, Currency, Field, Go, Pick, Toggle};
@@ -133,7 +133,7 @@ impl Screen for Settings {
             ));
         }
         app.push(button(text::DEVELOPER, Action::Go(Go::Developer)));
-        let buttons = [
+        let buttons = sections([
             (
                 text::WALLETS,
                 vec![button(text::ADD_WALLET, Action::Go(Go::AddWallet))],
@@ -153,10 +153,7 @@ impl Screen for Settings {
                 ],
             ),
             (text::APP, app),
-        ]
-        .into_iter()
-        .flat_map(|(label, buttons)| section(label, buttons))
-        .collect();
+        ]);
         Page {
             id: PageId::Settings,
             title: text::SETTINGS.to_owned(),

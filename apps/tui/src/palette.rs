@@ -71,9 +71,13 @@ fn all(view: &View) -> Vec<Entry> {
 fn page_entries(view: &View, list: &mut Vec<Entry>) {
     let page = &view.page;
     for button in &page.buttons {
+        let label = match &button.section {
+            Some(section) => format!("{section}: {}", button.label),
+            None => button.label.clone(),
+        };
         add(
             list,
-            button.label.clone(),
+            label,
             hints::KIND_ACTION,
             Command::Act(button.action.clone()),
         );
