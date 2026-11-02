@@ -437,7 +437,10 @@ impl Screen for ImportKey {
                 self.key = Secret::new(value);
                 self.error = None;
             }
-            Action::Pick(Pick::Family(family)) => self.family = *family,
+            Action::Pick(Pick::Family(family)) => {
+                self.family = *family;
+                self.error = None;
+            }
             Action::Submit => {
                 match bahaa_engine::check_key(self.key.expose(), chain(self.family)) {
                     Err(err) => self.error = Some(text::sentence(&err.to_string())),
@@ -475,6 +478,7 @@ impl Screen for ImportKey {
         let families = [
             (Family::Evm, text::EVM_NETWORKS),
             (Family::Tron, text::TRON),
+            (Family::Ton, text::TON),
         ]
         .into_iter()
         .map(|(family, label)| {
@@ -508,6 +512,7 @@ fn chain(family: Family) -> ChainFamily {
     match family {
         Family::Evm => ChainFamily::Evm,
         Family::Tron => ChainFamily::Tron,
+        Family::Ton => ChainFamily::Ton,
     }
 }
 

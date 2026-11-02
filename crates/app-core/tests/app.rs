@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_app_core::{
-    Action, App, AppConfig, ChainFamily, Channel, Currency, Direction, EngineConfig, Field, Go,
-    KdfParams, Kind, Level, Page, PageId, Pick, Registry, Request, Tab, Toggle, Tone, Value, View,
-    Words,
+    Action, App, AppConfig, ChainFamily, Channel, Currency, Direction, EngineConfig, Family, Field,
+    Go, KdfParams, Kind, Level, Page, PageId, Pick, Registry, Request, Tab, Toggle, Tone, Value,
+    View, Words,
 };
 use serde_json::{Value as Json, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -648,6 +648,57 @@ async fn a_private_key_is_checked_while_typing_and_becomes_a_one_account_wallet(
             .iter()
             .any(|button| button.label == "Add account")
     );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_ton_private_key_is_checked_as_ton_and_keeps_the_contract_switch() {
+    let scratch = Scratch::new();
+    let registry = offline(|family| family != ChainFamily::Ton);
+    let (app, _requests, mut view) = start_with(&scratch, registry, false);
+    at(&mut view, PageId::Welcome).await;
+    app.act(Action::Pick(Pick::ImportKey));
+    at(&mut view, PageId::ImportKey).await;
+    app.act(Action::Type(
+        Field::Key,
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60\
+         d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+            .to_owned(),
+    ));
+    until(&mut view, |current| {
+        hint(current, Field::Key)
+            == Some((
+                Level::Error,
+                "A private key is 64 hex characters".to_owned(),
+            ))
+    })
+    .await;
+    app.act(Action::Pick(Pick::Family(Family::Ton)));
+    until(&mut view, |current| {
+        hint(current, Field::Key) == Some((Level::Success, "A valid private key".to_owned()))
+    })
+    .await;
+    app.act(Action::Submit);
+    at(&mut view, PageId::NewPassword).await;
+    set_password(&app);
+    at(&mut view, PageId::Portfolio).await;
+    app.act(Action::Go(Go::Tab(Tab::Settings)));
+    let settings = until(&mut view, |current| {
+        current.page.id == PageId::Settings
+            && current
+                .page
+                .table
+                .as_ref()
+                .is_some_and(|table| !table.rows.is_empty())
+    })
+    .await;
+    let row = &settings.page.table.as_ref().unwrap().rows[0];
+    assert_eq!(row.cells[1].text, "Private key, TON");
+    app.act(row.open.clone().unwrap());
+    let wallet = at(&mut view, PageId::Wallet).await;
+    let contract = wallet.page.groups().next().unwrap();
+    assert_eq!(contract.label, "TON contract");
+    assert!(contract.choices[0].selected);
     app.shutdown().await.unwrap();
 }
 

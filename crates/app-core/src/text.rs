@@ -20,11 +20,12 @@ pub(crate) const CREATE_12: &str = "Create a wallet (12 words)";
 pub(crate) const CREATE_24: &str = "Create a wallet (24 words)";
 pub(crate) const IMPORT: &str = "Import a wallet";
 pub(crate) const IMPORT_KEY: &str = "Import a private key";
-pub(crate) const IMPORT_KEY_TEXT: &str = "Paste a private key exported from another wallet. One key is one account, on EVM networks or on Tron.";
+pub(crate) const IMPORT_KEY_TEXT: &str = "Paste a private key exported from another wallet. One key is one account, on EVM networks, Tron or TON.";
 pub(crate) const PRIVATE_KEY: &str = "Private key";
 pub(crate) const USE_FOR: &str = "Use it for";
 pub(crate) const EVM_NETWORKS: &str = "EVM networks";
 pub(crate) const TRON: &str = "Tron";
+pub(crate) const TON: &str = "TON";
 pub(crate) const KEY_OK: &str = "A valid private key";
 pub(crate) const SET_PASSWORD: &str = "Set a password";
 pub(crate) const SET_PASSWORD_TEXT: &str =
@@ -434,8 +435,9 @@ pub(crate) fn channel(channel: Channel) -> &'static str {
 
 pub(crate) fn key_wallet(family: ChainFamily) -> String {
     match family {
+        ChainFamily::Evm => format!("{PRIVATE_KEY}, {EVM_NETWORKS}"),
         ChainFamily::Tron => format!("{PRIVATE_KEY}, {TRON}"),
-        ChainFamily::Evm | ChainFamily::Ton => format!("{PRIVATE_KEY}, {EVM_NETWORKS}"),
+        ChainFamily::Ton => format!("{PRIVATE_KEY}, {TON}"),
     }
 }
 

@@ -127,6 +127,7 @@ pub enum Family {
     #[default]
     Evm,
     Tron,
+    Ton,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
