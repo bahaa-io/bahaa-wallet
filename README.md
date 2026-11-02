@@ -63,7 +63,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 
 ## Features
 
-- **Wallets:** create or import 12- and 24-word phrases, TON's own phrases, or a single private key for EVM networks or Tron, with several wallets and accounts.
+- **Wallets:** create or import 12- and 24-word phrases, TON's own phrases, or a single private key for any network, with several wallets and accounts.
 - **Balances:** coins and tokens on every network, valued in USD, EUR or IRT.
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
 - **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks.
