@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use bahaa_crypto::{DerivationPath, Mnemonic};
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::sec1::ToSec1Point;
 use sha3::{Digest, Keccak256};
 
 const HARDHAT: &str = "test test test test test test test test test test test junk";
@@ -15,7 +15,7 @@ fn path(text: &str) -> DerivationPath {
 fn evm_address(phrase: &str, index: u32) -> String {
     let seed = Mnemonic::parse(phrase).unwrap().to_seed("");
     let key = bahaa_crypto::secp256k1(&seed, &path(&format!("m/44'/60'/0'/0/{index}"))).unwrap();
-    let point = key.public_key().to_encoded_point(false);
+    let point = key.public_key().to_sec1_point(false);
     let hash = Keccak256::digest(&point.as_bytes()[1..]);
     hash[12..].iter().fold(String::new(), |mut out, byte| {
         let _ = write!(out, "{byte:02x}");

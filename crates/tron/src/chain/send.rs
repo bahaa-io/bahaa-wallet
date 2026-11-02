@@ -432,7 +432,7 @@ mod tests {
             panic!("{refused:?}");
         };
         assert!(reason.contains(&named), "{reason}");
-        let stranger = k256::SecretKey::from_slice(&[0x42; 32]).unwrap();
+        let stranger = bahaa_crypto::SecretKey::from_slice(&[0x42; 32]).unwrap();
         let other = tx::raw(tx::coins(&from, &[0x27; 20], 1_001), &anchor, 0, None).unwrap();
         let (forged, id) = tx::sign(other, &stranger).unwrap();
         let forged = Signed {

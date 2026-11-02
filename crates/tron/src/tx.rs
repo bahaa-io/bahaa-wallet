@@ -1,6 +1,6 @@
 use bahaa_chain::{ChainError, MAX_MEMO, memo_text, parse_transfer};
+use bahaa_crypto::{SIGNATURE_BYTES, SecretKey};
 use bahaa_types::is_plain_text;
-use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
 use prost::Message;
 use ruint::aliases::U256;
 use sha2::{Digest as _, Sha256};
@@ -119,13 +119,12 @@ pub(crate) fn txid(raw: &Raw) -> [u8; 32] {
     Sha256::digest(raw.encode_to_vec()).into()
 }
 
-pub(crate) fn sign(raw: Raw, key: &k256::SecretKey) -> Result<(Vec<u8>, [u8; 32]), ChainError> {
+pub(crate) fn sign(raw: Raw, key: &SecretKey) -> Result<(Vec<u8>, [u8; 32]), ChainError> {
     let id = txid(&raw);
-    let (signature, recovery) = SigningKey::from(key)
-        .sign_prehash_recoverable(&id)
+    let (signature, odd) = bahaa_crypto::secp256k1_sign(key, &id)
         .map_err(|_| ChainError::Invalid("signing failed"))?;
-    let mut bytes = signature.to_bytes().to_vec();
-    bytes.push(27 + recovery.to_byte());
+    let mut bytes = signature.to_vec();
+    bytes.push(27 + u8::from(odd));
     let tx = Transaction {
         raw_data: Some(raw),
         signature: vec![bytes],
@@ -233,23 +232,13 @@ fn exact<T: Message + Default>(bytes: &[u8]) -> Option<T> {
 }
 
 fn recover(id: &[u8; 32], signature: &[u8]) -> Option<[u8; 20]> {
-    let (body, [v]) = signature.split_at_checked(SIGNATURE_LEN - 1)? else {
-        return None;
-    };
-    let recovery = match v {
-        0 | 27 => 0,
-        1 | 28 => 1,
+    let (body, v) = signature.split_first_chunk::<SIGNATURE_BYTES>()?;
+    let odd = match v {
+        [0 | 27] => false,
+        [1 | 28] => true,
         _ => return None,
     };
-    let signature = Signature::from_slice(body).ok()?;
-    if signature.normalize_s().is_some() {
-        return None;
-    }
-    let key = VerifyingKey::recover_from_prehash(id, &signature, RecoveryId::from_byte(recovery)?)
-        .ok()?;
-    Some(bahaa_crypto::secp256k1_address(&k256::PublicKey::from(
-        &key,
-    )))
+    bahaa_crypto::secp256k1_recover(id, body, odd)
 }
 
 fn tron(address: &[u8; 20]) -> Vec<u8> {
@@ -272,8 +261,8 @@ mod tests {
     use bahaa_chain::transfer_data;
     use bahaa_types::hex;
 
-    fn key(byte: u8) -> k256::SecretKey {
-        k256::SecretKey::from_slice(&[byte; 32]).unwrap()
+    fn key(byte: u8) -> SecretKey {
+        SecretKey::from_slice(&[byte; 32]).unwrap()
     }
 
     fn anchor() -> Anchor {
@@ -287,7 +276,7 @@ mod tests {
         }
     }
 
-    fn owner(key: &k256::SecretKey) -> [u8; 20] {
+    fn owner(key: &SecretKey) -> [u8; 20] {
         bahaa_crypto::secp256k1_address(&key.public_key())
     }
 
@@ -379,8 +368,7 @@ mod tests {
             )
             .unwrap();
             let tx = Transaction::decode(bytes.as_slice()).unwrap();
-            let signature = Signature::from_slice(&tx.signature[0][..64]).unwrap();
-            assert!(signature.normalize_s().is_none(), "key {byte}");
+            assert!(parse(&bytes).is_ok(), "key {byte}");
             assert!(matches!(tx.signature[0][64], 27 | 28));
         }
         let key = key(5);

@@ -340,7 +340,7 @@ pub fn derive(seed: &Seed, account: u32) -> Result<Address, ChainError> {
     )))
 }
 
-fn key(seed: &Seed, account: u32) -> Result<k256::SecretKey, ChainError> {
+fn key(seed: &Seed, account: u32) -> Result<bahaa_crypto::SecretKey, ChainError> {
     let path: DerivationPath = format!("m/44'/195'/0'/0/{account}")
         .parse()
         .map_err(|_| ChainError::Invalid("account index out of range"))?;

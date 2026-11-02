@@ -1,25 +1,18 @@
-use alloy_consensus::transaction::SignerRecoverable;
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
 use alloy_eips::eip2718::{Decodable2718, Encodable2718};
 use alloy_primitives::Signature;
 use bahaa_chain::ChainError;
-use k256::ecdsa::SigningKey;
+use bahaa_crypto::SecretKey;
 
 pub(crate) struct Parsed {
     pub from: [u8; 20],
     pub tx: TxEip1559,
 }
 
-pub(crate) fn sign(
-    tx: TxEip1559,
-    key: &k256::SecretKey,
-) -> Result<(Vec<u8>, [u8; 32]), ChainError> {
-    let signing = SigningKey::from(key);
-    let hash = tx.signature_hash();
-    let (signature, recovery) = signing
-        .sign_prehash_recoverable(hash.as_slice())
+pub(crate) fn sign(tx: TxEip1559, key: &SecretKey) -> Result<(Vec<u8>, [u8; 32]), ChainError> {
+    let (signature, odd) = bahaa_crypto::secp256k1_sign(key, &tx.signature_hash().0)
         .map_err(|_| ChainError::Invalid("signing failed"))?;
-    let signature = Signature::from_signature_and_parity(signature, recovery.is_y_odd());
+    let signature = Signature::from_bytes_and_parity(&signature, odd);
     let envelope = TxEnvelope::from(tx.into_signed(signature));
     Ok((envelope.encoded_2718(), envelope.tx_hash().0))
 }
@@ -31,9 +24,12 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, ChainError> {
         return Err(invalid());
     }
     let signed = envelope.as_eip1559().ok_or(invalid())?;
-    let from = envelope.recover_signer().map_err(|_| invalid())?;
+    let [signature @ .., parity] = signed.signature().as_rsy();
+    let from =
+        bahaa_crypto::secp256k1_recover(&signed.tx().signature_hash().0, &signature, parity == 1)
+            .ok_or_else(invalid)?;
     Ok(Parsed {
-        from: from.into_array(),
+        from,
         tx: signed.tx().clone(),
     })
 }
@@ -46,8 +42,8 @@ mod tests {
     use bahaa_chain::{parse_transfer, transfer_data};
     use ruint::aliases::U256;
 
-    fn key(byte: u8) -> k256::SecretKey {
-        k256::SecretKey::from_slice(&[byte; 32]).unwrap()
+    fn key(byte: u8) -> SecretKey {
+        SecretKey::from_slice(&[byte; 32]).unwrap()
     }
 
     fn sample(nonce: u64) -> TxEip1559 {

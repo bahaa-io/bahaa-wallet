@@ -1,7 +1,7 @@
 use ed25519_dalek::SigningKey;
 use hmac::{Hmac, Mac};
 use k256::elliptic_curve::PrimeField;
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::sec1::ToSec1Point;
 use k256::{FieldBytes, PublicKey, Scalar, SecretKey};
 use sha2::Sha512;
 use sha3::{Digest, Keccak256};
@@ -42,7 +42,7 @@ pub fn secp256k1(seed: &Seed, path: &DerivationPath) -> Result<SecretKey, Derive
 }
 
 pub fn secp256k1_address(key: &PublicKey) -> [u8; 20] {
-    let hash = Keccak256::digest(&key.to_encoded_point(false).as_bytes()[1..]);
+    let hash = Keccak256::digest(&key.to_sec1_point(false).as_bytes()[1..]);
     let mut out = [0u8; 20];
     out.copy_from_slice(&hash[12..]);
     out
@@ -82,7 +82,7 @@ fn secp256k1_node(seed: &[u8], path: &DerivationPath) -> Result<Node, DeriveErro
             let public = SecretKey::from_bytes(&FieldBytes::from(*node.key))
                 .map_err(|_| DeriveError::InvalidKey)?
                 .public_key()
-                .to_encoded_point(true);
+                .to_sec1_point(true);
             Zeroizing::new(public.as_bytes().to_vec())
         } else {
             let mut prefix = Zeroizing::new(Vec::with_capacity(33));
