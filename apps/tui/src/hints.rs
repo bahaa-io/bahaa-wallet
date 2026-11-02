@@ -11,6 +11,7 @@ pub(crate) const LOGO: [&str; 3] = [
     "▀▀  ▀ ▀ ▀ ▀ ▀ ▀ ▀ ▀",
 ];
 pub(crate) const LOGO_WORD: &str = "w a l l e t";
+pub(crate) const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 pub(crate) const ABOUT: &str = "A non-custodial wallet for EVM networks, Tron and TON";
 pub(crate) const DATA_HELP: &str =
     "Folder for the wallet's files (default: the system's app data folder)";

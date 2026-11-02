@@ -169,7 +169,7 @@ fn status(buffer: &mut Buffer, area: Rect, start: u16, banner: &Banner, ui: &mut
 
 fn footer(buffer: &mut Buffer, area: Rect, view: &View, ui: &Ui) {
     buffer.set_style(area, theme::panel());
-    let right = if let Some(notice) = ui.notice {
+    let status = if let Some(notice) = ui.notice {
         Span::styled(
             format!("{} {notice} ", theme::icon(Level::Warning)),
             theme::level(Level::Warning),
@@ -188,7 +188,14 @@ fn footer(buffer: &mut Buffer, area: Rect, view: &View, ui: &Ui) {
     } else {
         Span::raw("")
     };
-    let right_width = wrap::width(&right.content);
+    let mut right = Line::from(status);
+    if !matches!(view.page.id, PageId::Starting | PageId::Unlock) {
+        right.push_span(Span::styled(
+            format!(" {} ", hints::VERSION),
+            theme::muted(),
+        ));
+    }
+    let right_width = cells(right.width());
     let room = area.width.saturating_sub(right_width + 2);
     let mut spans = vec![Span::raw(" ")];
     let mut used = 1;
@@ -204,7 +211,7 @@ fn footer(buffer: &mut Buffer, area: Rect, view: &View, ui: &Ui) {
         spans.push(Span::styled(text, theme::muted()));
     }
     buffer.set_line(area.x, area.y, &Line::from(spans), room);
-    buffer.set_span(
+    buffer.set_line(
         area.right().saturating_sub(right_width),
         area.y,
         &right,
