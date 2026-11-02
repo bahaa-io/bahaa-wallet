@@ -477,16 +477,7 @@ fn hint(view: &View, field: Field) -> Option<(Level, String)> {
 async fn sending_starts_from_a_list_and_checks_while_typing() {
     let scratch = Scratch::new();
     let node = bsc_node().await;
-    let mut registry = offline(|family| family == ChainFamily::Evm);
-    let mut networks: Vec<_> = registry.networks().cloned().collect();
-    for network in &mut networks {
-        if network.id.as_str() == "bsc" {
-            network.endpoints.truncate(1);
-            network.endpoints[0].url = node.parse().unwrap();
-        }
-    }
-    registry = Registry::with_networks(networks).unwrap();
-    let (app, _requests, mut view) = imported_on(&scratch, registry, false).await;
+    let (app, _requests, mut view) = imported_on(&scratch, bsc_registry(&node), false).await;
     app.act(Action::Go(Go::Tab(Tab::Send)));
     let list = until(&mut view, |current| {
         current.page.id == PageId::SendFrom
@@ -648,6 +639,152 @@ async fn a_private_key_is_checked_while_typing_and_becomes_a_one_account_wallet(
             .iter()
             .any(|button| button.label == "Add account")
     );
+    app.shutdown().await.unwrap();
+}
+
+fn bsc_registry(node: &str) -> Registry {
+    let networks: Vec<_> = offline(|family| family == ChainFamily::Evm)
+        .networks()
+        .cloned()
+        .map(|mut network| {
+            if network.id.as_str() == "bsc" {
+                network.endpoints.truncate(1);
+                network.endpoints[0].url = node.parse().unwrap();
+            }
+            network
+        })
+        .collect();
+    Registry::with_networks(networks).unwrap()
+}
+
+fn counted_switch(page: &Page) -> Option<bool> {
+    page.groups()
+        .find(|group| group.label == "Portfolio")
+        .map(|group| group.choices[0].selected)
+}
+
+async fn watching(scratch: &Scratch) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
+    let registry = bsc_registry(&bsc_node().await);
+    let (app, requests, mut view) = start_with(scratch, registry, false);
+    at(&mut view, PageId::Welcome).await;
+    app.act(Action::Pick(Pick::Watch));
+    let page = at(&mut view, PageId::Watch).await;
+    assert_eq!(counted_switch(&page.page), Some(true));
+    app.act(Action::Type(Field::Address, "hello".to_owned()));
+    until(&mut view, |current| {
+        hint(current, Field::Address)
+            == Some((
+                Level::Error,
+                "This is not an address on EVM networks, Tron or TON".to_owned(),
+            ))
+    })
+    .await;
+    app.act(Action::Type(Field::Address, FRIEND.to_owned()));
+    until(&mut view, |current| {
+        hint(current, Field::Address)
+            == Some((Level::Success, "An address on EVM networks".to_owned()))
+    })
+    .await;
+    app.act(Action::Submit);
+    at(&mut view, PageId::NewPassword).await;
+    set_password(&app);
+    let home = at(&mut view, PageId::Portfolio).await;
+    assert!(
+        home.toasts
+            .iter()
+            .any(|toast| toast.text == "Watching the address")
+    );
+    (app, requests, view)
+}
+
+async fn watch_wallet_page(app: &App, view: &mut watch::Receiver<Arc<View>>) -> Arc<View> {
+    app.act(Action::Go(Go::Tab(Tab::Settings)));
+    let settings = until(view, |current| {
+        current.page.id == PageId::Settings
+            && current
+                .page
+                .table
+                .as_ref()
+                .is_some_and(|table| !table.rows.is_empty())
+    })
+    .await;
+    let row = &settings.page.table.as_ref().unwrap().rows[0];
+    assert_eq!(row.cells[1].text, "Watch only, EVM networks");
+    app.act(row.open.clone().unwrap());
+    at(view, PageId::Wallet).await
+}
+
+#[tokio::test]
+async fn a_watched_address_shows_its_balance_but_is_never_offered_for_sending() {
+    let scratch = Scratch::new();
+    let (app, _requests, mut view) = watching(&scratch).await;
+    until(&mut view, |current| {
+        current
+            .page
+            .table
+            .as_ref()
+            .is_some_and(|table| !table.rows.is_empty())
+    })
+    .await;
+    app.act(Action::Go(Go::Tab(Tab::Send)));
+    let send = at(&mut view, PageId::SendFrom).await;
+    assert!(
+        send.page
+            .table
+            .as_ref()
+            .is_none_or(|table| table.rows.is_empty())
+    );
+    let wallet = watch_wallet_page(&app, &mut view).await;
+    assert_eq!(counted_switch(&wallet.page), Some(true));
+    assert!(
+        !wallet
+            .page
+            .buttons
+            .iter()
+            .any(|button| button.label.starts_with("Show"))
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_watched_wallet_left_out_of_the_total_is_one_pick_away() {
+    let scratch = Scratch::new();
+    let (app, _requests, mut view) = watching(&scratch).await;
+    watch_wallet_page(&app, &mut view).await;
+    app.act(Action::Toggle(Toggle::Counted));
+    until(&mut view, |current| {
+        current.page.id == PageId::Wallet && counted_switch(&current.page) == Some(false)
+    })
+    .await;
+    app.act(Action::Go(Go::Tab(Tab::Portfolio)));
+    let left_out = until(&mut view, |current| {
+        current.page.id == PageId::Portfolio && !current.page.notes.is_empty()
+    })
+    .await;
+    assert!(
+        left_out
+            .page
+            .table
+            .as_ref()
+            .is_some_and(|table| table.rows.is_empty())
+    );
+    assert!(
+        left_out.page.notes[0]
+            .text
+            .starts_with("1 watch-only wallet")
+    );
+    assert!(left_out.page.groups().any(|group| group.label == "Wallets"));
+    app.act(Action::Pick(Pick::Wallet(Some(0))));
+    until(&mut view, |current| {
+        current.page.id == PageId::Portfolio
+            && current.page.notes.is_empty()
+            && current
+                .page
+                .table
+                .as_ref()
+                .is_some_and(|table| !table.rows.is_empty())
+    })
+    .await;
     app.shutdown().await.unwrap();
 }
 

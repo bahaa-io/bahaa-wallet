@@ -6,12 +6,12 @@ use ruint::aliases::U256;
 use super::receive::Receive;
 use super::send::{Send, Source};
 use super::{
-    Screen, asset_cell, button, cell, choice, group, line, network_cell, network_line,
+    Screen, asset_cell, button, cell, choice, group, line, network_cell, network_line, note,
     picked_wallet, wallet_group,
 };
 use crate::action::{Action, Go, Pick, Toggle};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Item, Page, PageId, Row, Share, Table, Tone};
+use crate::view::{Item, Level, Note, Page, PageId, Row, Share, Table, Tone};
 use crate::{format, text};
 
 const SHARES: usize = 5;
@@ -59,6 +59,19 @@ impl Portfolio {
                 .then_with(|| ctx.symbol(&a.asset).cmp(&ctx.symbol(&b.asset)))
         });
         list
+    }
+
+    fn left_out(&self, ctx: &Ctx<'_>) -> Vec<Note> {
+        let count = ctx
+            .data
+            .wallets
+            .iter()
+            .filter(|wallet| !wallet.counted)
+            .count();
+        if self.filter.is_some() || count == 0 {
+            return Vec::new();
+        }
+        vec![note(Level::Info, text::left_out(count))]
     }
 }
 
@@ -133,6 +146,7 @@ impl Screen for Portfolio {
                 rows,
                 empty: text::NO_ASSETS.to_owned(),
             }),
+            notes: self.left_out(ctx),
             ..Page::default()
         }
     }
@@ -149,16 +163,22 @@ impl Asset {
             .filter(|holding| holding.asset == self.asset)
             .collect()
     }
+
+    fn spendable<'a>(&self, ctx: &'a Ctx<'_>) -> Vec<&'a Holding> {
+        self.holdings(ctx)
+            .into_iter()
+            .filter(|holding| !ctx.watch_only(holding.wallet))
+            .collect()
+    }
 }
 
 impl Screen for Asset {
     fn act(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
-        let first = self
-            .holdings(ctx)
-            .into_iter()
-            .max_by(|a, b| a.amount.partial_cmp(&b.amount).unwrap_or(Ordering::Equal));
-        match (action, first) {
-            (Action::Go(Go::SendAsset), Some(holding)) => {
+        match action {
+            Action::Go(Go::SendAsset) => {
+                let Some(holding) = largest(self.spendable(ctx)) else {
+                    return Reply::default();
+                };
                 let source = Source {
                     wallet: holding.wallet,
                     address: holding.address,
@@ -166,9 +186,10 @@ impl Screen for Asset {
                 };
                 Reply::nav(Nav::Push(Box::new(Send::new(Some(source)))))
             }
-            (Action::Go(Go::ReceiveAsset), Some(holding)) => {
-                Reply::nav(Nav::Push(Box::new(Receive::for_holding(holding))))
-            }
+            Action::Go(Go::ReceiveAsset) => largest(self.holdings(ctx))
+                .map_or_else(Reply::default, |holding| {
+                    Reply::nav(Nav::Push(Box::new(Receive::for_holding(holding))))
+                }),
             _ => Reply::default(),
         }
     }
@@ -229,21 +250,29 @@ impl Screen for Asset {
                 rows,
                 empty: text::NO_ASSETS.to_owned(),
             }),
-            buttons: vec![
-                button(text::SEND, Action::Go(Go::SendAsset)),
-                button(text::RECEIVE, Action::Go(Go::ReceiveAsset)),
-            ],
+            buttons: (!self.spendable(ctx).is_empty())
+                .then(|| button(text::SEND, Action::Go(Go::SendAsset)))
+                .into_iter()
+                .chain([button(text::RECEIVE, Action::Go(Go::ReceiveAsset))])
+                .collect(),
             ..Page::default()
         }
     }
 }
 
+fn largest(holdings: Vec<&Holding>) -> Option<&Holding> {
+    holdings
+        .into_iter()
+        .max_by(|a, b| a.amount.partial_cmp(&b.amount).unwrap_or(Ordering::Equal))
+}
+
 fn held<'a>(ctx: &'a Ctx<'_>, filter: Option<WalletId>) -> impl Iterator<Item = &'a Holding> {
-    ctx.data
-        .portfolio
-        .holdings
-        .iter()
-        .filter(move |holding| filter.is_none_or(|wallet| holding.wallet == wallet))
+    ctx.data.portfolio.holdings.iter().filter(move |holding| {
+        filter.map_or_else(
+            || ctx.counted(holding.wallet),
+            |wallet| holding.wallet == wallet,
+        )
+    })
 }
 
 fn shares(ctx: &Ctx<'_>, summaries: &[Summary], total: Amount) -> Vec<Share> {

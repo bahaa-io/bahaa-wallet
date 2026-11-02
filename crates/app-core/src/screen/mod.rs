@@ -17,7 +17,7 @@ use bahaa_engine::{
     WalletId, WalletInfo, WalletKind, WordCount,
 };
 
-use crate::action::{Action, Field, Pick, Tab};
+use crate::action::{Action, Field, Pick, Tab, Toggle};
 use crate::call::Outcome;
 use crate::core::{Ctx, Reply};
 use crate::text;
@@ -105,6 +105,18 @@ pub(crate) fn sections(list: impl IntoIterator<Item = (&'static str, Vec<Button>
         .collect()
 }
 
+pub(crate) fn toggle(label: &str, choice_label: &str, toggle: Toggle, on: bool) -> Item {
+    group(
+        label,
+        vec![choice(choice_label, Action::Toggle(toggle), on)],
+    )
+    .into()
+}
+
+pub(crate) fn counted_toggle(on: bool) -> Item {
+    toggle(text::PORTFOLIO, text::COUNT_IN_TOTAL, Toggle::Counted, on)
+}
+
 pub(crate) fn choice(label: impl Into<String>, action: Action, selected: bool) -> Choice {
     toned_choice(label, action, selected, Tone::Plain)
 }
@@ -175,7 +187,8 @@ pub(crate) fn asset_cell(ctx: &Ctx<'_>, asset: &AssetId) -> Cell {
 }
 
 pub(crate) fn wallet_group(ctx: &Ctx<'_>, filter: Option<WalletId>) -> Option<Group> {
-    if ctx.data.wallets.len() < 2 {
+    let wallets = &ctx.data.wallets;
+    if wallets.len() < 2 && wallets.iter().all(|wallet| wallet.counted) {
         return None;
     }
     let all = choice(
@@ -284,6 +297,7 @@ pub(crate) fn wallet_kind(wallet: &WalletInfo) -> String {
         WalletKind::Bip39 => text::multi_chain(wallet.words.map_or(0, words), wallet.passphrase),
         WalletKind::Ton => text::ton_wallet(wallet.ton.unwrap_or(TonContract::W5)),
         WalletKind::Key(family) => text::key_wallet(family),
+        WalletKind::Watch(family) => text::watch_wallet(family),
     }
 }
 

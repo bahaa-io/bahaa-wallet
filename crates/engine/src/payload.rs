@@ -1,10 +1,10 @@
 use bahaa_crypto::{ExposeSecret, KEY_BYTES, Mnemonic, SecretString, TON_WORDS, TonMnemonic};
-use bahaa_types::{ChainFamily, TonContract};
+use bahaa_types::{Address, ChainFamily, TonContract};
 use zeroize::Zeroizing;
 
 use crate::KeyringError;
 
-const VERSION: u8 = 5;
+const VERSION: u8 = 6;
 const FIRST_VERSION: u8 = 1;
 const CONTRACT_VERSION: u8 = 3;
 const MAX_WALLETS: usize = 64;
@@ -12,9 +12,10 @@ const MAX_PASSPHRASE: usize = 1024;
 const BIP39: u8 = 0;
 const TON: u8 = 1;
 const KEY: u8 = 2;
-const KEY_EVM: u8 = 0;
-const KEY_TRON: u8 = 1;
-const KEY_TON: u8 = 2;
+const WATCH: u8 = 3;
+const FAMILY_EVM: u8 = 0;
+const FAMILY_TRON: u8 = 1;
+const FAMILY_TON: u8 = 2;
 const W5: u8 = 0;
 const V4R2: u8 = 1;
 
@@ -36,6 +37,10 @@ pub enum Phrase {
         key: Zeroizing<[u8; KEY_BYTES]>,
         contract: TonContract,
     },
+    Watch {
+        address: Address,
+        counted: bool,
+    },
 }
 
 impl Phrase {
@@ -44,7 +49,7 @@ impl Phrase {
             Self::Bip39 { contract, .. }
             | Self::Ton { contract, .. }
             | Self::TonKey { contract, .. } => Some(*contract),
-            Self::Key { .. } => None,
+            Self::Key { .. } | Self::Watch { .. } => None,
         }
     }
 
@@ -53,7 +58,28 @@ impl Phrase {
             Self::Bip39 { contract, .. }
             | Self::Ton { contract, .. }
             | Self::TonKey { contract, .. } => Some(contract),
-            Self::Key { .. } => None,
+            Self::Key { .. } | Self::Watch { .. } => None,
+        }
+    }
+
+    pub fn watched(&self) -> Option<Address> {
+        match self {
+            Self::Watch { address, .. } => Some(*address),
+            _ => None,
+        }
+    }
+
+    pub fn counted(&self) -> bool {
+        match self {
+            Self::Watch { counted, .. } => *counted,
+            _ => true,
+        }
+    }
+
+    pub fn counted_mut(&mut self) -> Option<&mut bool> {
+        match self {
+            Self::Watch { counted, .. } => Some(counted),
+            _ => None,
         }
     }
 }
@@ -97,16 +123,35 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
             Phrase::Key { key, family } => {
                 out.push(KEY);
                 out.push(match family {
-                    ChainFamily::Evm => KEY_EVM,
-                    ChainFamily::Tron => KEY_TRON,
+                    ChainFamily::Evm => FAMILY_EVM,
+                    ChainFamily::Tron => FAMILY_TRON,
                     ChainFamily::Ton => return Err(KeyringError::Damaged),
                 });
                 out.extend_from_slice(&**key);
             }
             Phrase::TonKey { key, .. } => {
                 out.push(KEY);
-                out.push(KEY_TON);
+                out.push(FAMILY_TON);
                 out.extend_from_slice(&**key);
+            }
+            Phrase::Watch { address, counted } => {
+                out.push(WATCH);
+                match address {
+                    Address::Evm(bytes) => {
+                        out.push(FAMILY_EVM);
+                        out.extend_from_slice(bytes);
+                    }
+                    Address::Tron(bytes) => {
+                        out.push(FAMILY_TRON);
+                        out.extend_from_slice(bytes);
+                    }
+                    Address::Ton { workchain, hash } => {
+                        out.push(FAMILY_TON);
+                        out.extend_from_slice(&workchain.to_be_bytes());
+                        out.extend_from_slice(hash);
+                    }
+                }
+                out.push(u8::from(*counted));
             }
         }
         if let Some(contract) = entry.phrase.contract() {
@@ -160,6 +205,7 @@ pub fn decode(bytes: &[u8]) -> Result<Contents, KeyringError> {
             BIP39 => read_bip39(&mut reader, version)?,
             TON => read_ton(&mut reader)?,
             KEY => read_key(&mut reader)?,
+            WATCH => read_watch(&mut reader)?,
             _ => return Err(KeyringError::Damaged),
         };
         if id >= next_id || entries.iter().any(|entry: &Entry| entry.id == id) {
@@ -214,20 +260,38 @@ fn read_key(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
     let mut key = Zeroizing::new([0u8; KEY_BYTES]);
     key.copy_from_slice(reader.take(KEY_BYTES)?);
     Ok(match family {
-        KEY_EVM => Phrase::Key {
+        FAMILY_EVM => Phrase::Key {
             key,
             family: ChainFamily::Evm,
         },
-        KEY_TRON => Phrase::Key {
+        FAMILY_TRON => Phrase::Key {
             key,
             family: ChainFamily::Tron,
         },
-        KEY_TON => Phrase::TonKey {
+        FAMILY_TON => Phrase::TonKey {
             key,
             contract: read_contract(reader)?,
         },
         _ => return Err(KeyringError::Damaged),
     })
+}
+
+fn read_watch(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
+    let address = match reader.take(1)?[0] {
+        FAMILY_EVM => Address::Evm(reader.array()?),
+        FAMILY_TRON => Address::Tron(reader.array()?),
+        FAMILY_TON => Address::Ton {
+            workchain: i8::from_be_bytes(reader.array()?),
+            hash: reader.array()?,
+        },
+        _ => return Err(KeyringError::Damaged),
+    };
+    let counted = match reader.take(1)?[0] {
+        0 => false,
+        1 => true,
+        _ => return Err(KeyringError::Damaged),
+    };
+    Ok(Phrase::Watch { address, counted })
 }
 
 fn read_contract(reader: &mut Reader<'_>) -> Result<TonContract, KeyringError> {
@@ -369,6 +433,41 @@ mod tests {
             let mut unknown = encoded.to_vec();
             unknown[1 + 4 + 2 + 4 + 1] = 3;
             assert!(matches!(decode(&unknown), Err(KeyringError::Damaged)));
+        }
+    }
+
+    #[test]
+    fn watched_addresses_round_trip_with_their_switch() {
+        let addresses = [
+            Address::Evm([1; 20]),
+            Address::Tron([2; 20]),
+            Address::Ton {
+                workchain: -1,
+                hash: [3; 32],
+            },
+        ];
+        for (address, counted) in addresses.into_iter().zip([true, false, true]) {
+            let contents = Contents {
+                next_id: 2,
+                entries: vec![Entry {
+                    id: 1,
+                    phrase: Phrase::Watch { address, counted },
+                }],
+            };
+            let encoded = encode(&contents).unwrap();
+            let decoded = decode(&encoded).unwrap();
+            assert!(matches!(
+                &decoded.entries[0].phrase,
+                Phrase::Watch { address: read, counted: kept } if *read == address && *kept == counted
+            ));
+            assert_eq!(decoded.entries[0].phrase.contract(), None);
+            let mut switch = encoded.to_vec();
+            let last = switch.len() - 1;
+            switch[last] = 2;
+            assert!(matches!(decode(&switch), Err(KeyringError::Damaged)));
+            let mut family = encoded.to_vec();
+            family[1 + 4 + 2 + 4 + 1] = 3;
+            assert!(matches!(decode(&family), Err(KeyringError::Damaged)));
         }
     }
 

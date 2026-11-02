@@ -77,6 +77,7 @@ pub enum Pick {
     Create(Words),
     Import,
     ImportKey,
+    Watch,
     Kind(Kind),
     Family(Family),
     Wallet(Option<usize>),
@@ -106,6 +107,7 @@ pub enum Toggle {
     HideBalances,
     Developer,
     Testnets,
+    Counted,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

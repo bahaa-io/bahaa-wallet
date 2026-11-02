@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use bahaa_crypto::{ExposeSecret, Mnemonic, SeedKind, TonPhraseError, WordCount};
 use bahaa_engine::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletKind};
-use bahaa_types::{ChainFamily, TonContract};
+use bahaa_types::{Address, ChainFamily, TonContract};
 use bahaa_vault::{KdfParams, Vault};
 
 const FAST: KdfParams = KdfParams {
@@ -439,6 +439,57 @@ fn a_private_key_is_one_account_on_the_family_it_was_imported_for() {
             &key[2..]
         );
     }
+}
+
+#[test]
+fn a_watched_address_has_no_keys_and_keeps_its_switch() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    let phrase = keyring.import(HARDHAT, "").unwrap();
+    let address = Address::Ton {
+        workchain: 0,
+        hash: [7; 32],
+    };
+    let watched = keyring.watch(address, true).unwrap();
+    assert_eq!(
+        keyring.watch(address, false).unwrap_err(),
+        KeyringError::Duplicate
+    );
+    keyring.watch(Address::Evm([7; 20]), true).unwrap();
+    assert_eq!(keyring.seed(watched).unwrap_err(), KeyringError::WatchOnly);
+    assert_eq!(
+        keyring.reveal(watched, PASSWORD).unwrap_err(),
+        KeyringError::WatchOnly
+    );
+    assert_eq!(
+        keyring
+            .set_ton_contract(watched, TonContract::V4R2)
+            .unwrap_err(),
+        KeyringError::NoTon
+    );
+    assert_eq!(
+        keyring.set_counted(phrase, false).unwrap_err(),
+        KeyringError::AlwaysCounted
+    );
+    keyring.set_counted(watched, false).unwrap();
+    let keyring = reopened(&scratch);
+    let shown: Vec<(WalletKind, bool)> = keyring
+        .wallets()
+        .unwrap()
+        .iter()
+        .map(|wallet| (wallet.kind, wallet.counted))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            (WalletKind::Bip39, true),
+            (WalletKind::Watch(ChainFamily::Ton), false),
+            (WalletKind::Watch(ChainFamily::Evm), true),
+        ]
+    );
+    assert_eq!(keyring.watched(watched).unwrap(), Some(address));
+    assert_eq!(keyring.watched(phrase).unwrap(), None);
 }
 
 #[test]

@@ -11,10 +11,13 @@ use bahaa_config::{Fiat, Registry, Settings};
 use bahaa_crypto::SecretString;
 use bahaa_engine::{
     Engine, EngineError, KeyringError, NetworkHealth, NewPhrase, Portfolio, SendRequest, Spend,
+    WalletKind,
 };
 use bahaa_market::{MarketConfig, Status};
 use bahaa_types::{Address, Amount, ChainFamily};
-use common::{HARDHAT, HARDHAT_0, Scratch, TRON_0, TRON_0_HEX, TRON_GENESIS, USDT, config, until};
+use common::{
+    HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, TRON_0, TRON_0_HEX, TRON_GENESIS, USDT, config, until,
+};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -226,13 +229,9 @@ async fn locking_hides_accounts_and_balances() {
     );
 }
 
-#[tokio::test]
-async fn prices_are_asked_only_for_held_coins_in_the_chosen_fiat() {
-    let scratch = Scratch::new();
+async fn market(record: Arc<Mutex<Vec<Value>>>) -> MarketConfig {
     let stream = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let stream_url = Url::parse(&format!("ws://{}/", stream.local_addr().unwrap())).unwrap();
-    let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
-    let record = Arc::clone(&seen);
     tokio::spawn(async move {
         let (socket, _) = stream.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
@@ -250,7 +249,7 @@ async fn prices_are_asked_only_for_held_coins_in_the_chosen_fiat() {
             }
         }
     });
-    let market = MarketConfig {
+    MarketConfig {
         api: Url::parse("http://127.0.0.1:9/").unwrap(),
         stream: stream_url,
         poll_every: Duration::from_secs(60),
@@ -258,7 +257,14 @@ async fn prices_are_asked_only_for_held_coins_in_the_chosen_fiat() {
         backoff_max: Duration::from_millis(100),
         silence_limit: Duration::from_secs(5),
         connect_timeout: Duration::from_secs(2),
-    };
+    }
+}
+
+#[tokio::test]
+async fn prices_are_asked_only_for_held_coins_in_the_chosen_fiat() {
+    let scratch = Scratch::new();
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let market = market(Arc::clone(&seen)).await;
     let engine = Engine::start(config(
         &scratch,
         registry(node(Arc::default(), Duration::ZERO).await),
@@ -319,6 +325,90 @@ async fn prices_are_asked_only_for_held_coins_in_the_chosen_fiat() {
         .map(|holding| holding.price_at)
         .collect();
     assert_eq!(ages, [Some(1), Some(1)]);
+}
+
+#[tokio::test]
+async fn a_watched_address_is_valued_and_left_out_of_the_total_on_request() {
+    let scratch = Scratch::new();
+    let market = market(Arc::default()).await;
+    let engine = Engine::start(config(
+        &scratch,
+        registry(node(Arc::default(), Duration::ZERO).await),
+        Some(market),
+    ))
+    .unwrap();
+    let mut portfolio = engine.portfolio();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let own = engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    let mine = Address::parse(ChainFamily::Evm, HARDHAT_0).unwrap();
+    assert!(matches!(
+        engine.watch(mine, true).await,
+        Err(EngineError::Keyring(KeyringError::Duplicate))
+    ));
+    let other = Address::parse(ChainFamily::Evm, HARDHAT_1).unwrap();
+    let watched = engine.watch(other, true).await.unwrap();
+    let accounts = engine.accounts().await.unwrap();
+    assert!(accounts.iter().any(|account| account.wallet == watched
+        && account.address == other
+        && account.network.is_none()));
+    let both = until(&mut portfolio, |p| {
+        p.total.is_some_and(|total| total.fixed() == "2110.00")
+    })
+    .await;
+    assert!(
+        both.holdings
+            .iter()
+            .any(|holding| holding.wallet == watched)
+    );
+    engine.set_counted(watched, false).await.unwrap();
+    let mine_only = until(&mut portfolio, |p| {
+        p.total.is_some_and(|total| total.fixed() == "1055.00")
+    })
+    .await;
+    assert!(
+        mine_only
+            .holdings
+            .iter()
+            .any(|holding| holding.wallet == watched && holding.value.is_some())
+    );
+    assert!(matches!(
+        engine.set_counted(own, false).await,
+        Err(EngineError::Keyring(KeyringError::AlwaysCounted))
+    ));
+    let request = SendRequest {
+        wallet: watched,
+        account: 0,
+        asset: "bsc".parse().unwrap(),
+        to: mine,
+        amount: Spend::Max,
+        memo: None,
+    };
+    assert!(matches!(
+        engine.prepare_send(request).await,
+        Err(EngineError::Keyring(KeyringError::WatchOnly))
+    ));
+    assert!(matches!(
+        engine.reveal(watched, SecretString::from("pw")).await,
+        Err(EngineError::Keyring(KeyringError::WatchOnly))
+    ));
+    assert!(engine.add_account(watched).await.is_err());
+    engine.lock().await.unwrap();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .wallets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|wallet| wallet.id == watched)
+        .unwrap();
+    assert_eq!(
+        (wallet.kind, wallet.counted),
+        (WalletKind::Watch(ChainFamily::Evm), false)
+    );
+    engine.shutdown().await.unwrap();
 }
 
 async fn wait_for(calls: &Arc<Mutex<usize>>, at_least: usize) {

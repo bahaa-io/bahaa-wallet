@@ -4,7 +4,7 @@ use std::time::Duration;
 use bahaa_engine::{
     Account, Activity, ActivityKind, Address, Amount, AssetId, Coin, Contact, CustomToken, Event,
     Fiat, Network, NetworkId, Portfolio, Price, Registry, SentStatus, SentTx, Settings, State,
-    Status, WalletId, WalletInfo,
+    Status, WalletId, WalletInfo, WalletKind,
 };
 
 use crate::action::{Action, Go, Tab};
@@ -71,6 +71,21 @@ impl Ctx<'_> {
         position
             .and_then(|position| self.data.wallets[position].name.clone())
             .unwrap_or_else(|| text::wallet(position.map_or(0, |position| position + 1)))
+    }
+
+    pub(crate) fn watch_only(&self, id: WalletId) -> bool {
+        self.data
+            .wallets
+            .iter()
+            .any(|wallet| wallet.id == id && matches!(wallet.kind, WalletKind::Watch(_)))
+    }
+
+    pub(crate) fn counted(&self, id: WalletId) -> bool {
+        self.data
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == id)
+            .is_none_or(|wallet| wallet.counted)
     }
 
     pub(crate) fn amount(&self, amount: Amount, symbol: &str) -> String {

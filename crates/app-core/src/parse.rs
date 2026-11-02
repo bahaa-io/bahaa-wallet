@@ -1,4 +1,4 @@
-use bahaa_engine::{Address, Amount, ChainFamily};
+use bahaa_engine::{Address, AddressError, Amount, ChainFamily};
 
 use crate::text;
 
@@ -22,6 +22,17 @@ pub(crate) fn amount(text: &str, decimals: u8) -> Result<Amount, String> {
 
 pub(crate) fn address(text: &str, family: ChainFamily) -> Result<Address, String> {
     Address::parse(family, text.trim()).map_err(|err| text::sentence(&err.to_string()))
+}
+
+pub(crate) fn any_address(text: &str) -> Result<Address, String> {
+    let tries = ChainFamily::ALL.map(|family| Address::parse(family, text.trim()));
+    if let Some(address) = tries.iter().find_map(|tried| tried.ok()) {
+        return Ok(address);
+    }
+    if tries.contains(&Err(AddressError::Checksum)) {
+        return Err(text::sentence(&AddressError::Checksum.to_string()));
+    }
+    Err(text::NOT_AN_ADDRESS.to_owned())
 }
 
 #[cfg(test)]
@@ -49,5 +60,26 @@ mod tests {
             address(text, ChainFamily::Tron).unwrap_err(),
             "This is not a valid tron address"
         );
+    }
+
+    #[test]
+    fn any_address_finds_its_own_network() {
+        let families: Vec<ChainFamily> = [
+            "0xA749C5a714991dc2EF2cF36a238514adA4cbBf69",
+            " TRovmURrSa5937phqN8yUCpqqiGt7vuTyR ",
+            "UQCi1ivY6QriyKIQZrSTwhvf4qXI19qIPe4XAOYo-qMMUEiR",
+        ]
+        .iter()
+        .map(|text| any_address(text).unwrap().family())
+        .collect();
+        assert_eq!(
+            families,
+            [ChainFamily::Evm, ChainFamily::Tron, ChainFamily::Ton]
+        );
+        assert_eq!(
+            any_address("0xa749C5a714991dc2EF2cF36a238514adA4cbBf69").unwrap_err(),
+            "The address checksum does not match, check it for a typo"
+        );
+        assert_eq!(any_address("hello").unwrap_err(), text::NOT_AN_ADDRESS);
     }
 }

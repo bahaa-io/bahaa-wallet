@@ -59,6 +59,7 @@ pub enum PageId {
     Verify,
     Import,
     ImportKey,
+    Watch,
     Unlock,
     Portfolio,
     Asset,

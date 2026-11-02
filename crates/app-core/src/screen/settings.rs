@@ -5,7 +5,7 @@ use super::tokens;
 use super::wallets::Wallet;
 use super::{
     Screen, button, cell, choice, group, hidden, line, password_inputs, password_problem, sections,
-    wallet_kind,
+    toggle, wallet_kind,
 };
 use crate::action::{Action, Channel, Currency, Field, Go, Pick, Toggle};
 use crate::call::{Call, Outcome};
@@ -230,14 +230,6 @@ fn failed(outcome: Outcome) -> Reply {
         Outcome::Done(Err(err)) => Reply::note(Level::Error, text::error(&err)),
         _ => Reply::default(),
     }
-}
-
-fn toggle(label: &str, choice_label: &str, toggle: Toggle, on: bool) -> Item {
-    group(
-        label,
-        vec![choice(choice_label, Action::Toggle(toggle), on)],
-    )
-    .into()
 }
 
 fn fiat(currency: Currency) -> Fiat {

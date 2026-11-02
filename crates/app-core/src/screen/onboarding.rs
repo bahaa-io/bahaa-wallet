@@ -1,13 +1,14 @@
-use bahaa_engine::{ChainFamily, KeyringError, NewPhrase, PhraseKind, SecretString};
+use bahaa_engine::{Address, ChainFamily, KeyringError, NewPhrase, PhraseKind, SecretString};
 
 use super::{
-    Screen, button, choice, group, hidden, note, password_inputs, password_problem, sections,
+    Screen, button, choice, counted_toggle, group, hidden, input, note, password_inputs,
+    password_problem, sections,
 };
-use crate::action::{Action, Family, Field, Kind, Pick, Words};
+use crate::action::{Action, Family, Field, Kind, Pick, Toggle, Words};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
-use crate::text;
 use crate::view::{Input, Level, Note, Page, PageId, Secret};
+use crate::{parse, text};
 
 const CHECKED_WORDS: usize = 3;
 
@@ -33,6 +34,9 @@ impl Screen for Welcome {
             Action::Pick(Pick::Import) => Reply::nav(Nav::Push(Box::new(Import::new(self.adding)))),
             Action::Pick(Pick::ImportKey) => {
                 Reply::nav(Nav::Push(Box::new(ImportKey::new(self.adding))))
+            }
+            Action::Pick(Pick::Watch) => {
+                Reply::nav(Nav::Push(Box::new(WatchAddress::new(self.adding))))
             }
             _ => Reply::default(),
         }
@@ -76,6 +80,10 @@ impl Screen for Welcome {
                         button(text::PRIVATE_KEY, Action::Pick(Pick::ImportKey)),
                     ],
                 ),
+                (
+                    text::WATCH,
+                    vec![button(text::ADDRESS, Action::Pick(Pick::Watch))],
+                ),
             ]),
             ..Page::default()
         }
@@ -86,6 +94,7 @@ enum Next {
     Create(Words),
     Import(Secret, Secret, Option<PhraseKind>),
     ImportKey(Secret, Family),
+    Watch(Address, bool),
 }
 
 struct NewPassword {
@@ -114,6 +123,14 @@ impl NewPassword {
                 Call::Import(super::secret(phrase), super::secret(passphrase), *kind)
             }
             Next::ImportKey(key, family) => Call::ImportKey(super::secret(key), chain(*family)),
+            Next::Watch(address, counted) => Call::Watch(*address, *counted),
+        }
+    }
+
+    fn finished(&self) -> &'static str {
+        match self.next {
+            Next::Watch(..) => text::WATCH_ADDED,
+            _ => text::IMPORTED,
         }
     }
 }
@@ -147,7 +164,7 @@ impl Screen for NewPassword {
                 Reply::nav(Nav::Replace(Box::new(ShowPhrase::new(&phrase))))
             }
             Outcome::Imported(Ok(_)) => {
-                Reply::nav(Nav::Finish).with_note(Level::Success, text::IMPORTED)
+                Reply::nav(Nav::Finish).with_note(Level::Success, self.finished())
             }
             Outcome::Done(Err(err))
             | Outcome::Generated(Err(err))
@@ -512,6 +529,90 @@ impl Screen for ImportKey {
                 }
                 .into(),
                 group(text::USE_FOR, families).into(),
+            ],
+            error: self.error.clone(),
+            buttons: vec![button(text::CONTINUE, Action::Submit)],
+            ..Page::default()
+        }
+    }
+}
+
+struct WatchAddress {
+    adding: bool,
+    address: String,
+    counted: bool,
+    error: Option<String>,
+}
+
+impl WatchAddress {
+    fn new(adding: bool) -> Self {
+        Self {
+            adding,
+            address: String::new(),
+            counted: true,
+            error: None,
+        }
+    }
+
+    fn check(&self) -> Option<Note> {
+        if self.address.trim().is_empty() {
+            return None;
+        }
+        Some(match parse::any_address(&self.address) {
+            Ok(address) => note(Level::Success, text::watch_hint(address.family())),
+            Err(problem) => note(Level::Error, problem),
+        })
+    }
+}
+
+impl Screen for WatchAddress {
+    fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
+        match action {
+            Action::Type(Field::Address, value) => {
+                self.address.clone_from(value);
+                self.error = None;
+            }
+            Action::Toggle(Toggle::Counted) => self.counted = !self.counted,
+            Action::Submit => match parse::any_address(&self.address) {
+                Err(problem) => self.error = Some(problem),
+                Ok(address) if self.adding => {
+                    return Reply::call(Call::Watch(address, self.counted));
+                }
+                Ok(address) => {
+                    let next = Next::Watch(address, self.counted);
+                    return Reply::nav(Nav::Push(Box::new(NewPassword::new(next))));
+                }
+            },
+            _ => {}
+        }
+        Reply::default()
+    }
+
+    fn done(&mut self, outcome: Outcome, _ctx: &Ctx<'_>) -> Reply {
+        match outcome {
+            Outcome::Imported(Ok(_)) => {
+                Reply::nav(Nav::Finish).with_note(Level::Success, text::WATCH_ADDED)
+            }
+            Outcome::Imported(Err(err)) => {
+                self.error = Some(text::error(&err));
+                Reply::default()
+            }
+            _ => Reply::default(),
+        }
+    }
+
+    fn page(&self, _ctx: &Ctx<'_>) -> Page {
+        Page {
+            id: PageId::Watch,
+            title: text::WATCH_TITLE.to_owned(),
+            text: Some(text::WATCH_TEXT.to_owned()),
+            form: vec![
+                Input {
+                    hint: self.check(),
+                    ..input(Field::Address, text::ADDRESS, &self.address)
+                }
+                .into(),
+                counted_toggle(self.counted),
             ],
             error: self.error.clone(),
             buttons: vec![button(text::CONTINUE, Action::Submit)],

@@ -135,6 +135,8 @@ enum Command {
         Reply<WalletId>,
     ),
     ImportKey(SecretString, ChainFamily, Reply<WalletId>),
+    Watch(Address, bool, Reply<WalletId>),
+    SetCounted(WalletId, bool, Reply<()>),
     Remove(WalletId, Reply<()>),
     AddAccount(WalletId, Reply<Vec<Account>>),
     RemoveAccount(WalletId, u32, Reply<()>),
@@ -259,6 +261,7 @@ impl Engine {
             notices_tx,
             notices,
             accounts: Vec::new(),
+            uncounted: Vec::new(),
             held: Vec::new(),
             health: Vec::new(),
             generation: 0,
@@ -378,6 +381,16 @@ impl Engine {
         family: ChainFamily,
     ) -> Result<WalletId, EngineError> {
         self.ask(|reply| Command::ImportKey(key, family, reply))
+            .await
+    }
+
+    pub async fn watch(&self, address: Address, counted: bool) -> Result<WalletId, EngineError> {
+        self.ask(|reply| Command::Watch(address, counted, reply))
+            .await
+    }
+
+    pub async fn set_counted(&self, wallet: WalletId, counted: bool) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetCounted(wallet, counted, reply))
             .await
     }
 
@@ -550,6 +563,7 @@ struct Worker {
     notices_tx: mpsc::Sender<Notice>,
     notices: mpsc::Receiver<Notice>,
     accounts: Vec<Account>,
+    uncounted: Vec<WalletId>,
     held: Vec<Held>,
     health: Vec<NetworkHealth>,
     generation: u64,
@@ -699,6 +713,8 @@ impl Worker {
             | Command::Generate(..)
             | Command::Import(..)
             | Command::ImportKey(..)
+            | Command::Watch(..)
+            | Command::SetCounted(..)
             | Command::Remove(..)
             | Command::AddAccount(..)
             | Command::RemoveAccount(..)
@@ -726,13 +742,11 @@ impl Worker {
                 };
                 let _ = reply.send(result);
             }
-            Command::Generate(words, passphrase, reply) => {
-                let result = self
-                    .keyring(move |keyring| keyring.generate(words, passphrase.expose_secret()))
-                    .await;
-                self.after_change(result.is_ok()).await;
-                let _ = reply.send(result);
-            }
+            Command::Generate(words, passphrase, reply) => answer(
+                reply,
+                self.changed(move |keyring| keyring.generate(words, passphrase.expose_secret()))
+                    .await,
+            ),
             Command::Import(phrase, passphrase, kind, reply) => {
                 self.import(phrase, passphrase, kind, reply).await;
             }
@@ -746,6 +760,14 @@ impl Worker {
                     .await;
                 self.imported(added, reply).await;
             }
+            Command::Watch(address, counted, reply) => {
+                answer(reply, self.watch(address, counted).await);
+            }
+            Command::SetCounted(id, counted, reply) => answer(
+                reply,
+                self.changed(move |keyring| keyring.set_counted(id, counted))
+                    .await,
+            ),
             Command::Remove(id, reply) => {
                 let result = self.keyring(move |keyring| keyring.remove(id)).await;
                 if result.is_ok() {
@@ -763,13 +785,11 @@ impl Worker {
                 let result = self.remove_account(wallet, index).await;
                 let _ = reply.send(result);
             }
-            Command::SetTonContract(id, contract, reply) => {
-                let result = self
-                    .keyring(move |keyring| keyring.set_ton_contract(id, contract))
-                    .await;
-                self.after_change(result.is_ok()).await;
-                let _ = reply.send(result);
-            }
+            Command::SetTonContract(id, contract, reply) => answer(
+                reply,
+                self.changed(move |keyring| keyring.set_ton_contract(id, contract))
+                    .await,
+            ),
             Command::Reveal(id, password, reply) => {
                 let result = self
                     .keyring(move |keyring| keyring.reveal(id, password.expose_secret().as_bytes()))
@@ -1009,6 +1029,23 @@ impl Worker {
         }
     }
 
+    async fn watch(&mut self, address: Address, counted: bool) -> Result<WalletId, EngineError> {
+        if self.owner(&address).is_some() {
+            return Err(KeyringError::Duplicate.into());
+        }
+        self.changed(move |keyring| keyring.watch(address, counted))
+            .await
+    }
+
+    async fn changed<T: Send + 'static>(
+        &mut self,
+        work: impl FnOnce(&mut Keyring) -> Result<T, KeyringError> + Send + 'static,
+    ) -> Result<T, EngineError> {
+        let result = self.keyring(work).await;
+        self.after_change(result.is_ok()).await;
+        result
+    }
+
     async fn after_change(&mut self, ok: bool) {
         if !ok {
             return;
@@ -1030,7 +1067,7 @@ impl Worker {
             .iter()
             .map(|wallet| {
                 let kept = match wallet.kind {
-                    WalletKind::Ton | WalletKind::Key(_) => vec![0],
+                    WalletKind::Ton | WalletKind::Key(_) | WalletKind::Watch(_) => vec![0],
                     WalletKind::Bip39 => self
                         .store
                         .account_indexes(wallet.id.value())
@@ -1043,7 +1080,7 @@ impl Worker {
             .keyring(move |keyring| {
                 let mut accounts = Vec::new();
                 for wallet in keyring.wallets()? {
-                    let seed = keyring.seed(wallet.id)?;
+                    let watched = keyring.watched(wallet.id)?;
                     let kept = indexes
                         .iter()
                         .find(|(id, _)| *id == wallet.id)
@@ -1052,11 +1089,11 @@ impl Worker {
                         let mut derived = Vec::with_capacity(chains.len());
                         let contract = wallet.ton.unwrap_or(TonContract::W5);
                         for chain in chains.iter().filter(|chain| chain.holds(wallet.kind)) {
-                            derived.push((
-                                chain.family(),
-                                chain.network().id.clone(),
-                                chain.derive(seed, index, contract)?,
-                            ));
+                            let address = match watched {
+                                Some(address) => address,
+                                None => chain.derive(keyring.seed(wallet.id)?, index, contract)?,
+                            };
+                            derived.push((chain.family(), chain.network().id.clone(), address));
                         }
                         accounts.extend(chains::accounts(wallet.id, index, &derived));
                     }
@@ -1071,6 +1108,11 @@ impl Worker {
                     .any(|account| account.wallet == held.wallet && account.address == held.address)
             });
             self.accounts = accounts;
+            self.uncounted = listed
+                .iter()
+                .filter(|wallet| !wallet.counted)
+                .map(|wallet| wallet.id)
+                .collect();
             let _ = self
                 .events
                 .send(Event::AccountsChanged(self.accounts.clone()));
@@ -1172,6 +1214,7 @@ impl Worker {
         self.drafts.clear();
         self.session = self.session.wrapping_add(1);
         self.accounts.clear();
+        self.uncounted.clear();
         self.held.clear();
         self.health.clear();
         self.keep_prices();
@@ -1206,6 +1249,7 @@ impl Worker {
             &self.registry,
             &self.custom,
             &self.held,
+            &self.uncounted,
             self.health.clone(),
             &snapshot,
             self.settings.fiat,

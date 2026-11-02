@@ -7,7 +7,7 @@ use bahaa_crypto::{
     TonPhraseError, WordCount,
 };
 use bahaa_store::StoreKey;
-use bahaa_types::{ChainFamily, TonContract, hex};
+use bahaa_types::{Address, ChainFamily, TonContract, hex};
 use bahaa_vault::{KdfParams, Vault, VaultError};
 use thiserror::Error;
 
@@ -41,6 +41,7 @@ pub struct WalletInfo {
     pub passphrase: bool,
     pub kind: WalletKind,
     pub ton: Option<TonContract>,
+    pub counted: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +49,7 @@ pub enum WalletKind {
     Bip39,
     Ton,
     Key(ChainFamily),
+    Watch(ChainFamily),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +104,10 @@ pub enum KeyringError {
     TonPassphrase,
     #[error("this wallet has no TON account")]
     NoTon,
+    #[error("this is a watch-only wallet, it has no keys")]
+    WatchOnly,
+    #[error("only a watch-only wallet can be left out of the total")]
+    AlwaysCounted,
     #[error(transparent)]
     Key(#[from] KeyError),
     #[error(transparent)]
@@ -131,7 +137,7 @@ pub struct Keyring {
 struct Session {
     vault: Vault,
     contents: Contents,
-    seeds: Vec<Seed>,
+    seeds: Vec<Option<Seed>>,
 }
 
 impl Keyring {
@@ -221,7 +227,9 @@ impl Keyring {
                         !passphrase.expose_secret().is_empty(),
                     ),
                     Phrase::Ton { .. } => (Some(WordCount::TwentyFour), false),
-                    Phrase::Key { .. } | Phrase::TonKey { .. } => (None, false),
+                    Phrase::Key { .. } | Phrase::TonKey { .. } | Phrase::Watch { .. } => {
+                        (None, false)
+                    }
                 };
                 let kind = kind_of(&entry.phrase);
                 WalletInfo {
@@ -231,6 +239,7 @@ impl Keyring {
                     passphrase,
                     kind,
                     ton: entry.phrase.contract(),
+                    counted: entry.phrase.counted(),
                 }
             })
             .collect())
@@ -262,6 +271,11 @@ impl Keyring {
         self.add(key_phrase(text, family)?)
     }
 
+    pub fn watch(&mut self, address: Address, counted: bool) -> Result<WalletId, KeyringError> {
+        self.session()?;
+        self.add(Phrase::Watch { address, counted })
+    }
+
     pub fn import_as(
         &mut self,
         phrase: &str,
@@ -277,21 +291,23 @@ impl Keyring {
         id: WalletId,
         contract: TonContract,
     ) -> Result<(), KeyringError> {
-        let path = self.path.clone();
-        let session = self.session_mut()?;
-        let index = session.index(id)?;
-        let current = session.contents.entries[index]
+        self.edit(id, contract, Phrase::contract_mut, KeyringError::NoTon)
+    }
+
+    pub fn set_counted(&mut self, id: WalletId, counted: bool) -> Result<(), KeyringError> {
+        self.edit(
+            id,
+            counted,
+            Phrase::counted_mut,
+            KeyringError::AlwaysCounted,
+        )
+    }
+
+    pub fn watched(&self, id: WalletId) -> Result<Option<Address>, KeyringError> {
+        let session = self.session()?;
+        Ok(session.contents.entries[session.index(id)?]
             .phrase
-            .contract_mut()
-            .ok_or(KeyringError::NoTon)?;
-        let previous = std::mem::replace(current, contract);
-        if let Err(err) = persist(&path, session) {
-            if let Some(current) = session.contents.entries[index].phrase.contract_mut() {
-                *current = previous;
-            }
-            return Err(err);
-        }
-        Ok(())
+            .watched())
     }
 
     pub fn remove(&mut self, id: WalletId) -> Result<(), KeyringError> {
@@ -310,7 +326,9 @@ impl Keyring {
 
     pub fn seed(&self, id: WalletId) -> Result<&Seed, KeyringError> {
         let session = self.session()?;
-        Ok(&session.seeds[session.index(id)?])
+        session.seeds[session.index(id)?]
+            .as_ref()
+            .ok_or(KeyringError::WatchOnly)
     }
 
     pub fn check_password(&self, password: &[u8]) -> Result<(), KeyringError> {
@@ -328,6 +346,7 @@ impl Keyring {
             Phrase::Key { key, .. } | Phrase::TonKey { key, .. } => {
                 SecretString::from(hex::encode(&**key))
             }
+            Phrase::Watch { .. } => return Err(KeyringError::WatchOnly),
         })
     }
 
@@ -350,13 +369,12 @@ impl Keyring {
         let path = self.path.clone();
         let session = self.session_mut()?;
         let seed = seed(&phrase)?;
-        let kind = kind_of(&phrase);
         if session
             .contents
             .entries
             .iter()
             .zip(&session.seeds)
-            .any(|(entry, known)| kind_of(&entry.phrase) == kind && known.expose() == seed.expose())
+            .any(|(entry, known)| same(&entry.phrase, known.as_ref(), &phrase, seed.as_ref()))
         {
             return Err(KeyringError::Duplicate);
         }
@@ -372,6 +390,27 @@ impl Keyring {
             return Err(err);
         }
         Ok(WalletId(id))
+    }
+
+    fn edit<V>(
+        &mut self,
+        id: WalletId,
+        value: V,
+        field: impl Fn(&mut Phrase) -> Option<&mut V>,
+        missing: KeyringError,
+    ) -> Result<(), KeyringError> {
+        let path = self.path.clone();
+        let session = self.session_mut()?;
+        let index = session.index(id)?;
+        let current = field(&mut session.contents.entries[index].phrase).ok_or(missing)?;
+        let previous = std::mem::replace(current, value);
+        if let Err(err) = persist(&path, session) {
+            if let Some(current) = field(&mut session.contents.entries[index].phrase) {
+                *current = previous;
+            }
+            return Err(err);
+        }
+        Ok(())
     }
 
     fn verify(&self, password: &[u8]) -> Result<(), KeyringError> {
@@ -424,7 +463,7 @@ pub fn check_phrase(phrase: &str, passphrase: &str) -> Result<PhraseKind, Keyrin
     match kind_of(&parse(phrase, passphrase, None)?) {
         WalletKind::Bip39 => Ok(PhraseKind::Bip39),
         WalletKind::Ton => Ok(PhraseKind::Ton),
-        WalletKind::Key(_) => Err(KeyringError::Damaged),
+        WalletKind::Key(_) | WalletKind::Watch(_) => Err(KeyringError::Damaged),
     }
 }
 
@@ -451,6 +490,24 @@ fn kind_of(phrase: &Phrase) -> WalletKind {
         Phrase::Ton { .. } => WalletKind::Ton,
         Phrase::Key { family, .. } => WalletKind::Key(*family),
         Phrase::TonKey { .. } => WalletKind::Key(ChainFamily::Ton),
+        Phrase::Watch { address, .. } => WalletKind::Watch(address.family()),
+    }
+}
+
+fn same(
+    first: &Phrase,
+    first_seed: Option<&Seed>,
+    second: &Phrase,
+    second_seed: Option<&Seed>,
+) -> bool {
+    match (first.watched(), second.watched()) {
+        (Some(first), Some(second)) => first == second,
+        _ => {
+            kind_of(first) == kind_of(second)
+                && first_seed
+                    .zip(second_seed)
+                    .is_some_and(|(first, second)| first.expose() == second.expose())
+        }
     }
 }
 
@@ -490,17 +547,20 @@ fn bip39(mnemonic: Mnemonic, passphrase: &str) -> Result<Phrase, KeyringError> {
     })
 }
 
-fn seed(phrase: &Phrase) -> Result<Seed, KeyringError> {
-    match phrase {
+fn seed(phrase: &Phrase) -> Result<Option<Seed>, KeyringError> {
+    Ok(Some(match phrase {
         Phrase::Bip39 {
             mnemonic,
             passphrase,
             ..
-        } => Ok(mnemonic.to_seed(passphrase.expose_secret())),
-        Phrase::Ton { mnemonic, .. } => mnemonic.to_seed().map_err(|_| KeyringError::Damaged),
-        Phrase::Key { key, .. } => bahaa_crypto::key_seed(key).map_err(|_| KeyringError::Damaged),
-        Phrase::TonKey { key, .. } => Ok(bahaa_crypto::ton_key_seed(key)),
-    }
+        } => mnemonic.to_seed(passphrase.expose_secret()),
+        Phrase::Ton { mnemonic, .. } => mnemonic.to_seed().map_err(|_| KeyringError::Damaged)?,
+        Phrase::Key { key, .. } => {
+            bahaa_crypto::key_seed(key).map_err(|_| KeyringError::Damaged)?
+        }
+        Phrase::TonKey { key, .. } => bahaa_crypto::ton_key_seed(key),
+        Phrase::Watch { .. } => return Ok(None),
+    }))
 }
 
 fn persist(path: &Path, session: &Session) -> Result<(), KeyringError> {

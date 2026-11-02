@@ -1,7 +1,9 @@
 use bahaa_engine::{TonContract, WalletId, WalletKind};
 
-use super::{Screen, button, cell, choice, group, hidden, input, line, wallet_kind};
-use crate::action::{Action, Contract, Field, Go, Pick, Tab};
+use super::{
+    Screen, button, cell, choice, counted_toggle, group, hidden, input, line, wallet_kind,
+};
+use crate::action::{Action, Contract, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::view::{Level, Page, PageId, Row, Secret, Table, Tone};
@@ -24,8 +26,11 @@ impl Wallet {
 }
 
 impl Screen for Wallet {
-    fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
+    fn act(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
         match action {
+            Action::Toggle(Toggle::Counted) => {
+                return Reply::call(Call::SetCounted(self.id, !ctx.counted(self.id)));
+            }
             Action::Type(Field::Name, value) => self.name.clone_from(value),
             Action::Submit => {
                 return Reply::call(Call::Rename(self.id, self.name.trim().to_owned()));
@@ -140,7 +145,12 @@ impl Screen for Wallet {
                 }));
             }
         }
-        buttons.push(button(reveal_label(wallet.kind), Action::Go(Go::Reveal)));
+        if matches!(wallet.kind, WalletKind::Watch(_)) {
+            form.push(counted_toggle(wallet.counted));
+        }
+        if let Some(label) = reveal_label(wallet.kind) {
+            buttons.push(button(label, Action::Go(Go::Reveal)));
+        }
         buttons.push(button(text::REMOVE_WALLET, Action::Go(Go::RemoveWallet)));
         Page {
             id: PageId::Wallet,
@@ -213,7 +223,7 @@ impl Screen for Reveal {
         let name = ctx.wallet_name(self.id);
         let title = match kind {
             WalletKind::Key(_) => text::key_title(&name),
-            WalletKind::Bip39 | WalletKind::Ton => text::reveal_title(&name),
+            WalletKind::Bip39 | WalletKind::Ton | WalletKind::Watch(_) => text::reveal_title(&name),
         };
         let mut page = Page {
             id: PageId::Reveal,
@@ -227,7 +237,10 @@ impl Screen for Reveal {
             page.buttons = vec![button(text::DONE, Action::Submit)];
         } else {
             page.form = vec![hidden(Field::Password, text::PASSWORD, &self.password).into()];
-            page.buttons = vec![button(reveal_label(kind), Action::Submit)];
+            page.buttons = reveal_label(kind)
+                .map(|label| button(label, Action::Submit))
+                .into_iter()
+                .collect();
         }
         page
     }
@@ -286,7 +299,14 @@ impl Screen for Remove {
         Page {
             id: PageId::RemoveWallet,
             title: text::remove_title(&ctx.wallet_name(self.id)),
-            text: Some(text::REMOVE_TEXT.to_owned()),
+            text: Some(
+                if ctx.watch_only(self.id) {
+                    text::REMOVE_WATCH_TEXT
+                } else {
+                    text::REMOVE_TEXT
+                }
+                .to_owned(),
+            ),
             form: vec![hidden(Field::Password, text::PASSWORD, &self.password).into()],
             error: self.error.clone(),
             buttons: vec![button(text::REMOVE_WALLET, Action::Submit)],
@@ -295,9 +315,10 @@ impl Screen for Remove {
     }
 }
 
-fn reveal_label(kind: WalletKind) -> &'static str {
+fn reveal_label(kind: WalletKind) -> Option<&'static str> {
     match kind {
-        WalletKind::Key(_) => text::SHOW_KEY,
-        WalletKind::Bip39 | WalletKind::Ton => text::SHOW_PHRASE,
+        WalletKind::Key(_) => Some(text::SHOW_KEY),
+        WalletKind::Bip39 | WalletKind::Ton => Some(text::SHOW_PHRASE),
+        WalletKind::Watch(_) => None,
     }
 }

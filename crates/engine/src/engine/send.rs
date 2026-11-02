@@ -174,6 +174,11 @@ impl Worker {
 
     fn send_target(&self, request: &SendRequest) -> Result<(usize, Transfer), EngineError> {
         self.ensure_unlocked()?;
+        if let Some(keyring) = &self.keyring
+            && keyring.watched(request.wallet)?.is_some()
+        {
+            return Err(KeyringError::WatchOnly.into());
+        }
         let chain = self
             .chain_index(request.asset.network())
             .ok_or(ChainError::Unsupported("sending in this version"))?;

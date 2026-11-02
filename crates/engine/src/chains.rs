@@ -48,7 +48,7 @@ impl AnyChain {
         match kind {
             WalletKind::Bip39 => true,
             WalletKind::Ton => matches!(self, Self::Ton(_)),
-            WalletKind::Key(family) => self.family() == family,
+            WalletKind::Key(family) | WalletKind::Watch(family) => self.family() == family,
         }
     }
 

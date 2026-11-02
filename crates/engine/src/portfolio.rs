@@ -122,6 +122,7 @@ pub(crate) fn build(
     registry: &Registry,
     custom: &[CustomToken],
     held: &[Held],
+    uncounted: &[WalletId],
     networks: Vec<NetworkHealth>,
     snapshot: &Snapshot,
     fiat: Fiat,
@@ -155,6 +156,7 @@ pub(crate) fn build(
         .collect();
     let total = holdings
         .iter()
+        .filter(|holding| !uncounted.contains(&holding.wallet))
         .filter_map(|holding| holding.value)
         .try_fold(None, |sum: Option<Amount>, value| match sum {
             None => Some(Some(value)),
@@ -223,6 +225,7 @@ mod tests {
             &registry(),
             &[],
             &[trx.clone(), locked.clone()],
+            &[],
             Vec::new(),
             &prices,
             Fiat::Usd,
@@ -273,7 +276,7 @@ mod tests {
                 ("crypto/ETH", "2408.54"),
             ],
         );
-        let portfolio = build(&registry(), &[], &held, Vec::new(), &prices, Fiat::Usd);
+        let portfolio = build(&registry(), &[], &held, &[], Vec::new(), &prices, Fiat::Usd);
         let values: Vec<Option<String>> = portfolio
             .holdings
             .iter()
@@ -293,10 +296,30 @@ mod tests {
     }
 
     #[test]
+    fn wallets_left_out_of_the_total_keep_their_values() {
+        let watched = crate::keyring::test_wallet(2);
+        let mut other = held("bsc", "2", 18);
+        other.wallet = watched;
+        let held = [held("bsc", "1", 18), other];
+        let prices = snapshot("USDT", &[("crypto/BNB", "700")]);
+        let portfolio = build(
+            &registry(),
+            &[],
+            &held,
+            &[watched],
+            Vec::new(),
+            &prices,
+            Fiat::Usd,
+        );
+        assert_eq!(portfolio.holdings[1].value.unwrap().fixed(), "1400.00");
+        assert_eq!(portfolio.total.unwrap().fixed(), "700.00");
+    }
+
+    #[test]
     fn prices_in_another_base_are_never_mixed_in() {
         let held = [held("bsc", "1", 18)];
         let prices = snapshot("USDT", &[("crypto/BNB", "714.3")]);
-        let portfolio = build(&registry(), &[], &held, Vec::new(), &prices, Fiat::Irt);
+        let portfolio = build(&registry(), &[], &held, &[], Vec::new(), &prices, Fiat::Irt);
         assert_eq!(portfolio.holdings[0].value, None);
         assert_eq!(portfolio.total, None);
     }
@@ -323,6 +346,7 @@ mod tests {
             &registry(),
             &custom,
             &held,
+            &[],
             Vec::new(),
             &Snapshot::default(),
             Fiat::Usd,

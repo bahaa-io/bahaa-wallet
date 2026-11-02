@@ -96,7 +96,7 @@ impl Send {
             .portfolio
             .holdings
             .iter()
-            .filter(|holding| !holding.amount.is_zero())
+            .filter(|holding| !holding.amount.is_zero() && !ctx.watch_only(holding.wallet))
             .collect();
         held.sort_by(|a, b| {
             b.value

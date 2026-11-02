@@ -20,6 +20,14 @@ pub(crate) const CREATE: &str = "Create";
 pub(crate) const IMPORT: &str = "Import";
 pub(crate) const WORDS_12: &str = "12 words";
 pub(crate) const WORDS_24: &str = "24 words";
+pub(crate) const WATCH: &str = "Watch";
+pub(crate) const WATCH_TITLE: &str = "Watch an address";
+pub(crate) const WATCH_TEXT: &str =
+    "Follow the balances and activity of any address. A watch-only wallet can't send.";
+pub(crate) const WATCH_ONLY: &str = "Watch only";
+pub(crate) const WATCH_ADDED: &str = "Watching the address";
+pub(crate) const NOT_AN_ADDRESS: &str = "This is not an address on EVM networks, Tron or TON";
+pub(crate) const COUNT_IN_TOTAL: &str = "Count in my total";
 pub(crate) const IMPORT_KEY: &str = "Import a private key";
 pub(crate) const IMPORT_KEY_TEXT: &str = "Paste a private key exported from another wallet. One key is one account, on EVM networks, Tron or TON.";
 pub(crate) const PRIVATE_KEY: &str = "Private key";
@@ -207,6 +215,8 @@ pub(crate) const DATA_FOLDER: &str = "Data folder";
 pub(crate) const REMOVE_WALLET: &str = "Remove wallet";
 pub(crate) const REVEAL_TEXT: &str =
     "Anyone who sees this can take your funds. Make sure no one is watching.";
+pub(crate) const REMOVE_WATCH_TEXT: &str =
+    "The wallet leaves this device. It only watched an address, so you can add it again any time.";
 pub(crate) const REMOVE_TEXT: &str = "The wallet leaves this device. You can only bring it back with its recovery phrase, so make sure you have it.";
 pub(crate) const WALLET_REMOVED: &str = "Wallet removed";
 
@@ -285,6 +295,14 @@ pub(crate) fn minutes(minutes: u16) -> String {
 
 pub(crate) fn wallet(position: usize) -> String {
     format!("Wallet {position}")
+}
+
+pub(crate) fn left_out(count: usize) -> String {
+    if count == 1 {
+        "1 watch-only wallet is left out of this total. Pick it above to see it.".to_owned()
+    } else {
+        format!("{count} watch-only wallets are left out of this total. Pick one above to see it.")
+    }
 }
 
 pub(crate) fn account(index: u32) -> String {
@@ -436,12 +454,24 @@ pub(crate) fn channel(channel: Channel) -> &'static str {
     }
 }
 
-pub(crate) fn key_wallet(family: ChainFamily) -> String {
+fn family(family: ChainFamily) -> &'static str {
     match family {
-        ChainFamily::Evm => format!("{PRIVATE_KEY}, {EVM_NETWORKS}"),
-        ChainFamily::Tron => format!("{PRIVATE_KEY}, {TRON}"),
-        ChainFamily::Ton => format!("{PRIVATE_KEY}, {TON}"),
+        ChainFamily::Evm => EVM_NETWORKS,
+        ChainFamily::Tron => TRON,
+        ChainFamily::Ton => TON,
     }
+}
+
+pub(crate) fn key_wallet(of: ChainFamily) -> String {
+    format!("{PRIVATE_KEY}, {}", family(of))
+}
+
+pub(crate) fn watch_wallet(of: ChainFamily) -> String {
+    format!("{WATCH_ONLY}, {}", family(of))
+}
+
+pub(crate) fn watch_hint(of: ChainFamily) -> String {
+    format!("An address on {}", family(of))
 }
 
 pub(crate) fn key_title(wallet: &str) -> String {
