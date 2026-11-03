@@ -565,5 +565,145 @@
     "router": "TKzxdSv2FZKQrEqkKVgp5DcwEXBEKMg2Ax",
     "wrapped": "TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR",
     "fee_bps": 30
+  },
+  "chainflip": {
+    "url": "https://chainflip-swap.chainflip.io/",
+    "rpc": "https://rpc.mainnet.chainflip.io/",
+    "network": "bitcoin",
+    "assets": {
+      "bitcoin": {
+        "chain": "Bitcoin",
+        "asset": "BTC",
+        "id": 5,
+        "decimals": 8
+      },
+      "ethereum": {
+        "chain": "Ethereum",
+        "asset": "ETH",
+        "id": 1,
+        "decimals": 18
+      },
+      "ethereum/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48": {
+        "chain": "Ethereum",
+        "asset": "USDC",
+        "id": 3,
+        "decimals": 6
+      },
+      "ethereum/0xdAC17F958D2ee523a2206206994597C13D831ec7": {
+        "chain": "Ethereum",
+        "asset": "USDT",
+        "id": 8,
+        "decimals": 6
+      },
+      "arbitrum": {
+        "chain": "Arbitrum",
+        "asset": "ETH",
+        "id": 6,
+        "decimals": 18
+      },
+      "arbitrum/0xaf88d065e77c8cC2239327C5EDb3A432268e5831": {
+        "chain": "Arbitrum",
+        "asset": "USDC",
+        "id": 7,
+        "decimals": 6
+      },
+      "arbitrum/0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9": {
+        "chain": "Arbitrum",
+        "asset": "USDT",
+        "id": 15,
+        "decimals": 6
+      },
+      "solana": {
+        "chain": "Solana",
+        "asset": "SOL",
+        "id": 9,
+        "decimals": 9
+      },
+      "solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
+        "chain": "Solana",
+        "asset": "USDC",
+        "id": 10,
+        "decimals": 6
+      },
+      "solana/Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": {
+        "chain": "Solana",
+        "asset": "USDT",
+        "id": 16,
+        "decimals": 6
+      },
+      "tron": {
+        "chain": "Tron",
+        "asset": "TRX",
+        "id": 17,
+        "decimals": 6
+      },
+      "tron/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t": {
+        "chain": "Tron",
+        "asset": "USDT",
+        "id": 18,
+        "decimals": 6
+      }
+    }
+  },
+  "thorchain": {
+    "url": "https://gateway.liquify.com/chain/thorchain_api/",
+    "network": "bitcoin",
+    "assets": {
+      "bitcoin": {
+        "pool": "BTC.BTC",
+        "short": "b",
+        "decimals": 8
+      },
+      "avalanche": {
+        "pool": "AVAX.AVAX",
+        "decimals": 18
+      },
+      "avalanche/0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E": {
+        "pool": "AVAX.USDC-0XB97EF9EF8734C71904D8002F8B6BC66DD9C48A6E",
+        "decimals": 6
+      },
+      "avalanche/0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7": {
+        "pool": "AVAX.USDT-0X9702230A8EA53601F5CD2DC00FDBC13D4DF4A8C7",
+        "decimals": 6
+      },
+      "base": {
+        "pool": "BASE.ETH",
+        "decimals": 18
+      },
+      "base/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913": {
+        "pool": "BASE.USDC-0X833589FCD6EDB6E08F4C7C32D4F71B54BDA02913",
+        "decimals": 6
+      },
+      "ethereum": {
+        "pool": "ETH.ETH",
+        "decimals": 18
+      },
+      "ethereum/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48": {
+        "pool": "ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48",
+        "decimals": 6
+      },
+      "ethereum/0xdAC17F958D2ee523a2206206994597C13D831ec7": {
+        "pool": "ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7",
+        "decimals": 6
+      },
+      "bsc": {
+        "pool": "BSC.BNB",
+        "decimals": 18
+      },
+      "bsc/0x55d398326f99059fF775485246999027B3197955": {
+        "pool": "BSC.USDT-0X55D398326F99059FF775485246999027B3197955",
+        "decimals": 18
+      },
+      "bsc/0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d": {
+        "pool": "BSC.USDC-0X8AC76A51CC950D9822D68B83FE1AD97B32CD580D",
+        "decimals": 18
+      }
+    },
+    "routers": {
+      "AVAX": "0x00dc6100103BC402d490aEE3F9a5560cBd91f1d4",
+      "BASE": "0x00dc6100103BC402d490aEE3F9a5560cBd91f1d4",
+      "BSC": "0xb30ec53f98ff5947ede720d32ac2da7e52a5f56b",
+      "ETH": "0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146"
+    }
   }
 }

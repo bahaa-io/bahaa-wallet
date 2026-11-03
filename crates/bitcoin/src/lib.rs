@@ -10,4 +10,4 @@ mod script;
 mod source;
 mod tx;
 
-pub use chain::{BitcoinChain, BitcoinPlan};
+pub use chain::{BitcoinCall, BitcoinChain, BitcoinPlan};

@@ -1,0 +1,75 @@
+{
+  "tx": {
+    "id": "8DB2867C986595891059B21E8B7992FFFBFE755A006D69B6AF3BDFB5CBB814CC",
+    "chain": "BASE",
+    "from_address": "0xbe337cff70ac2e2046d4a39dbfc8f4319129d933",
+    "to_address": "0x0d15b57a5bA0A31A4774c03DdfACf79b289db9ce",
+    "coins": [
+      {
+        "asset": "BASE.ETH",
+        "amount": "3049820"
+      }
+    ],
+    "gas": [
+      {
+        "asset": "BASE.ETH",
+        "amount": "23"
+      }
+    ],
+    "memo": "=:z:t1cApUgudh9AvfuFbbym5QKverVtHKB8Fhn:5580783/0/2:sto:0"
+  },
+  "planned_out_txs": [
+    {
+      "chain": "ZEC",
+      "to_address": "t1cApUgudh9AvfuFbbym5QKverVtHKB8Fhn",
+      "coin": {
+        "asset": "ZEC.ZEC",
+        "amount": "5646653"
+      },
+      "refund": false
+    }
+  ],
+  "out_txs": [
+    {
+      "id": "00FC40C8FEBD8C4EB5C7F01FF61228292470AC1D9EE49782AA76DD00D6437346",
+      "chain": "ZEC",
+      "from_address": "t1eKmL5jiL48MQuebArtUyS51VTf1gTfFAX",
+      "to_address": "t1cApUgudh9AvfuFbbym5QKverVtHKB8Fhn",
+      "coins": [
+        {
+          "asset": "ZEC.ZEC",
+          "amount": "5646653"
+        }
+      ],
+      "gas": [
+        {
+          "asset": "ZEC.ZEC",
+          "amount": "25000"
+        }
+      ],
+      "memo": "OUT:8DB2867C986595891059B21E8B7992FFFBFE755A006D69B6AF3BDFB5CBB814CC"
+    }
+  ],
+  "stages": {
+    "inbound_observed": {
+      "final_count": 109,
+      "completed": true
+    },
+    "inbound_confirmation_counted": {
+      "remaining_confirmation_seconds": 0,
+      "completed": true
+    },
+    "inbound_finalised": {
+      "completed": true
+    },
+    "swap_status": {
+      "pending": false
+    },
+    "swap_finalised": {
+      "completed": true
+    },
+    "outbound_signed": {
+      "completed": true
+    }
+  }
+}

@@ -2,7 +2,7 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 
-use bahaa_bitcoin::{BitcoinChain, BitcoinPlan};
+use bahaa_bitcoin::{BitcoinCall, BitcoinChain, BitcoinPlan};
 use bahaa_chain::{
     Approval, Balance, Chain, ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, Movement,
     PlannedCall, Replace, ScanCursor, Scanned, Signed, Transfer, TxId, TxStatus,
@@ -37,6 +37,7 @@ pub(crate) enum AnyCall {
     Solana(SolanaCall),
     Ton(Box<TonCall>),
     Tron(TronCall),
+    Bitcoin(Box<BitcoinCall>),
 }
 
 impl AnyCall {
@@ -46,6 +47,7 @@ impl AnyCall {
             Self::Solana(call) => call.planned(),
             Self::Ton(call) => call.planned(),
             Self::Tron(call) => call.planned(),
+            Self::Bitcoin(call) => call.planned(),
         }
     }
 
@@ -55,6 +57,7 @@ impl AnyCall {
             Self::Solana(call) => call.fee_max(),
             Self::Ton(call) => call.fee_max(),
             Self::Tron(call) => call.fee_max(),
+            Self::Bitcoin(call) => call.fee_max(),
         }
     }
 
@@ -62,8 +65,8 @@ impl AnyCall {
         match self {
             Self::Evm(call) => call.checked(),
             Self::Solana(_) => true,
-            Self::Ton(_) => false,
             Self::Tron(call) => call.checked(),
+            Self::Ton(_) | Self::Bitcoin(_) => false,
         }
     }
 }
@@ -177,7 +180,16 @@ impl AnyChain {
                     let (plans, fee) = chain.prepare_swap(swap).await?;
                     Ok((plans.into_iter().map(AnyCall::Tron).collect(), fee))
                 }
-                Self::Bitcoin(_) => Err(ChainError::Unsupported("swaps through contracts")),
+                Self::Bitcoin(chain) => {
+                    let (plans, fee) = chain.prepare_swap(swap).await?;
+                    Ok((
+                        plans
+                            .into_iter()
+                            .map(|plan| AnyCall::Bitcoin(Box::new(plan)))
+                            .collect(),
+                        fee,
+                    ))
+                }
             }
         })
         .await
@@ -228,7 +240,10 @@ impl AnyChain {
                         .iter()
                         .filter_map(|call| match call {
                             AnyCall::Evm(call) => Some(call.clone()),
-                            AnyCall::Solana(_) | AnyCall::Ton(_) | AnyCall::Tron(_) => None,
+                            AnyCall::Solana(_)
+                            | AnyCall::Ton(_)
+                            | AnyCall::Tron(_)
+                            | AnyCall::Bitcoin(_) => None,
                         })
                         .collect();
                     if plans.len() != calls.len() {
@@ -239,7 +254,7 @@ impl AnyChain {
                 Self::Solana(chain) => chain.recheck(swap).await,
                 Self::Ton(chain) => chain.recheck(swap).await,
                 Self::Tron(chain) => chain.recheck(swap).await,
-                Self::Bitcoin(_) => Err(ChainError::Unsupported("swaps through contracts")),
+                Self::Bitcoin(chain) => chain.recheck(swap),
             }
         })
         .await
@@ -251,6 +266,7 @@ impl AnyChain {
             (Self::Solana(chain), AnyCall::Solana(plan)) => chain.sign_call(plan, seed),
             (Self::Ton(chain), AnyCall::Ton(plan)) => chain.sign_call(plan, seed),
             (Self::Tron(chain), AnyCall::Tron(plan)) => chain.sign_call(plan, seed),
+            (Self::Bitcoin(chain), AnyCall::Bitcoin(plan)) => chain.sign_call(plan, seed),
             _ => Err(ChainError::Mismatch("the network")),
         }
     }
@@ -261,7 +277,7 @@ impl AnyChain {
             Self::Solana(chain) => chain.decode_call(signed),
             Self::Ton(chain) => chain.decode_call(signed),
             Self::Tron(chain) => chain.decode_call(signed),
-            Self::Bitcoin(_) => Err(ChainError::Unsupported("swaps through contracts")),
+            Self::Bitcoin(chain) => chain.decode_call(signed),
         }))
         .unwrap_or_else(|_| Err(unreadable()))
     }

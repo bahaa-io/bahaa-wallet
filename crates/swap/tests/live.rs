@@ -8,7 +8,8 @@ use bahaa_crypto::{Mnemonic, WordCount};
 use bahaa_evm::EvmChain;
 use bahaa_solana::SolanaChain;
 use bahaa_swap::{
-    Cow, Jupiter, Method, OneClick, Providers, Relay, Request, StonFi, SunSwap, SwapError,
+    Chainflip, Cow, Jupiter, Method, OneClick, Providers, Relay, Request, StonFi, SunSwap,
+    SwapError, Thorchain,
 };
 use bahaa_ton::TonChain;
 use bahaa_tron::TronChain;
@@ -289,4 +290,79 @@ async fn live_sunswap_routes_pass_tron_s_own_simulation() {
         chain.prepare_swap(&greedy).await.unwrap_err().to_string(),
         "the swap would pay less than its minimum"
     );
+}
+
+#[tokio::test]
+#[ignore = "talks to Chainflip"]
+async fn live_chainflip_gives_a_listed_vault_and_our_own_swap_data() {
+    let chainflip = Chainflip::new(
+        &Providers::builtin().unwrap().chainflip,
+        bahaa_chain::http::client().unwrap(),
+    );
+    let from = Address::parse(
+        ChainFamily::Bitcoin,
+        "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+    )
+    .unwrap();
+    for (buy, decimals, to) in [
+        (
+            "ethereum/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            6,
+            evm(),
+        ),
+        ("arbitrum", 18, evm()),
+        (
+            "solana",
+            9,
+            Address::parse(
+                ChainFamily::Solana,
+                "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+            )
+            .unwrap(),
+        ),
+    ] {
+        let asked = request("bitcoin", "0.002", 8, buy, decimals, from, to);
+        let (route, order) = chainflip.quote(&asked, now()).await.unwrap();
+        assert_eq!(
+            (route.provider, route.method),
+            ("Chainflip", Method::Validators)
+        );
+        assert!(route.minimum < route.expected, "{buy}");
+        let contract = order.contract.unwrap();
+        assert_eq!(contract.call.value, asked.amount);
+        assert!(contract.call.data.len() <= 80);
+        assert!(
+            order.deposit.to_string().starts_with("bc1p"),
+            "{}",
+            order.deposit
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "talks to THORChain"]
+async fn live_thorchain_quotes_into_bitcoin_through_its_pinned_router() {
+    let thorchain = Thorchain::new(
+        &Providers::builtin().unwrap().thorchain,
+        bahaa_chain::http::client().unwrap(),
+    )
+    .unwrap();
+    let to = Address::parse(
+        ChainFamily::Bitcoin,
+        "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+    )
+    .unwrap();
+    let mut asked = request("base", "0.3", 18, "bitcoin", 8, evm(), to);
+    asked.native_decimals = 18;
+    let (route, order) = thorchain.quote(&asked, now()).await.unwrap();
+    assert_eq!(
+        (route.provider, route.method),
+        ("THORChain", Method::Validators)
+    );
+    assert!(route.minimum < route.expected);
+    let contract = order.contract.unwrap();
+    assert_eq!(contract.call.value, asked.amount);
+    assert_eq!(contract.spender, None);
+    let memo = String::from_utf8_lossy(&contract.call.data);
+    assert!(memo.contains(&format!("=:b:{to}:")), "{memo}");
 }

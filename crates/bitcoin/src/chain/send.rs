@@ -157,6 +157,38 @@ impl BitcoinChain {
 
     pub(super) fn read(&self, signed: &Signed) -> Result<Decoded, ChainError> {
         let unusual = ChainError::Invalid("this is not a transfer this wallet makes");
+        let (tx, from) = self.verified(signed)?;
+        let mut paid = Vec::new();
+        let mut changes = Vec::new();
+        for output in &tx.outputs {
+            let address = self
+                .address(&output.script)
+                .ok_or_else(|| unusual.clone())?;
+            if self.takes_change(&from, &address) {
+                changes.push((address, output.value));
+            } else {
+                paid.push((address, output.value));
+            }
+        }
+        let (([(to, value)], [] | [_]) | ([], [(to, value)])) =
+            (paid.as_slice(), changes.as_slice())
+        else {
+            return Err(unusual);
+        };
+        Ok(Decoded {
+            from,
+            to: *to,
+            asset: AssetId::Native(self.network.id.clone()),
+            amount: self.sats(*value)?,
+            everything: false,
+            memo: None,
+            sequence: tx.inputs.first().map(|input| conflict(&input.previous)),
+            expires_at: None,
+        })
+    }
+
+    pub(super) fn verified(&self, signed: &Signed) -> Result<(Tx, Address), ChainError> {
+        let unusual = ChainError::Invalid("this is not a transfer this wallet makes");
         let tx = parse(&signed.bytes)?;
         if TxId::new(id_text(&tx.id()))? != signed.id {
             return Err(ChainError::Mismatch("the transaction id"));
@@ -211,34 +243,8 @@ impl BitcoinChain {
                 return Err(ChainError::Mismatch("the sender"));
             }
         }
-        let from = from.ok_or_else(|| unusual.clone())?;
-        let mut paid = Vec::new();
-        let mut changes = Vec::new();
-        for output in &tx.outputs {
-            let address = self
-                .address(&output.script)
-                .ok_or_else(|| unusual.clone())?;
-            if self.takes_change(&from, &address) {
-                changes.push((address, output.value));
-            } else {
-                paid.push((address, output.value));
-            }
-        }
-        let (([(to, value)], [] | [_]) | ([], [(to, value)])) =
-            (paid.as_slice(), changes.as_slice())
-        else {
-            return Err(unusual);
-        };
-        Ok(Decoded {
-            from,
-            to: *to,
-            asset: AssetId::Native(self.network.id.clone()),
-            amount: self.sats(*value)?,
-            everything: false,
-            memo: None,
-            sequence: tx.inputs.first().map(|input| conflict(&input.previous)),
-            expires_at: None,
-        })
+        let from = from.ok_or(unusual)?;
+        Ok((tx, from))
     }
 
     pub(super) async fn push(&self, signed: &Signed) -> Result<TxId, ChainError> {
@@ -306,7 +312,7 @@ impl BitcoinChain {
         }
     }
 
-    fn recipient(&self, to: &Address) -> Result<Vec<u8>, ChainError> {
+    pub(super) fn recipient(&self, to: &Address) -> Result<Vec<u8>, ChainError> {
         match to {
             Address::Bitcoin { script, testnet } if *testnet == self.network.testnet => {
                 Ok(locking(*script))
@@ -357,7 +363,7 @@ impl BitcoinChain {
     }
 }
 
-fn conflict(outpoint: &Outpoint) -> u64 {
+pub(super) fn conflict(outpoint: &Outpoint) -> u64 {
     let mut head = [0u8; 8];
     head.copy_from_slice(&outpoint.txid[..8]);
     u64::from_le_bytes(head) ^ u64::from(outpoint.vout)
@@ -446,6 +452,11 @@ pub(super) fn cost(coins: &[Coin], outputs: &[Output], rate: u64) -> (u64, u64) 
 }
 
 pub(super) fn unsigned(coins: &[Coin], mut outputs: Vec<Output>) -> (Vec<Coin>, Tx) {
+    outputs.sort();
+    ordered(coins, outputs)
+}
+
+pub(super) fn ordered(coins: &[Coin], outputs: Vec<Output>) -> (Vec<Coin>, Tx) {
     let mut coins = coins.to_vec();
     coins.sort_by_key(|coin| coin.outpoint);
     let inputs = coins
@@ -457,7 +468,6 @@ pub(super) fn unsigned(coins: &[Coin], mut outputs: Vec<Output>) -> (Vec<Coin>, 
             witness: Vec::new(),
         })
         .collect();
-    outputs.sort();
     let tx = Tx {
         version: VERSION,
         inputs,

@@ -258,3 +258,134 @@ async fn the_receive_address_moves_past_used_ones_and_other_networks_keep_theirs
             .is_err()
     );
 }
+
+const VAULT: &str = "bc1pske0hr4ne5xajxdd6gz25m6sdsy6xva0aly9phgl0xy0frj9rl0qc94fxv";
+const HARDHAT_0: &str = "0x9858effd232b4033e47d90003d41ec34ecaeda94";
+
+fn chainflip_side(
+    state: Arc<Mutex<&'static str>>,
+) -> impl Fn(bahaa_testkit::Request) -> bahaa_testkit::Reply + Send + Sync + 'static {
+    move |request| {
+        let path = request.path().to_owned();
+        let reply = if path.starts_with("/v2/quote") {
+            serde_json::json!([{
+                "type": "REGULAR",
+                "srcAsset": {"chain": "Bitcoin", "asset": "BTC"},
+                "destAsset": {"chain": "Ethereum", "asset": "USDC"},
+                "depositAmount": "20000",
+                "egressAmount": "15000000",
+                "recommendedRetryDurationMinutes": 10,
+                "recommendedLivePriceSlippageTolerancePercent": 0.5,
+                "estimatedDurationSeconds": 1014,
+                "includedFees": [
+                    {"type": "INGRESS", "chain": "Bitcoin", "asset": "BTC", "amount": "171"},
+                    {"type": "EGRESS", "chain": "Ethereum", "asset": "USDC", "amount": "28146"}
+                ]
+            }])
+        } else if path.starts_with("/api/encodeVaultSwapData") {
+            let address = request.json()["destAddress"]
+                .as_str()
+                .unwrap()
+                .to_lowercase();
+            let payload = format!(
+                "0103{}6400{}3201000200000000",
+                address.trim_start_matches("0x"),
+                "0".repeat(32)
+            );
+            serde_json::json!({"chain": "Bitcoin", "depositAddress": VAULT, "nulldataPayload": format!("0x{payload}")})
+        } else if path.starts_with("/v2/swaps/") {
+            serde_json::json!({"state": *state.lock().unwrap(), "swapEgress": {"amount": "14900000"}})
+        } else {
+            let bytes: Vec<u8> = VAULT.bytes().collect();
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"bitcoin": [["cFLRQ", {"Btc": bytes}]]}})
+        };
+        bahaa_testkit::Reply::json(200, &reply)
+    }
+}
+
+#[tokio::test]
+async fn bitcoin_swaps_through_chainflip_deposit_into_a_listed_vault_with_our_own_data() {
+    let mut ledger = Ledger::new(BITCOIN_GENESIS);
+    ledger.fund(&address(SECOND), 50_000, 1);
+    let ledger = Arc::new(Mutex::new(ledger));
+    let url = bahaa_testkit::electrum::serve(Log::default(), Arc::clone(&ledger)).await;
+    let state = Arc::new(Mutex::new("SWAPPING"));
+    let side = bahaa_testkit::serve(chainflip_side(Arc::clone(&state))).await;
+    let dead = url::Url::parse("http://127.0.0.1:9/").unwrap();
+    let scratch = Scratch::new();
+    let registry = Registry::with_networks(vec![
+        bitcoin_network(url),
+        common::network("ethereum", dead.clone()),
+    ])
+    .unwrap();
+    let mut providers = bahaa_engine::swap::Providers::builtin().unwrap();
+    providers.oneclick.url = dead.clone();
+    providers.relay.url = dead;
+    providers.chainflip.url = side.clone();
+    providers.chainflip.rpc = side;
+    let mut settings = config(&scratch, registry, None);
+    settings.swaps = Some(providers);
+    let engine = Engine::start(settings).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .import(SecretString::from(PHRASE), SecretString::from(""))
+        .await
+        .unwrap();
+    let mut portfolio = engine.portfolio();
+    until(&mut portfolio, |portfolio| !portfolio.holdings.is_empty()).await;
+    let mut events = engine.events();
+    let draft = engine
+        .prepare_swap(bahaa_engine::SwapRequest {
+            wallet,
+            account: 0,
+            sell: "bitcoin".parse().unwrap(),
+            buy: "ethereum/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+                .parse()
+                .unwrap(),
+            amount: Spend::Exact(Amount::parse("0.0002", 8).unwrap()),
+        })
+        .await
+        .unwrap();
+    let index = draft
+        .routes
+        .iter()
+        .position(|ranked| ranked.route.provider == "Chainflip")
+        .unwrap();
+    let route = &draft.routes[index].route;
+    assert_eq!(route.expected.to_string(), "15");
+    assert_eq!(route.minimum.to_string(), "14.85");
+    let review = engine.choose_swap(draft.id, index).await.unwrap();
+    assert!(!review.checked);
+    assert_eq!(review.draft.transfer.to, address(VAULT));
+    let tx = engine
+        .confirm_send(review.draft.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    assert_eq!(tx.to, address(VAULT));
+    let raw = ledger.lock().unwrap().broadcast[0].clone();
+    let minimum = format!("{:032x}", 14_850_000u128.swap_bytes());
+    let ours = format!(
+        "0103{}6400{minimum}3201000200000000",
+        HARDHAT_0.trim_start_matches("0x")
+    );
+    assert!(
+        raw.contains(&format!("6a30{ours}")),
+        "the deposit carries our own swap data"
+    );
+    *state.lock().unwrap() = "COMPLETED";
+    let done = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Ok(Event::SwapUpdated(swap)) = events.recv().await
+                && swap.status == bahaa_engine::swap::SwapStatus::Done
+            {
+                return swap;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        (done.provider.as_str(), done.reference.as_str()),
+        ("chainflip", tx.id.as_str())
+    );
+}

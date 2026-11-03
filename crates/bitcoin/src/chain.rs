@@ -13,11 +13,13 @@ use bahaa_types::{Address, AssetId, BitcoinType};
 use ruint::aliases::U256;
 
 mod account;
+mod calls;
 mod incoming;
 mod proven;
 mod replace;
 mod send;
 
+pub use calls::BitcoinCall;
 pub use send::BitcoinPlan;
 
 use crate::proof::{ambiguous, unproven};

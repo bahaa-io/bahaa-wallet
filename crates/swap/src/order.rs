@@ -31,6 +31,10 @@ pub enum Provider {
     StonFi,
     #[serde(rename = "sunswap")]
     SunSwap,
+    #[serde(rename = "chainflip")]
+    Chainflip,
+    #[serde(rename = "thorchain")]
+    Thorchain,
 }
 
 impl Provider {
@@ -47,6 +51,8 @@ impl Provider {
             Self::Jupiter => "Jupiter",
             Self::StonFi => "STON.fi",
             Self::SunSwap => "SunSwap",
+            Self::Chainflip => "Chainflip",
+            Self::Thorchain => "THORChain",
         }
     }
 
@@ -63,6 +69,8 @@ impl Provider {
             Self::Jupiter => "jupiter",
             Self::StonFi => "stonfi",
             Self::SunSwap => "sunswap",
+            Self::Chainflip => "chainflip",
+            Self::Thorchain => "thorchain",
         }
     }
 
@@ -79,6 +87,8 @@ impl Provider {
             Self::Jupiter,
             Self::StonFi,
             Self::SunSwap,
+            Self::Chainflip,
+            Self::Thorchain,
         ]
         .into_iter()
         .find(|provider| provider.key() == key)
@@ -97,7 +107,7 @@ impl Provider {
     }
 
     pub fn by_transaction(self) -> bool {
-        self.on_chain() || self == Self::Across
+        self.on_chain() || matches!(self, Self::Across | Self::Chainflip | Self::Thorchain)
     }
 }
 

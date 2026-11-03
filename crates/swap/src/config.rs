@@ -21,6 +21,44 @@ pub struct Providers {
     pub jupiter: JupiterConfig,
     pub stonfi: StonFiConfig,
     pub sunswap: SunSwapConfig,
+    pub chainflip: ChainflipConfig,
+    pub thorchain: ThorchainConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThorchainConfig {
+    pub url: Url,
+    pub network: NetworkId,
+    pub assets: BTreeMap<AssetId, ThorAsset>,
+    pub routers: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThorAsset {
+    pub pool: String,
+    #[serde(default)]
+    pub short: Option<String>,
+    pub decimals: u8,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChainflipConfig {
+    pub url: Url,
+    pub rpc: Url,
+    pub network: NetworkId,
+    pub assets: BTreeMap<AssetId, ChainflipAsset>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChainflipAsset {
+    pub chain: String,
+    pub asset: String,
+    pub id: u8,
+    pub decimals: u8,
 }
 
 #[derive(Clone, Debug, Deserialize)]

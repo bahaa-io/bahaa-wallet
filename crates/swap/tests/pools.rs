@@ -5,7 +5,9 @@ use std::time::Duration;
 use bahaa_chain::{Chain, ContractSwap, PlannedCall, Step, TxId, TxStatus, check_call, now};
 use bahaa_crypto::{Mnemonic, Seed, WordCount};
 use bahaa_evm::{EvmCall, EvmChain};
-use bahaa_swap::{Across, KyberSwap, Method, Order, Pools, Providers, Relay, Request, Velora};
+use bahaa_swap::{
+    Across, KyberSwap, Method, Order, Pools, Providers, Relay, Request, Thorchain, Velora,
+};
 use bahaa_testkit::anvil::Anvil;
 use bahaa_types::{Address, Amount, AssetId};
 use serde_json::json;
@@ -363,4 +365,43 @@ async fn a_relay_call_from_polygon_takes_exactly_the_amount_on_a_forked_chain() 
         held(&chain, &me, &format!("polygon/{usdt}")).await,
         Amount::parse("30", 6).unwrap()
     );
+}
+
+#[tokio::test]
+#[ignore = "needs a local anvil and internet: BAHAA_ANVIL=/path/to/anvil"]
+async fn a_thorchain_deposit_into_bitcoin_takes_exactly_the_amount_on_a_forked_chain() {
+    let (anvil, chain, me, seed) = forked_on("base", "https://mainnet.base.org").await;
+    let thorchain = Thorchain::new(
+        &Providers::builtin().unwrap().thorchain,
+        bahaa_chain::http::client().unwrap(),
+    )
+    .unwrap();
+    let to = Address::parse(
+        bahaa_types::ChainFamily::Bitcoin,
+        "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+    )
+    .unwrap();
+    let deposit = Request {
+        sell: "base".parse().unwrap(),
+        amount: Amount::parse("0.3", 18).unwrap(),
+        buy: "bitcoin".parse().unwrap(),
+        buy_decimals: 8,
+        native_decimals: 18,
+        from: me,
+        to,
+        deadline: now() + 1_800,
+    };
+    let (route, order) = thorchain.quote(&deposit, now()).await.unwrap();
+    assert_eq!(route.method, Method::Validators);
+    let mut swap = swap_of(&deposit, order);
+    swap.buy = None;
+    warm(&anvil, &swap).await;
+    let before = held(&chain, &me, "base").await;
+    let (plans, fee) = chain.prepare_swap(&swap).await.unwrap();
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].checked());
+    run(&chain, &seed, &plans).await;
+    let spent = before.checked_sub(held(&chain, &me, "base").await).unwrap();
+    assert!(spent >= deposit.amount);
+    assert!(spent <= deposit.amount.checked_add(fee.max()).unwrap());
 }

@@ -1,0 +1,30 @@
+{
+  "inbound_address": "0x4d39d5c55cfeb48f44d680fcac20493635dafdee",
+  "inbound_confirmation_blocks": 12,
+  "inbound_confirmation_seconds": 24,
+  "outbound_delay_blocks": 0,
+  "outbound_delay_seconds": 0,
+  "fees": {
+    "asset": "BTC.BTC",
+    "affiliate": "0",
+    "outbound": "1571",
+    "liquidity": "594",
+    "total": "2165",
+    "slippage_bps": 20,
+    "total_bps": 73
+  },
+  "router": "0x00dc6100103BC402d490aEE3F9a5560cBd91f1d4",
+  "expiry": 1793736321,
+  "warning": "Do not cache this response. Do not send funds after the expiry. Rapid streaming time is a best-case estimate. Actual execution may take longer due to direction skipping, swap failures, or queue budget limits.",
+  "notes": "Base Asset: Send the inbound_address the asset with the memo encoded in hex in the data field. Tokens: First approve router to spend tokens from user: asset.approve(router, amount). Then call router.depositWithExpiry(inbound_address, asset, amount, memo, expiry). Asset is the token contract address. Amount should be in native asset decimals (eg 1e18 for most tokens). Do not swap to smart contract addresses.",
+  "dust_threshold": "1000",
+  "recommended_min_amount_in": "261555",
+  "recommended_gas_rate": "150",
+  "gas_rate_units": "mwei",
+  "memo": "=:b:bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu:0/0/9",
+  "expected_amount_out": "292405",
+  "max_streaming_quantity": 9,
+  "streaming_swap_blocks": 3,
+  "streaming_swap_seconds": 18,
+  "total_swap_seconds": 42
+}

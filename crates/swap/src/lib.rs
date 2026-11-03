@@ -1,5 +1,6 @@
 mod abi;
 mod across;
+mod chainflip;
 mod config;
 mod cow;
 mod jupiter;
@@ -13,13 +14,16 @@ mod reply;
 mod route;
 mod stonfi;
 mod sunswap;
+mod thorchain;
 mod velora;
 
 pub use across::Across;
+pub use chainflip::Chainflip;
 pub use config::{
-    AcrossConfig, CowConfig, CowNetwork, JupiterConfig, KyberConfig, OneClickConfig, PoolConfig,
-    Providers, RelayChain, RelayConfig, RelayDeposit, SpokeConfig, StonFiConfig, StonFiRouter,
-    SunSwapConfig, VeloraConfig,
+    AcrossConfig, ChainflipAsset, ChainflipConfig, CowConfig, CowNetwork, JupiterConfig,
+    KyberConfig, OneClickConfig, PoolConfig, Providers, RelayChain, RelayConfig, RelayDeposit,
+    SpokeConfig, StonFiConfig, StonFiRouter, SunSwapConfig, ThorAsset, ThorchainConfig,
+    VeloraConfig,
 };
 pub use cow::{Cow, TypedOrder};
 pub use jupiter::Jupiter;
@@ -32,4 +36,5 @@ pub use relay::Relay;
 pub use route::{Charged, Cost, CostKind, Custody, Method, Route};
 pub use stonfi::StonFi;
 pub use sunswap::SunSwap;
+pub use thorchain::Thorchain;
 pub use velora::Velora;
