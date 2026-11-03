@@ -118,8 +118,11 @@ pub fn solana_network(url: Url) -> Network {
         .get(&"solana".parse().unwrap())
         .unwrap()
         .clone();
-    network.endpoints.truncate(1);
+    network
+        .endpoints
+        .retain(|endpoint| endpoint.has(Feature::History));
     network.endpoints[0].url = url;
+    network.endpoints[0].history_gap_ms = 0;
     network
 }
 

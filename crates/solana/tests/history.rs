@@ -8,7 +8,7 @@ use bahaa_chain::ScanCursor;
 use bahaa_solana::SolanaChain;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use common::{Ledger, address, called, native, node, solana_on};
+use common::{Ledger, address, called, native, node, serve, solana_on, usdc};
 use serde_json::{Value, json};
 
 const BINANCE: &str = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
@@ -93,4 +93,73 @@ async fn a_quiet_address_has_no_history_to_record() {
         .await
         .unwrap();
     assert_eq!(quiet, None);
+}
+
+#[tokio::test]
+async fn a_refused_lookup_keeps_what_was_read_before_it() {
+    let coins = recorded()["coins"].clone();
+    let id = signature(&coins);
+    let time = coins["blockTime"].as_u64().unwrap();
+    let refused =
+        "4UsiwZTYEBqNpUnYAteKAKd2dC1QiaFBNLBpxAWzLLhTAAwTWJb6BHH6FMTBfmbMorNGpruvGnLzzoY7dYU2vyhY";
+    let mut ledger = Ledger::default();
+    ledger.transactions.insert(id.clone(), coins);
+    ledger.history = vec![
+        listed(&id, time, &Value::Null),
+        listed(refused, time - 60, &Value::Null),
+    ];
+    let limited = |ledger: Ledger| {
+        move |method: &str, params: &Value| {
+            if method == "getTransaction" && params[0] == refused {
+                return (
+                    429,
+                    json!({"jsonrpc": "2.0", "id": 1, "error": {"code": 429, "message": "Too many requests"}}),
+                );
+            }
+            (
+                200,
+                json!({"jsonrpc": "2.0", "id": 1, "result": ledger.answer(method, params)}),
+            )
+        }
+    };
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let chain = SolanaChain::new(solana_on(&[serve(
+        Arc::clone(&log),
+        limited(ledger.clone()),
+    )
+    .await]))
+    .unwrap();
+    let scanned = chain
+        .scan(&address(BINANCE), &[native()], None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(scanned.found.len(), 1);
+    assert_eq!(scanned.found[0].id.as_str(), id);
+    ledger.history.reverse();
+    let chain = SolanaChain::new(solana_on(&[serve(log, limited(ledger)).await])).unwrap();
+    assert!(
+        chain
+            .scan(&address(BINANCE), &[native()], None)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn token_histories_are_read_only_for_opened_token_accounts() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let chain = SolanaChain::new(solana_on(
+        &[node(Arc::clone(&log), Ledger::default()).await],
+    ))
+    .unwrap();
+    chain
+        .scan(&address(BINANCE), &[native(), usdc()], None)
+        .await
+        .unwrap();
+    let listings: Vec<Value> = called(&log, "getSignaturesForAddress")
+        .into_iter()
+        .map(|params| params[0].clone())
+        .collect();
+    assert_eq!(listings, [json!(BINANCE)]);
 }

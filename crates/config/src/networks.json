@@ -540,14 +540,15 @@
     "endpoints": [
       {
         "protocol": "solana-rpc",
-        "url": "https://api.mainnet-beta.solana.com",
-        "features": [
-          "history"
-        ]
+        "url": "https://solana-rpc.publicnode.com"
       },
       {
         "protocol": "solana-rpc",
-        "url": "https://solana-rpc.publicnode.com"
+        "url": "https://api.mainnet-beta.solana.com",
+        "features": [
+          "history"
+        ],
+        "history_gap_ms": 1100
       }
     ],
     "explorer": {
@@ -669,7 +670,8 @@
         "url": "https://api.devnet.solana.com",
         "features": [
           "history"
-        ]
+        ],
+        "history_gap_ms": 1100
       }
     ],
     "explorer": {

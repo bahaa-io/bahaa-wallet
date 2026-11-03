@@ -621,8 +621,14 @@ mod tests {
             solana.tokens[1].contract.to_string(),
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
         );
-        assert!(solana.endpoints[0].has(Feature::History));
-        assert!(!solana.endpoints[1].has(Feature::History));
+        let history: Vec<&Endpoint> = solana
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.has(Feature::History))
+            .collect();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].history_gap_ms >= 1000);
+        assert!(!solana.endpoints[0].has(Feature::History));
         let broken = |edit: &dyn Fn(&mut Value)| edited("solana", edit).is_err();
         assert!(broken(&|n| n["genesis"] = Value::Null));
         assert!(broken(&|n| {

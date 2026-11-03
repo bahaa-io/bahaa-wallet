@@ -12,7 +12,7 @@ use crate::rpc::{self, count, key};
 use crate::tx::{self, Key};
 
 const PAGE: usize = 50;
-const MAX_LOOKUPS: usize = 32;
+const MAX_LOOKUPS: usize = 20;
 
 struct History {
     address: Key,
@@ -82,6 +82,21 @@ impl SolanaChain {
                 }
             });
         }
+        let token_accounts: Vec<Key> = histories
+            .iter()
+            .filter(|history| history.mint.is_some())
+            .map(|history| history.address)
+            .collect();
+        if !token_accounts.is_empty() {
+            let opened = self.accounts(&token_accounts, Some(0)).await?;
+            histories.retain(|history| {
+                history.mint.is_none()
+                    || token_accounts
+                        .iter()
+                        .zip(&opened)
+                        .any(|(address, account)| *address == history.address && account.is_some())
+            });
+        }
         if histories.is_empty() {
             return Ok(None);
         }
@@ -117,15 +132,14 @@ impl SolanaChain {
         let mut newest = None;
         let mut oldest = None;
         let mut looked = 0;
+        let interrupted = |newest, oldest: Option<u64>, err| match oldest {
+            Some(time) => Ok((newest, WalkEnd::Capped(time))),
+            None => Err(err),
+        };
         loop {
             let page = match self.listed(&history.address, before.as_ref(), PAGE).await {
                 Ok(page) => page,
-                Err(err) => {
-                    return match oldest {
-                        Some(time) => Ok((newest, WalkEnd::Capped(time))),
-                        None => Err(err),
-                    };
-                }
+                Err(err) => return interrupted(newest, oldest, err),
             };
             for entry in &page {
                 newest.get_or_insert(entry.time);
@@ -137,22 +151,14 @@ impl SolanaChain {
                 }
                 if !entry.failed {
                     looked += 1;
-                    let reply = self
-                        .rpc
-                        .call_with(
-                            Some(Feature::History),
-                            "getTransaction",
-                            json!([entry.id.as_str(), {
-                                "encoding": "base64",
-                                "commitment": "finalized",
-                                "maxSupportedTransactionVersion": 0
-                            }]),
-                        )
-                        .await?;
-                    match movement(&reply, owner, history, &entry.id)? {
-                        Some((true, moved)) => found.received.push(moved),
-                        Some((false, moved)) => found.sent.push(moved),
-                        None => {}
+                    let reply = match self.transaction(&entry.id).await {
+                        Ok(reply) => reply,
+                        Err(err) => return interrupted(newest, oldest, err),
+                    };
+                    match movement(&reply, owner, history, &entry.id) {
+                        Ok(Some((true, moved))) => found.received.push(moved),
+                        Ok(Some((false, moved))) => found.sent.push(moved),
+                        Ok(None) | Err(_) => {}
                     }
                 }
                 oldest = Some(entry.time);
@@ -163,6 +169,27 @@ impl SolanaChain {
                 (_, None) => return Ok((newest, WalkEnd::Missing)),
             }
         }
+    }
+
+    async fn transaction(&self, id: &TxId) -> Result<Value, ChainError> {
+        let reply = self
+            .rpc
+            .call_with(
+                Some(Feature::History),
+                "getTransaction",
+                json!([id.as_str(), {
+                    "encoding": "base64",
+                    "commitment": "finalized",
+                    "maxSupportedTransactionVersion": 0
+                }]),
+            )
+            .await?;
+        if reply.is_null() {
+            return Err(ChainError::Network(
+                "an endpoint does not know a listed transaction yet".to_owned(),
+            ));
+        }
+        Ok(reply)
     }
 
     async fn listed(
@@ -213,11 +240,6 @@ fn movement(
     history: &History,
     id: &TxId,
 ) -> Result<Option<(bool, Movement)>, ChainError> {
-    if found.is_null() {
-        return Err(ChainError::Network(
-            "an endpoint does not know a listed transaction yet".to_owned(),
-        ));
-    }
     let raw = rpc::encoded(&found["transaction"])?;
     let wire = tx::fetched(&raw, id)?;
     let meta = &found["meta"];
