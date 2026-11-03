@@ -293,5 +293,10 @@
         "chain": 43114
       }
     }
+  },
+  "jupiter": {
+    "url": "https://lite-api.jup.ag/swap/v1/",
+    "network": "solana",
+    "program": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
   }
 }

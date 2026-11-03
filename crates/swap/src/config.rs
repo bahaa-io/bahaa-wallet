@@ -18,6 +18,15 @@ pub struct Providers {
     pub across: AcrossConfig,
     pub velora: VeloraConfig,
     pub cow: CowConfig,
+    pub jupiter: JupiterConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JupiterConfig {
+    pub url: Url,
+    pub network: NetworkId,
+    pub program: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

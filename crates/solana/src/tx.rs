@@ -131,6 +131,12 @@ pub(crate) struct Wire<'a> {
     pub keys: Vec<Key>,
     pub blockhash: Key,
     pub instructions: Vec<Compiled>,
+    pub lookups: Vec<Lookup>,
+}
+
+pub(crate) struct Lookup {
+    pub writable: usize,
+    pub readonly: usize,
 }
 
 pub(crate) struct Compiled {
@@ -174,13 +180,15 @@ pub(crate) fn read(bytes: &[u8]) -> Option<Wire<'_>> {
             data,
         });
     }
+    let mut lookups = Vec::new();
     if versioned {
         for _ in 0..read_len(&mut reader)? {
             reader.array::<32>()?;
-            for _ in 0..2 {
-                let len = read_len(&mut reader)?;
-                reader.take(len)?;
-            }
+            let writable = read_len(&mut reader)?;
+            reader.take(writable)?;
+            let readonly = read_len(&mut reader)?;
+            reader.take(readonly)?;
+            lookups.push(Lookup { writable, readonly });
         }
     }
     reader.0.is_empty().then_some(Wire {
@@ -191,6 +199,7 @@ pub(crate) fn read(bytes: &[u8]) -> Option<Wire<'_>> {
         keys,
         blockhash,
         instructions,
+        lookups,
     })
 }
 

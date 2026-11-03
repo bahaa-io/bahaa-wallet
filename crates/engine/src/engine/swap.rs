@@ -4,8 +4,9 @@ use std::time::Duration;
 use bahaa_chain::{ChainError, ContractSwap, FeeQuote, MAX_MEMO, Step, Transfer};
 use bahaa_store::{SentStatus, SentTx, SwapRecord, SwapStatus};
 use bahaa_swap::{
-    Across, Charged, Comment, Cost, CostKind, Cow, KyberSwap, OneClick, Order, Pools, Progress,
-    Provider, Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, SwapError, Velora, rank,
+    Across, Charged, Comment, Cost, CostKind, Cow, Jupiter, KyberSwap, OneClick, Order, Pools,
+    Progress, Provider, Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, SwapError, Velora,
+    rank,
 };
 use bahaa_types::{Address, Amount, AssetId, BitcoinScript, NetworkId, is_plain_text};
 use futures_util::future::join_all;
@@ -71,6 +72,7 @@ pub(crate) struct Swappers {
     velora: Velora,
     across: Across,
     cow: Cow,
+    jupiter: Jupiter,
 }
 
 impl Swappers {
@@ -83,7 +85,8 @@ impl Swappers {
             kyber: KyberSwap::new(&providers.kyberswap, client.clone())?,
             velora: Velora::new(&providers.velora, client.clone())?,
             across: Across::new(&providers.across, client.clone())?,
-            cow: Cow::new(&providers.cow, client)?,
+            cow: Cow::new(&providers.cow, client.clone())?,
+            jupiter: Jupiter::new(&providers.jupiter, client)?,
         })
     }
 
@@ -106,6 +109,9 @@ impl Swappers {
                     .into_iter()
                     .filter_map(|(provider, covers)| covers.then_some(provider)),
             );
+        }
+        if chain.solana().is_some() && self.jupiter.covers(request) {
+            providers.push(Provider::Jupiter);
         }
         providers
     }
@@ -192,6 +198,10 @@ impl Swappers {
                 self.velora.quote(evm, request, now).await
             }
             Provider::Cow => self.cow.quote(request, now).await,
+            Provider::Jupiter => {
+                let solana = chain.solana().ok_or(SwapError::Unsupported)?;
+                self.jupiter.quote(solana, request, now).await
+            }
         }
     }
 
@@ -206,9 +216,11 @@ impl Swappers {
             Provider::Relay => self.relay.status(reference).await,
             Provider::Across => self.across.status(network, reference).await,
             Provider::Cow => self.cow.status(network, reference).await,
-            Provider::Uniswap | Provider::PancakeSwap | Provider::KyberSwap | Provider::Velora => {
-                Err(SwapError::Unsupported)
-            }
+            Provider::Uniswap
+            | Provider::PancakeSwap
+            | Provider::KyberSwap
+            | Provider::Velora
+            | Provider::Jupiter => Err(SwapError::Unsupported),
         }
     }
 }

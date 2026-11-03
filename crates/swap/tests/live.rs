@@ -1,11 +1,13 @@
 #![allow(clippy::unwrap_used)]
 
 use bahaa_chain::Chain;
+use bahaa_chain::ContractSwap;
 use bahaa_chain::now;
 use bahaa_config::Registry;
 use bahaa_crypto::{Mnemonic, WordCount};
 use bahaa_evm::EvmChain;
-use bahaa_swap::{Cow, OneClick, Providers, Relay, Request, SwapError};
+use bahaa_solana::SolanaChain;
+use bahaa_swap::{Cow, Jupiter, Method, OneClick, Providers, Relay, Request, SwapError};
 use bahaa_types::{Address, Amount, ChainFamily};
 
 fn evm() -> Address {
@@ -131,5 +133,61 @@ async fn live_cow_accepts_our_signature_and_only_misses_the_balance() {
             .iter()
             .any(|word| lower.contains(word)),
         "{reason}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "talks to Jupiter and Solana"]
+async fn live_jupiter_routes_pass_the_solana_check_for_a_funded_address() {
+    let registry = Registry::builtin().unwrap();
+    let chain =
+        SolanaChain::new(registry.get(&"solana".parse().unwrap()).unwrap().clone()).unwrap();
+    let whale = Address::parse(
+        ChainFamily::Solana,
+        "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+    )
+    .unwrap();
+    let jupiter = Jupiter::new(
+        &Providers::builtin().unwrap().jupiter,
+        bahaa_chain::http::client().unwrap(),
+    )
+    .unwrap();
+    let asked = request(
+        "solana",
+        "0.1",
+        9,
+        "solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        6,
+        whale,
+        whale,
+    );
+    let (route, order) = jupiter.quote(&chain, &asked, now()).await.unwrap();
+    assert_eq!(
+        (route.provider, route.method),
+        ("Jupiter", Method::Aggregator)
+    );
+    assert!(route.minimum < route.expected);
+    let contract = order.contract.unwrap();
+    let swap = ContractSwap {
+        account: 0,
+        from: whale,
+        call: contract.call,
+        spender: None,
+        sell: asked.sell.clone(),
+        amount: asked.amount,
+        buy: Some((asked.buy.clone(), route.minimum)),
+        ours: false,
+    };
+    let (plans, fee) = chain.prepare_swap(&swap).await.unwrap();
+    assert_eq!(plans.len(), 1);
+    assert!(fee.expected() < Amount::parse("0.01", 9).unwrap());
+    let mut greedy = swap.clone();
+    greedy.buy = Some((
+        asked.buy.clone(),
+        route.expected.checked_add(route.expected).unwrap(),
+    ));
+    assert_eq!(
+        chain.prepare_swap(&greedy).await.unwrap_err().to_string(),
+        "the swap would pay less than its minimum"
     );
 }

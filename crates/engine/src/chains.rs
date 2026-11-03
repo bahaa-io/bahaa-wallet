@@ -10,7 +10,7 @@ use bahaa_chain::{
 use bahaa_config::{Coin, Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmCall, EvmChain, EvmPlan};
-use bahaa_solana::{SolanaChain, SolanaPlan};
+use bahaa_solana::{SolanaCall, SolanaChain, SolanaPlan};
 use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock};
 use bahaa_ton::{TonChain, TonPlan};
 use bahaa_tron::{TronChain, TronPlan};
@@ -34,24 +34,28 @@ pub(crate) enum AnyChain {
 #[derive(Clone)]
 pub(crate) enum AnyCall {
     Evm(EvmCall),
+    Solana(SolanaCall),
 }
 
 impl AnyCall {
     pub(crate) fn planned(&self) -> &PlannedCall {
         match self {
             Self::Evm(call) => call.planned(),
+            Self::Solana(call) => call.planned(),
         }
     }
 
     pub(crate) fn fee_max(&self) -> Amount {
         match self {
             Self::Evm(call) => call.fee_max(),
+            Self::Solana(call) => call.fee_max(),
         }
     }
 
     pub(crate) fn checked(&self) -> bool {
         match self {
             Self::Evm(call) => call.checked(),
+            Self::Solana(_) => true,
         }
     }
 }
@@ -116,6 +120,13 @@ impl AnyChain {
         }
     }
 
+    pub(crate) fn solana(&self) -> Option<&SolanaChain> {
+        match self {
+            Self::Solana(chain) => Some(chain),
+            Self::Evm(_) | Self::Tron(_) | Self::Ton(_) | Self::Bitcoin(_) => None,
+        }
+    }
+
     pub(crate) async fn prepare_swap(
         &self,
         swap: &ContractSwap,
@@ -126,7 +137,11 @@ impl AnyChain {
                     let (plans, fee) = chain.prepare_swap(swap).await?;
                     Ok((plans.into_iter().map(AnyCall::Evm).collect(), fee))
                 }
-                Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Self::Solana(chain) => {
+                    let (plans, fee) = chain.prepare_swap(swap).await?;
+                    Ok((plans.into_iter().map(AnyCall::Solana).collect(), fee))
+                }
+                Self::Tron(_) | Self::Ton(_) | Self::Bitcoin(_) => {
                     Err(ChainError::Unsupported("swaps through contracts"))
                 }
             }
@@ -177,11 +192,18 @@ impl AnyChain {
                 Self::Evm(chain) => {
                     let plans: Vec<EvmCall> = calls
                         .iter()
-                        .map(|AnyCall::Evm(call)| call.clone())
+                        .filter_map(|call| match call {
+                            AnyCall::Evm(call) => Some(call.clone()),
+                            AnyCall::Solana(_) => None,
+                        })
                         .collect();
+                    if plans.len() != calls.len() {
+                        return Err(ChainError::Mismatch("the network"));
+                    }
                     chain.recheck(swap, &plans).await
                 }
-                Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Self::Solana(chain) => chain.recheck(swap).await,
+                Self::Tron(_) | Self::Ton(_) | Self::Bitcoin(_) => {
                     Err(ChainError::Unsupported("swaps through contracts"))
                 }
             }
@@ -192,6 +214,7 @@ impl AnyChain {
     pub(crate) fn sign_call(&self, plan: &AnyCall, seed: &Seed) -> Result<Signed, ChainError> {
         match (self, plan) {
             (Self::Evm(chain), AnyCall::Evm(plan)) => chain.sign_call(plan, seed),
+            (Self::Solana(chain), AnyCall::Solana(plan)) => chain.sign_call(plan, seed),
             _ => Err(ChainError::Mismatch("the network")),
         }
     }
@@ -199,7 +222,8 @@ impl AnyChain {
     pub(crate) fn decode_call(&self, signed: &Signed) -> Result<DecodedCall, ChainError> {
         std::panic::catch_unwind(AssertUnwindSafe(|| match self {
             Self::Evm(chain) => chain.decode_call(signed),
-            Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+            Self::Solana(chain) => chain.decode_call(signed),
+            Self::Tron(_) | Self::Ton(_) | Self::Bitcoin(_) => {
                 Err(ChainError::Unsupported("swaps through contracts"))
             }
         }))

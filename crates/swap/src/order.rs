@@ -25,6 +25,8 @@ pub enum Provider {
     Velora,
     #[serde(rename = "cow")]
     Cow,
+    #[serde(rename = "jupiter")]
+    Jupiter,
 }
 
 impl Provider {
@@ -38,6 +40,7 @@ impl Provider {
             Self::Across => "Across",
             Self::Velora => "Velora",
             Self::Cow => "CoW Swap",
+            Self::Jupiter => "Jupiter",
         }
     }
 
@@ -51,6 +54,7 @@ impl Provider {
             Self::Across => "across",
             Self::Velora => "velora",
             Self::Cow => "cow",
+            Self::Jupiter => "jupiter",
         }
     }
 
@@ -64,6 +68,7 @@ impl Provider {
             Self::Across,
             Self::Velora,
             Self::Cow,
+            Self::Jupiter,
         ]
         .into_iter()
         .find(|provider| provider.key() == key)
@@ -72,7 +77,7 @@ impl Provider {
     pub fn on_chain(self) -> bool {
         matches!(
             self,
-            Self::Uniswap | Self::PancakeSwap | Self::KyberSwap | Self::Velora
+            Self::Uniswap | Self::PancakeSwap | Self::KyberSwap | Self::Velora | Self::Jupiter
         )
     }
 

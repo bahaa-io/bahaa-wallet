@@ -6,4 +6,4 @@ mod programs;
 mod rpc;
 mod tx;
 
-pub use chain::{QUOTE_LIFE, SolanaChain, SolanaPlan, derive};
+pub use chain::{QUOTE_LIFE, SolanaCall, SolanaChain, SolanaPlan, derive, swap_instruction};

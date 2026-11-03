@@ -12,9 +12,11 @@ use ed25519_dalek::SigningKey;
 use futures_util::future::try_join_all;
 use ruint::aliases::U256;
 
+mod calls;
 mod incoming;
 mod send;
 
+pub use calls::{SolanaCall, swap_instruction};
 pub use send::SolanaPlan;
 
 use crate::programs::{METADATA, Shape, TOKEN, TOKEN_2022, metadata_account, token_account};
@@ -163,13 +165,7 @@ impl Chain for SolanaChain {
     }
 
     fn sign(&self, plan: &SolanaPlan, seed: &Seed) -> Result<Signed, ChainError> {
-        let key = SolanaPath::ALL
-            .into_iter()
-            .filter_map(|path| key(seed, plan.transfer.account, path).ok())
-            .find(|key| Address::Solana(key.verifying_key().to_bytes()) == plan.transfer.from)
-            .ok_or(ChainError::Invalid(
-                "this seed does not own the sending account",
-            ))?;
+        let key = signer(seed, plan.transfer.account, &plan.transfer.from)?;
         let (bytes, signature) = tx::sign(&plan.message, &key);
         Ok(Signed {
             id: tx::id(&signature)?,
@@ -252,6 +248,16 @@ pub fn derive(seed: &Seed, account: u32, path: SolanaPath) -> Result<Address, Ch
     Ok(Address::Solana(
         key(seed, account, path)?.verifying_key().to_bytes(),
     ))
+}
+
+fn signer(seed: &Seed, account: u32, from: &Address) -> Result<SigningKey, ChainError> {
+    SolanaPath::ALL
+        .into_iter()
+        .filter_map(|path| key(seed, account, path).ok())
+        .find(|key| Address::Solana(key.verifying_key().to_bytes()) == *from)
+        .ok_or(ChainError::Invalid(
+            "this seed does not own the sending account",
+        ))
 }
 
 fn key(seed: &Seed, account: u32, path: SolanaPath) -> Result<SigningKey, ChainError> {

@@ -2,6 +2,7 @@ mod abi;
 mod across;
 mod config;
 mod cow;
+mod jupiter;
 mod kyber;
 mod oneclick;
 mod order;
@@ -14,10 +15,11 @@ mod velora;
 
 pub use across::Across;
 pub use config::{
-    AcrossConfig, CowConfig, CowNetwork, KyberConfig, OneClickConfig, PoolConfig, Providers,
-    RelayChain, RelayConfig, RelayDeposit, SpokeConfig, VeloraConfig,
+    AcrossConfig, CowConfig, CowNetwork, JupiterConfig, KyberConfig, OneClickConfig, PoolConfig,
+    Providers, RelayChain, RelayConfig, RelayDeposit, SpokeConfig, VeloraConfig,
 };
 pub use cow::{Cow, TypedOrder};
+pub use jupiter::Jupiter;
 pub use kyber::KyberSwap;
 pub use oneclick::OneClick;
 pub use order::{Comment, Contract, Order, Progress, Provider, QUOTE_LIFE, Request, SwapError};

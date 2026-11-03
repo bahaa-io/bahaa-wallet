@@ -7,7 +7,11 @@ use std::time::Duration;
 
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Engine, SendRequest, SentStatus, SolanaPath, Spend, WalletId, WalletKind};
+use bahaa_engine::swap::{Method, Providers, SwapStatus};
+use bahaa_engine::{
+    Engine, Event, SendRequest, SentKind, SentStatus, SolanaPath, Spend, SwapRequest, WalletId,
+    WalletKind,
+};
 use bahaa_types::{Address, Amount, AssetId, ChainFamily};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -56,6 +60,7 @@ fn answer(ledger: &Mutex<Ledger>, call: &Value) -> Value {
             {"signature": "vGWaZAYtYPZpRsBbKL1LyTZS2Upj7muftZzAH4PJfWif3XAk8vFEiV9XVtDeVRWAURJVpFYBt1sbRXxrdBRMCAQ", "slot": 9, "blockTime": 1_793_637_863, "err": null}
         ]),
         "getSignaturesForAddress" => json!([]),
+        "simulateTransaction" if params[1]["innerInstructions"] == true => swap_simulation(),
         "simulateTransaction" => {
             json!({"context": {"slot": 1}, "value": {"err": null, "logs": [], "unitsConsumed": 450}})
         }
@@ -209,4 +214,143 @@ async fn a_phrase_used_on_the_short_path_is_found_there_and_remembered() {
         solana_path(&engine, wallet).await,
         Some(SolanaPath::Bip44Change)
     );
+}
+
+const JUPITER: &str = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SOLD: u64 = 100_000_000;
+const QUOTED: u64 = 9_331_279;
+const RENT: u64 = 2_039_280;
+
+fn key(text: &str) -> [u8; 32] {
+    bs58::decode(text).into_vec().unwrap().try_into().unwrap()
+}
+
+fn swap_transaction() -> Vec<u8> {
+    let mut data = vec![0xe5, 0x17, 0xcb, 0x97, 0x7a, 0xe3, 0xad, 0x2a, 0];
+    data.extend_from_slice(&SOLD.to_le_bytes());
+    data.extend_from_slice(&QUOTED.to_le_bytes());
+    data.extend_from_slice(&50u16.to_le_bytes());
+    data.push(0);
+    let mut message = vec![0x80, 1, 0, 1, 3];
+    for account in [key(OWNER), [5; 32], key(JUPITER)] {
+        message.extend_from_slice(&account);
+    }
+    message.extend_from_slice(&[7; 32]);
+    message.extend_from_slice(&[1, 2, 2, 0, 1]);
+    message.push(u8::try_from(data.len()).unwrap());
+    message.extend_from_slice(&data);
+    message.push(0);
+    let mut transaction = vec![1];
+    transaction.extend_from_slice(&[0; 64]);
+    transaction.extend_from_slice(&message);
+    transaction
+}
+
+fn swap_simulation() -> Value {
+    let start = 1_250_000_000u64;
+    json!({"context": {"slot": 1}, "value": {
+        "err": null,
+        "fee": 5_000,
+        "unitsConsumed": 50_000,
+        "loadedAddresses": {"writable": [], "readonly": []},
+        "preBalances": [start, 0, 1],
+        "postBalances": [start - SOLD - 5_000 - RENT, RENT, 1],
+        "preTokenBalances": [],
+        "postTokenBalances": [{
+            "accountIndex": 1,
+            "mint": USDC,
+            "owner": OWNER,
+            "uiTokenAmount": {"amount": QUOTED.to_string(), "decimals": 6},
+        }],
+        "innerInstructions": [],
+        "accounts": [account(start - SOLD - 5_000 - RENT)],
+    }})
+}
+
+async fn jupiter() -> url::Url {
+    bahaa_testkit::serve(|request| {
+        if request.path().starts_with("/quote") {
+            return bahaa_testkit::Reply::json(
+                200,
+                &json!({
+                    "inputMint": "So11111111111111111111111111111111111111112",
+                    "outputMint": USDC,
+                    "inAmount": SOLD.to_string(),
+                    "outAmount": QUOTED.to_string(),
+                    "otherAmountThreshold": "9284623",
+                    "swapMode": "ExactIn",
+                    "platformFee": null,
+                }),
+            );
+        }
+        bahaa_testkit::Reply::json(
+            200,
+            &json!({"swapTransaction": STANDARD.encode(swap_transaction())}),
+        )
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_jupiter_swap_is_checked_by_simulation_signed_sent_and_settled() {
+    let scratch = Scratch::new();
+    let ledger = Arc::new(Mutex::new(Ledger::default()));
+    let shared = Arc::clone(&ledger);
+    let url = common::node(move |call| (answer(&shared, call), Duration::ZERO)).await;
+    let registry = Registry::with_networks(vec![common::solana_network(url)]).unwrap();
+    let dead = url::Url::parse("http://127.0.0.1:9/").unwrap();
+    let mut providers = Providers::builtin().unwrap();
+    providers.oneclick.url = dead.clone();
+    providers.relay.url = dead;
+    providers.jupiter.url = jupiter().await;
+    let mut config = config(&scratch, registry, None);
+    config.swaps = Some(providers);
+    let engine = Engine::start(config).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .import(SecretString::from(PHRASE), SecretString::from(""))
+        .await
+        .unwrap();
+    let mut events = engine.events();
+    let draft = engine
+        .prepare_swap(SwapRequest {
+            wallet,
+            account: 0,
+            sell: "solana".parse().unwrap(),
+            buy: format!("solana/{USDC}").parse().unwrap(),
+            amount: Spend::Exact(Amount::parse("0.1", 9).unwrap()),
+        })
+        .await
+        .unwrap();
+    let index = draft
+        .routes
+        .iter()
+        .position(|ranked| ranked.route.provider == "Jupiter")
+        .unwrap();
+    let route = &draft.routes[index].route;
+    assert_eq!(route.method, Method::Aggregator);
+    assert_eq!(route.minimum.to_string(), "9.284622");
+    let review = engine.choose_swap(draft.id, index).await.unwrap();
+    assert!(review.checked);
+    assert_eq!(review.draft.fee.expected().to_string(), "0.00204428");
+    let tx = engine
+        .confirm_send(review.draft.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    assert_eq!(tx.kind, SentKind::Swap);
+    assert_eq!(ledger.lock().unwrap().sent.len(), 1);
+    let done = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(Event::SwapUpdated(swap)) = events.recv().await
+                && swap.status == SwapStatus::Done
+            {
+                return swap;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(done.provider, "jupiter");
+    assert_eq!(done.reference, tx.id);
 }
