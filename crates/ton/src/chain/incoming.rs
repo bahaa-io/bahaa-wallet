@@ -1,4 +1,4 @@
-use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId};
+use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId, WalkEnd, covered};
 use bahaa_config::Protocol;
 use bahaa_types::{Address, AssetId};
 
@@ -6,15 +6,6 @@ use super::{TonChain, amount, hex};
 use crate::transaction::Transaction;
 
 const MAX_SCANNED: usize = 64;
-const SETTLE: u64 = 300;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum End {
-    Missing,
-    Start { now: u32 },
-    Connected,
-    Capped { now: u32 },
-}
 
 struct History {
     address: Address,
@@ -121,9 +112,9 @@ impl TonChain {
         histories: &[History],
         stop: u64,
         found: &mut Found,
-    ) -> Result<(Option<u32>, End), ChainError> {
+    ) -> Result<(Option<u64>, WalkEnd), ChainError> {
         let Some(mut next) = self.http.account(&history.address).await?.last else {
-            return Ok((None, End::Missing));
+            return Ok((None, WalkEnd::Missing));
         };
         let mut newest = None;
         let mut oldest = None;
@@ -133,15 +124,16 @@ impl TonChain {
                 Ok(list) => list,
                 Err(err) => {
                     return match oldest {
-                        Some(now) => Ok((newest, End::Capped { now })),
+                        Some(time) => Ok((newest, WalkEnd::Capped(time))),
                         None => Err(err),
                     };
                 }
             };
             for transaction in list {
-                newest.get_or_insert(transaction.now);
-                if u64::from(transaction.now) < stop {
-                    return Ok((newest, End::Connected));
+                let time = u64::from(transaction.now);
+                newest.get_or_insert(time);
+                if time < stop {
+                    return Ok((newest, WalkEnd::Connected));
                 }
                 if let Some(entry) = receipt(owner, history, &transaction)? {
                     found.received.push(entry);
@@ -152,23 +144,13 @@ impl TonChain {
                         .extend(departures(owner, history, histories, &transaction)?);
                 }
                 scanned += 1;
-                oldest = Some(transaction.now);
+                oldest = Some(time);
                 next = transaction.previous;
                 if next.1 == 0 {
-                    return Ok((
-                        newest,
-                        End::Start {
-                            now: transaction.now,
-                        },
-                    ));
+                    return Ok((newest, WalkEnd::Start(time)));
                 }
                 if scanned >= MAX_SCANNED {
-                    return Ok((
-                        newest,
-                        End::Capped {
-                            now: transaction.now,
-                        },
-                    ));
+                    return Ok((newest, WalkEnd::Capped(time)));
                 }
             }
         }
@@ -243,96 +225,4 @@ fn departures(
         }
     }
     Ok(sent)
-}
-
-fn covered(cursor: Option<ScanCursor>, walked: &[(Option<u32>, End)], checked: u64) -> ScanCursor {
-    let stop = cursor.map_or(0, |cursor| cursor.next);
-    let newest = walked.iter().filter_map(|(head, _)| *head).max();
-    let seen = newest.map_or(checked, |newest| checked.min(u64::from(newest)));
-    let next = stop.max(seen.saturating_sub(SETTLE));
-    let since = walked
-        .iter()
-        .filter_map(|(_, end)| match end {
-            End::Missing => None,
-            End::Start { now } => Some(u64::from(*now)),
-            End::Connected => cursor.map(|cursor| cursor.complete_since),
-            End::Capped { now } => Some(u64::from(*now).saturating_add(1)),
-        })
-        .max()
-        .unwrap_or_else(|| cursor.map_or(checked, |cursor| cursor.complete_since))
-        .min(next);
-    ScanCursor {
-        next,
-        complete_from: since,
-        complete_since: since,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const NOW: u64 = 1_792_300_000;
-
-    fn cursor(next: u64, since: u64) -> ScanCursor {
-        ScanCursor {
-            next,
-            complete_from: since,
-            complete_since: since,
-        }
-    }
-
-    #[test]
-    fn coverage_is_the_latest_point_every_history_reaches() {
-        let first = covered(
-            None,
-            &[
-                (Some(1_792_200_000), End::Capped { now: 1_791_000_000 }),
-                (Some(1_792_100_000), End::Start { now: 1_791_500_000 }),
-                (None, End::Missing),
-            ],
-            NOW,
-        );
-        assert_eq!(first, cursor(1_792_199_700, 1_791_500_000));
-        let later = covered(
-            Some(first),
-            &[
-                (Some(1_792_250_000), End::Connected),
-                (Some(1_792_150_000), End::Connected),
-            ],
-            NOW,
-        );
-        assert_eq!(later, cursor(1_792_249_700, 1_791_500_000));
-        let gap = covered(
-            Some(later),
-            &[(Some(1_792_290_000), End::Capped { now: 1_792_260_000 })],
-            NOW,
-        );
-        assert_eq!(gap, cursor(1_792_289_700, 1_792_260_001));
-    }
-
-    #[test]
-    fn the_cursor_never_runs_ahead_of_the_clock_or_backwards() {
-        assert_eq!(
-            covered(None, &[(None, End::Missing)], NOW),
-            cursor(NOW - SETTLE, NOW - SETTLE)
-        );
-        assert_eq!(
-            covered(
-                None,
-                &[(Some(1_900_000_000), End::Start { now: 1_800_000_000 })],
-                NOW
-            ),
-            cursor(NOW - SETTLE, NOW - SETTLE)
-        );
-        let ahead = cursor(NOW, 5);
-        assert_eq!(
-            covered(Some(ahead), &[(Some(1_700_000_000), End::Connected)], NOW),
-            cursor(NOW, 5)
-        );
-        assert_eq!(
-            covered(Some(ahead), &[(None, End::Missing)], NOW),
-            cursor(NOW, 5)
-        );
-    }
 }
