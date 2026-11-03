@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use bahaa_chain::ChainError;
-use bahaa_config::{BlockCheckpoint, ChainKind};
+use bahaa_config::{BlockCheckpoint, ChainKind, RETARGET_BLOCKS};
 
 use super::account::{Coin, script};
 use super::{BitcoinChain, spent};
+use crate::header::block_hash;
 use crate::proof::{Header, Headers, has_work, proves, unproven};
 use crate::script::locking;
 use crate::tx::{Hash, Outpoint};
@@ -129,6 +130,20 @@ impl BitcoinChain {
             .into_iter()
             .map(|header| header.ok_or_else(ChainError::malformed))
             .collect()
+    }
+
+    pub async fn next_checkpoint(&self) -> Result<BlockCheckpoint, ChainError> {
+        let (old, _) = self.consensus()?;
+        self.sync().await?;
+        let trusted = self.trusted();
+        let headers = trusted.headers.as_ref().ok_or_else(ChainError::malformed)?;
+        let tip = headers.next().saturating_sub(1);
+        let height = ((tip / RETARGET_BLOCKS).saturating_sub(1) * RETARGET_BLOCKS).max(old.height);
+        let hash = headers
+            .get(height)
+            .and_then(|header| block_hash(header))
+            .ok_or_else(ChainError::malformed)?;
+        Ok(BlockCheckpoint { height, hash })
     }
 
     async fn sync(&self) -> Result<(), ChainError> {

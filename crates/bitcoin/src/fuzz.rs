@@ -1,10 +1,12 @@
 use bahaa_types::hex;
 use serde_json::Value;
 
-use crate::{electrum, esplora, header, source, tx};
+use crate::{electrum, esplora, header, proof, source, tx};
 
 pub fn raw(bytes: &[u8]) {
     tx::fuzz(bytes);
+    proof::fuzz(bytes);
+    let _ = tx::read_signature(bytes);
 }
 
 pub fn json(bytes: &[u8]) {

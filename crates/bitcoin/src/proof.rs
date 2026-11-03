@@ -163,6 +163,25 @@ fn retarget(first: i64, last: i64, last_bits: u32, limit: u32) -> Option<u32> {
     Some(compact(scaled.min(target(limit)?)))
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(bytes: &[u8]) {
+    const LIMIT: u32 = 0x207f_ffff;
+    let headers: Vec<Header> = bytes.as_chunks::<HEADER_BYTES>().0.to_vec();
+    if let Some((first, rest)) = headers.split_first() {
+        let _ = has_work(first, LIMIT);
+        let _ = proves(first, &[0; 32], &[[1; 32]], 1);
+        if let Some(hash) = block_hash(first) {
+            let checkpoint = BlockCheckpoint {
+                height: RETARGET_BLOCKS,
+                hash,
+            };
+            if let Ok(mut chain) = Headers::start(&checkpoint, *first, LIMIT) {
+                let _ = chain.extend(rest, LIMIT);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bahaa_types::hex;
