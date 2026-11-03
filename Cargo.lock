@@ -718,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-app-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bahaa-engine",
  "bahaa-testkit",
@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-chain"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bahaa-config",
  "bahaa-crypto",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-config"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bahaa-types",
  "serde",
@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-crypto"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bahaa-types",
  "bs58",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-engine"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "adnl",
  "bahaa-chain",
@@ -810,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-evm"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-market"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bahaa-testkit",
  "bahaa-types",
@@ -849,7 +849,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-solana"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bahaa-chain",
  "bahaa-config",
@@ -869,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-store"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bahaa-config",
  "bahaa-types",
@@ -886,7 +886,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-testkit"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bahaa-chain",
  "serde_json",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-ton"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "adnl",
  "bahaa-chain",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-tron"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bahaa-chain",
  "bahaa-config",
@@ -943,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-tui"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "arboard",
  "bahaa-app-core",
@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-types"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.23.1",
  "bs58",
@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-vault"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
