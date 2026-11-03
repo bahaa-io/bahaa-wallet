@@ -909,6 +909,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bahaa-swap"
+version = "0.8.0"
+dependencies = [
+ "bahaa-chain",
+ "bahaa-types",
+ "ruint",
+]
+
+[[package]]
 name = "bahaa-testkit"
 version = "0.8.0"
 dependencies = [

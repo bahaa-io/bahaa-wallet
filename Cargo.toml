@@ -27,6 +27,7 @@ bahaa-evm = { path = "crates/evm" }
 bahaa-market = { path = "crates/market" }
 bahaa-solana = { path = "crates/solana" }
 bahaa-store = { path = "crates/store" }
+bahaa-swap = { path = "crates/swap" }
 bahaa-testkit = { path = "crates/testkit" }
 bahaa-ton = { path = "crates/ton" }
 bahaa-tron = { path = "crates/tron" }
