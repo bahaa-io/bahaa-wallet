@@ -240,6 +240,13 @@ fn read_nulldata(script: &[u8]) -> Option<Vec<u8>> {
     (payload.len() == usize::from(length) && payload.len() <= MAX_NULLDATA).then_some(payload)
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(script: &[u8]) {
+    if let Some(payload) = read_nulldata(script) {
+        assert_eq!(nulldata(&payload).ok().as_deref(), Some(script));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

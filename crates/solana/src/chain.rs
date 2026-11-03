@@ -343,6 +343,11 @@ pub(crate) fn fuzz(value: &serde_json::Value) {
     send::fuzz(value);
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz_raw(data: &[u8]) {
+    calls::fuzz(data);
+}
+
 #[cfg(test)]
 mod tests {
     use bahaa_crypto::{Mnemonic, ed25519_seed};

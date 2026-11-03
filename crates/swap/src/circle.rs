@@ -249,6 +249,11 @@ fn progress(answer: &Value) -> Result<Progress, SwapError> {
     })
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(value: &Value) {
+    let _ = progress(value);
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

@@ -291,3 +291,13 @@ fn token(spoke: &Spoke, asset: &AssetId) -> Result<[u8; 20], SwapError> {
 fn hex(bytes: &[u8; 20]) -> String {
     format!("0x{}", bahaa_types::hex::encode(bytes))
 }
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(value: &Value) {
+    let origin = Spoke {
+        chain: 1,
+        address: [1; 20],
+        wrapped: [2; 20],
+    };
+    let _ = Terms::read(value, &origin, 0);
+}

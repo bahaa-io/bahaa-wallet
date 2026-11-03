@@ -341,6 +341,23 @@ fn progress(status: &Value) -> Result<Progress, SwapError> {
     })
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(value: &Value) {
+    let _ = progress(value);
+    if let Ok(bitcoin) = "bitcoin".parse::<AssetId>() {
+        let _ = costs(&value["fees"], &bitcoin);
+    }
+    if let Some(quoted) = value["memo"].as_str() {
+        let btc = ThorAsset {
+            pool: "BTC.BTC".to_owned(),
+            short: Some("b".to_owned()),
+            decimals: 8,
+        };
+        let destination = value["destination"].as_str().unwrap_or_default();
+        let _ = memo(quoted, &btc, destination, U256::from(1u8));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use sha3::{Digest, Keccak256};

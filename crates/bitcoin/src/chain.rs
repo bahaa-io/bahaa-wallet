@@ -256,3 +256,8 @@ fn spent<'a>(known: &'a HashMap<Hash, Tx>, point: &Outpoint) -> Option<&'a Outpu
         .outputs
         .get(usize::try_from(point.vout).ok()?)
 }
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(bytes: &[u8]) {
+    calls::fuzz(bytes);
+}

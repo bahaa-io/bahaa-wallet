@@ -405,6 +405,15 @@ fn destination(asset: &ChainflipAsset, to: &Address) -> Option<Vec<u8>> {
     }
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(data: &[u8]) {
+    for width in [20, 32] {
+        if let Some(read) = Payload::decode(data, width) {
+            assert_eq!(read.encode(), data);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

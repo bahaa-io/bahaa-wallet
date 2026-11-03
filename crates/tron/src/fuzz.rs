@@ -5,6 +5,8 @@ use crate::{chain, http, tx};
 pub fn raw(data: &[u8]) {
     let _ = tx::parse(data);
     let _ = tx::coins_in(data);
+    let _ = tx::parse_call(data);
+    chain::fuzz_raw(data);
 }
 
 pub fn json(data: &[u8]) {

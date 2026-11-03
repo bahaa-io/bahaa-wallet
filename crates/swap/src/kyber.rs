@@ -230,6 +230,11 @@ fn described(data: &[u8]) -> Option<Described> {
     })
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(data: &[u8]) {
+    let _ = described(data);
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::Value;

@@ -317,7 +317,10 @@ fn last_amount(data: &[u8]) -> Option<U256> {
         return None;
     }
     let count = usize::try_from(word(1)?).ok().filter(|count| *count >= 2)?;
-    if data.len() != (2 + count) * WORD {
+    let size = count
+        .checked_add(2)
+        .and_then(|words| words.checked_mul(WORD));
+    if size != Some(data.len()) {
         return None;
     }
     word(1 + count)
@@ -380,6 +383,11 @@ fn merge(total: &mut Quote, quote: Quote) -> Result<(), ChainError> {
     Ok(())
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(data: &[u8]) {
+    let _ = last_amount(data);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +400,10 @@ mod tests {
         }
         assert_eq!(last_amount(&data), Some(U256::from(32_197_142u64)));
         assert_eq!(last_amount(&data[..96]), None);
+        let mut endless = vec![0u8; 77];
+        endless[31] = 32;
+        endless[56..64].copy_from_slice(&[0x08; 8]);
+        assert_eq!(last_amount(&endless), None);
     }
 
     #[test]

@@ -482,3 +482,36 @@ fn ton_message(data: &Value, request: &Request) -> Result<(Address, Vec<u8>), Sw
         .ok_or_else(unreadable)?;
     Ok((deposit, body))
 }
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(data: &[u8]) {
+    let _ = approved_spender(data, U256::from(1u8));
+    if let Some(units) = data.get(4..).and_then(|args| crate::abi::uint(args, 1)) {
+        let _ = approved_spender(data, units);
+    }
+}
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz_reply(value: &Value) {
+    let (Ok(sell), Ok(buy), Ok(amount)) = (
+        "ton".parse::<AssetId>(),
+        "base".parse::<AssetId>(),
+        Amount::new(U256::from(1_000_000_000u64), 9),
+    ) else {
+        return;
+    };
+    let request = Request {
+        sell,
+        amount,
+        buy,
+        buy_decimals: 18,
+        native_decimals: 9,
+        from: Address::Ton {
+            workchain: 0,
+            hash: [1; 32],
+        },
+        to: Address::Evm([2; 20]),
+        deadline: 0,
+    };
+    let _ = ton_message(value, &request);
+}

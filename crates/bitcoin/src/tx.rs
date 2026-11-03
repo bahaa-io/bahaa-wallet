@@ -256,9 +256,9 @@ fn read_integer(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     };
     let length = usize::from(*length);
     let value = rest.get(..length)?;
-    let positive = value.first().is_some_and(|first| first & 0x80 == 0);
-    let minimal = value.len() == 1 || value[0] != 0 || value[1] & 0x80 != 0;
-    if !positive || !minimal {
+    let (&first, tail) = value.split_first()?;
+    let minimal = first != 0 || tail.first().is_none_or(|next| next & 0x80 != 0);
+    if first & 0x80 != 0 || !minimal {
         return None;
     }
     let value = value.strip_prefix(&[0]).unwrap_or(value);
@@ -493,6 +493,8 @@ mod tests {
         padded[1] += 1;
         padded[3] += 1;
         assert_eq!(read_signature(&padded), None);
+        let empty = [0x30, 0x07, 0x02, 0x00, 0x00, 0x00, 0x0a, 0x0a, 0x5c, 0x01];
+        assert_eq!(read_signature(&empty), None);
     }
 
     #[test]

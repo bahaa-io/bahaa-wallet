@@ -347,3 +347,8 @@ fn iso(seconds: u64) -> String {
         at.year, at.month, at.day, at.hour, at.minute, at.second
     )
 }
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(value: &Value) {
+    let _ = signed_text(value);
+}

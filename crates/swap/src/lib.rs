@@ -4,6 +4,9 @@ mod chainflip;
 mod circle;
 mod config;
 mod cow;
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz;
 mod jupiter;
 mod kyber;
 mod oneclick;

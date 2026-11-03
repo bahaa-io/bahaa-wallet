@@ -447,6 +447,43 @@ fn parsed_dangerous(program: &Key, parsed: &Value, owner: &Key) -> bool {
         && party(field).as_ref() == Some(owner)
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(data: &[u8]) {
+    let _ = swap_instruction(data);
+    let Some((head, rest)) = data.split_first_chunk::<2>() else {
+        return;
+    };
+    let Some((transaction, reply)) = rest.split_at_checked(usize::from(u16::from_le_bytes(*head)))
+    else {
+        return;
+    };
+    let (Some(wire), Ok(value), Ok(sell), Ok(amount)) = (
+        tx::read(transaction),
+        serde_json::from_slice::<Value>(reply),
+        "solana".parse::<AssetId>(),
+        Amount::new(U256::from(1_000_000u32), 9),
+    ) else {
+        return;
+    };
+    let _ = swap_program(&wire);
+    let swap = ContractSwap {
+        account: 0,
+        from: Address::Solana([1; 32]),
+        call: Call {
+            to: Address::Solana([2; 32]),
+            value: amount,
+            data: Vec::new(),
+        },
+        spender: None,
+        sell,
+        amount,
+        buy: None,
+        ours: false,
+        spent: None,
+    };
+    let _ = judge(&wire, &[1; 32], &swap, &value);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

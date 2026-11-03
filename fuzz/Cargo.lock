@@ -691,6 +691,7 @@ dependencies = [
  "bahaa-evm",
  "bahaa-market",
  "bahaa-solana",
+ "bahaa-swap",
  "bahaa-ton",
  "bahaa-tron",
  "bahaa-types",
@@ -729,6 +730,30 @@ dependencies = [
  "ruint",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "bahaa-swap"
+version = "0.8.0"
+dependencies = [
+ "bahaa-chain",
+ "bahaa-evm",
+ "bahaa-solana",
+ "bahaa-ton",
+ "bahaa-tron",
+ "bahaa-types",
+ "base64 0.23.1",
+ "bs58",
+ "ed25519-dalek",
+ "futures-util",
+ "reqwest",
+ "ruint",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sha3",
+ "thiserror 2.0.21",
+ "url",
 ]
 
 [[package]]

@@ -4,6 +4,7 @@ use crate::{chain, rpc, tx};
 
 pub fn raw(data: &[u8]) {
     tx::fuzz(data);
+    chain::fuzz_raw(data);
 }
 
 pub fn json(data: &[u8]) {

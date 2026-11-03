@@ -290,6 +290,18 @@ fn described(data: &[u8]) -> Option<Described> {
     })
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(data: &[u8]) {
+    let _ = described(data);
+}
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz_reply(value: &Value) {
+    if let Ok(data) = built_data(value) {
+        let _ = described(&data);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

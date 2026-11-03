@@ -13,6 +13,7 @@ bahaa-crypto = { path = "../crates/crypto" }
 bahaa-evm = { path = "../crates/evm" }
 bahaa-market = { path = "../crates/market" }
 bahaa-solana = { path = "../crates/solana" }
+bahaa-swap = { path = "../crates/swap" }
 bahaa-ton = { path = "../crates/ton" }
 bahaa-tron = { path = "../crates/tron" }
 bahaa-types = { path = "../crates/types" }
@@ -107,6 +108,20 @@ bench = false
 [[bin]]
 name = "bitcoin_json"
 path = "fuzz_targets/bitcoin_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "swap_raw"
+path = "fuzz_targets/swap_raw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "swap_json"
+path = "fuzz_targets/swap_json.rs"
 test = false
 doc = false
 bench = false

@@ -185,6 +185,11 @@ fn terms(data: &[u8]) -> Option<Terms> {
     })
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(data: &[u8]) {
+    let _ = terms(data);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
