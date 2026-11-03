@@ -22,14 +22,14 @@ use bahaa_store::{
 };
 use bahaa_types::{Address, AssetId, BitcoinType, ChainFamily, NetworkId, SolanaPath, TonContract};
 use bahaa_vault::KdfParams;
-use futures_util::future::join;
+use futures_util::future::{join, join_all};
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
 use crate::caution::{Arrival, Caution};
-use crate::chains::{self, AnyChain, Fetched};
+use crate::chains::{self, AnyChain, NetworkBalances, NetworkHistory};
 use crate::keyring;
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
 use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, WalletKind};
@@ -166,7 +166,9 @@ enum Command {
 }
 
 enum Notice {
-    Fetched(Fetched),
+    Balances(u64, Box<NetworkBalances>),
+    History(u64, Box<NetworkHistory>),
+    Refreshed(u64),
     Quoted(Box<Quoted>),
     Delivered(Box<Delivered>),
     Tracked(Vec<SentTx>),
@@ -291,6 +293,9 @@ impl Engine {
             health: Vec::new(),
             generation: 0,
             refreshing: None,
+            scanning: BTreeMap::new(),
+            loaded: BTreeSet::new(),
+            scanned: BTreeSet::new(),
             deadline: None,
             next_refresh: None,
             unit: auto_lock_unit,
@@ -620,6 +625,9 @@ struct Worker {
     health: Vec<NetworkHealth>,
     generation: u64,
     refreshing: Option<JoinHandle<()>>,
+    scanning: BTreeMap<NetworkId, JoinHandle<()>>,
+    loaded: BTreeSet<NetworkId>,
+    scanned: BTreeSet<NetworkId>,
     deadline: Option<Instant>,
     next_refresh: Option<Instant>,
     unit: Duration,
@@ -911,7 +919,13 @@ impl Worker {
 
     async fn notice(&mut self, notice: Notice) {
         match notice {
-            Notice::Fetched(fetched) => self.apply(fetched),
+            Notice::Balances(generation, update) if generation == self.generation => {
+                self.balances_arrived(*update);
+            }
+            Notice::History(generation, update) if generation == self.generation => {
+                self.history_arrived(*update);
+            }
+            Notice::Refreshed(generation) if generation == self.generation => self.refreshed(),
             Notice::Quoted(quoted) => self.quoted(*quoted),
             Notice::Delivered(delivered) => self.delivered(*delivered),
             Notice::Tracked(updates) => self.tracked(updates),
@@ -925,7 +939,10 @@ impl Worker {
                     })
                     .await;
             }
-            Notice::Detected(..) => {}
+            Notice::Balances(..)
+            | Notice::History(..)
+            | Notice::Refreshed(_)
+            | Notice::Detected(..) => {}
         }
     }
 
@@ -1284,6 +1301,10 @@ impl Worker {
             })
             .await;
         if let Ok(accounts) = derived {
+            if accounts != self.accounts {
+                self.loaded.clear();
+                self.scanned.clear();
+            }
             self.held.retain(|held| {
                 accounts
                     .iter()
@@ -1309,22 +1330,79 @@ impl Worker {
             return;
         }
         self.next_refresh = None;
+        let testnets = self.settings.show_testnets;
+        let active: Vec<NetworkId> = self
+            .chains
+            .iter()
+            .map(AnyChain::network)
+            .filter(|network| testnets || !network.testnet)
+            .map(|network| network.id.clone())
+            .collect();
+        self.held
+            .retain(|held| active.contains(held.asset.network()));
+        self.health
+            .retain(|health| active.contains(&health.network));
+        for network in &active {
+            if !self.health.iter().any(|health| health.network == *network) {
+                self.health.push(NetworkHealth::waiting(network.clone()));
+            }
+        }
+        self.publish_portfolio();
         let chains = Arc::clone(&self.chains);
         let accounts = self.accounts.clone();
         let custom = Arc::clone(&self.custom);
-        let testnets = self.settings.show_testnets;
-        let cursors = self.scans.clone();
         let generation = self.generation;
         let notices = self.notices_tx.clone();
         self.refreshing = Some(tokio::spawn(async move {
-            let fetched =
-                chains::fetch(&chains, &accounts, &custom, &cursors, testnets, generation).await;
-            let _ = notices.send(Notice::Fetched(fetched)).await;
+            let reads = chains
+                .iter()
+                .filter(|chain| active.contains(&chain.network().id))
+                .map(|chain| {
+                    let (accounts, custom, notices) = (&accounts, &custom, &notices);
+                    async move {
+                        let read = chains::balances(chain, accounts, custom).await;
+                        let _ = notices
+                            .send(Notice::Balances(generation, Box::new(read)))
+                            .await;
+                    }
+                });
+            join_all(reads).await;
+            let _ = notices.send(Notice::Refreshed(generation)).await;
         }));
+    }
+
+    fn start_history(&mut self, network: &NetworkId) {
+        if self.scanning.contains_key(network) {
+            return;
+        }
+        let Some(index) = self.chain_index(network) else {
+            return;
+        };
+        let chains = Arc::clone(&self.chains);
+        let accounts = self.accounts.clone();
+        let custom = Arc::clone(&self.custom);
+        let cursors: Vec<Scan> = self
+            .scans
+            .iter()
+            .filter(|scan| scan.network == *network)
+            .cloned()
+            .collect();
+        let generation = self.generation;
+        let notices = self.notices_tx.clone();
+        let task = tokio::spawn(async move {
+            let read = chains::history(&chains[index], &accounts, &custom, &cursors).await;
+            let _ = notices
+                .send(Notice::History(generation, Box::new(read)))
+                .await;
+        });
+        self.scanning.insert(network.clone(), task);
     }
 
     fn stop_refresh(&mut self) {
         if let Some(task) = self.refreshing.take() {
+            task.abort();
+        }
+        for (_, task) in std::mem::take(&mut self.scanning) {
             task.abort();
         }
         self.generation = self.generation.wrapping_add(1);
@@ -1336,45 +1414,67 @@ impl Worker {
         self.start_refresh();
     }
 
-    fn apply(&mut self, fetched: Fetched) {
-        if fetched.generation != self.generation {
-            return;
-        }
-        self.refreshing = None;
-        let mut held = fetched.held;
-        let mut health = fetched.health;
-        for network in health
-            .iter_mut()
-            .filter(|network| network.problem.is_some())
-        {
-            network.updated_at = self
-                .health
-                .iter()
-                .find(|old| old.network == network.network)
-                .and_then(|old| old.updated_at);
-            let kept: Vec<Held> = self
-                .held
-                .iter()
-                .filter(|old| {
-                    old.asset.network() == &network.network
-                        && self.accounts.iter().any(|account| {
+    fn balances_arrived(&mut self, update: NetworkBalances) {
+        let network = update.network;
+        let failed = update.problem.is_some();
+        let accounts = &self.accounts;
+        let kept: Vec<Held> = self
+            .held
+            .iter()
+            .filter(|old| {
+                old.asset.network() != &network
+                    || (failed
+                        && accounts.iter().any(|account| {
                             account.wallet == old.wallet && account.address == old.address
                         })
-                        && !held
+                        && !update
+                            .held
                             .iter()
-                            .any(|new| new.address == old.address && new.asset == old.asset)
-                })
-                .cloned()
-                .collect();
-            held.extend(kept);
+                            .any(|new| new.address == old.address && new.asset == old.asset))
+            })
+            .cloned()
+            .collect();
+        self.held = kept;
+        self.held.extend(update.held);
+        if !self.health.iter().any(|health| health.network == network) {
+            self.health.push(NetworkHealth::waiting(network.clone()));
         }
-        self.held = held;
-        self.health = health;
-        self.record_scans(fetched.scans);
-        self.record_trusted();
-        self.next_refresh = Some(Instant::now() + self.refresh_every);
+        if let Some(health) = self
+            .health
+            .iter_mut()
+            .find(|health| health.network == network)
+        {
+            health.problem = update.problem;
+            health.checked_at = update.checked_at;
+            if !failed {
+                health.updated_at = Some(update.checked_at);
+            }
+        }
+        self.loaded.insert(network.clone());
         self.refresh_prices();
         self.publish_portfolio();
+        self.start_history(&network);
+    }
+
+    fn history_arrived(&mut self, update: NetworkHistory) {
+        self.scanning.remove(&update.network);
+        self.record_scans(update.scans);
+        if let Some(health) = self
+            .health
+            .iter_mut()
+            .find(|health| health.network == update.network)
+        {
+            health.history_problem = update.problem;
+        }
+        self.scanned.insert(update.network);
+        self.record_trusted();
+        self.publish_portfolio();
+    }
+
+    fn refreshed(&mut self) {
+        self.refreshing = None;
+        self.record_trusted();
+        self.next_refresh = Some(Instant::now() + self.refresh_every);
     }
 
     fn record_trusted(&mut self) {
@@ -1402,6 +1502,8 @@ impl Worker {
         self.uncounted.clear();
         self.held.clear();
         self.health.clear();
+        self.loaded.clear();
+        self.scanned.clear();
         self.keep_prices();
         self.forget_private();
         let state = if self.keyring.as_ref().is_some_and(Keyring::exists) {
@@ -1430,12 +1532,21 @@ impl Worker {
 
     fn publish_portfolio(&self) {
         let snapshot = self.quotes();
+        let health = self
+            .health
+            .iter()
+            .map(|health| NetworkHealth {
+                loading: !self.loaded.contains(&health.network),
+                history_loading: !self.scanned.contains(&health.network),
+                ..health.clone()
+            })
+            .collect();
         let portfolio = portfolio::build(
             &self.registry,
             &self.custom,
             &self.held,
             &self.uncounted,
-            self.health.clone(),
+            health,
             &snapshot,
             self.settings.fiat,
         );

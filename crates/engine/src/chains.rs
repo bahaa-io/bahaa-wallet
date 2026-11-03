@@ -20,7 +20,7 @@ use crate::WalletInfo;
 use futures_util::FutureExt;
 use futures_util::future::join_all;
 
-use crate::portfolio::{Account, Held, NetworkHealth};
+use crate::portfolio::{Account, Held};
 use crate::{WalletId, WalletKind};
 
 pub(crate) enum AnyChain {
@@ -424,53 +424,94 @@ pub(crate) fn accounts(
     accounts
 }
 
-pub(crate) struct Fetched {
-    pub generation: u64,
+pub(crate) struct NetworkBalances {
+    pub network: NetworkId,
     pub held: Vec<Held>,
-    pub health: Vec<NetworkHealth>,
+    pub problem: Option<String>,
+    pub checked_at: u64,
+}
+
+pub(crate) struct NetworkHistory {
+    pub network: NetworkId,
     pub scans: Vec<(Scan, Vec<Received>, Vec<Outgoing>)>,
+    pub problem: Option<String>,
 }
 
-struct NetworkFetch {
-    held: Vec<Held>,
-    health: NetworkHealth,
-    scans: Vec<(Scan, Vec<Received>, Vec<Outgoing>)>,
-}
-
-pub(crate) async fn fetch(
-    chains: &[AnyChain],
+pub(crate) async fn balances(
+    chain: &AnyChain,
     accounts: &[Account],
     custom: &[CustomToken],
-    cursors: &[Scan],
-    testnets: bool,
-    generation: u64,
-) -> Fetched {
-    let jobs = chains
-        .iter()
-        .filter(|chain| testnets || !chain.network().testnet)
-        .map(|chain| fetch_network(chain, accounts, custom, cursors));
-    let results = join_all(jobs).await;
-    let mut fetched = Fetched {
-        generation,
+) -> NetworkBalances {
+    let network = chain.network();
+    let (_, groups) = assets_of(network, custom);
+    let groups = &groups;
+    let reads = served(chain, accounts).map(|account| async move {
+        let mut held = Vec::new();
+        let mut problem = None;
+        for group in groups {
+            match chain.balances(&account.address, group).await {
+                Ok(balances) => held.extend(balances.into_iter().map(|balance| Held {
+                    wallet: account.wallet,
+                    address: account.address,
+                    asset: balance.asset,
+                    amount: balance.amount,
+                    staked: balance.staked,
+                })),
+                Err(err) => problem = Some(err.to_string()),
+            }
+        }
+        (held, problem)
+    });
+    let mut result = NetworkBalances {
+        network: network.id.clone(),
         held: Vec::new(),
-        health: Vec::with_capacity(results.len()),
-        scans: Vec::new(),
+        problem: None,
+        checked_at: 0,
     };
-    for result in results {
-        fetched.held.extend(result.held);
-        fetched.health.push(result.health);
-        fetched.scans.extend(result.scans);
+    for (held, problem) in join_all(reads).await {
+        result.held.extend(held);
+        result.problem = result.problem.or(problem);
     }
-    fetched
+    result.checked_at = bahaa_chain::now();
+    result
 }
 
-async fn fetch_network(
+pub(crate) async fn history(
     chain: &AnyChain,
     accounts: &[Account],
     custom: &[CustomToken],
     cursors: &[Scan],
-) -> NetworkFetch {
+) -> NetworkHistory {
     let network = chain.network();
+    let (assets, _) = assets_of(network, custom);
+    let mut result = NetworkHistory {
+        network: network.id.clone(),
+        scans: Vec::new(),
+        problem: None,
+    };
+    for account in served(chain, accounts) {
+        let cursor = cursors
+            .iter()
+            .find(|scan| scan.network == network.id && scan.address == account.address)
+            .map(cursor_of);
+        match chain.scan(&account.address, &assets, cursor).await {
+            Ok(Some(scanned)) => result
+                .scans
+                .push(scan_of(&network.id, &account.address, scanned)),
+            Ok(None) => {}
+            Err(err) => result.problem = Some(err.to_string()),
+        }
+    }
+    result
+}
+
+fn served<'a>(chain: &'a AnyChain, accounts: &'a [Account]) -> impl Iterator<Item = &'a Account> {
+    accounts
+        .iter()
+        .filter(|account| account.serves(&chain.network().id, chain.family()))
+}
+
+fn assets_of(network: &Network, custom: &[CustomToken]) -> (Vec<AssetId>, Vec<Vec<AssetId>>) {
     let listed: Vec<AssetId> = network.assets().map(|(asset, _)| asset).collect();
     let mut groups = vec![listed.clone()];
     let mut assets = listed;
@@ -483,50 +524,7 @@ async fn fetch_network(
             groups.push(vec![token.asset.clone()]);
         }
     }
-    let mut result = NetworkFetch {
-        held: Vec::new(),
-        health: NetworkHealth {
-            network: network.id.clone(),
-            problem: None,
-            history_problem: None,
-            checked_at: 0,
-            updated_at: None,
-        },
-        scans: Vec::new(),
-    };
-    for account in accounts
-        .iter()
-        .filter(|account| account.serves(&network.id, chain.family()))
-    {
-        for group in &groups {
-            match chain.balances(&account.address, group).await {
-                Ok(balances) => result.held.extend(balances.into_iter().map(|balance| Held {
-                    wallet: account.wallet,
-                    address: account.address,
-                    asset: balance.asset,
-                    amount: balance.amount,
-                    staked: balance.staked,
-                })),
-                Err(err) => result.health.problem = Some(err.to_string()),
-            }
-        }
-        let cursor = cursors
-            .iter()
-            .find(|scan| scan.network == network.id && scan.address == account.address)
-            .map(cursor_of);
-        match chain.scan(&account.address, &assets, cursor).await {
-            Ok(Some(scanned)) => result
-                .scans
-                .push(scan_of(&network.id, &account.address, scanned)),
-            Ok(None) => {}
-            Err(err) => result.health.history_problem = Some(err.to_string()),
-        }
-    }
-    result.health.checked_at = bahaa_chain::now();
-    if result.health.problem.is_none() {
-        result.health.updated_at = Some(result.health.checked_at);
-    }
-    result
+    (assets, groups)
 }
 
 fn cursor_of(scan: &Scan) -> ScanCursor {

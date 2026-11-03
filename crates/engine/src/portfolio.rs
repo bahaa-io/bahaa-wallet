@@ -38,6 +38,22 @@ pub struct NetworkHealth {
     pub history_problem: Option<String>,
     pub checked_at: u64,
     pub updated_at: Option<u64>,
+    pub loading: bool,
+    pub history_loading: bool,
+}
+
+impl NetworkHealth {
+    pub(crate) fn waiting(network: NetworkId) -> Self {
+        Self {
+            network,
+            problem: None,
+            history_problem: None,
+            checked_at: 0,
+            updated_at: None,
+            loading: true,
+            history_loading: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
