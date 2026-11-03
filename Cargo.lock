@@ -913,8 +913,20 @@ name = "bahaa-swap"
 version = "0.8.0"
 dependencies = [
  "bahaa-chain",
+ "bahaa-config",
+ "bahaa-testkit",
  "bahaa-types",
+ "base64 0.23.1",
+ "bs58",
+ "ed25519-dalek",
+ "reqwest",
  "ruint",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
 ]
 
 [[package]]

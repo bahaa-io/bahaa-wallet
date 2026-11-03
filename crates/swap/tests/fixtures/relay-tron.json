@@ -1,0 +1,369 @@
+{
+ "requestId": "0x1793721392a3036926d206edfb32322ae2fa2ed43534c384e540901f3ff64efc",
+ "steps": [
+  {
+   "id": "deposit",
+   "action": "Confirm transaction in your wallet",
+   "description": "Depositing funds to the relayer to execute the swap for ETH",
+   "kind": "transaction",
+   "items": [
+    {
+     "status": "incomplete",
+     "data": {
+      "parameter": {
+       "owner_address": "41c8599111f29c1e1e061265b4af93ea1f274ad78a",
+       "to_address": "41a7555957d2731cbd8dbc7d8b728f7685110b51e6",
+       "amount": 100000000
+      },
+      "type": "TransferContract"
+     },
+     "check": {
+      "endpoint": "/intents/status?requestId=0x1793721392a3036926d206edfb32322ae2fa2ed43534c384e540901f3ff64efc",
+      "method": "GET"
+     }
+    }
+   ],
+   "requestId": "0x1793721392a3036926d206edfb32322ae2fa2ed43534c384e540901f3ff64efc",
+   "depositAddress": "TRDz6FGqtpHjdnCn5zJJ2qLz5D9ZXYbWwp"
+  }
+ ],
+ "fees": {
+  "gas": {
+   "currency": {
+    "chainId": 728126428,
+    "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+    "symbol": "TRX",
+    "name": "TRX",
+    "decimals": 6,
+    "metadata": {
+     "logoURI": "https://assets.relay.link/icons/currencies/trx.png",
+     "verified": true
+    }
+   },
+   "amount": "1400000",
+   "amountFormatted": "1.4",
+   "amountUsd": "0.450796",
+   "minimumAmount": "1400000"
+  },
+  "relayer": {
+   "currency": {
+    "chainId": 728126428,
+    "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+    "symbol": "TRX",
+    "name": "TRX",
+    "decimals": 6,
+    "metadata": {
+     "logoURI": "https://assets.relay.link/icons/currencies/trx.png",
+     "verified": true
+    }
+   },
+   "amount": "2679047",
+   "amountFormatted": "2.679047",
+   "amountUsd": "0.862645",
+   "minimumAmount": "2679047"
+  },
+  "relayerGas": {
+   "currency": {
+    "chainId": 728126428,
+    "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+    "symbol": "TRX",
+    "name": "TRX",
+    "decimals": 6,
+    "metadata": {
+     "logoURI": "https://assets.relay.link/icons/currencies/trx.png",
+     "verified": true
+    }
+   },
+   "amount": "2447254",
+   "amountFormatted": "2.447254",
+   "amountUsd": "0.788008",
+   "minimumAmount": "2447254"
+  },
+  "relayerService": {
+   "currency": {
+    "chainId": 728126428,
+    "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+    "symbol": "TRX",
+    "name": "TRX",
+    "decimals": 6,
+    "metadata": {
+     "logoURI": "https://assets.relay.link/icons/currencies/trx.png",
+     "verified": true
+    }
+   },
+   "amount": "231793",
+   "amountFormatted": "0.231793",
+   "amountUsd": "0.074637",
+   "minimumAmount": "231793"
+  },
+  "app": {
+   "currency": {
+    "chainId": 728126428,
+    "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+    "symbol": "TRX",
+    "name": "TRX",
+    "decimals": 6,
+    "metadata": {
+     "logoURI": "https://assets.relay.link/icons/currencies/trx.png",
+     "verified": true
+    }
+   },
+   "amount": "0",
+   "amountFormatted": "0.0",
+   "amountUsd": "0",
+   "minimumAmount": "0"
+  },
+  "subsidized": {
+   "currency": {
+    "chainId": 728126428,
+    "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+    "symbol": "TRX",
+    "name": "TRX",
+    "decimals": 6,
+    "metadata": {
+     "logoURI": "https://assets.relay.link/icons/currencies/trx.png",
+     "verified": true
+    }
+   },
+   "amount": "0",
+   "amountFormatted": "0.0",
+   "amountUsd": "0",
+   "minimumAmount": "0"
+  }
+ },
+ "details": {
+  "operation": "swap",
+  "sender": "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH",
+  "recipient": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+  "currencyIn": {
+   "currency": {
+    "chainId": 728126428,
+    "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+    "symbol": "TRX",
+    "name": "TRX",
+    "decimals": 6,
+    "metadata": {
+     "logoURI": "https://assets.relay.link/icons/currencies/trx.png",
+     "verified": true
+    }
+   },
+   "amount": "100000000",
+   "amountFormatted": "100.0",
+   "amountUsd": "32.199700",
+   "minimumAmount": "100000000"
+  },
+  "currencyOut": {
+   "currency": {
+    "chainId": 8453,
+    "address": "0x0000000000000000000000000000000000000000",
+    "symbol": "ETH",
+    "name": "Ether",
+    "decimals": 18,
+    "metadata": {
+     "logoURI": "https://assets.relay.link/icons/1/light.png",
+     "verified": true
+    }
+   },
+   "amount": "13606723822997492",
+   "amountFormatted": "0.013606723822997492",
+   "amountUsd": "31.238632",
+   "minimumAmount": "13334589346537542"
+  },
+  "refundCurrency": {
+   "currency": {
+    "chainId": 728126428,
+    "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+    "symbol": "TRX",
+    "name": "TRX",
+    "decimals": 6,
+    "metadata": {
+     "logoURI": "https://assets.relay.link/icons/currencies/trx.png",
+     "verified": true
+    }
+   },
+   "amount": "100000000",
+   "amountFormatted": "100.0",
+   "amountUsd": "32.199700",
+   "minimumAmount": "100000000"
+  },
+  "totalImpact": {
+   "usd": "-0.961068",
+   "percent": "-2.98"
+  },
+  "swapImpact": {
+   "usd": "-0.098423",
+   "percent": "-0.31"
+  },
+  "expandedPriceImpact": {
+   "swap": {
+    "usd": "-0.133741"
+   },
+   "execution": {
+    "usd": "-0.808008"
+   },
+   "relay": {
+    "usd": "-0.019319"
+   },
+   "app": {
+    "usd": "0"
+   },
+   "sponsored": {
+    "usd": "0"
+   }
+  },
+  "rate": "0.00013606723822997491",
+  "slippageTolerance": {
+   "total": "200",
+   "origin": {
+    "usd": "0.000000",
+    "value": "0",
+    "percent": "0.00"
+   },
+   "destination": {
+    "usd": "0.624773",
+    "value": "272134476459950",
+    "percent": "2.00"
+   }
+  },
+  "timeEstimate": 2,
+  "userBalance": "0",
+  "isFixedRate": false,
+  "route": {
+   "origin": {
+    "inputCurrency": {
+     "currency": {
+      "chainId": 728126428,
+      "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+      "symbol": "TRX",
+      "name": "TRX",
+      "decimals": 6,
+      "metadata": {
+       "logoURI": "https://assets.relay.link/icons/currencies/trx.png",
+       "verified": true
+      }
+     },
+     "amount": "100000000",
+     "amountFormatted": "100.0",
+     "amountUsd": "32.199700",
+     "minimumAmount": "100000000"
+    },
+    "outputCurrency": {
+     "currency": {
+      "chainId": 728126428,
+      "address": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+      "symbol": "TRX",
+      "name": "TRX",
+      "decimals": 6,
+      "metadata": {
+       "logoURI": "https://assets.relay.link/icons/currencies/trx.png",
+       "verified": true
+      }
+     },
+     "amount": "100000000",
+     "amountFormatted": "100.0",
+     "amountUsd": "32.199700",
+     "minimumAmount": "100000000"
+    },
+    "router": "relay"
+   },
+   "destination": {
+    "inputCurrency": {
+     "currency": {
+      "chainId": 8453,
+      "address": "0x0000000000000000000000000000000000000000",
+      "symbol": "ETH",
+      "name": "Ether",
+      "decimals": 18,
+      "metadata": {
+       "logoURI": "https://assets.relay.link/icons/1/light.png",
+       "verified": true
+      }
+     },
+     "amount": "13606723822997492",
+     "amountFormatted": "0.013606723822997492",
+     "amountUsd": "31.238632",
+     "minimumAmount": "13334589346537542"
+    },
+    "outputCurrency": {
+     "currency": {
+      "chainId": 8453,
+      "address": "0x0000000000000000000000000000000000000000",
+      "symbol": "ETH",
+      "name": "Ether",
+      "decimals": 18,
+      "metadata": {
+       "logoURI": "https://assets.relay.link/icons/1/light.png",
+       "verified": true
+      }
+     },
+     "amount": "13606723822997492",
+     "amountFormatted": "0.013606723822997492",
+     "amountUsd": "31.238632",
+     "minimumAmount": "13334589346537542"
+    },
+    "router": "relay"
+   }
+  }
+ },
+ "protocol": {
+  "v2": {
+   "orderId": "0xfb1209de8e6616fd77311719372c2f455b75e6148e33c4d0e5cbe455d63f5d14",
+   "hubType": "onchain",
+   "orderData": {
+    "version": "v1",
+    "solverChainId": "base",
+    "solver": "0xf70da97812cb96acdf810712aa562db8dfa3dbef",
+    "salt": "0x1ec371db18600b81b9ae7402550abbdb47af49d5a187b55264ea24386e96d671",
+    "inputs": [
+     {
+      "payment": {
+       "chainId": "tron",
+       "currency": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+       "amount": "100000000",
+       "weight": "1"
+      },
+      "refunds": [
+       {
+        "chainId": "tron",
+        "recipient": "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH",
+        "currency": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+        "minimumAmount": "0",
+        "deadline": 1809273392,
+        "extraData": "0x"
+       },
+       {
+        "chainId": "base",
+        "recipient": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+        "currency": "0x0000000000000000000000000000000000000000",
+        "minimumAmount": "0",
+        "deadline": 1809273392,
+        "extraData": "0x0000000000000000000000000729e2a4716d9f7dd17858d5d504426d228697f7"
+       }
+      ]
+     }
+    ],
+    "output": {
+     "chainId": "base",
+     "payments": [
+      {
+       "recipient": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+       "currency": "0x0000000000000000000000000000000000000000",
+       "minimumAmount": "13334589346537542",
+       "expectedAmount": "13606723822997492"
+      }
+     ],
+     "calls": [],
+     "deadline": 1809273392,
+     "extraData": "0x0000000000000000000000000729e2a4716d9f7dd17858d5d504426d228697f7"
+    },
+    "fees": []
+   },
+   "paymentDetails": {
+    "chainId": "tron",
+    "depository": "TXtEs6t2oUWQsNos7m68gbHdE9Q5n6x2oN",
+    "currency": "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+    "amount": "100000000"
+   }
+  }
+ }
+}

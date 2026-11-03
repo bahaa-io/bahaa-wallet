@@ -1,0 +1,81 @@
+{
+  "oneclick": {
+    "url": "https://1click.chaindefuser.com/v0/",
+    "key": "ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc",
+    "assets": {
+      "ethereum": "nep141:eth.omft.near",
+      "ethereum/0xdAC17F958D2ee523a2206206994597C13D831ec7": "nep141:eth-0xdac17f958d2ee523a2206206994597c13d831ec7.omft.near",
+      "ethereum/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48": "nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near",
+      "bsc": "nep245:v2_1.omni.hot.tg:56_11111111111111111111",
+      "bsc/0x55d398326f99059fF775485246999027B3197955": "nep245:v2_1.omni.hot.tg:56_2CMMyVTGZkeyNZTSvS5sarzfir6g",
+      "bsc/0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d": "nep245:v2_1.omni.hot.tg:56_2w93GqMcEmQFDru84j3HZZWt557r",
+      "polygon": "nep245:v2_1.omni.hot.tg:137_11111111111111111111",
+      "polygon/0xc2132D05D31c914a87C6611C10748AEb04B58e8F": "nep245:v2_1.omni.hot.tg:137_3hpYoaLtt8MP1Z2GH1U473DMRKgr",
+      "polygon/0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359": "nep245:v2_1.omni.hot.tg:137_qiStmoQJDQPTebaPjgx5VBxZv6L",
+      "arbitrum": "nep141:arb.omft.near",
+      "arbitrum/0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9": "nep141:arb-0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9.omft.near",
+      "arbitrum/0xaf88d065e77c8cC2239327C5EDb3A432268e5831": "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near",
+      "avalanche": "nep245:v2_1.omni.hot.tg:43114_11111111111111111111",
+      "avalanche/0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7": "nep245:v2_1.omni.hot.tg:43114_372BeH7ENZieCaabwkbWkBiTTgXp",
+      "avalanche/0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E": "nep245:v2_1.omni.hot.tg:43114_3atVJH3r5c4GqiSYmg9fECvjc47o",
+      "base": "nep141:base.omft.near",
+      "base/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913": "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near",
+      "optimism": "nep245:v2_1.omni.hot.tg:10_11111111111111111111",
+      "optimism/0x94b008aA00579c1307B0EF2c499aD98a8ce58e58": "nep245:v2_1.omni.hot.tg:10_359RPSJVdTxwTJT9TyGssr2rFoWo",
+      "optimism/0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85": "nep245:v2_1.omni.hot.tg:10_A2ewyUyDp6qsue1jqZsGypkCxRJ",
+      "tron": "nep141:tron.omft.near",
+      "tron/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t": "nep141:tron-d28a265909efecdcee7c5028585214ea0b96f015.omft.near",
+      "ton": "nep245:v2_1.omni.hot.tg:1117_",
+      "ton/EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs": "nep245:v2_1.omni.hot.tg:1117_3tsdfyziyc7EJbP2aULWSKU4toBaAcN4FdTgfm5W1mC4ouR",
+      "solana": "nep141:sol.omft.near",
+      "solana/Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "nep141:sol-c800a4bd850783ccb82c2b2c7e84175443606352.omft.near",
+      "solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "nep141:sol-5ce3bf3a31af18be40ba30f721101b4341690186.omft.near",
+      "bitcoin": "nep141:btc.omft.near"
+    }
+  },
+  "relay": {
+    "url": "https://api.relay.link/",
+    "chains": {
+      "ethereum": {
+        "id": 1,
+        "deposit": "address"
+      },
+      "bsc": {
+        "id": 56,
+        "deposit": "address"
+      },
+      "polygon": {
+        "id": 137,
+        "deposit": "none"
+      },
+      "arbitrum": {
+        "id": 42161,
+        "deposit": "address"
+      },
+      "avalanche": {
+        "id": 43114,
+        "deposit": "none"
+      },
+      "base": {
+        "id": 8453,
+        "deposit": "address"
+      },
+      "optimism": {
+        "id": 10,
+        "deposit": "address"
+      },
+      "tron": {
+        "id": 728126428,
+        "deposit": "address"
+      },
+      "ton": {
+        "id": 224235520,
+        "deposit": "comment"
+      },
+      "solana": {
+        "id": 792703809,
+        "deposit": "none"
+      }
+    }
+  }
+}

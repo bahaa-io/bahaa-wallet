@@ -1,0 +1,73 @@
+{
+ "status": "PENDING_DEPOSIT",
+ "updatedAt": "2026-11-03T15:45:42.751Z",
+ "correlationId": "8acf76d4-5ce0-492f-9a74-e17cf97079a3",
+ "swapDetails": {
+  "depositedAmount": null,
+  "depositedAmountUsd": null,
+  "depositedAmountFormatted": null,
+  "intentHashes": [],
+  "nearTxHashes": [],
+  "amountIn": null,
+  "amountInFormatted": null,
+  "amountInUsd": null,
+  "amountOut": null,
+  "amountOutFormatted": null,
+  "amountOutUsd": null,
+  "slippage": null,
+  "refundedAmount": "0",
+  "refundedAmountFormatted": "0",
+  "refundedAmountUsd": "0",
+  "refundReason": null,
+  "refundFee": "290000",
+  "withdrawFee": "35000000000000",
+  "originChainTxHashes": [],
+  "destinationChainTxHashes": []
+ },
+ "quoteResponse": {
+  "timestamp": "2026-11-03T15:45:42.044Z",
+  "signature": "ed25519:5esFwoznCJyEtXEfC7QJDtZbZSJa5y8GSt8VHKAjNUGfWayuQUWimnDmMkSGFrW25oMwFqUmXmWJF8LUadhHbU2w",
+  "quoteRequest": {
+   "dry": false,
+   "swapType": "EXACT_INPUT",
+   "depositMode": "SIMPLE",
+   "slippageTolerance": 100,
+   "originAsset": "nep141:tron.omft.near",
+   "depositType": "ORIGIN_CHAIN",
+   "destinationAsset": "nep141:eth.omft.near",
+   "amount": "400000000",
+   "refundTo": "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH",
+   "refundType": "ORIGIN_CHAIN",
+   "recipient": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+   "recipientType": "DESTINATION_CHAIN",
+   "deadline": "2026-11-03T16:15:41.000Z",
+   "appFees": [
+    {
+     "limitOrderId": null,
+     "recipient": "5880ad2b362620fadf759cbceb1cd5737ce8c6ed7fb8e9942881e6731f9247dd",
+     "fee": 20
+    }
+   ],
+   "virtualChainRecipient": null,
+   "virtualChainRefundRecipient": null,
+   "referral": null,
+   "confidentiality": "public"
+  },
+  "quote": {
+   "amountIn": "400000000",
+   "amountInFormatted": "400.0",
+   "amountInUsd": "128.914400000000",
+   "minAmountIn": "400000000",
+   "amountOut": "55719737514852880",
+   "amountOutFormatted": "0.05571973751485288",
+   "amountOutUsd": "127.806590727319",
+   "minAmountOut": "55162540139704351",
+   "timeWhenInactive": "2026-11-06T16:15:41.000Z",
+   "depositAddress": "THQiLhFPYUAohMsJTaPVVRMfZwr6BwdUTa",
+   "deadline": "2026-11-06T16:15:41.000Z",
+   "timeEstimate": 87,
+   "refundFee": "290000",
+   "withdrawFee": "35000000000000"
+  }
+ }
+}
