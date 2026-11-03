@@ -31,6 +31,27 @@ pub(crate) fn uint(data: &[u8], index: usize) -> Option<U256> {
     Some(U256::from_be_bytes(word))
 }
 
+pub(crate) fn address(data: &[u8], index: usize) -> Option<[u8; 20]> {
+    let word = uint(data, index)?.to_be_bytes::<WORD>();
+    word[..12]
+        .iter()
+        .all(|byte| *byte == 0)
+        .then(|| word[12..].try_into().ok())
+        .flatten()
+}
+
+pub(crate) fn tail(data: &[u8], index: usize) -> Option<&[u8]> {
+    let offset = usize::try_from(uint(data, index)?).ok()?;
+    if offset % WORD != 0 {
+        return None;
+    }
+    data.get(offset..)
+}
+
+pub(crate) fn length(data: &[u8], index: usize) -> Option<usize> {
+    usize::try_from(uint(tail(data, index)?, 0)?).ok()
+}
+
 fn padded(length: usize) -> usize {
     length.div_ceil(WORD) * WORD
 }

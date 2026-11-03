@@ -4,8 +4,8 @@ use std::time::Duration;
 use bahaa_chain::{ChainError, ContractSwap, FeeQuote, MAX_MEMO, Step, Transfer};
 use bahaa_store::{SentStatus, SentTx, SwapRecord, SwapStatus};
 use bahaa_swap::{
-    Charged, Comment, Cost, CostKind, OneClick, Order, Pools, Progress, Provider, Providers,
-    QUOTE_LIFE, Ranked, Relay, Request, Route, SwapError, rank,
+    Charged, Comment, Cost, CostKind, KyberSwap, OneClick, Order, Pools, Progress, Provider,
+    Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, SwapError, rank,
 };
 use bahaa_types::{Address, Amount, AssetId, BitcoinScript, is_plain_text};
 use futures_util::future::{join, join_all};
@@ -58,12 +58,14 @@ pub struct SwapReview {
     pub route: Ranked,
     pub order: Order,
     pub steps: Vec<Step>,
+    pub checked: bool,
 }
 
 pub(crate) struct Swappers {
     oneclick: OneClick,
     relay: Relay,
     pools: Pools,
+    kyber: KyberSwap,
 }
 
 impl Swappers {
@@ -71,8 +73,9 @@ impl Swappers {
         let client = bahaa_chain::http::client()?;
         Ok(Self {
             oneclick: OneClick::new(&providers.oneclick, client.clone())?,
-            relay: Relay::new(&providers.relay, client),
+            relay: Relay::new(&providers.relay, client.clone()),
             pools: Pools::new(&providers.pools)?,
+            kyber: KyberSwap::new(&providers.kyberswap, client)?,
         })
     }
 
@@ -104,7 +107,17 @@ impl Swappers {
                     .map(|(route, order)| (route, Some(order))),
             )
         };
-        let ((oneclick, relay), pools) = join(join(oneclick, relay), pools).await;
+        let kyber = async {
+            let evm = chain.evm().filter(|_| self.kyber.covers(request))?;
+            Some(
+                self.kyber
+                    .quote(evm, request, now)
+                    .await
+                    .map(|(route, order)| (route, Some(order))),
+            )
+        };
+        let ((oneclick, relay), (pools, kyber)) =
+            join(join(oneclick, relay), join(pools, kyber)).await;
         let mut answers = vec![(Provider::OneClick, oneclick), (Provider::Relay, relay)];
         if let Some(answer) = pools {
             let venue = self
@@ -112,6 +125,9 @@ impl Swappers {
                 .provider(request.sell.network())
                 .unwrap_or(Provider::Uniswap);
             answers.push((venue, answer));
+        }
+        if let Some(answer) = kyber {
+            answers.push((Provider::KyberSwap, answer));
         }
         let mut quotes = Vec::new();
         let mut unavailable = Vec::new();
@@ -159,6 +175,10 @@ impl Swappers {
                 let evm = chain.evm().ok_or(SwapError::Unsupported)?;
                 self.pools.quote(evm, request, now).await
             }
+            Provider::KyberSwap => {
+                let evm = chain.evm().ok_or(SwapError::Unsupported)?;
+                self.kyber.quote(evm, request, now).await
+            }
         }
     }
 
@@ -166,7 +186,9 @@ impl Swappers {
         match provider {
             Provider::OneClick => self.oneclick.status(reference).await,
             Provider::Relay => self.relay.status(reference).await,
-            Provider::Uniswap | Provider::PancakeSwap => Err(SwapError::Unsupported),
+            Provider::Uniswap | Provider::PancakeSwap | Provider::KyberSwap => {
+                Err(SwapError::Unsupported)
+            }
         }
     }
 }
@@ -233,6 +255,7 @@ struct Ordered {
     transfer: Transfer,
     fee: FeeQuote,
     steps: Vec<Step>,
+    checked: bool,
 }
 
 struct Priced {
@@ -240,6 +263,7 @@ struct Priced {
     order: Order,
     plans: Vec<AnyCall>,
     fee: FeeQuote,
+    swap: ContractSwap,
 }
 
 fn contract_swap(account: u32, request: &Request, order: &Order) -> Option<ContractSwap> {
@@ -287,6 +311,7 @@ async fn priced(
             order,
             plans,
             fee,
+            swap,
         }),
         Err(ChainError::Insufficient {
             needed, available, ..
@@ -303,6 +328,7 @@ async fn priced(
                 order,
                 plans,
                 fee,
+                swap,
             })
         }
         Err(err) => Err(err.into()),
@@ -474,9 +500,13 @@ async fn call_order(
             .iter()
             .map(|plan| plan.planned().step.clone())
             .collect(),
+        checked: priced.plans.iter().all(AnyCall::checked),
         route: priced.route,
         order: priced.order,
-        plan: Planned::Calls(priced.plans),
+        plan: Planned::Calls {
+            calls: priced.plans,
+            swap: Box::new(priced.swap),
+        },
         transfer,
         fee: priced.fee,
     })
@@ -714,6 +744,7 @@ impl Worker {
                     transfer,
                     fee,
                     steps: Vec::new(),
+                    checked: false,
                 })
             }
             .await;
@@ -749,6 +780,7 @@ impl Worker {
             transfer,
             fee,
             steps,
+            checked,
         } = match result {
             Ok(ordered) => ordered,
             Err(err) => {
@@ -778,6 +810,7 @@ impl Worker {
                 route,
                 order,
                 steps,
+                checked,
             }),
             _ => Err(SwapError::Untrusted("the provider's final order is far below market").into()),
         });

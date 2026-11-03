@@ -1,5 +1,6 @@
 mod abi;
 mod config;
+mod kyber;
 mod oneclick;
 mod order;
 mod pools;
@@ -8,7 +9,10 @@ mod relay;
 mod reply;
 mod route;
 
-pub use config::{OneClickConfig, PoolConfig, Providers, RelayChain, RelayConfig, RelayDeposit};
+pub use config::{
+    KyberConfig, OneClickConfig, PoolConfig, Providers, RelayChain, RelayConfig, RelayDeposit,
+};
+pub use kyber::KyberSwap;
 pub use oneclick::OneClick;
 pub use order::{Comment, Contract, Order, Progress, Provider, QUOTE_LIFE, Request, SwapError};
 pub use pools::Pools;

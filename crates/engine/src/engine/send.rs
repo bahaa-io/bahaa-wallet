@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_chain::{
-    ChainError, Decoded, DecodedCall, FeeQuote, MAX_MEMO, Replace, Signed, Step as CallStep,
-    Transfer, TxId, TxStatus, check_call, check_signed,
+    ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, MAX_MEMO, Replace, Signed,
+    Step as CallStep, Transfer, TxId, TxStatus, check_call, check_signed,
 };
 use bahaa_crypto::{DeriveError, ExposeSecret, SecretString};
 use bahaa_store::{MAX_REASON, SentKind, SentStatus, SentTx};
@@ -53,7 +53,10 @@ pub struct Draft {
 #[derive(Clone)]
 pub(super) enum Planned {
     Transfer(Box<AnyPlan>),
-    Calls(Vec<AnyCall>),
+    Calls {
+        calls: Vec<AnyCall>,
+        swap: Box<ContractSwap>,
+    },
 }
 
 enum Signing {
@@ -367,6 +370,9 @@ impl Worker {
         let chains = Arc::clone(&self.chains);
         let (wallet, chain) = (draft.wallet, draft.chain);
         let (plan, transfer) = (draft.plan.clone(), draft.transfer.clone());
+        if let Planned::Calls { calls, swap } = &plan {
+            chains[chain].recheck(swap, calls).await?;
+        }
         let signing = self
             .keyring(move |keyring| {
                 keyring.check_password(password.expose_secret().as_bytes())?;
@@ -379,7 +385,7 @@ impl Worker {
                         check_signed(&transfer, &decoded)?;
                         Ok::<_, EngineError>(Signing::Transfer(Box::new((signed, decoded))))
                     }
-                    Planned::Calls(calls) => calls
+                    Planned::Calls { calls, .. } => calls
                         .iter()
                         .map(|call| {
                             let signed = chain.sign_call(call, seed)?;

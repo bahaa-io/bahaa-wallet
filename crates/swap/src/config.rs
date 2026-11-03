@@ -14,6 +14,15 @@ pub struct Providers {
     pub oneclick: OneClickConfig,
     pub relay: RelayConfig,
     pub pools: BTreeMap<NetworkId, PoolConfig>,
+    pub kyberswap: KyberConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KyberConfig {
+    pub url: Url,
+    pub router: String,
+    pub chains: BTreeMap<NetworkId, String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

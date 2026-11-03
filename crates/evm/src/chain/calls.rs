@@ -33,6 +33,7 @@ pub struct EvmCall {
     planned: PlannedCall,
     tx: TxEip1559,
     fee_max: Amount,
+    checked: bool,
 }
 
 impl EvmCall {
@@ -42,6 +43,10 @@ impl EvmCall {
 
     pub fn fee_max(&self) -> Amount {
         self.fee_max
+    }
+
+    pub fn checked(&self) -> bool {
+        self.checked
     }
 }
 
@@ -118,7 +123,7 @@ impl EvmChain {
             None => enough(native.0, units, held.native, native.1)?,
         }
         let steps = self.steps(swap, allowance)?;
-        let gas = self.gas(&from, &steps, swap, allowance).await?;
+        let (gas, checked) = self.gas(&from, &steps, swap, allowance).await?;
         let (base, tip) = self.fees().await?;
         let max_fee = base
             .checked_mul(U256::from(2u8))
@@ -162,6 +167,7 @@ impl EvmChain {
                 planned,
                 tx,
                 fee_max: self.native(fee_max)?,
+                checked,
             });
         }
         fees.lines = merged(fees.lines)?;
@@ -173,6 +179,25 @@ impl EvmChain {
             .ok_or_else(ChainError::overflow)?;
         enough(native.0, needed, held.native, native.1)?;
         Ok((plans, self.fee_quote(fees)?))
+    }
+
+    pub async fn recheck(&self, swap: &ContractSwap, plans: &[EvmCall]) -> Result<(), ChainError> {
+        let from = bytes(&swap.from)?;
+        let allowance = match (swap.sell.contract(), swap.spender) {
+            (Some(token), Some(spender)) => {
+                self.allowance(&bytes(token)?, &from, &bytes(&spender)?)
+                    .await?
+            }
+            _ => U256::ZERO,
+        };
+        let steps: Vec<PlannedCall> = plans.iter().map(|plan| plan.planned.clone()).collect();
+        let lonely = steps.len() == 1 && swap.spender.is_some();
+        if lonely && allowance < swap.amount.units() {
+            return Err(ChainError::Invalid(
+                "the approval this swap relied on is gone, get a new quote",
+            ));
+        }
+        self.gas(&from, &steps, swap, allowance).await.map(|_| ())
     }
 
     pub fn sign_call(&self, plan: &EvmCall, seed: &Seed) -> Result<Signed, ChainError> {
@@ -325,7 +350,7 @@ impl EvmChain {
         steps: &[PlannedCall],
         swap: &ContractSwap,
         allowance: U256,
-    ) -> Result<Vec<Gas>, ChainError> {
+    ) -> Result<(Vec<Gas>, bool), ChainError> {
         let mut calls = steps
             .iter()
             .map(|step| call_json(from, &step.call))
@@ -356,13 +381,14 @@ impl EvmChain {
             Some(reply) => {
                 let simulated = simulated(&reply, calls.len())?;
                 judge(from, swap, steps.len() - 1, &simulated, check)?;
-                Ok(simulated[..steps.len()]
+                let gas = simulated[..steps.len()]
                     .iter()
                     .map(|call| Gas {
                         used: call.used,
                         limit: call.peak.saturating_add(call.peak / 4),
                     })
-                    .collect())
+                    .collect();
+                Ok((gas, true))
             }
             None if swap.ours && steps.len() == 1 => {
                 let route = Route {
@@ -373,10 +399,11 @@ impl EvmChain {
                     decimals: self.network.native.decimals,
                 };
                 let estimate = self.estimate(from, &route).await?;
-                Ok(vec![Gas {
+                let gas = vec![Gas {
                     used: estimate,
                     limit: estimate.saturating_add(estimate / 5),
-                }])
+                }];
+                Ok((gas, false))
             }
             None => Err(ChainError::Unsupported(
                 "checking this swap before it is signed",

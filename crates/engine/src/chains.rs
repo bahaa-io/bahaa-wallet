@@ -48,6 +48,12 @@ impl AnyCall {
             Self::Evm(call) => call.fee_max(),
         }
     }
+
+    pub(crate) fn checked(&self) -> bool {
+        match self {
+            Self::Evm(call) => call.checked(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -119,6 +125,28 @@ impl AnyChain {
                 Self::Evm(chain) => {
                     let (plans, fee) = chain.prepare_swap(swap).await?;
                     Ok((plans.into_iter().map(AnyCall::Evm).collect(), fee))
+                }
+                Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                    Err(ChainError::Unsupported("swaps through contracts"))
+                }
+            }
+        })
+        .await
+    }
+
+    pub(crate) async fn recheck(
+        &self,
+        swap: &ContractSwap,
+        calls: &[AnyCall],
+    ) -> Result<(), ChainError> {
+        shielded(async {
+            match self {
+                Self::Evm(chain) => {
+                    let plans: Vec<EvmCall> = calls
+                        .iter()
+                        .map(|AnyCall::Evm(call)| call.clone())
+                        .collect();
+                    chain.recheck(swap, &plans).await
                 }
                 Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
                     Err(ChainError::Unsupported("swaps through contracts"))

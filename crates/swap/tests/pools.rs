@@ -5,7 +5,7 @@ use std::time::Duration;
 use bahaa_chain::{Chain, ContractSwap, PlannedCall, Step, TxId, TxStatus, check_call, now};
 use bahaa_crypto::{Mnemonic, Seed, WordCount};
 use bahaa_evm::{EvmCall, EvmChain};
-use bahaa_swap::{Method, Pools, Providers, Request};
+use bahaa_swap::{KyberSwap, Method, Order, Pools, Providers, Request};
 use bahaa_testkit::anvil::Anvil;
 use bahaa_types::{Address, Amount, AssetId};
 use serde_json::json;
@@ -58,8 +58,36 @@ async fn quoted(chain: &EvmChain, request: &Request) -> ContractSwap {
         ("PancakeSwap", Method::Pool)
     );
     assert!(route.minimum < route.expected);
+    assert_eq!(order.deposit.to_string(), ROUTER);
+    swap_of(request, order)
+}
+
+async fn warm(anvil: &Anvil, swap: &ContractSwap) {
+    let from = swap.from.to_string();
+    let mut calls = Vec::new();
+    if let (Some(token), Some(spender)) = (swap.sell.contract(), swap.spender) {
+        calls.push(json!({
+            "from": from,
+            "to": token.to_string(),
+            "data": format!(
+                "0x095ea7b3{:0>64}{:064x}",
+                spender.to_string().trim_start_matches("0x").to_lowercase(),
+                swap.amount.units()
+            ),
+        }));
+    }
+    calls.push(json!({
+        "from": from,
+        "to": swap.call.to.to_string(),
+        "value": format!("{:#x}", swap.call.value.units()),
+        "data": format!("0x{}", bahaa_types::hex::encode(&swap.call.data)),
+    }));
+    let params = json!([{"blockStateCalls": [{"calls": calls}], "validation": false}, "latest"]);
+    anvil.rpc("eth_simulateV1", params).await.unwrap();
+}
+
+fn swap_of(request: &Request, order: Order) -> ContractSwap {
     let contract = order.contract.unwrap();
-    assert_eq!(contract.call.to.to_string(), ROUTER);
     ContractSwap {
         account: ACCOUNT,
         from: request.from,
@@ -77,9 +105,12 @@ async fn run(chain: &EvmChain, seed: &Seed, plans: &[EvmCall]) {
         let signed = chain.sign_call(plan, seed).unwrap();
         check_call(plan.planned(), &chain.decode_call(&signed).unwrap()).unwrap();
         let id = chain.broadcast_private(&signed).await.unwrap();
+        DEBUG_IDS.lock().unwrap().push(id.as_str().to_owned());
         confirmed(chain, &id).await;
     }
 }
+
+static DEBUG_IDS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 async fn confirmed(chain: &EvmChain, id: &TxId) {
     for _ in 0..100 {
@@ -89,7 +120,7 @@ async fn confirmed(chain: &EvmChain, id: &TxId) {
             .unwrap()
         {
             TxStatus::Confirmed { .. } => return,
-            TxStatus::Failed(reason) => panic!("failed: {reason}"),
+            TxStatus::Failed(reason) => panic!("failed: {reason} {:?}", DEBUG_IDS.lock().unwrap()),
             _ => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
@@ -173,4 +204,43 @@ async fn a_swap_that_pays_less_or_someone_else_is_refused_before_signing() {
     let mut cheaper = honest;
     cheaper.amount = Amount::parse("0.5", 18).unwrap();
     assert!(chain.prepare_swap(&cheaper).await.is_err());
+}
+
+#[tokio::test]
+#[ignore = "needs a local anvil and internet: BAHAA_ANVIL=/path/to/anvil"]
+async fn kyberswap_routes_pass_the_check_and_settle_on_a_forked_chain() {
+    let (anvil, chain, me, seed) = forked().await;
+    let usdt = format!("bsc/{USDT}");
+    let kyber = KyberSwap::new(
+        &Providers::builtin().unwrap().kyberswap,
+        bahaa_chain::http::client().unwrap(),
+    )
+    .unwrap();
+    let buy = request("bsc", "1", &usdt, me);
+    let (route, order) = kyber.quote(&chain, &buy, now()).await.unwrap();
+    assert_eq!(
+        (route.provider, route.method),
+        ("KyberSwap", Method::Aggregator)
+    );
+    let buying = swap_of(&buy, order);
+    warm(&anvil, &buying).await;
+    let (plans, _) = chain.prepare_swap(&buying).await.unwrap();
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].checked());
+    run(&chain, &seed, &plans).await;
+    let bought = held(&chain, &me, &usdt).await;
+    assert!(bought >= buying.buy.as_ref().unwrap().1);
+
+    let half = Amount::new(bought.units() / ruint::aliases::U256::from(2u8), 18).unwrap();
+    let sell = request(&usdt, &half.to_string(), "bsc", me);
+    let (_, order) = kyber.quote(&chain, &sell, now()).await.unwrap();
+    let selling = swap_of(&sell, order);
+    warm(&anvil, &selling).await;
+    let (plans, _) = chain.prepare_swap(&selling).await.unwrap();
+    assert_eq!(plans.len(), 2);
+    run(&chain, &seed, &plans).await;
+    assert_eq!(
+        held(&chain, &me, &usdt).await,
+        bought.checked_sub(half).unwrap()
+    );
 }

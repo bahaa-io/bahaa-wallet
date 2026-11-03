@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -237,7 +237,7 @@ fn word(units: u128) -> String {
     format!("0x{units:064x}")
 }
 
-fn simulated(calls: &[Value], paid: u128) -> Value {
+fn simulated(calls: &[Value], paid: u64) -> Value {
     let me = HARDHAT_0.to_lowercase();
     let answers: Vec<Value> = calls
         .iter()
@@ -246,7 +246,7 @@ fn simulated(calls: &[Value], paid: u128) -> Value {
             let logs = if call["to"] == PANCAKE {
                 json!([
                     {"address": USDT, "topics": [TRANSFER, topic(&me), topic(POOL)], "data": word(50_000_000_000_000_000_000)},
-                    {"address": NATIVE, "topics": [TRANSFER, topic(PANCAKE), topic(&me)], "data": word(paid)},
+                    {"address": NATIVE, "topics": [TRANSFER, topic(PANCAKE), topic(&me)], "data": word(u128::from(paid))},
                 ])
             } else {
                 json!([])
@@ -258,7 +258,7 @@ fn simulated(calls: &[Value], paid: u128) -> Value {
     json!([{"calls": answers}])
 }
 
-fn pool_node(sent: &Sent, call: &Value, paid: u128) -> Value {
+fn pool_node(sent: &Sent, call: &Value, paid: &AtomicU64) -> Value {
     let first = call["params"][0].as_str().unwrap_or_default().to_owned();
     let mut sent = sent.lock().unwrap();
     let hash = |raw: &str| {
@@ -296,7 +296,7 @@ fn pool_node(sent: &Sent, call: &Value, paid: u128) -> Value {
                 .as_array()
                 .unwrap()
                 .clone();
-            simulated(&calls, paid)
+            simulated(&calls, paid.load(Ordering::SeqCst))
         }
         "eth_sendRawTransaction" => {
             sent.push(first.clone());
@@ -314,14 +314,16 @@ fn pool_node(sent: &Sent, call: &Value, paid: u128) -> Value {
     result(reply)
 }
 
-async fn pooled(scratch: &Scratch, paid: u128) -> (Engine, WalletId, Sent) {
+async fn pooled(scratch: &Scratch, paid: &Arc<AtomicU64>) -> (Engine, WalletId, Sent) {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let shared = Arc::clone(&sent);
-    let url = common::node(move |call| (pool_node(&shared, call, paid), Duration::ZERO)).await;
+    let paid = Arc::clone(paid);
+    let url = common::node(move |call| (pool_node(&shared, call, &paid), Duration::ZERO)).await;
     let dead = Url::parse("http://127.0.0.1:9/").unwrap();
     let registry = Registry::with_networks(vec![common::network("bsc", url)]).unwrap();
     let mut providers = Providers::builtin().unwrap();
     providers.relay.url = dead.clone();
+    providers.kyberswap.url = dead.clone();
     providers.oneclick.url = dead;
     let mut config = config(scratch, registry, None);
     config.swaps = Some(providers);
@@ -347,7 +349,8 @@ fn usdt_to_bnb(wallet: WalletId) -> SwapRequest {
 #[tokio::test]
 async fn a_pool_swap_approves_exactly_is_checked_by_simulation_and_settles_when_mined() {
     let scratch = Scratch::new();
-    let (engine, wallet, sent) = pooled(&scratch, 80_000_000_000_000_000).await;
+    let paid = Arc::new(AtomicU64::new(80_000_000_000_000_000));
+    let (engine, wallet, sent) = pooled(&scratch, &paid).await;
     let mut events = engine.events();
     let draft = engine.prepare_swap(usdt_to_bnb(wallet)).await.unwrap();
     let index = draft
@@ -379,6 +382,7 @@ async fn a_pool_swap_approves_exactly_is_checked_by_simulation_and_settles_when_
             if amount.to_string() == "50" && spender.to_string().to_lowercase() == PANCAKE
     ));
     assert_eq!(review.steps[1], Step::Swap);
+    assert!(review.checked);
     assert_eq!(review.draft.transfer.to.to_string().to_lowercase(), PANCAKE);
     let tx = engine
         .confirm_send(review.draft.id, SecretString::from("pw"))
@@ -417,7 +421,8 @@ async fn a_pool_swap_approves_exactly_is_checked_by_simulation_and_settles_when_
 #[tokio::test]
 async fn a_pool_swap_that_would_pay_less_than_its_minimum_is_listed_as_unavailable() {
     let scratch = Scratch::new();
-    let (engine, wallet, _sent) = pooled(&scratch, 70_000_000_000_000_000).await;
+    let paid = Arc::new(AtomicU64::new(70_000_000_000_000_000));
+    let (engine, wallet, _sent) = pooled(&scratch, &paid).await;
     let draft = engine.prepare_swap(usdt_to_bnb(wallet)).await.unwrap();
     assert!(
         draft
@@ -431,4 +436,29 @@ async fn a_pool_swap_that_would_pay_less_than_its_minimum_is_listed_as_unavailab
         .find(|missing| missing.provider == "PancakeSwap")
         .unwrap();
     assert_eq!(missing.reason, "the swap would pay less than its minimum");
+}
+
+#[tokio::test]
+async fn a_pool_swap_whose_price_moved_after_the_review_is_refused_at_signing() {
+    let scratch = Scratch::new();
+    let paid = Arc::new(AtomicU64::new(80_000_000_000_000_000));
+    let (engine, wallet, sent) = pooled(&scratch, &paid).await;
+    let draft = engine.prepare_swap(usdt_to_bnb(wallet)).await.unwrap();
+    let index = draft
+        .routes
+        .iter()
+        .position(|ranked| ranked.route.provider == "PancakeSwap")
+        .unwrap();
+    let review = engine.choose_swap(draft.id, index).await.unwrap();
+    paid.store(70_000_000_000_000_000, Ordering::SeqCst);
+    let refused = engine
+        .confirm_send(review.draft.id, SecretString::from("pw"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "the swap would pay less than its minimum"
+    );
+    assert_eq!(sent.lock().unwrap().len(), 0);
+    assert_eq!(engine.history().await.unwrap().len(), 0);
 }

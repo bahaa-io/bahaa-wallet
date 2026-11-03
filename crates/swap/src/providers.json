@@ -188,5 +188,17 @@
         10000
       ]
     }
+  },
+  "kyberswap": {
+    "url": "https://aggregator-api.kyberswap.com/",
+    "router": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+    "chains": {
+      "ethereum": "ethereum",
+      "bsc": "bsc",
+      "arbitrum": "arbitrum",
+      "polygon": "polygon",
+      "optimism": "optimism",
+      "base": "base"
+    }
   }
 }
