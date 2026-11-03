@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
 use bahaa_store::{
-    Contact, CustomToken, Outgoing, Received, SavedPrices, SavedQuote, Scan, SentStatus, SentTx,
-    Store, StoreError, StoreKey, SwapRecord, SwapStatus, TrustedBlock,
+    Contact, CustomToken, Outgoing, Received, SavedPrices, SavedQuote, Scan, SentKind, SentStatus,
+    SentTx, Store, StoreError, StoreKey, SwapRecord, SwapStatus, TrustedBlock,
 };
 use bahaa_types::{Address, Amount, ChainFamily, Price};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -199,6 +199,8 @@ fn sent(id: &str, status: SentStatus) -> SentTx {
         transaction: None,
         memo: None,
         replaces: None,
+        kind: SentKind::Transfer,
+        private: false,
     }
 }
 

@@ -1,12 +1,20 @@
+use bahaa_chain::Call;
 use bahaa_types::{Address, Amount, AssetId, TonForm};
+use serde::Deserialize;
 use thiserror::Error;
 
 pub const QUOTE_LIFE: u64 = 30;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub enum Provider {
+    #[serde(rename = "oneclick")]
     OneClick,
+    #[serde(rename = "relay")]
     Relay,
+    #[serde(rename = "uniswap")]
+    Uniswap,
+    #[serde(rename = "pancakeswap")]
+    PancakeSwap,
 }
 
 impl Provider {
@@ -14,6 +22,8 @@ impl Provider {
         match self {
             Self::OneClick => "NEAR Intents",
             Self::Relay => "Relay",
+            Self::Uniswap => "Uniswap",
+            Self::PancakeSwap => "PancakeSwap",
         }
     }
 
@@ -21,13 +31,24 @@ impl Provider {
         match self {
             Self::OneClick => "oneclick",
             Self::Relay => "relay",
+            Self::Uniswap => "uniswap",
+            Self::PancakeSwap => "pancakeswap",
         }
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
-        [Self::OneClick, Self::Relay]
-            .into_iter()
-            .find(|provider| provider.key() == key)
+        [
+            Self::OneClick,
+            Self::Relay,
+            Self::Uniswap,
+            Self::PancakeSwap,
+        ]
+        .into_iter()
+        .find(|provider| provider.key() == key)
+    }
+
+    pub fn on_chain(self) -> bool {
+        matches!(self, Self::Uniswap | Self::PancakeSwap)
     }
 }
 
@@ -58,6 +79,14 @@ pub struct Order {
     pub expected: Amount,
     pub minimum: Amount,
     pub expires_at: u64,
+    pub contract: Option<Contract>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Contract {
+    pub call: Call,
+    pub spender: Option<Address>,
+    pub ours: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

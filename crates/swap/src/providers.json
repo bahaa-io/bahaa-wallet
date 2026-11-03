@@ -102,5 +102,91 @@
       "solana/Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
       "solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     ]
+  },
+  "pools": {
+    "ethereum": {
+      "provider": "uniswap",
+      "quoter": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+      "router": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      "wrapped": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      "fees": [
+        100,
+        500,
+        3000,
+        10000
+      ]
+    },
+    "arbitrum": {
+      "provider": "uniswap",
+      "quoter": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+      "router": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      "wrapped": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+      "fees": [
+        100,
+        500,
+        3000,
+        10000
+      ]
+    },
+    "optimism": {
+      "provider": "uniswap",
+      "quoter": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+      "router": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      "wrapped": "0x4200000000000000000000000000000000000006",
+      "fees": [
+        100,
+        500,
+        3000,
+        10000
+      ]
+    },
+    "polygon": {
+      "provider": "uniswap",
+      "quoter": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+      "router": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      "wrapped": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
+      "fees": [
+        100,
+        500,
+        3000,
+        10000
+      ]
+    },
+    "base": {
+      "provider": "uniswap",
+      "quoter": "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+      "router": "0x2626664c2603336E57B271c5C0b26F421741e481",
+      "wrapped": "0x4200000000000000000000000000000000000006",
+      "fees": [
+        100,
+        500,
+        3000,
+        10000
+      ]
+    },
+    "avalanche": {
+      "provider": "uniswap",
+      "quoter": "0xbe0F5544EC67e9B3b2D979aaA43f18Fd87E6257F",
+      "router": "0xbb00FF08d01D300023C629E8fFfFcb65A5a578cE",
+      "wrapped": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+      "fees": [
+        100,
+        500,
+        3000,
+        10000
+      ]
+    },
+    "bsc": {
+      "provider": "pancakeswap",
+      "quoter": "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
+      "router": "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
+      "wrapped": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
+      "fees": [
+        100,
+        500,
+        2500,
+        10000
+      ]
+    }
   }
 }

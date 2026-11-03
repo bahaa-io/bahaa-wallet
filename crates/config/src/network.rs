@@ -66,7 +66,7 @@ impl Protocol {
 
     fn allows(self, feature: Feature) -> bool {
         match feature {
-            Feature::Logs => self == Self::JsonRpc,
+            Feature::Logs | Feature::Private => self == Self::JsonRpc,
             Feature::History => matches!(
                 self,
                 Self::TronHttp
@@ -85,6 +85,7 @@ impl Protocol {
 pub enum Feature {
     Logs,
     History,
+    Private,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -435,7 +436,11 @@ impl Spec {
         self.native
             .check()
             .map_err(|text| problem(&format!("native coin {text}")))?;
-        if self.endpoints.is_empty() {
+        if self
+            .endpoints
+            .iter()
+            .all(|endpoint| endpoint.has(Feature::Private))
+        {
             return Err(problem("needs at least one endpoint"));
         }
         if !(MIN_BLOCK_MS..=MAX_BLOCK_MS).contains(&self.block_ms) {
@@ -462,6 +467,9 @@ impl Spec {
                 return Err(problem(
                     "an endpoint claims a feature its protocol cannot have",
                 ));
+            }
+            if endpoint.has(Feature::Private) && endpoint.features.len() != 1 {
+                return Err(problem("a private endpoint only takes transactions"));
             }
             if endpoint.min_gap_ms > MAX_GAP_MS {
                 return Err(problem("an endpoint's min_gap_ms is over one minute"));

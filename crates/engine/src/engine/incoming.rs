@@ -206,6 +206,8 @@ mod tests {
             transaction: None,
             memo: None,
             replaces: None,
+            kind: bahaa_store::SentKind::Transfer,
+            private: false,
         }
     }
 

@@ -4,7 +4,7 @@ use bahaa_types::{AssetId, NetworkId};
 use serde::Deserialize;
 use url::Url;
 
-use crate::order::SwapError;
+use crate::order::{Provider, SwapError};
 
 const BUILTIN: &str = include_str!("providers.json");
 
@@ -13,6 +13,17 @@ const BUILTIN: &str = include_str!("providers.json");
 pub struct Providers {
     pub oneclick: OneClickConfig,
     pub relay: RelayConfig,
+    pub pools: BTreeMap<NetworkId, PoolConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolConfig {
+    pub provider: Provider,
+    pub quoter: String,
+    pub router: String,
+    pub wrapped: String,
+    pub fees: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

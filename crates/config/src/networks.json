@@ -49,6 +49,27 @@
         "protocol": "json-rpc",
         "url": "https://1rpc.io/bnb",
         "features": []
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://rpc-bsc.48.club",
+        "features": [
+          "private"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://bscrpc.pancakeswap.finance",
+        "features": [
+          "private"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://bsc.rpc.blxrbdn.com",
+        "features": [
+          "private"
+        ]
       }
     ],
     "explorer": {
@@ -107,6 +128,20 @@
         "protocol": "json-rpc",
         "url": "https://1rpc.io/eth",
         "features": []
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://rpc.flashbots.net/fast",
+        "features": [
+          "private"
+        ]
+      },
+      {
+        "protocol": "json-rpc",
+        "url": "https://rpc.mevblocker.io/noreverts",
+        "features": [
+          "private"
+        ]
       }
     ],
     "explorer": {

@@ -8,11 +8,12 @@ use std::time::Duration;
 
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
-use bahaa_engine::swap::{Charged, CostKind, Method, Providers, SwapStatus};
+use bahaa_engine::SentKind;
+use bahaa_engine::swap::{Charged, CostKind, Method, Providers, Step, SwapStatus};
 use bahaa_engine::{Engine, Event, Spend, SwapRequest, WalletId};
 use bahaa_testkit::{Reply, serve};
 use bahaa_types::{Address, Amount, ChainFamily};
-use common::{HARDHAT, HARDHAT_0, Scratch, config, result, unhex};
+use common::{HARDHAT, HARDHAT_0, Scratch, USDT, config, result, unhex};
 use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
 use url::Url;
@@ -220,4 +221,214 @@ async fn a_cross_chain_swap_is_quoted_signed_as_a_plain_deposit_and_tracked_to_d
     let kept = engine.swaps().await.unwrap();
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].status, SwapStatus::Done);
+}
+
+const QUOTER: &str = "0xb048bbc1ee6b733fffcfb9e9cef7375518e25997";
+const PANCAKE: &str = "0x13f4ea83d0bd40e75c8222255bc855a974568dd4";
+const POOL: &str = "0x172fcd41e0913e95784454622d1c3724f546f849";
+const NATIVE: &str = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const TRANSFER: &str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+fn topic(address: &str) -> String {
+    format!("0x{:0>64}", address.trim_start_matches("0x").to_lowercase())
+}
+
+fn word(units: u128) -> String {
+    format!("0x{units:064x}")
+}
+
+fn simulated(calls: &[Value], paid: u128) -> Value {
+    let me = HARDHAT_0.to_lowercase();
+    let answers: Vec<Value> = calls
+        .iter()
+        .map(|call| {
+            let data = call["data"].as_str().unwrap_or_default();
+            let logs = if call["to"] == PANCAKE {
+                json!([
+                    {"address": USDT, "topics": [TRANSFER, topic(&me), topic(POOL)], "data": word(50_000_000_000_000_000_000)},
+                    {"address": NATIVE, "topics": [TRANSFER, topic(PANCAKE), topic(&me)], "data": word(paid)},
+                ])
+            } else {
+                json!([])
+            };
+            let output = if data.starts_with("0xdd62ed3e") { word(0) } else { "0x".to_owned() };
+            json!({"status": "0x1", "gasUsed": "0x249f0", "returnData": output, "logs": logs})
+        })
+        .collect();
+    json!([{"calls": answers}])
+}
+
+fn pool_node(sent: &Sent, call: &Value, paid: u128) -> Value {
+    let first = call["params"][0].as_str().unwrap_or_default().to_owned();
+    let mut sent = sent.lock().unwrap();
+    let hash = |raw: &str| {
+        format!(
+            "0x{}",
+            common::hex(&Keccak256::digest(unhex(raw.trim_start_matches("0x"))))
+        )
+    };
+    let known = sent.iter().any(|raw| hash(raw) == first);
+    let target = call["params"][0]["to"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase();
+    let data = call["params"][0]["data"].as_str().unwrap_or_default();
+    let reply = match call["method"].as_str().unwrap() {
+        "eth_chainId" => json!("0x38"),
+        "eth_getBalance" => json!("0x8ac7230489e80000"),
+        "eth_getTransactionCount" => json!("0x0"),
+        "eth_feeHistory" => {
+            json!({"oldestBlock": "0x1", "baseFeePerGas": ["0x3b9aca00", "0x3b9aca00"]})
+        }
+        "eth_maxPriorityFeePerGas" => json!("0x3b9aca00"),
+        "eth_call" if target == QUOTER => json!(format!(
+            "{}{}",
+            word(80_000_000_000_000_000),
+            "0".repeat(192)
+        )),
+        "eth_call" if target == USDT && data.starts_with("0x313ce567") => json!(word(18)),
+        "eth_call" if target == USDT && data.starts_with("0x70a08231") => {
+            json!(word(100_000_000_000_000_000_000))
+        }
+        "eth_call" => json!(word(0)),
+        "eth_simulateV1" => {
+            let calls = call["params"][0]["blockStateCalls"][0]["calls"]
+                .as_array()
+                .unwrap()
+                .clone();
+            simulated(&calls, paid)
+        }
+        "eth_sendRawTransaction" => {
+            sent.push(first.clone());
+            json!(hash(&first))
+        }
+        "eth_getTransactionReceipt" if known => json!({
+            "status": "0x1",
+            "blockNumber": "0x10",
+            "gasUsed": "0x249f0",
+            "effectiveGasPrice": "0x77359400"
+        }),
+        "eth_getTransactionByHash" if known => json!({"hash": first}),
+        _ => Value::Null,
+    };
+    result(reply)
+}
+
+async fn pooled(scratch: &Scratch, paid: u128) -> (Engine, WalletId, Sent) {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let shared = Arc::clone(&sent);
+    let url = common::node(move |call| (pool_node(&shared, call, paid), Duration::ZERO)).await;
+    let dead = Url::parse("http://127.0.0.1:9/").unwrap();
+    let registry = Registry::with_networks(vec![common::network("bsc", url)]).unwrap();
+    let mut providers = Providers::builtin().unwrap();
+    providers.relay.url = dead.clone();
+    providers.oneclick.url = dead;
+    let mut config = config(scratch, registry, None);
+    config.swaps = Some(providers);
+    let engine = Engine::start(config).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    (engine, wallet, sent)
+}
+
+fn usdt_to_bnb(wallet: WalletId) -> SwapRequest {
+    SwapRequest {
+        wallet,
+        account: 0,
+        sell: format!("bsc/{USDT}").parse().unwrap(),
+        buy: "bsc".parse().unwrap(),
+        amount: Spend::Exact(Amount::parse("50", 18).unwrap()),
+    }
+}
+
+#[tokio::test]
+async fn a_pool_swap_approves_exactly_is_checked_by_simulation_and_settles_when_mined() {
+    let scratch = Scratch::new();
+    let (engine, wallet, sent) = pooled(&scratch, 80_000_000_000_000_000).await;
+    let mut events = engine.events();
+    let draft = engine.prepare_swap(usdt_to_bnb(wallet)).await.unwrap();
+    let index = draft
+        .routes
+        .iter()
+        .position(|ranked| ranked.route.provider == "PancakeSwap")
+        .unwrap();
+    let route = &draft.routes[index].route;
+    assert_eq!(route.method, Method::Pool);
+    assert_eq!(route.expected.to_string(), "0.08");
+    assert_eq!(route.minimum.to_string(), "0.0796");
+    assert!(
+        route
+            .costs
+            .iter()
+            .any(|cost| cost.kind == CostKind::PoolFee)
+    );
+    let network = route
+        .costs
+        .iter()
+        .find(|cost| cost.kind == CostKind::NetworkFee)
+        .unwrap();
+    assert_eq!(network.amount.to_string(), "0.0006");
+    let review = engine.choose_swap(draft.id, index).await.unwrap();
+    assert_eq!(review.steps.len(), 2);
+    assert!(matches!(
+        &review.steps[0],
+        Step::Approve { amount, spender, .. }
+            if amount.to_string() == "50" && spender.to_string().to_lowercase() == PANCAKE
+    ));
+    assert_eq!(review.steps[1], Step::Swap);
+    assert_eq!(review.draft.transfer.to.to_string().to_lowercase(), PANCAKE);
+    let tx = engine
+        .confirm_send(review.draft.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    assert_eq!(tx.kind, SentKind::Swap);
+    assert!(tx.private);
+    let raw = sent.lock().unwrap().clone();
+    assert_eq!(raw.len(), 2);
+    assert!(raw[0].contains("095ea7b3"), "the approval goes first");
+    let history = engine.history().await.unwrap();
+    let approval = history
+        .iter()
+        .find(|record| record.kind == SentKind::Approval)
+        .unwrap();
+    assert_eq!(approval.amount.to_string(), "50");
+    assert_eq!(approval.sequence, Some(0));
+    assert_eq!(tx.sequence, Some(1));
+    let done = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(Event::SwapUpdated(swap)) = events.recv().await
+                && swap.status == SwapStatus::Done
+            {
+                return swap;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        (done.provider.as_str(), done.reference.as_str()),
+        ("pancakeswap", tx.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn a_pool_swap_that_would_pay_less_than_its_minimum_is_listed_as_unavailable() {
+    let scratch = Scratch::new();
+    let (engine, wallet, _sent) = pooled(&scratch, 70_000_000_000_000_000).await;
+    let draft = engine.prepare_swap(usdt_to_bnb(wallet)).await.unwrap();
+    assert!(
+        draft
+            .routes
+            .iter()
+            .all(|ranked| ranked.route.provider != "PancakeSwap")
+    );
+    let missing = draft
+        .unavailable
+        .iter()
+        .find(|missing| missing.provider == "PancakeSwap")
+        .unwrap();
+    assert_eq!(missing.reason, "the swap would pay less than its minimum");
 }

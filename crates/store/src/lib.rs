@@ -104,6 +104,19 @@ pub struct SentTx {
     pub memo: Option<String>,
     #[serde(default)]
     pub replaces: Option<String>,
+    #[serde(default)]
+    pub kind: SentKind,
+    #[serde(default)]
+    pub private: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SentKind {
+    #[default]
+    Transfer,
+    Approval,
+    Swap,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

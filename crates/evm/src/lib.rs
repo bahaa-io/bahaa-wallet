@@ -5,4 +5,4 @@ pub mod fuzz;
 mod rpc;
 mod tx;
 
-pub use chain::{EvmChain, EvmPlan, derive};
+pub use chain::{EvmCall, EvmChain, EvmPlan, derive};

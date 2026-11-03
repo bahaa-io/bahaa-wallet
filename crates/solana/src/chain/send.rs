@@ -263,6 +263,7 @@ impl SolanaChain {
     pub(super) async fn push(&self, signed: &Signed) -> Result<TxId, ChainError> {
         self.rpc
             .call_all(
+                None,
                 "sendTransaction",
                 json!([STANDARD.encode(&signed.bytes), {
                     "encoding": "base64",

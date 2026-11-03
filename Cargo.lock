@@ -915,11 +915,14 @@ version = "0.8.0"
 dependencies = [
  "bahaa-chain",
  "bahaa-config",
+ "bahaa-crypto",
+ "bahaa-evm",
  "bahaa-testkit",
  "bahaa-types",
  "base64 0.23.1",
  "bs58",
  "ed25519-dalek",
+ "futures-util",
  "reqwest",
  "ruint",
  "serde",
@@ -935,9 +938,12 @@ name = "bahaa-testkit"
 version = "0.8.0"
 dependencies = [
  "bahaa-chain",
+ "bahaa-config",
  "bahaa-types",
+ "reqwest",
  "serde_json",
  "sha2 0.10.9",
+ "sha3",
  "tokio",
  "url",
 ]

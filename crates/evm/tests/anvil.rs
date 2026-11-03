@@ -1,105 +1,23 @@
 #![allow(clippy::unwrap_used)]
 
-use std::fmt::Write;
-use std::net::TcpListener;
-use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use alloy_consensus::{SignableTransaction, TxEnvelope};
 use alloy_eips::eip2718::Decodable2718;
 use bahaa_chain::ScanCursor;
 use bahaa_chain::{Chain, ChainError, FeeItem, Transfer, TxId, TxStatus, check_signed};
-use bahaa_config::{ChainKind, Endpoint, Feature, Protocol, Registry};
 use bahaa_crypto::{Mnemonic, Seed};
 use bahaa_evm::EvmChain;
 use bahaa_types::{Address, Amount, AssetId};
-use serde_json::{Value, json};
-use sha3::{Digest, Keccak256};
-use url::Url;
+use serde_json::json;
+
+use bahaa_testkit::anvil::Anvil;
 
 const HARDHAT: &str = "test test test test test test test test test test test junk";
 const USDT: &str = "0x55d398326f99059fF775485246999027B3197955";
 
-struct Anvil {
-    child: Child,
-    url: Url,
-    network: String,
-}
-
-impl Anvil {
-    fn start(network: &str, extra: &[&str]) -> Self {
-        let binary = std::env::var("BAHAA_ANVIL").unwrap();
-        let registry = Registry::builtin().unwrap();
-        let ChainKind::Evm { chain_id, .. } = registry.get(&network.parse().unwrap()).unwrap().kind
-        else {
-            panic!("not evm")
-        };
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let mut command = Command::new(binary);
-        command
-            .args(["--chain-id", &chain_id.to_string()])
-            .args(["--port", &port.to_string(), "--silent"])
-            .args(extra)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        Self {
-            child: command.spawn().unwrap(),
-            url: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
-            network: network.to_owned(),
-        }
-    }
-
-    async fn ready(&self) {
-        let http = reqwest::Client::new();
-        for _ in 0..100 {
-            if self.rpc(&http, "eth_chainId", json!([])).await.is_some() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        panic!("anvil did not start");
-    }
-
-    async fn rpc(&self, http: &reqwest::Client, method: &str, params: Value) -> Option<Value> {
-        let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
-        let reply: Value = http
-            .post(self.url.clone())
-            .json(&body)
-            .send()
-            .await
-            .ok()?
-            .json()
-            .await
-            .ok()?;
-        reply.get("result").cloned()
-    }
-
-    fn chain(&self) -> EvmChain {
-        let registry = Registry::builtin().unwrap();
-        let mut network = registry
-            .get(&self.network.parse().unwrap())
-            .unwrap()
-            .clone();
-        network.endpoints = vec![Endpoint {
-            protocol: Protocol::JsonRpc,
-            url: self.url.clone(),
-            features: vec![Feature::Logs],
-            min_gap_ms: 0,
-            history_gap_ms: 0,
-        }];
-        EvmChain::new(network).unwrap()
-    }
-}
-
-impl Drop for Anvil {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+fn chain_of(anvil: &Anvil) -> EvmChain {
+    EvmChain::new(anvil.network()).unwrap()
 }
 
 fn seed() -> Seed {
@@ -159,7 +77,7 @@ async fn balance(chain: &EvmChain, address: &Address, asset: &AssetId) -> Amount
 async fn sends_native_coins_end_to_end() {
     let anvil = Anvil::start("bsc", &[]);
     anvil.ready().await;
-    let chain = anvil.chain();
+    let chain = chain_of(&anvil);
     let bnb: AssetId = "bsc".parse().unwrap();
     let amount = Amount::parse("0.25", 18).unwrap();
     let transfer = transfer(&chain, bnb.clone(), amount);
@@ -187,17 +105,15 @@ async fn sends_native_coins_end_to_end() {
 async fn a_max_send_leaves_only_the_fee_room_it_did_not_use() {
     let anvil = Anvil::start("bsc", &[]);
     anvil.ready().await;
-    let chain = anvil.chain();
+    let chain = chain_of(&anvil);
     let bnb: AssetId = "bsc".parse().unwrap();
     let mut transfer = transfer(&chain, bnb.clone(), Amount::default());
     transfer.account = 2;
     transfer.from = chain.derive(&seed(), 2).unwrap();
     transfer.max = true;
     let start = Amount::parse("1", 18).unwrap();
-    let http = reqwest::Client::new();
     anvil
         .rpc(
-            &http,
             "anvil_setBalance",
             json!([transfer.from.to_string(), format!("{:#x}", start.units())]),
         )
@@ -229,7 +145,7 @@ async fn a_max_send_leaves_only_the_fee_room_it_did_not_use() {
 async fn a_memo_is_carried_on_chain_by_a_coin_transfer() {
     let anvil = Anvil::start("bsc", &[]);
     anvil.ready().await;
-    let chain = anvil.chain();
+    let chain = chain_of(&anvil);
     let mut transfer = transfer(
         &chain,
         "bsc".parse().unwrap(),
@@ -245,9 +161,8 @@ async fn a_memo_is_carried_on_chain_by_a_coin_transfer() {
     check_signed(&transfer, &chain.decode(&signed).unwrap()).unwrap();
     let id = chain.broadcast(&signed).await.unwrap();
     confirmed(&chain, &id).await;
-    let http = reqwest::Client::new();
     let mined = anvil
-        .rpc(&http, "eth_getTransactionByHash", json!([id.as_str()]))
+        .rpc("eth_getTransactionByHash", json!([id.as_str()]))
         .await
         .unwrap();
     assert_eq!(mined["input"], "0x6465706f7369742034343137");
@@ -258,8 +173,7 @@ async fn a_memo_is_carried_on_chain_by_a_coin_transfer() {
 async fn a_waiting_transfer_is_sped_up_or_cancelled_in_the_mempool() {
     let anvil = Anvil::start("bsc", &["--no-mining"]);
     anvil.ready().await;
-    let chain = anvil.chain();
-    let http = reqwest::Client::new();
+    let chain = chain_of(&anvil);
     let bnb: AssetId = "bsc".parse().unwrap();
     for how in [bahaa_chain::Replace::SpeedUp, bahaa_chain::Replace::Cancel] {
         let transfer = transfer(&chain, bnb.clone(), Amount::parse("0.1", 18).unwrap());
@@ -282,10 +196,7 @@ async fn a_waiting_transfer_is_sped_up_or_cancelled_in_the_mempool() {
         let replacement = chain.sign(&plan, &seed()).unwrap();
         check_signed(chain.planned(&plan), &chain.decode(&replacement).unwrap()).unwrap();
         chain.broadcast(&replacement).await.unwrap();
-        anvil
-            .rpc(&http, "anvil_mine", json!(["0x1"]))
-            .await
-            .unwrap();
+        anvil.rpc("anvil_mine", json!(["0x1"])).await.unwrap();
         assert!(matches!(
             chain
                 .status(&replacement.id, &transfer.from, None)
@@ -317,7 +228,7 @@ async fn a_waiting_transfer_is_sped_up_or_cancelled_in_the_mempool() {
 async fn refuses_to_overspend_and_knows_unknown_ids() {
     let anvil = Anvil::start("bsc", &[]);
     anvil.ready().await;
-    let chain = anvil.chain();
+    let chain = chain_of(&anvil);
     let empty = Mnemonic::from_entropy(&[3; 16]).unwrap().to_seed("");
     let mut transfer = transfer(
         &chain,
@@ -344,12 +255,8 @@ async fn refuses_to_overspend_and_knows_unknown_ids() {
 async fn sends_real_bsc_usdt_on_a_forked_chain() {
     let anvil = Anvil::start("bsc", &["--fork-url", "https://bsc-dataseed.bnbchain.org"]);
     anvil.ready().await;
-    let chain = anvil.chain();
-    let http = reqwest::Client::new();
-    let forked_at = anvil
-        .rpc(&http, "eth_blockNumber", json!([]))
-        .await
-        .unwrap();
+    let chain = chain_of(&anvil);
+    let forked_at = anvil.rpc("eth_blockNumber", json!([])).await.unwrap();
     let forked_at =
         u64::from_str_radix(forked_at.as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
     let usdt: AssetId = format!("bsc/{USDT}").parse().unwrap();
@@ -358,28 +265,9 @@ async fn sends_real_bsc_usdt_on_a_forked_chain() {
         panic!("not evm")
     };
     let funded = Amount::parse("1000", 18).unwrap();
-    let mut slot_found = false;
-    for slot in 0u8..20 {
-        let mut key = [0u8; 64];
-        key[12..32].copy_from_slice(&owner);
-        key[63] = slot;
-        let storage = Keccak256::digest(key)
-            .iter()
-            .fold(String::from("0x"), |mut out, byte| {
-                let _ = write!(out, "{byte:02x}");
-                out
-            });
-        let value = format!("0x{:064x}", funded.units());
-        anvil
-            .rpc(&http, "anvil_setStorageAt", json!([USDT, storage, value]))
-            .await
-            .unwrap();
-        if balance(&chain, &from, &usdt).await == funded {
-            slot_found = true;
-            break;
-        }
-    }
-    assert!(slot_found, "could not find the USDT balance slot");
+    anvil
+        .fund_token(USDT, &owner, &format!("{:x}", funded.units()))
+        .await;
     let amount = Amount::parse("2.5", 18).unwrap();
     let transfer = transfer(&chain, usdt.clone(), amount);
     let before_to = balance(&chain, &transfer.to, &usdt).await;
@@ -410,10 +298,7 @@ async fn sends_real_bsc_usdt_on_a_forked_chain() {
         chain.prepare(&everything).await.unwrap_err(),
         ChainError::Invalid("there is nothing to send")
     );
-    anvil
-        .rpc(&http, "anvil_mine", json!(["0xc"]))
-        .await
-        .unwrap();
+    anvil.rpc("anvil_mine", json!(["0xc"])).await.unwrap();
     let local_only = ScanCursor {
         next: forked_at + 1,
         complete_from: forked_at + 1,
@@ -446,7 +331,7 @@ async fn sends_on_a_forked_base_priced_by_the_real_fee_oracle() {
         ],
     );
     anvil.ready().await;
-    let chain = anvil.chain();
+    let chain = chain_of(&anvil);
     let eth: AssetId = "base".parse().unwrap();
     let amount = Amount::parse("0.25", 18).unwrap();
     let mut transfer = transfer(&chain, eth.clone(), amount);
@@ -469,10 +354,8 @@ async fn sends_on_a_forked_base_priced_by_the_real_fee_oracle() {
         .tx()
         .encoded_for_signing()
         .len();
-    let http = reqwest::Client::new();
     let bound = anvil
         .rpc(
-            &http,
             "eth_call",
             json!([{
                 "to": "0x420000000000000000000000000000000000000F",

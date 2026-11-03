@@ -2,10 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_chain::{
-    ChainError, FeeQuote, MAX_MEMO, Replace, Signed, Transfer, TxId, TxStatus, check_signed,
+    ChainError, Decoded, DecodedCall, FeeQuote, MAX_MEMO, Replace, Signed, Step as CallStep,
+    Transfer, TxId, TxStatus, check_call, check_signed,
 };
 use bahaa_crypto::{DeriveError, ExposeSecret, SecretString};
-use bahaa_store::{MAX_REASON, SentStatus, SentTx};
+use bahaa_store::{MAX_REASON, SentKind, SentStatus, SentTx};
 use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text, to_plain_text};
 use futures_util::future::join_all;
 use tokio::time::Instant;
@@ -13,7 +14,7 @@ use tokio::time::Instant;
 use super::swap::SwapLink;
 use super::{EngineError, Event, Notice, Reply, Worker};
 use crate::caution::Caution;
-use crate::chains::{AnyChain, AnyPlan};
+use crate::chains::{AnyCall, AnyChain, AnyPlan};
 use crate::{KeyringError, WalletId};
 
 const MAX_DRAFTS: usize = 8;
@@ -49,12 +50,23 @@ pub struct Draft {
     pub replaces: Option<String>,
 }
 
+#[derive(Clone)]
+pub(super) enum Planned {
+    Transfer(Box<AnyPlan>),
+    Calls(Vec<AnyCall>),
+}
+
+enum Signing {
+    Transfer(Box<(Signed, Decoded)>),
+    Calls(Vec<(Signed, DecodedCall, CallStep, Amount)>),
+}
+
 pub(super) struct Prepared {
     wallet: WalletId,
     chain: usize,
     transfer: Transfer,
     fee: FeeQuote,
-    plan: AnyPlan,
+    plan: Planned,
     expires: Instant,
     replaces: Option<String>,
     swap: Option<SwapLink>,
@@ -63,7 +75,7 @@ pub(super) struct Prepared {
 pub(super) struct NewDraft {
     pub wallet: WalletId,
     pub chain: usize,
-    pub plan: AnyPlan,
+    pub plan: Planned,
     pub transfer: Transfer,
     pub fee: FeeQuote,
     pub replaces: Option<String>,
@@ -81,8 +93,7 @@ pub(super) struct Quoted {
 }
 
 pub(super) struct Delivered {
-    record: SentTx,
-    delivery: Delivery,
+    outcomes: Vec<(SentTx, Delivery)>,
     reply: Reply<SentTx>,
     swap: Option<SwapLink>,
 }
@@ -167,7 +178,7 @@ impl Worker {
             .raw
             .as_deref()
             .and_then(bahaa_types::hex::decode)
-            .filter(|_| tx.status.is_open())
+            .filter(|_| tx.status.is_open() && tx.kind == SentKind::Transfer)
             .ok_or(ChainError::Invalid(
                 "only a transfer still on its way can be replaced",
             ))?;
@@ -282,7 +293,7 @@ impl Worker {
         let draft = self.add_draft(NewDraft {
             wallet,
             chain,
-            plan,
+            plan: Planned::Transfer(Box::new(plan)),
             transfer,
             fee,
             replaces,
@@ -337,7 +348,7 @@ impl Worker {
         reply: Reply<SentTx>,
     ) {
         match self.sign_draft(id, password).await {
-            Ok((chain, record, signed, swap)) => self.deliver(chain, record, signed, reply, swap),
+            Ok((chain, batch, swap)) => self.deliver(chain, batch, reply, swap),
             Err(err) => {
                 let _ = reply.send(Err(err));
             }
@@ -348,7 +359,7 @@ impl Worker {
         &mut self,
         id: DraftId,
         password: SecretString,
-    ) -> Result<(usize, SentTx, Signed, Option<SwapLink>), EngineError> {
+    ) -> Result<(usize, Vec<(SentTx, Signed)>, Option<SwapLink>), EngineError> {
         let draft = self.drafts.remove(&id).ok_or(EngineError::UnknownDraft)?;
         if Instant::now() >= draft.expires {
             return Err(EngineError::DraftExpired);
@@ -356,23 +367,58 @@ impl Worker {
         let chains = Arc::clone(&self.chains);
         let (wallet, chain) = (draft.wallet, draft.chain);
         let (plan, transfer) = (draft.plan.clone(), draft.transfer.clone());
-        let signed = self
+        let signing = self
             .keyring(move |keyring| {
                 keyring.check_password(password.expose_secret().as_bytes())?;
-                let signed = chains[chain].sign(&plan, keyring.seed(wallet)?)?;
-                let decoded = chains[chain].decode(&signed)?;
-                check_signed(&transfer, &decoded)?;
-                Ok::<_, EngineError>((signed, decoded))
+                let seed = keyring.seed(wallet)?;
+                let chain = &chains[chain];
+                match &plan {
+                    Planned::Transfer(plan) => {
+                        let signed = chain.sign(plan, seed)?;
+                        let decoded = chain.decode(&signed)?;
+                        check_signed(&transfer, &decoded)?;
+                        Ok::<_, EngineError>(Signing::Transfer(Box::new((signed, decoded))))
+                    }
+                    Planned::Calls(calls) => calls
+                        .iter()
+                        .map(|call| {
+                            let signed = chain.sign_call(call, seed)?;
+                            let decoded = chain.decode_call(&signed)?;
+                            check_call(call.planned(), &decoded)?;
+                            Ok((signed, decoded, call.planned().step.clone(), call.fee_max()))
+                        })
+                        .collect::<Result<Vec<_>, EngineError>>()
+                        .map(Signing::Calls),
+                }
             })
             .await;
-        let (signed, decoded) = match signed {
+        let signing = match signing {
             Err(EngineError::Keyring(KeyringError::WrongPassword)) => {
                 self.drafts.insert(id, draft);
                 return Err(KeyringError::WrongPassword.into());
             }
             other => other?,
         };
-        let network = self.chains[chain].network().id.clone();
+        let batch = match signing {
+            Signing::Transfer(signed) => {
+                let (signed, decoded) = *signed;
+                vec![(self.sent_transfer(&draft, &signed, decoded)?, signed)]
+            }
+            Signing::Calls(calls) => self.sent_calls(&draft, calls)?,
+        };
+        for (record, _) in &batch {
+            self.save(record.clone())?;
+        }
+        Ok((chain, batch, draft.swap))
+    }
+
+    fn sent_transfer(
+        &self,
+        draft: &Prepared,
+        signed: &Signed,
+        decoded: Decoded,
+    ) -> Result<SentTx, EngineError> {
+        let network = self.chains[draft.chain].network().id.clone();
         if let Some(replaced) = &draft.replaces {
             let same = self.history.iter().any(|tx| {
                 tx.network == network
@@ -383,19 +429,10 @@ impl Worker {
             if !same {
                 return Err(ChainError::Mismatch("the replaced transfer").into());
             }
-        } else {
-            let reused = decoded.sequence.is_some()
-                && self.history.iter().any(|tx| {
-                    tx.status.is_open()
-                        && tx.network == network
-                        && tx.from == decoded.from
-                        && tx.sequence == decoded.sequence
-                });
-            if reused {
-                return Err(EngineError::StillSending);
-            }
+        } else if self.reused(&network, &decoded.from, decoded.sequence) {
+            return Err(EngineError::StillSending);
         }
-        let record = SentTx {
+        Ok(SentTx {
             id: signed.id.to_string(),
             network,
             from: decoded.from,
@@ -413,27 +450,99 @@ impl Worker {
             transaction: None,
             memo: decoded.memo,
             replaces: draft.replaces.clone(),
-        };
-        self.save(record.clone())?;
-        Ok((chain, record, signed, draft.swap))
+            kind: SentKind::Transfer,
+            private: false,
+        })
+    }
+
+    fn sent_calls(
+        &self,
+        draft: &Prepared,
+        calls: Vec<(Signed, DecodedCall, CallStep, Amount)>,
+    ) -> Result<Vec<(SentTx, Signed)>, EngineError> {
+        let network = self.chains[draft.chain].network().id.clone();
+        let created_at = bahaa_chain::now();
+        calls
+            .into_iter()
+            .map(|(signed, decoded, step, fee_max)| {
+                if self.reused(&network, &decoded.from, decoded.sequence) {
+                    return Err(EngineError::StillSending);
+                }
+                let (kind, to, asset, amount) = match step {
+                    CallStep::Approve {
+                        asset,
+                        spender,
+                        amount,
+                    } => (SentKind::Approval, spender, asset, amount),
+                    CallStep::Swap => (
+                        SentKind::Swap,
+                        decoded.call.to,
+                        draft.transfer.asset.clone(),
+                        draft.transfer.amount,
+                    ),
+                };
+                let record = SentTx {
+                    id: signed.id.to_string(),
+                    network: network.clone(),
+                    from: decoded.from,
+                    to,
+                    asset,
+                    amount,
+                    sequence: decoded.sequence,
+                    fee_max,
+                    fee_paid: None,
+                    block: None,
+                    created_at,
+                    expires_at: None,
+                    status: SentStatus::Sending,
+                    raw: Some(bahaa_types::hex::encode(&signed.bytes)),
+                    transaction: None,
+                    memo: None,
+                    replaces: None,
+                    kind,
+                    private: true,
+                };
+                Ok((record, signed))
+            })
+            .collect()
+    }
+
+    fn reused(&self, network: &NetworkId, from: &Address, sequence: Option<u64>) -> bool {
+        sequence.is_some()
+            && self.history.iter().any(|tx| {
+                tx.status.is_open()
+                    && tx.network == *network
+                    && tx.from == *from
+                    && tx.sequence == sequence
+            })
     }
 
     fn deliver(
         &mut self,
         chain: usize,
-        record: SentTx,
-        signed: Signed,
+        batch: Vec<(SentTx, Signed)>,
         reply: Reply<SentTx>,
         swap: Option<SwapLink>,
     ) {
-        self.broadcasting.insert(record.id.clone());
+        for (record, _) in &batch {
+            self.broadcasting.insert(record.id.clone());
+        }
         let chains = Arc::clone(&self.chains);
         let notices = self.notices_tx.clone();
         tokio::spawn(async move {
-            let delivery = deliver(&chains[chain], &signed, &record).await;
+            let mut outcomes = Vec::with_capacity(batch.len());
+            let mut refused = false;
+            for (record, signed) in batch {
+                let delivery = if refused {
+                    Delivery::Refused("an earlier step was refused".to_owned())
+                } else {
+                    deliver(&chains[chain], &signed, &record).await
+                };
+                refused |= matches!(delivery, Delivery::Refused(_));
+                outcomes.push((record, delivery));
+            }
             let delivered = Delivered {
-                record,
-                delivery,
+                outcomes,
                 reply,
                 swap,
             };
@@ -443,35 +552,31 @@ impl Worker {
 
     pub(super) fn delivered(&mut self, delivered: Delivered) {
         let Delivered {
-            mut record,
-            delivery,
+            outcomes,
             reply,
             swap,
         } = delivered;
-        self.broadcasting.remove(&record.id);
-        let refused = match delivery {
-            Delivery::Accepted => {
-                record.status = SentStatus::Pending;
-                None
+        let mut answer = Err(EngineError::UnknownDraft);
+        let mut refused = None;
+        for (mut record, delivery) in outcomes {
+            self.broadcasting.remove(&record.id);
+            match delivery {
+                Delivery::Accepted => record.status = SentStatus::Pending,
+                Delivery::Refused(reason) => {
+                    record.status = SentStatus::Failed(reason.clone());
+                    record.raw = None;
+                    refused = refused.or(Some(reason));
+                }
+                Delivery::Unknown => {}
             }
-            Delivery::Refused(reason) => {
-                record.status = SentStatus::Failed(reason.clone());
-                record.raw = None;
-                Some(reason)
-            }
-            Delivery::Unknown => None,
-        };
-        let saved = self.save(record.clone());
-        if let Some(link) = swap
-            && refused.is_none()
-            && saved.is_ok()
-        {
-            self.record_swap(&record, link);
+            answer = self.save(record.clone()).map(|()| record);
         }
-        let _ = reply.send(match (refused, saved) {
-            (Some(reason), _) => Err(ChainError::Rejected(reason).into()),
-            (None, Err(err)) => Err(err),
-            (None, Ok(())) => Ok(record),
+        if let (Some(link), None, Ok(record)) = (swap, &refused, &answer) {
+            self.record_swap(record, link);
+        }
+        let _ = reply.send(match refused {
+            Some(reason) => Err(ChainError::Rejected(reason).into()),
+            None => answer,
         });
         self.schedule_tracking();
     }
@@ -518,6 +623,9 @@ impl Worker {
                 } else {
                     Vec::new()
                 };
+                if update.kind == SentKind::Swap {
+                    self.settle_swap(&update);
+                }
                 let _ = self.save(update);
                 for rival in rivals {
                     let _ = self.save(rival);
@@ -597,8 +705,16 @@ impl Worker {
     }
 }
 
+async fn send(chain: &AnyChain, signed: &Signed, private: bool) -> Result<TxId, ChainError> {
+    if private {
+        chain.broadcast_private(signed).await
+    } else {
+        chain.broadcast(signed).await
+    }
+}
+
 async fn deliver(chain: &AnyChain, signed: &Signed, record: &SentTx) -> Delivery {
-    match chain.broadcast(signed).await {
+    match send(chain, signed, record.private).await {
         Ok(_) => Delivery::Accepted,
         Err(ChainError::Rejected(reason)) => match chain
             .status(&signed.id, &record.from, record.expires_at)
@@ -619,7 +735,7 @@ async fn track(chain: &AnyChain, tx: &SentTx, now: u64) -> Option<SentTx> {
         Step::Keep => None,
         Step::Update(next) => Some(*next),
         Step::Rebroadcast(bytes) => {
-            chain.broadcast(&Signed { id, bytes }).await.ok()?;
+            send(chain, &Signed { id, bytes }, tx.private).await.ok()?;
             (tx.status != SentStatus::Pending).then(|| SentTx {
                 status: SentStatus::Pending,
                 ..tx.clone()
@@ -710,6 +826,8 @@ mod tests {
             transaction: None,
             memo: None,
             replaces: None,
+            kind: SentKind::Transfer,
+            private: false,
         }
     }
 

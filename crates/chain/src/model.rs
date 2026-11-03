@@ -111,6 +111,50 @@ impl Transfer {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Call {
+    pub to: Address,
+    pub value: Amount,
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContractSwap {
+    pub account: u32,
+    pub from: Address,
+    pub call: Call,
+    pub spender: Option<Address>,
+    pub sell: AssetId,
+    pub amount: Amount,
+    pub buy: Option<(AssetId, Amount)>,
+    pub ours: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    Approve {
+        asset: AssetId,
+        spender: Address,
+        amount: Amount,
+    },
+    Swap,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlannedCall {
+    pub step: Step,
+    pub account: u32,
+    pub from: Address,
+    pub call: Call,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodedCall {
+    pub from: Address,
+    pub call: Call,
+    pub sequence: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Replace {
     SpeedUp,
@@ -389,6 +433,19 @@ pub fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {
 pub fn memo_text(bytes: &[u8]) -> Option<String> {
     let text = to_plain_text(&String::from_utf8_lossy(bytes), MAX_MEMO);
     (!text.is_empty()).then_some(text)
+}
+
+pub fn check_call(planned: &PlannedCall, decoded: &DecodedCall) -> Result<(), ChainError> {
+    let checks = [
+        (decoded.from == planned.from, "the sender"),
+        (decoded.call.to == planned.call.to, "the contract"),
+        (decoded.call.value == planned.call.value, "the amount"),
+        (decoded.call.data == planned.call.data, "the call"),
+    ];
+    match checks.into_iter().find(|(same, _)| !same) {
+        Some((_, field)) => Err(ChainError::Mismatch(field)),
+        None => Ok(()),
+    }
 }
 
 pub fn check_signed(transfer: &Transfer, decoded: &Decoded) -> Result<(), ChainError> {

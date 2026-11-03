@@ -18,7 +18,8 @@ pub use bahaa_crypto::{
 };
 pub use bahaa_market::{MarketConfig, MarketError, Quote, Snapshot, Status};
 pub use bahaa_store::{
-    Contact, CustomToken, Movement, Outgoing, Received, Scan, SentStatus, SentTx, StoreError,
+    Contact, CustomToken, Movement, Outgoing, Received, Scan, SentKind, SentStatus, SentTx,
+    StoreError,
 };
 pub use bahaa_types::{
     Address, AddressError, Amount, AmountError, AssetId, BitcoinType, ChainFamily, NetworkId,
@@ -33,10 +34,11 @@ pub use engine::{
 };
 
 pub mod swap {
+    pub use bahaa_chain::{Call, Step};
     pub use bahaa_store::{SwapRecord, SwapStatus};
     pub use bahaa_swap::{
-        Caution, Charged, Comment, Cost, CostKind, Custody, Method, Order, Progress, Provider,
-        Providers, REFUSE_BPS, Ranked, Refusal, Route, SwapError, Value, WARN_BPS,
+        Caution, Charged, Comment, Contract, Cost, CostKind, Custody, Method, Order, Progress,
+        Provider, Providers, REFUSE_BPS, Ranked, Refusal, Route, SwapError, Value, WARN_BPS,
     };
 }
 pub use keyring::{

@@ -174,7 +174,10 @@ impl Pool {
         let candidates: Vec<&Slot> = self
             .slots
             .iter()
-            .filter(|slot| need.is_none_or(|feature| slot.endpoint.has(feature)))
+            .filter(|slot| match need {
+                Some(feature) => slot.endpoint.has(feature),
+                None => !slot.endpoint.has(Feature::Private),
+            })
             .collect();
         if candidates.is_empty() {
             return Err(PoolError::NoEndpoint);

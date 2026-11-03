@@ -194,6 +194,7 @@ impl Relay {
             expected,
             minimum,
             expires_at: now.saturating_add(QUOTE_LIFE),
+            contract: None,
         };
         Ok((route, order))
     }

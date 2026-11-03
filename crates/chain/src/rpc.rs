@@ -6,7 +6,7 @@ use bahaa_config::{Endpoint, Feature};
 use serde_json::{Value, json};
 use url::Url;
 
-use crate::{ChainError, Failure, Pool, http};
+use crate::{ChainError, Failure, Pool, PoolError, http};
 
 const REFUSAL_MEMORY: Duration = Duration::from_secs(3600);
 
@@ -59,8 +59,27 @@ impl<D: Dialect> JsonRpc<D> {
             .await?)
     }
 
+    pub async fn call_if_served(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<Option<Value>, ChainError> {
+        match self
+            .pool
+            .call(None, |endpoint| {
+                self.attempt(endpoint, method, params.clone())
+            })
+            .await
+        {
+            Ok(value) => Ok(Some(value)),
+            Err(PoolError::Unserved(_)) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     pub async fn call_all<T>(
         &self,
+        need: Option<Feature>,
         method: &str,
         params: Value,
         judge: impl Fn(Result<Value, Failure<ChainError>>) -> Result<T, Failure<ChainError>>,
@@ -68,7 +87,7 @@ impl<D: Dialect> JsonRpc<D> {
         let judge = &judge;
         Ok(self
             .pool
-            .call_all(None, |endpoint| {
+            .call_all(need, |endpoint| {
                 let attempt = self.attempt(endpoint, method, params.clone());
                 async move { judge(attempt.await) }
             })

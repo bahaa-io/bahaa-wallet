@@ -4,17 +4,17 @@ use std::time::Duration;
 
 use bahaa_bitcoin::{BitcoinChain, BitcoinPlan};
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Movement, Replace, ScanCursor, Scanned, Signed,
-    Transfer, TxId, TxStatus,
+    Balance, Chain, ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, Movement,
+    PlannedCall, Replace, ScanCursor, Scanned, Signed, Transfer, TxId, TxStatus,
 };
 use bahaa_config::{Coin, Network, Registry};
 use bahaa_crypto::Seed;
-use bahaa_evm::{EvmChain, EvmPlan};
+use bahaa_evm::{EvmCall, EvmChain, EvmPlan};
 use bahaa_solana::{SolanaChain, SolanaPlan};
 use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock};
 use bahaa_ton::{TonChain, TonPlan};
 use bahaa_tron::{TronChain, TronPlan};
-use bahaa_types::{Address, AssetId, ChainFamily, NetworkId, TonContract};
+use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, TonContract};
 
 use crate::WalletInfo;
 use futures_util::FutureExt;
@@ -29,6 +29,25 @@ pub(crate) enum AnyChain {
     Ton(Box<TonChain>),
     Solana(SolanaChain),
     Bitcoin(Box<BitcoinChain>),
+}
+
+#[derive(Clone)]
+pub(crate) enum AnyCall {
+    Evm(EvmCall),
+}
+
+impl AnyCall {
+    pub(crate) fn planned(&self) -> &PlannedCall {
+        match self {
+            Self::Evm(call) => call.planned(),
+        }
+    }
+
+    pub(crate) fn fee_max(&self) -> Amount {
+        match self {
+            Self::Evm(call) => call.fee_max(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -80,6 +99,57 @@ impl AnyChain {
             }
             Self::Bitcoin(chain) => {
                 chain.derive_as(seed, account, wallet.bitcoin.unwrap_or_default())
+            }
+        }
+    }
+
+    pub(crate) fn evm(&self) -> Option<&EvmChain> {
+        match self {
+            Self::Evm(chain) => Some(chain),
+            Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => None,
+        }
+    }
+
+    pub(crate) async fn prepare_swap(
+        &self,
+        swap: &ContractSwap,
+    ) -> Result<(Vec<AnyCall>, FeeQuote), ChainError> {
+        shielded(async {
+            match self {
+                Self::Evm(chain) => {
+                    let (plans, fee) = chain.prepare_swap(swap).await?;
+                    Ok((plans.into_iter().map(AnyCall::Evm).collect(), fee))
+                }
+                Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                    Err(ChainError::Unsupported("swaps through contracts"))
+                }
+            }
+        })
+        .await
+    }
+
+    pub(crate) fn sign_call(&self, plan: &AnyCall, seed: &Seed) -> Result<Signed, ChainError> {
+        match (self, plan) {
+            (Self::Evm(chain), AnyCall::Evm(plan)) => chain.sign_call(plan, seed),
+            _ => Err(ChainError::Mismatch("the network")),
+        }
+    }
+
+    pub(crate) fn decode_call(&self, signed: &Signed) -> Result<DecodedCall, ChainError> {
+        std::panic::catch_unwind(AssertUnwindSafe(|| match self {
+            Self::Evm(chain) => chain.decode_call(signed),
+            Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("swaps through contracts"))
+            }
+        }))
+        .unwrap_or_else(|_| Err(unreadable()))
+    }
+
+    pub(crate) async fn broadcast_private(&self, signed: &Signed) -> Result<TxId, ChainError> {
+        match self {
+            Self::Evm(chain) => shielded(chain.broadcast_private(signed)).await,
+            Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                self.broadcast(signed).await
             }
         }
     }

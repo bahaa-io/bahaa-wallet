@@ -13,9 +13,10 @@ pub use chain::Chain;
 pub use clock::{now, now_ms};
 pub use history::{WalkEnd, covered};
 pub use model::{
-    Balance, ChainError, Decoded, FeeItem, FeeLine, FeeQuote, FeeRate, Incoming, MAX_MEMO,
-    Movement, Outgoing, Pace, RateUnit, Replace, Replaced, ScanCursor, Scanned, Signed, Transfer,
-    TxId, TxStatus, Wait, amount, check_signed, enough, memo_text, on_network,
+    Balance, Call, ChainError, ContractSwap, Decoded, DecodedCall, FeeItem, FeeLine, FeeQuote,
+    FeeRate, Incoming, MAX_MEMO, Movement, Outgoing, Pace, PlannedCall, RateUnit, Replace,
+    Replaced, ScanCursor, Scanned, Signed, Step, Transfer, TxId, TxStatus, Wait, amount,
+    check_call, check_signed, enough, memo_text, on_network,
 };
 pub use pool::{Failure, Pool, PoolError};
 pub use rpc::{Dialect, JsonRpc};

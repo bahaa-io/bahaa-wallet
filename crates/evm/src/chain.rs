@@ -5,16 +5,19 @@ use bahaa_chain::{
     MAX_MEMO, Pace, RateUnit, Replace, Signed, Transfer, TxId, TxStatus, Wait, abi_text, amount,
     enough, on_network, parse_transfer, transfer_data,
 };
-use bahaa_config::{ChainKind, Coin, Network};
+use bahaa_config::{ChainKind, Coin, Feature, Network};
 use bahaa_crypto::{DerivationPath, Seed, secp256k1_address};
 use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS, is_plain_text};
 use futures_util::future::{try_join, try_join_all, try_join3};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
+mod calls;
 mod logs;
 mod replace;
 mod rollup;
+
+pub use calls::EvmCall;
 
 use crate::rpc::{Evm, Rpc, quantity};
 use crate::tx;
@@ -149,6 +152,42 @@ impl EvmChain {
             .and_then(|fees| fees.last())
             .ok_or(ChainError::Unsupported("networks without EIP-1559 fees"))?;
         Ok((quantity(next)?, quantity(&tip)?))
+    }
+}
+
+impl EvmChain {
+    async fn nonce(&self, from: &[u8; 20]) -> Result<u64, ChainError> {
+        let nonce = self
+            .rpc
+            .call("eth_getTransactionCount", json!([hex(from), "pending"]))
+            .await?;
+        u64::try_from(quantity(&nonce)?).map_err(|_| ChainError::Invalid("impossible nonce"))
+    }
+
+    async fn send_raw(&self, signed: &Signed, need: Option<Feature>) -> Result<TxId, ChainError> {
+        let ours = |reply: &Value| {
+            reply.as_str().map(str::to_ascii_lowercase).as_deref() == Some(signed.id.as_str())
+        };
+        self.rpc
+            .call_all(
+                need,
+                "eth_sendRawTransaction",
+                json!([hex(&signed.bytes)]),
+                |reply| match reply {
+                    Ok(reply) if ours(&reply) => Ok(()),
+                    Ok(_) => Err(Failure::Retry(ChainError::Network(
+                        "the node answered with another transaction id".to_owned(),
+                    ))),
+                    Err(Failure::Fatal(ChainError::Rejected(message)))
+                        if already_known(&message) =>
+                    {
+                        Ok(())
+                    }
+                    Err(other) => Err(other),
+                },
+            )
+            .await?;
+        Ok(signed.id.clone())
     }
 }
 
@@ -428,14 +467,7 @@ impl Chain for EvmChain {
         transfer.check(&self.network.id)?;
         Self::memo_allowed(transfer)?;
         let token = transfer.asset.contract().map(bytes).transpose()?;
-        let (held, nonce) = try_join(
-            self.held(&from, token.as_ref()),
-            self.rpc
-                .call("eth_getTransactionCount", json!([hex(&from), "pending"])),
-        )
-        .await?;
-        let nonce = u64::try_from(quantity(&nonce)?)
-            .map_err(|_| ChainError::Invalid("impossible nonce"))?;
+        let (held, nonce) = try_join(self.held(&from, token.as_ref()), self.nonce(&from)).await?;
         let mut transfer = self.resolve(&held, transfer).await?;
         let route = self.route(&transfer).await?;
         self.funds(&held, &transfer, &route, U256::ZERO)?;
@@ -482,17 +514,7 @@ impl Chain for EvmChain {
     }
 
     fn sign(&self, plan: &EvmPlan, seed: &Seed) -> Result<Signed, ChainError> {
-        let key = key(seed, plan.transfer.account)?;
-        if Address::Evm(secp256k1_address(&key.public_key())) != plan.transfer.from {
-            return Err(ChainError::Invalid(
-                "this seed does not own the sending account",
-            ));
-        }
-        let (bytes, hash) = tx::sign(plan.tx.clone(), &key)?;
-        Ok(Signed {
-            id: TxId::new(hex(&hash))?,
-            bytes,
-        })
+        signed(&plan.tx, seed, plan.transfer.account, &plan.transfer.from)
     }
 
     fn decode(&self, signed: &Signed) -> Result<Decoded, ChainError> {
@@ -541,28 +563,7 @@ impl Chain for EvmChain {
     }
 
     async fn broadcast(&self, signed: &Signed) -> Result<TxId, ChainError> {
-        let ours = |reply: &Value| {
-            reply.as_str().map(str::to_ascii_lowercase).as_deref() == Some(signed.id.as_str())
-        };
-        self.rpc
-            .call_all(
-                "eth_sendRawTransaction",
-                json!([hex(&signed.bytes)]),
-                |reply| match reply {
-                    Ok(reply) if ours(&reply) => Ok(()),
-                    Ok(_) => Err(Failure::Retry(ChainError::Network(
-                        "the node answered with another transaction id".to_owned(),
-                    ))),
-                    Err(Failure::Fatal(ChainError::Rejected(message)))
-                        if already_known(&message) =>
-                    {
-                        Ok(())
-                    }
-                    Err(other) => Err(other),
-                },
-            )
-            .await?;
-        Ok(signed.id.clone())
+        self.send_raw(signed, None).await
     }
 
     async fn status(
@@ -637,6 +638,20 @@ pub fn derive(seed: &Seed, account: u32) -> Result<Address, ChainError> {
     )))
 }
 
+fn signed(tx: &TxEip1559, seed: &Seed, account: u32, from: &Address) -> Result<Signed, ChainError> {
+    let key = key(seed, account)?;
+    if Address::Evm(secp256k1_address(&key.public_key())) != *from {
+        return Err(ChainError::Invalid(
+            "this seed does not own the sending account",
+        ));
+    }
+    let (bytes, hash) = tx::sign(tx.clone(), &key)?;
+    Ok(Signed {
+        id: TxId::new(hex(&hash))?,
+        bytes,
+    })
+}
+
 fn key(seed: &Seed, account: u32) -> Result<bahaa_crypto::SecretKey, ChainError> {
     let path: DerivationPath = format!("m/44'/60'/0'/0/{account}")
         .parse()
@@ -673,6 +688,7 @@ fn word(address: &[u8; 20]) -> String {
 
 #[cfg(fuzzing)]
 pub(crate) fn fuzz(value: &Value) {
+    calls::fuzz(value);
     logs::fuzz(value);
     rollup::fuzz(value);
     let _ = already_known(value["message"].as_str().unwrap_or_default());
