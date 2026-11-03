@@ -35,9 +35,10 @@ const TRUSTED: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("tru
 const PRICES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("prices");
 const ACCOUNTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("accounts");
 const NAMES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("names");
+const SWAPS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("swaps");
 const SEAL: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("seal");
-const SEALED: [TableDefinition<'static, &str, &[u8]>; 9] = [
-    CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS, NAMES,
+const SEALED: [TableDefinition<'static, &str, &[u8]>; 10] = [
+    CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS, NAMES, SWAPS,
 ];
 const CHECK: &str = "check";
 const CHECKED: &[u8] = b"bahaa store";
@@ -118,6 +119,43 @@ pub enum SentStatus {
 impl SentStatus {
     pub fn is_open(&self) -> bool {
         matches!(self, Self::Sending | Self::Pending)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwapRecord {
+    pub id: String,
+    pub network: NetworkId,
+    pub provider: String,
+    pub reference: String,
+    pub from: Address,
+    pub to: Address,
+    pub deposit: Address,
+    pub sell: AssetId,
+    pub amount: Amount,
+    pub buy: AssetId,
+    pub expected: Amount,
+    pub minimum: Amount,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub status: SwapStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwapStatus {
+    Waiting,
+    Received,
+    Swapping,
+    Done,
+    Refunded,
+    Failed(String),
+}
+
+impl SwapStatus {
+    pub fn is_open(&self) -> bool {
+        matches!(self, Self::Waiting | Self::Received | Self::Swapping)
     }
 }
 
@@ -395,6 +433,35 @@ impl Store {
             ));
         }
         self.put(SENT, &format!("{}/{}", tx.network, tx.id), &encode(tx)?)
+    }
+
+    pub fn swaps(&self) -> Result<Vec<SwapRecord>, StoreError> {
+        self.all(SWAPS)
+    }
+
+    pub fn save_swap(&self, swap: &SwapRecord) -> Result<(), StoreError> {
+        let short = |text: &str| is_plain_text(text, MAX_TX_ID);
+        if !short(&swap.id) || !short(&swap.provider) || !short(&swap.reference) {
+            return Err(StoreError::Invalid("not a swap"));
+        }
+        if let SwapStatus::Failed(reason) = &swap.status
+            && !is_plain_text(reason, MAX_REASON)
+        {
+            return Err(StoreError::Invalid(
+                "a failure reason must be short plain text",
+            ));
+        }
+        if swap.sell == swap.buy
+            || swap.minimum.decimals() != swap.expected.decimals()
+            || swap.minimum.units() > swap.expected.units()
+        {
+            return Err(StoreError::Invalid("not a swap"));
+        }
+        self.put(
+            SWAPS,
+            &format!("{}/{}", swap.network, swap.id),
+            &encode(swap)?,
+        )
     }
 
     pub fn received(&self) -> Result<Vec<Received>, StoreError> {

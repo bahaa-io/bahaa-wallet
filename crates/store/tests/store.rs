@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
 use bahaa_store::{
     Contact, CustomToken, Outgoing, Received, SavedPrices, SavedQuote, Scan, SentStatus, SentTx,
-    Store, StoreError, StoreKey, TrustedBlock,
+    Store, StoreError, StoreKey, SwapRecord, SwapStatus, TrustedBlock,
 };
 use bahaa_types::{Address, Amount, ChainFamily, Price};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -199,6 +199,56 @@ fn sent(id: &str, status: SentStatus) -> SentTx {
         transaction: None,
         memo: None,
         replaces: None,
+    }
+}
+
+fn swap(status: SwapStatus) -> SwapRecord {
+    SwapRecord {
+        id: format!("0x{}", "ef".repeat(32)),
+        network: "bsc".parse().unwrap(),
+        provider: "relay".to_owned(),
+        reference: format!("0x{}", "12".repeat(32)),
+        from: evm("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+        to: evm("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+        deposit: evm("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+        sell: "bsc".parse().unwrap(),
+        amount: Amount::parse("0.25", 18).unwrap(),
+        buy: "base".parse().unwrap(),
+        expected: Amount::parse("0.07", 18).unwrap(),
+        minimum: Amount::parse("0.069", 18).unwrap(),
+        created_at: 1_760_000_000,
+        updated_at: 1_760_000_000,
+        status,
+    }
+}
+
+#[test]
+fn swaps_are_sealed_kept_and_updated_in_place() {
+    let scratch = Scratch::new();
+    {
+        let store = unlocked(&scratch);
+        store.save_swap(&swap(SwapStatus::Waiting)).unwrap();
+        store.save_swap(&swap(SwapStatus::Done)).unwrap();
+        store.lock();
+        assert_eq!(store.swaps(), Err(StoreError::Locked));
+    }
+    let store = unlocked(&scratch);
+    assert_eq!(store.swaps().unwrap(), [swap(SwapStatus::Done)]);
+    assert!(!SwapStatus::Refunded.is_open());
+    assert!(SwapStatus::Swapping.is_open());
+    let mut backwards = swap(SwapStatus::Waiting);
+    backwards.minimum = Amount::parse("0.08", 18).unwrap();
+    let mut same = swap(SwapStatus::Waiting);
+    same.buy = same.sell.clone();
+    let mut hidden = swap(SwapStatus::Waiting);
+    hidden.provider = "relay\u{202e}".to_owned();
+    for bad in [
+        backwards,
+        same,
+        hidden,
+        swap(SwapStatus::Failed("x".repeat(201))),
+    ] {
+        assert!(matches!(store.save_swap(&bad), Err(StoreError::Invalid(_))));
     }
 }
 
