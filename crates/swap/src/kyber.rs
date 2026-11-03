@@ -157,6 +157,7 @@ impl KyberSwap {
                 },
                 spender: (!native_in).then_some(router),
                 ours: false,
+                spent: None,
             }),
             typed: None,
         };

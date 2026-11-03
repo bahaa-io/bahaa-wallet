@@ -273,6 +273,7 @@ impl Relay {
             },
             spender,
             ours: false,
+            spent: None,
         })
     }
 

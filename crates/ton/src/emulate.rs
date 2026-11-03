@@ -420,6 +420,7 @@ pub(crate) mod tests {
                 query_id: 5,
             }),
             memo: None,
+            call: None,
         }
     }
 

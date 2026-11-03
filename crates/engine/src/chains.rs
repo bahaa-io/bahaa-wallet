@@ -12,7 +12,7 @@ use bahaa_crypto::Seed;
 use bahaa_evm::{EvmCall, EvmChain, EvmPlan};
 use bahaa_solana::{SolanaCall, SolanaChain, SolanaPlan};
 use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock};
-use bahaa_ton::{TonChain, TonPlan};
+use bahaa_ton::{TonCall, TonChain, TonPlan};
 use bahaa_tron::{TronChain, TronPlan};
 use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, TonContract};
 
@@ -35,6 +35,7 @@ pub(crate) enum AnyChain {
 pub(crate) enum AnyCall {
     Evm(EvmCall),
     Solana(SolanaCall),
+    Ton(Box<TonCall>),
 }
 
 impl AnyCall {
@@ -42,6 +43,7 @@ impl AnyCall {
         match self {
             Self::Evm(call) => call.planned(),
             Self::Solana(call) => call.planned(),
+            Self::Ton(call) => call.planned(),
         }
     }
 
@@ -49,6 +51,7 @@ impl AnyCall {
         match self {
             Self::Evm(call) => call.fee_max(),
             Self::Solana(call) => call.fee_max(),
+            Self::Ton(call) => call.fee_max(),
         }
     }
 
@@ -56,6 +59,7 @@ impl AnyCall {
         match self {
             Self::Evm(call) => call.checked(),
             Self::Solana(_) => true,
+            Self::Ton(_) => false,
         }
     }
 }
@@ -120,6 +124,13 @@ impl AnyChain {
         }
     }
 
+    pub(crate) fn ton(&self) -> Option<&TonChain> {
+        match self {
+            Self::Ton(chain) => Some(chain),
+            Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => None,
+        }
+    }
+
     pub(crate) fn solana(&self) -> Option<&SolanaChain> {
         match self {
             Self::Solana(chain) => Some(chain),
@@ -141,7 +152,17 @@ impl AnyChain {
                     let (plans, fee) = chain.prepare_swap(swap).await?;
                     Ok((plans.into_iter().map(AnyCall::Solana).collect(), fee))
                 }
-                Self::Tron(_) | Self::Ton(_) | Self::Bitcoin(_) => {
+                Self::Ton(chain) => {
+                    let (plans, fee) = chain.prepare_swap(swap).await?;
+                    Ok((
+                        plans
+                            .into_iter()
+                            .map(|plan| AnyCall::Ton(Box::new(plan)))
+                            .collect(),
+                        fee,
+                    ))
+                }
+                Self::Tron(_) | Self::Bitcoin(_) => {
                     Err(ChainError::Unsupported("swaps through contracts"))
                 }
             }
@@ -194,7 +215,7 @@ impl AnyChain {
                         .iter()
                         .filter_map(|call| match call {
                             AnyCall::Evm(call) => Some(call.clone()),
-                            AnyCall::Solana(_) => None,
+                            AnyCall::Solana(_) | AnyCall::Ton(_) => None,
                         })
                         .collect();
                     if plans.len() != calls.len() {
@@ -203,7 +224,8 @@ impl AnyChain {
                     chain.recheck(swap, &plans).await
                 }
                 Self::Solana(chain) => chain.recheck(swap).await,
-                Self::Tron(_) | Self::Ton(_) | Self::Bitcoin(_) => {
+                Self::Ton(chain) => chain.recheck(swap).await,
+                Self::Tron(_) | Self::Bitcoin(_) => {
                     Err(ChainError::Unsupported("swaps through contracts"))
                 }
             }
@@ -215,6 +237,7 @@ impl AnyChain {
         match (self, plan) {
             (Self::Evm(chain), AnyCall::Evm(plan)) => chain.sign_call(plan, seed),
             (Self::Solana(chain), AnyCall::Solana(plan)) => chain.sign_call(plan, seed),
+            (Self::Ton(chain), AnyCall::Ton(plan)) => chain.sign_call(plan, seed),
             _ => Err(ChainError::Mismatch("the network")),
         }
     }
@@ -223,7 +246,8 @@ impl AnyChain {
         std::panic::catch_unwind(AssertUnwindSafe(|| match self {
             Self::Evm(chain) => chain.decode_call(signed),
             Self::Solana(chain) => chain.decode_call(signed),
-            Self::Tron(_) | Self::Ton(_) | Self::Bitcoin(_) => {
+            Self::Ton(chain) => chain.decode_call(signed),
+            Self::Tron(_) | Self::Bitcoin(_) => {
                 Err(ChainError::Unsupported("swaps through contracts"))
             }
         }))

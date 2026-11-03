@@ -27,6 +27,8 @@ pub enum Provider {
     Cow,
     #[serde(rename = "jupiter")]
     Jupiter,
+    #[serde(rename = "stonfi")]
+    StonFi,
 }
 
 impl Provider {
@@ -41,6 +43,7 @@ impl Provider {
             Self::Velora => "Velora",
             Self::Cow => "CoW Swap",
             Self::Jupiter => "Jupiter",
+            Self::StonFi => "STON.fi",
         }
     }
 
@@ -55,6 +58,7 @@ impl Provider {
             Self::Velora => "velora",
             Self::Cow => "cow",
             Self::Jupiter => "jupiter",
+            Self::StonFi => "stonfi",
         }
     }
 
@@ -69,6 +73,7 @@ impl Provider {
             Self::Velora,
             Self::Cow,
             Self::Jupiter,
+            Self::StonFi,
         ]
         .into_iter()
         .find(|provider| provider.key() == key)
@@ -123,6 +128,7 @@ pub struct Contract {
     pub call: Call,
     pub spender: Option<Address>,
     pub ours: bool,
+    pub spent: Option<Amount>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

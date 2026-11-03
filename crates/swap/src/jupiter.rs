@@ -157,6 +157,7 @@ impl Jupiter {
                 },
                 spender: None,
                 ours: false,
+                spent: None,
             }),
             typed: None,
         };

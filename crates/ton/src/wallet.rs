@@ -45,6 +45,7 @@ pub(crate) struct Order {
     pub bounce: bool,
     pub token: Option<Token>,
     pub memo: Option<String>,
+    pub call: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,8 +167,16 @@ pub(crate) fn delivered(order: &Order) -> Result<Vec<u8>, ChainError> {
 
 fn outgoing(order: &Order, source: Option<&Address>) -> Result<Cell, ChainError> {
     let broken = |_| ChainError::Invalid("cannot build the wallet message");
-    let (destination, bounce, body) = match &order.token {
-        None => (
+    let (destination, bounce, body) = match (&order.call, &order.token) {
+        (Some(call), _) => (
+            order.to,
+            order.bounce,
+            crate::cells::bag(call)
+                .and_then(|bag| bag.single_root().ok())
+                .map(|root| (*root).clone())
+                .ok_or(ChainError::Invalid("the call body is not a cell"))?,
+        ),
+        (None, None) => (
             order.to,
             order.bounce,
             match &order.memo {
@@ -175,7 +184,7 @@ fn outgoing(order: &Order, source: Option<&Address>) -> Result<Cell, ChainError>
                 None => CellBuilder::new().build().map_err(broken)?,
             },
         ),
-        Some(token) => (token.wallet, true, token_body(order, token)?),
+        (None, Some(token)) => (token.wallet, true, token_body(order, token)?),
     };
     let src = match source {
         None => MsgAddrNone {}.into(),
@@ -296,6 +305,20 @@ pub(crate) fn external(
 }
 
 pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
+    read(boc, false)
+}
+
+pub(crate) fn parse_call(boc: &[u8]) -> Result<Parsed, ChainError> {
+    read(boc, true)
+}
+
+pub(crate) fn serialized(cell: &Cell) -> Result<Vec<u8>, ChainError> {
+    BagOfCells::from_root(cell.clone())
+        .serialize(false)
+        .map_err(|_| ChainError::Invalid("cannot encode the cell"))
+}
+
+fn read(boc: &[u8], call: bool) -> Result<Parsed, ChainError> {
     let invalid = || ChainError::Invalid("not a signed wallet transfer");
     let root = crate::cells::bag(boc)
         .ok_or_else(invalid)?
@@ -340,7 +363,12 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
     )
     .ok_or_else(invalid)?;
     let payload = &inner.body.value;
-    let (to, token, memo) = if payload.bit_len() == 0 && payload.references().is_empty() {
+    let (to, token, memo) = if call {
+        if everything {
+            return Err(ChainError::Invalid("not a single plain transfer"));
+        }
+        (destination, None, None)
+    } else if payload.bit_len() == 0 && payload.references().is_empty() {
         (destination, None, None)
     } else if payload.parser().load_u32(32).ok() == Some(comment::COMMENT) {
         let memo = comment::text(payload)
@@ -366,6 +394,11 @@ pub(crate) fn parse(boc: &[u8]) -> Result<Parsed, ChainError> {
         bounce: sent.bounce,
         token,
         memo,
+        call: if call {
+            Some(serialized(payload)?)
+        } else {
+            None
+        },
     };
     let unsigned_cell = unsigned(&order)?;
     let resigned =
@@ -499,7 +532,7 @@ pub(crate) fn read_address(boc: &[u8]) -> Option<Address> {
     crate::cells::from_ton(&address)
 }
 
-fn to_ton(address: &Address) -> Result<TonAddress, ChainError> {
+pub(crate) fn to_ton(address: &Address) -> Result<TonAddress, ChainError> {
     let (workchain, hash) = crate::cells::parts(address)?;
     Ok(TonAddress::new(i32::from(workchain), TonHash::from(hash)))
 }
@@ -581,6 +614,7 @@ mod tests {
             bounce: false,
             token: None,
             memo: None,
+            call: None,
         };
         let plain = external(&order, &[9; 64], None).unwrap();
         let id = normalized(&plain).unwrap();

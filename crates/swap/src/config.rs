@@ -19,6 +19,23 @@ pub struct Providers {
     pub velora: VeloraConfig,
     pub cow: CowConfig,
     pub jupiter: JupiterConfig,
+    pub stonfi: StonFiConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StonFiConfig {
+    pub url: Url,
+    pub network: NetworkId,
+    pub routers: Vec<StonFiRouter>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StonFiRouter {
+    pub address: String,
+    pub version: u8,
+    pub pton: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

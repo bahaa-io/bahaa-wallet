@@ -128,6 +128,7 @@ pub struct ContractSwap {
     pub amount: Amount,
     pub buy: Option<(AssetId, Amount)>,
     pub ours: bool,
+    pub spent: Option<Amount>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

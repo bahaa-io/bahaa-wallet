@@ -484,6 +484,7 @@ mod tests {
                 Amount::parse(minimum, 6).unwrap(),
             )),
             ours: false,
+            spent: None,
         };
         (data, swap)
     }

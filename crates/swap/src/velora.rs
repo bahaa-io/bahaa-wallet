@@ -246,6 +246,7 @@ impl Velora {
                 },
                 spender: (!native_in).then_some(augustus),
                 ours: false,
+                spent: None,
             }),
             typed: None,
         };

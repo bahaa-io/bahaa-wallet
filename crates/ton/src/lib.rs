@@ -1,4 +1,5 @@
 mod blocks;
+mod body;
 mod cells;
 mod chain;
 mod comment;
@@ -16,5 +17,6 @@ mod transaction;
 mod vm;
 mod wallet;
 
-pub use chain::{TonChain, TonPlan};
+pub use body::Body;
+pub use chain::{TonCall, TonChain, TonPlan};
 pub use comment::read_comment;

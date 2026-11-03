@@ -11,9 +11,9 @@ use super::tokens::Contracts;
 use super::{TonChain, amount, hex, key};
 use crate::cells::{Account, Status};
 use crate::fees::{Config, Settings, Storage, size_without_root};
-use crate::wallet::{self, Order};
+use crate::wallet::{self, Order, Parsed};
 
-const CONFIRM_BLOCKS: u64 = 40;
+pub(super) const CONFIRM_BLOCKS: u64 = 40;
 
 pub(super) const LIFETIME: u64 = 300;
 
@@ -32,7 +32,7 @@ pub(crate) struct Estimate {
 }
 
 impl Estimate {
-    fn expected(&self) -> Option<u64> {
+    pub(super) fn expected(&self) -> Option<u64> {
         self.compute
             .checked_add(self.storage)?
             .checked_add(self.forwarding)
@@ -78,6 +78,7 @@ impl TonChain {
             bounce: false,
             token: None,
             memo: transfer.memo.clone(),
+            call: None,
         };
         let contracts = match token {
             None => {
@@ -161,7 +162,7 @@ impl TonChain {
         Ok((transfer.asset.contract().copied(), decimals))
     }
 
-    fn sequence(
+    pub(super) fn sequence(
         &self,
         wallet: &Account,
         address: &Address,
@@ -213,8 +214,7 @@ impl TonChain {
         })
     }
 
-    pub(super) fn decode_signed(&self, signed: &Signed) -> Result<Decoded, ChainError> {
-        let parsed = wallet::parse(&signed.bytes)?;
+    pub(super) fn verified(&self, parsed: &Parsed, signed: &Signed) -> Result<(), ChainError> {
         if hex::encode(&parsed.id) != signed.id.as_str() {
             return Err(ChainError::Mismatch("the transaction id"));
         }
@@ -232,6 +232,12 @@ impl TonChain {
                 return Err(ChainError::Invalid("the deployment is for another wallet"));
             }
         }
+        Ok(())
+    }
+
+    pub(super) fn decode_signed(&self, signed: &Signed) -> Result<Decoded, ChainError> {
+        let parsed = wallet::parse(&signed.bytes)?;
+        self.verified(&parsed, signed)?;
         let (asset, value) = match &parsed.order.token {
             None => (
                 AssetId::Native(self.network.id.clone()),
@@ -265,7 +271,7 @@ impl TonChain {
     }
 }
 
-fn fee_lines(
+pub(super) fn fee_lines(
     fees: &Estimate,
     contract: TonContract,
     contracts: Option<u64>,
@@ -347,7 +353,7 @@ fn leave_nothing(
     Ok(fees)
 }
 
-fn prices(config: &Config) -> Result<(Settings, Storage), ChainError> {
+pub(super) fn prices(config: &Config) -> Result<(Settings, Storage), ChainError> {
     let unreadable = || ChainError::Network("the fee settings cannot be read".to_owned());
     Ok((
         config.settings().ok_or_else(unreadable)?,
@@ -420,6 +426,7 @@ mod tests {
                 bounce: !deploy,
                 token: None,
                 memo: None,
+                call: None,
             },
             deploy,
         }
@@ -749,6 +756,7 @@ mod tests {
                     bounce: false,
                     token: None,
                     memo: None,
+                    call: None,
                 };
                 let fees =
                     leave_nothing(&mut order, deploy, &wallet, (&settings, &storage), NOW).unwrap();
@@ -828,6 +836,7 @@ mod tests {
                 bounce: false,
                 token: None,
                 memo: Some(memo.clone()),
+                call: None,
             };
             let fees = estimate(&order, true, &wallet, (&settings, &storage), NOW).unwrap();
             let transfer = Transfer {

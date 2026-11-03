@@ -11,11 +11,13 @@ use bahaa_types::{Address, AssetId, TonContract, hex};
 use ed25519_dalek::SigningKey;
 use ruint::aliases::U256;
 
+mod calls;
 mod incoming;
 mod send;
 mod tokens;
 mod track;
 
+pub use calls::TonCall;
 pub use send::TonPlan;
 
 use crate::http::{Http, Item};

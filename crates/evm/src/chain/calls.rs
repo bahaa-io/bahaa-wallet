@@ -813,6 +813,7 @@ pub(crate) fn fuzz(value: &Value) {
             amount: Amount::default(),
             buy: None,
             ours: false,
+            spent: None,
         };
         let _ = judge(&[1; 20], &swap, 0, &simulated, Some(U256::ZERO));
     }
@@ -872,6 +873,7 @@ mod tests {
                 Amount::parse("0.000000000000000040", 18).unwrap(),
             )),
             ours: true,
+            spent: None,
         }
     }
 

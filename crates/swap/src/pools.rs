@@ -162,6 +162,7 @@ impl Pools {
                 },
                 spender: (!native_in).then_some(router),
                 ours: true,
+                spent: None,
             }),
             typed: None,
         };

@@ -7,7 +7,8 @@ use bahaa_config::Registry;
 use bahaa_crypto::{Mnemonic, WordCount};
 use bahaa_evm::EvmChain;
 use bahaa_solana::SolanaChain;
-use bahaa_swap::{Cow, Jupiter, Method, OneClick, Providers, Relay, Request, SwapError};
+use bahaa_swap::{Cow, Jupiter, Method, OneClick, Providers, Relay, Request, StonFi, SwapError};
+use bahaa_ton::TonChain;
 use bahaa_types::{Address, Amount, ChainFamily};
 
 fn evm() -> Address {
@@ -177,6 +178,7 @@ async fn live_jupiter_routes_pass_the_solana_check_for_a_funded_address() {
         amount: asked.amount,
         buy: Some((asked.buy.clone(), route.minimum)),
         ours: false,
+        spent: None,
     };
     let (plans, fee) = chain.prepare_swap(&swap).await.unwrap();
     assert_eq!(plans.len(), 1);
@@ -190,4 +192,52 @@ async fn live_jupiter_routes_pass_the_solana_check_for_a_funded_address() {
         chain.prepare_swap(&greedy).await.unwrap_err().to_string(),
         "the swap would pay less than its minimum"
     );
+}
+
+#[tokio::test]
+#[ignore = "talks to STON.fi and TON"]
+async fn live_stonfi_routes_name_the_pools_the_chain_confirms() {
+    let registry = Registry::builtin().unwrap();
+    let chain = TonChain::new(registry.get(&"ton".parse().unwrap()).unwrap().clone()).unwrap();
+    let stonfi = StonFi::new(
+        &Providers::builtin().unwrap().stonfi,
+        bahaa_chain::http::client().unwrap(),
+    )
+    .unwrap();
+    let owner = Address::parse(
+        ChainFamily::Ton,
+        "UQCi1ivY6QriyKIQZrSTwhvf4qXI19qIPe4XAOYo-qMMUEiR",
+    )
+    .unwrap();
+    let usdt = "ton/EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs";
+    for (sell, amount, decimals, buy, buy_decimals) in
+        [("ton", "1", 9, usdt, 6), (usdt, "1", 6, "ton", 9)]
+    {
+        let mut asked = request(sell, amount, decimals, buy, buy_decimals, owner, owner);
+        asked.native_decimals = 9;
+        let (route, order) = stonfi.quote(&chain, &asked, now()).await.unwrap();
+        assert_eq!((route.provider, route.method), ("STON.fi", Method::Pool));
+        assert!(route.minimum < route.expected);
+        let contract = order.contract.unwrap();
+        assert!(contract.ours);
+        let swap = ContractSwap {
+            account: 0,
+            from: owner,
+            call: contract.call,
+            spender: None,
+            sell: asked.sell.clone(),
+            amount: asked.amount,
+            buy: Some((asked.buy.clone(), route.minimum)),
+            ours: true,
+            spent: contract.spent,
+        };
+        match chain.prepare_swap(&swap).await {
+            Ok((plans, fee)) => {
+                assert_eq!(plans.len(), 1);
+                assert!(fee.expected() <= fee.max());
+            }
+            Err(bahaa_chain::ChainError::Insufficient { .. }) => {}
+            Err(other) => panic!("{other:?}"),
+        }
+    }
 }

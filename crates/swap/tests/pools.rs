@@ -102,6 +102,7 @@ fn swap_of(request: &Request, order: Order) -> ContractSwap {
         amount: request.amount,
         buy: Some((request.buy.clone(), order.minimum)),
         ours: contract.ours,
+        spent: contract.spent,
     }
 }
 
@@ -328,8 +329,7 @@ async fn velora_routes_pass_the_check_and_pay_after_their_fee_on_a_forked_chain(
 #[tokio::test]
 #[ignore = "needs a local anvil and internet: BAHAA_ANVIL=/path/to/anvil"]
 async fn a_relay_call_from_polygon_takes_exactly_the_amount_on_a_forked_chain() {
-    let (anvil, chain, me, seed) =
-        forked_on("polygon", "https://polygon.drpc.org").await;
+    let (anvil, chain, me, seed) = forked_on("polygon", "https://polygon.drpc.org").await;
     let usdt = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
     let Address::Evm(owner) = me else { panic!() };
     anvil

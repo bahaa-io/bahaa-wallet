@@ -167,6 +167,7 @@ impl Across {
                 },
                 spender: (!native_in).then_some(spoke),
                 ours: true,
+                spent: None,
             }),
             typed: None,
         };
