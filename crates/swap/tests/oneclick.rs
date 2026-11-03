@@ -202,4 +202,12 @@ fn every_builtin_mainnet_asset_has_one_mapping_and_nothing_else_is_mapped() {
                 .is_some_and(|network| !network.testnet)
         );
     }
+    assert!(providers.relay.assets.is_subset(&ours));
+    assert!(
+        providers
+            .relay
+            .assets
+            .iter()
+            .all(|asset| providers.relay.chains.contains_key(asset.network()))
+    );
 }

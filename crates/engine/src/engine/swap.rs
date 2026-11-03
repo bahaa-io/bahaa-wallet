@@ -7,17 +7,21 @@ use bahaa_swap::{
     Charged, Comment, Cost, CostKind, OneClick, Order, Progress, Provider, Providers, QUOTE_LIFE,
     Ranked, Relay, Request, Route, SwapError, rank,
 };
-use bahaa_types::{Address, Amount, AssetId, is_plain_text};
+use bahaa_types::{Address, Amount, AssetId, BitcoinScript, is_plain_text};
 use futures_util::future::{join, join_all};
 use tokio::time::Instant;
 
-use super::send::NewDraft;
+use super::send::{NewDraft, Spend};
 use super::{Draft, EngineError, Event, Notice, Reply, Worker};
-use crate::chains::AnyPlan;
+use crate::chains::{AnyChain, AnyPlan};
 use crate::portfolio;
 use crate::{KeyringError, WalletId};
 
 const MAX_SWAP_DRAFTS: usize = 8;
+const STAND_IN: [u8; 32] = [
+    0xe5, 0x5e, 0x0d, 0x12, 0x9a, 0x10, 0xa5, 0x9f, 0x99, 0xac, 0xd7, 0x44, 0xcb, 0xa4, 0x9a, 0x46,
+    0x72, 0x8b, 0xc5, 0xc0, 0x15, 0xcd, 0x52, 0xd2, 0xea, 0xa5, 0xe5, 0x26, 0xd2, 0xb1, 0x09, 0x35,
+];
 const DEPOSIT_WINDOW: u64 = 30 * 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -29,7 +33,7 @@ pub struct SwapRequest {
     pub account: u32,
     pub sell: AssetId,
     pub buy: AssetId,
-    pub amount: Amount,
+    pub amount: Spend,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +45,7 @@ pub struct Unavailable {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SwapDraft {
     pub id: SwapId,
+    pub amount: Amount,
     pub routes: Vec<Ranked>,
     pub unavailable: Vec<Unavailable>,
     pub fee: Option<FeeQuote>,
@@ -70,29 +75,28 @@ impl Swappers {
 
     async fn quotes(&self, request: &Request, now: u64) -> (Vec<Quote>, Vec<Unavailable>) {
         let oneclick = async {
-            self.oneclick.covers(request).then_some(())?;
-            Some(self.oneclick.quote(request, false, now).await)
+            if !self.oneclick.covers(request) {
+                return Err(SwapError::Unsupported);
+            }
+            self.oneclick.quote(request, false, now).await
         };
         let relay = async {
-            self.relay.covers(request).then_some(())?;
-            Some(
-                self.relay
-                    .quote(request, now)
-                    .await
-                    .map(|(route, order)| (route, Some(order))),
-            )
+            if !self.relay.covers(request) {
+                return Err(SwapError::Unsupported);
+            }
+            let (route, order) = self.relay.quote(request, now).await?;
+            Ok((route, Some(order)))
         };
         let (oneclick, relay) = join(oneclick, relay).await;
         let mut quotes = Vec::new();
         let mut unavailable = Vec::new();
         for (provider, answer) in [(Provider::OneClick, oneclick), (Provider::Relay, relay)] {
             match answer {
-                Some(Ok((route, order))) => quotes.push((provider, route, order)),
-                Some(Err(err)) => unavailable.push(Unavailable {
+                Ok((route, order)) => quotes.push((provider, route, order)),
+                Err(err) => unavailable.push(Unavailable {
                     provider: provider.name(),
                     reason: err.to_string(),
                 }),
-                None => {}
             }
         }
         (quotes, unavailable)
@@ -127,15 +131,18 @@ pub(super) struct PreparedSwap {
     wallet: WalletId,
     account: u32,
     chain: usize,
+    max: bool,
     request: Request,
     routes: Vec<(Provider, Ranked, Option<Order>)>,
     expires: Instant,
 }
 
+#[derive(Clone)]
 struct Picked {
     wallet: WalletId,
     account: u32,
     chain: usize,
+    max: bool,
     request: Request,
     provider: Provider,
     route: Ranked,
@@ -147,15 +154,20 @@ pub(super) struct SwapLink {
     order: Order,
 }
 
+struct Found {
+    request: Request,
+    quotes: Vec<Quote>,
+    unavailable: Vec<Unavailable>,
+    fee: Option<FeeQuote>,
+}
+
 pub(super) struct SwapQuoted {
     session: u64,
     wallet: WalletId,
     account: u32,
     chain: usize,
-    request: Request,
-    quotes: Vec<Quote>,
-    unavailable: Vec<Unavailable>,
-    fee: Option<FeeQuote>,
+    max: bool,
+    found: Result<Found, EngineError>,
     reply: Reply<SwapDraft>,
 }
 
@@ -191,6 +203,73 @@ fn memo(order: &Order) -> Result<Option<String>, EngineError> {
         )))
 }
 
+fn stand_in(like: &Address) -> Address {
+    let mut short = [0u8; 20];
+    short.copy_from_slice(&STAND_IN[..20]);
+    match like {
+        Address::Evm(_) => Address::Evm(short),
+        Address::Tron(_) => Address::Tron(short),
+        Address::Ton { workchain, .. } => Address::Ton {
+            workchain: *workchain,
+            hash: STAND_IN,
+        },
+        Address::Solana(_) => Address::Solana(STAND_IN),
+        Address::Bitcoin { testnet, .. } => Address::Bitcoin {
+            script: BitcoinScript::WitnessKeyHash(short),
+            testnet: *testnet,
+        },
+    }
+}
+
+async fn most(
+    chain: &AnyChain,
+    account: u32,
+    request: &Request,
+    to: Address,
+    memo: Option<String>,
+) -> Result<Amount, ChainError> {
+    let everything = Transfer {
+        account,
+        from: request.from,
+        to,
+        asset: request.sell.clone(),
+        amount: Amount::default(),
+        max: true,
+        memo,
+    };
+    let (_, planned, _) = chain.prepare(&everything).await?;
+    let exact = Transfer {
+        amount: planned.amount,
+        max: false,
+        ..everything
+    };
+    match chain.prepare(&exact).await {
+        Ok(_) => Ok(planned.amount),
+        Err(ChainError::Insufficient {
+            needed, available, ..
+        }) if request.sell.contract().is_none()
+            && needed.decimals() == planned.amount.decimals() =>
+        {
+            let smaller = needed
+                .checked_sub(available)
+                .and_then(|short| planned.amount.checked_sub(short))
+                .ok()
+                .filter(|smaller| !smaller.is_zero())
+                .ok_or(ChainError::Invalid(
+                    "there is not enough left to swap after the network fee",
+                ))?;
+            chain
+                .prepare(&Transfer {
+                    amount: smaller,
+                    ..exact
+                })
+                .await?;
+            Ok(smaller)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 fn stored(progress: Progress) -> SwapStatus {
     match progress {
         Progress::Waiting => SwapStatus::Waiting,
@@ -204,7 +283,7 @@ fn stored(progress: Progress) -> SwapStatus {
 
 impl Worker {
     pub(super) fn prepare_swap(&mut self, request: &SwapRequest, reply: Reply<SwapDraft>) {
-        let (chain, asked) = match self.swap_target(request) {
+        let (chain, mut asked) = match self.swap_target(request) {
             Ok(target) => target,
             Err(err) => {
                 let _ = reply.send(Err(err));
@@ -218,39 +297,56 @@ impl Worker {
         let chains = Arc::clone(&self.chains);
         let notices = self.notices_tx.clone();
         let (session, wallet, account) = (self.session, request.wallet, request.account);
+        let max = request.amount == Spend::Max;
         tokio::spawn(async move {
-            let now = bahaa_chain::now();
-            let (quotes, unavailable) = swappers.quotes(&asked, now).await;
-            let target = quotes
-                .iter()
-                .find_map(|(_, _, order)| order.as_ref().map(|order| order.deposit))
-                .unwrap_or(asked.from);
-            let estimate = Transfer {
-                account,
-                from: asked.from,
-                to: target,
-                asset: asked.sell.clone(),
-                amount: asked.amount,
-                max: false,
-                memo: None,
-            };
-            let fee = chains[chain]
-                .prepare(&estimate)
-                .await
-                .ok()
-                .map(|(_, _, fee)| fee);
-            let found = SwapQuoted {
+            let found = async {
+                if max {
+                    asked.amount = Box::pin(most(
+                        &chains[chain],
+                        account,
+                        &asked,
+                        stand_in(&asked.from),
+                        None,
+                    ))
+                    .await?;
+                }
+                let (quotes, unavailable) = swappers.quotes(&asked, bahaa_chain::now()).await;
+                let target = quotes
+                    .iter()
+                    .find_map(|(_, _, order)| order.as_ref().map(|order| order.deposit))
+                    .unwrap_or_else(|| stand_in(&asked.from));
+                let estimate = Transfer {
+                    account,
+                    from: asked.from,
+                    to: target,
+                    asset: asked.sell.clone(),
+                    amount: asked.amount,
+                    max: false,
+                    memo: None,
+                };
+                let fee = chains[chain]
+                    .prepare(&estimate)
+                    .await
+                    .ok()
+                    .map(|(_, _, fee)| fee);
+                Ok::<_, EngineError>(Found {
+                    request: asked,
+                    quotes,
+                    unavailable,
+                    fee,
+                })
+            }
+            .await;
+            let quoted = SwapQuoted {
                 session,
                 wallet,
                 account,
                 chain,
-                request: asked,
-                quotes,
-                unavailable,
-                fee,
+                max,
+                found,
                 reply,
             };
-            let _ = notices.send(Notice::SwapQuoted(Box::new(found))).await;
+            let _ = notices.send(Notice::SwapQuoted(Box::new(quoted))).await;
         });
     }
 
@@ -260,16 +356,26 @@ impl Worker {
             wallet,
             account,
             chain,
-            request,
-            quotes,
-            unavailable,
-            fee,
+            max,
+            found,
             reply,
         } = arrived;
         if session != self.session || !self.unlocked() {
             let _ = reply.send(Err(KeyringError::Locked.into()));
             return;
         }
+        let Found {
+            request,
+            quotes,
+            unavailable,
+            fee,
+        } = match found {
+            Ok(found) => found,
+            Err(err) => {
+                let _ = reply.send(Err(err));
+                return;
+            }
+        };
         let quotes: Vec<Quote> = quotes
             .into_iter()
             .map(|(provider, mut route, order)| {
@@ -298,6 +404,7 @@ impl Worker {
         let id = SwapId(self.next_swap);
         let draft = SwapDraft {
             id,
+            amount: request.amount,
             routes: routes.iter().map(|(_, ranked, _)| ranked.clone()).collect(),
             unavailable,
             fee,
@@ -309,6 +416,7 @@ impl Worker {
                 wallet,
                 account,
                 chain,
+                max,
                 request,
                 routes,
                 expires: now + life,
@@ -333,21 +441,42 @@ impl Worker {
         let notices = self.notices_tx.clone();
         let session = self.session;
         tokio::spawn(async move {
+            let mut request = picked.request.clone();
             let result = async {
-                let (route, order) = swappers.order(&picked, bahaa_chain::now()).await?;
-                if order.amount != picked.request.amount {
+                let chain = &chains[picked.chain];
+                let (mut route, mut order) = swappers.order(&picked, bahaa_chain::now()).await?;
+                if picked.max {
+                    let exact = Box::pin(most(
+                        chain,
+                        picked.account,
+                        &request,
+                        order.deposit,
+                        memo(&order)?,
+                    ))
+                    .await?;
+                    if exact != order.amount {
+                        request.amount = exact;
+                        let again = Picked {
+                            request: request.clone(),
+                            order: None,
+                            ..picked.clone()
+                        };
+                        (route, order) = swappers.order(&again, bahaa_chain::now()).await?;
+                    }
+                }
+                if order.amount != request.amount {
                     return Err(SwapError::Untrusted("the order is for another amount").into());
                 }
                 let transfer = Transfer {
                     account: picked.account,
-                    from: picked.request.from,
+                    from: request.from,
                     to: order.deposit,
-                    asset: picked.request.sell.clone(),
+                    asset: request.sell.clone(),
                     amount: order.amount,
                     max: false,
                     memo: memo(&order)?,
                 };
-                let (plan, transfer, fee) = chains[picked.chain].prepare(&transfer).await?;
+                let (plan, transfer, fee) = chain.prepare(&transfer).await?;
                 Ok::<_, EngineError>((route, order, plan, transfer, fee))
             }
             .await;
@@ -355,7 +484,7 @@ impl Worker {
                 session,
                 wallet: picked.wallet,
                 chain: picked.chain,
-                request: picked.request,
+                request,
                 result,
                 reply,
             };
@@ -551,6 +680,7 @@ impl Worker {
             wallet: prepared.wallet,
             account: prepared.account,
             chain: prepared.chain,
+            max: prepared.max,
             request: prepared.request.clone(),
             provider: *provider,
             route: route.clone(),
@@ -561,16 +691,22 @@ impl Worker {
     fn swap_target(&self, request: &SwapRequest) -> Result<(usize, Request), EngineError> {
         let (chain, from) =
             self.spending(request.wallet, request.account, request.sell.network())?;
-        if request.sell == request.buy || request.amount.is_zero() {
-            return Err(ChainError::Invalid("pick two different assets and an amount").into());
+        if request.sell == request.buy {
+            return Err(ChainError::Invalid("pick two different assets").into());
         }
         let sold = portfolio::coin(&self.registry, &self.custom, &request.sell)
             .ok_or(ChainError::Invalid("this wallet doesn't track that asset"))?;
         let bought = portfolio::coin(&self.registry, &self.custom, &request.buy)
             .ok_or(ChainError::Invalid("this wallet doesn't track that asset"))?;
-        if sold.decimals != request.amount.decimals() {
-            return Err(ChainError::Invalid("the amount has the wrong number of decimals").into());
-        }
+        let amount = match request.amount {
+            Spend::Exact(amount) if !amount.is_zero() && amount.decimals() == sold.decimals => {
+                amount
+            }
+            Spend::Max => Amount::zero(sold.decimals).map_err(|_| ChainError::overflow())?,
+            Spend::Exact(_) => {
+                return Err(ChainError::Invalid("enter an amount to swap").into());
+            }
+        };
         let destination = self
             .chain_index(request.buy.network())
             .ok_or(ChainError::Unsupported("receiving on that network"))?;
@@ -594,7 +730,7 @@ impl Worker {
             chain,
             Request {
                 sell: request.sell.clone(),
-                amount: request.amount,
+                amount,
                 buy: request.buy.clone(),
                 buy_decimals: bought.decimals,
                 from,
@@ -610,7 +746,7 @@ mod tests {
     use bahaa_swap::{Comment, Order, Provider};
     use bahaa_types::{Address, Amount, ChainFamily, hex};
 
-    use super::memo;
+    use super::{memo, stand_in};
 
     const RELAY_BODY: &str = "b5ee9c7241010101004800008c0000000030786463383838323163313265313165346231346431383835633565346131366563633435656264393733616238666239363030346434366534336432336266623544d48afe";
 
@@ -630,6 +766,29 @@ mod tests {
             minimum: amount,
             expires_at: 0,
         }
+    }
+
+    #[test]
+    fn the_fee_estimate_goes_to_an_unused_address_of_the_same_kind() {
+        let solana = Address::parse(
+            ChainFamily::Solana,
+            "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+        )
+        .unwrap();
+        let bitcoin = Address::parse(
+            ChainFamily::Bitcoin,
+            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+        )
+        .unwrap();
+        for like in [solana, bitcoin] {
+            let other = stand_in(&like);
+            assert_ne!(other, like);
+            assert_eq!(other.family(), like.family());
+        }
+        assert!(matches!(
+            stand_in(&bitcoin),
+            Address::Bitcoin { testnet: true, .. }
+        ));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::time::Duration;
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
 use bahaa_engine::swap::{Charged, CostKind, Method, Providers, SwapStatus};
-use bahaa_engine::{Engine, Event, SwapRequest};
+use bahaa_engine::{Engine, Event, Spend, SwapRequest, WalletId};
 use bahaa_testkit::{Reply, serve};
 use bahaa_types::{Address, Amount, ChainFamily};
 use common::{HARDHAT, HARDHAT_0, Scratch, config, result, unhex};
@@ -39,6 +39,7 @@ fn node(sent: &Arc<Mutex<Vec<String>>>, call: &Value) -> Value {
             json!({"oldestBlock": "0x1", "baseFeePerGas": ["0x3b9aca00", "0x3b9aca00"]})
         }
         "eth_maxPriorityFeePerGas" => json!("0x3b9aca00"),
+        "eth_estimateGas" if call["params"][0]["to"] == DEPOSIT => json!("0x7530"),
         "eth_estimateGas" => json!("0x5208"),
         "eth_getCode" => json!("0x"),
         "eth_call" => json!(format!("0x{:064x}", 0)),
@@ -104,9 +105,9 @@ async fn relay(polls: Arc<AtomicUsize>) -> Url {
     .await
 }
 
-#[tokio::test]
-async fn a_cross_chain_swap_is_quoted_signed_as_a_plain_deposit_and_tracked_to_done() {
-    let scratch = Scratch::new();
+type Sent = Arc<Mutex<Vec<String>>>;
+
+async fn swapping(scratch: &Scratch) -> (Engine, WalletId, Sent) {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let shared = Arc::clone(&sent);
     let url = common::node(move |call| (node(&shared, call), Duration::ZERO)).await;
@@ -119,21 +120,55 @@ async fn a_cross_chain_swap_is_quoted_signed_as_a_plain_deposit_and_tracked_to_d
     let mut providers = Providers::builtin().unwrap();
     providers.relay.url = relay(Arc::new(AtomicUsize::new(0))).await;
     providers.oneclick.url = dead;
-    let mut config = config(&scratch, registry, None);
+    let mut config = config(scratch, registry, None);
     config.swaps = Some(providers);
     let engine = Engine::start(config).unwrap();
-    let mut events = engine.events();
     engine.create(SecretString::from("pw")).await.unwrap();
     let wallet = engine
         .import(SecretString::from(HARDHAT), SecretString::from(""))
         .await
         .unwrap();
+    (engine, wallet, sent)
+}
+
+fn bnb_to_base(wallet: WalletId, amount: Spend) -> SwapRequest {
+    SwapRequest {
+        wallet,
+        account: 0,
+        sell: "bsc".parse().unwrap(),
+        buy: "base".parse().unwrap(),
+        amount,
+    }
+}
+
+#[tokio::test]
+async fn swapping_everything_quotes_the_exact_balance_left_after_the_network_fee() {
+    let scratch = Scratch::new();
+    let (engine, wallet, _sent) = swapping(&scratch).await;
+    let draft = engine
+        .prepare_swap(bnb_to_base(wallet, Spend::Max))
+        .await
+        .unwrap();
+    assert_eq!(draft.amount.to_string(), "9.999937");
+    assert_eq!(draft.routes[0].route.amount, draft.amount);
+    let review = engine.choose_swap(draft.id, 0).await.unwrap();
+    assert_eq!(review.draft.transfer.amount.to_string(), "9.999892");
+    assert!(!review.draft.transfer.max);
+    assert_eq!(review.order.amount, review.draft.transfer.amount);
+    assert_eq!(review.route.route.amount, review.draft.transfer.amount);
+}
+
+#[tokio::test]
+async fn a_cross_chain_swap_is_quoted_signed_as_a_plain_deposit_and_tracked_to_done() {
+    let scratch = Scratch::new();
+    let (engine, wallet, sent) = swapping(&scratch).await;
+    let mut events = engine.events();
     let request = SwapRequest {
         wallet,
         account: 0,
         sell: "bsc".parse().unwrap(),
         buy: "base".parse().unwrap(),
-        amount: Amount::parse("0.1", 18).unwrap(),
+        amount: Spend::Exact(Amount::parse("0.1", 18).unwrap()),
     };
     let draft = engine.prepare_swap(request).await.unwrap();
     assert_eq!(draft.routes.len(), 1);
@@ -149,7 +184,7 @@ async fn a_cross_chain_swap_is_quoted_signed_as_a_plain_deposit_and_tracked_to_d
         .find(|cost| cost.kind == CostKind::NetworkFee)
         .unwrap();
     assert_eq!(network.charged, Charged::Extra);
-    assert_eq!(network.amount.to_string(), "0.000042");
+    assert_eq!(network.amount.to_string(), "0.00006");
     let review = engine.choose_swap(draft.id, 0).await.unwrap();
     let deposit = Address::parse(ChainFamily::Evm, DEPOSIT).unwrap();
     assert_eq!(review.draft.transfer.to, deposit);

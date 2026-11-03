@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bahaa_chain::{Wait, transfer_data};
 use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, hex};
@@ -28,6 +28,7 @@ pub struct Relay {
     client: Client,
     base: Url,
     chains: BTreeMap<NetworkId, RelayChain>,
+    assets: BTreeSet<AssetId>,
 }
 
 #[derive(Deserialize)]
@@ -92,6 +93,7 @@ impl Relay {
             client,
             base: config.url.clone(),
             chains: config.chains.clone(),
+            assets: config.assets.clone(),
         }
     }
 
@@ -103,6 +105,8 @@ impl Relay {
             return false;
         };
         request.sell != request.buy
+            && self.assets.contains(&request.sell)
+            && self.assets.contains(&request.buy)
             && currency(&request.buy, request.to.family()).is_some()
             && match origin.deposit {
                 RelayDeposit::Address => true,

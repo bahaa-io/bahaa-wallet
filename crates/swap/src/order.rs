@@ -78,7 +78,7 @@ pub enum SwapError {
     Refused(String),
     #[error("{0}")]
     Untrusted(&'static str),
-    #[error("this provider does not swap these assets")]
+    #[error("doesn't swap these assets")]
     Unsupported,
 }
 

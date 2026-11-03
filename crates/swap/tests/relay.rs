@@ -253,6 +253,11 @@ async fn only_origins_with_keyless_plain_deposits_are_covered() {
         18,
         ton,
     )));
+    let mut to_ton_usdt = ether();
+    to_ton_usdt.buy = "ton/EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+        .parse()
+        .unwrap();
+    assert!(!relay.covers(&to_ton_usdt));
     let mut to_bitcoin = ether();
     to_bitcoin.buy = "bitcoin".parse().unwrap();
     assert!(!relay.covers(&to_bitcoin));

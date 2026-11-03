@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bahaa_types::{AssetId, NetworkId};
 use serde::Deserialize;
@@ -28,6 +28,7 @@ pub struct OneClickConfig {
 pub struct RelayConfig {
     pub url: Url,
     pub chains: BTreeMap<NetworkId, RelayChain>,
+    pub assets: BTreeSet<AssetId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
