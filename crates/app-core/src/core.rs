@@ -134,6 +134,22 @@ impl Ctx<'_> {
             .map_or_else(|| id.to_string(), |network| network.name.clone())
     }
 
+    pub(crate) fn pending(&self, history: bool) -> Vec<String> {
+        self.data
+            .portfolio
+            .networks
+            .iter()
+            .filter(|health| {
+                if history {
+                    health.history_loading
+                } else {
+                    health.loading
+                }
+            })
+            .map(|health| self.network_name(&health.network))
+            .collect()
+    }
+
     pub(crate) fn network_tone(&self, id: &NetworkId) -> Tone {
         self.network(id)
             .map_or(Tone::Plain, |network| Tone::Brand(network.color))
@@ -662,8 +678,11 @@ impl Core {
             .filter(|health| health.problem.is_some())
             .map(|health| ctx.network_name(&health.network))
             .collect();
+        let loading = ctx.pending(false);
         let (level, text) = if !down.is_empty() {
             (Level::Warning, text::unreachable(&down))
+        } else if !loading.is_empty() {
+            (Level::Info, text::loading(&loading))
         } else if portfolio.prices == Status::Offline {
             (Level::Warning, text::PRICES_OFFLINE.to_owned())
         } else if portfolio.networks.is_empty() {

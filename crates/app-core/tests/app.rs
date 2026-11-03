@@ -375,7 +375,12 @@ async fn the_banner_opens_the_network_status() {
     app.act(banner.action.clone());
     app.act(banner.action);
     let status = until(&mut view, |current| {
-        current.page.id == PageId::Networks && !current.page.notes.is_empty()
+        current.page.id == PageId::Networks
+            && current
+                .page
+                .notes
+                .iter()
+                .any(|note| note.text.starts_with("BNB Smart Chain: "))
     })
     .await;
     let table = status.page.table.as_ref().unwrap();
@@ -715,7 +720,12 @@ async fn a_watched_wallet_left_out_of_the_total_is_one_pick_away() {
     .await;
     app.act(Action::Go(Go::Tab(Tab::Portfolio)));
     let left_out = until(&mut view, |current| {
-        current.page.id == PageId::Portfolio && !current.page.notes.is_empty()
+        current.page.id == PageId::Portfolio
+            && current
+                .page
+                .notes
+                .iter()
+                .any(|note| note.text.starts_with("1 watch-only wallet"))
     })
     .await;
     assert!(
@@ -724,11 +734,6 @@ async fn a_watched_wallet_left_out_of_the_total_is_one_pick_away() {
             .table
             .as_ref()
             .is_some_and(|table| table.rows.is_empty())
-    );
-    assert!(
-        left_out.page.notes[0]
-            .text
-            .starts_with("1 watch-only wallet")
     );
     assert!(left_out.page.groups().any(|group| group.label == "Wallets"));
     app.act(Action::Pick(Pick::Wallet(Some(0))));

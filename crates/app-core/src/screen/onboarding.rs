@@ -509,6 +509,7 @@ impl Screen for ImportKey {
             (Family::Tron, text::TRON),
             (Family::Ton, text::TON),
             (Family::Solana, text::SOLANA),
+            (Family::Bitcoin, text::BITCOIN),
         ]
         .into_iter()
         .map(|(family, label)| {
@@ -628,6 +629,7 @@ fn chain(family: Family) -> ChainFamily {
         Family::Tron => ChainFamily::Tron,
         Family::Ton => ChainFamily::Ton,
         Family::Solana => ChainFamily::Solana,
+        Family::Bitcoin => ChainFamily::Bitcoin,
     }
 }
 

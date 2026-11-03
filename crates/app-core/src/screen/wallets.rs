@@ -1,9 +1,9 @@
-use bahaa_engine::{SolanaPath, TonContract, WalletId, WalletInfo, WalletKind};
+use bahaa_engine::{BitcoinType, SolanaPath, TonContract, WalletId, WalletInfo, WalletKind};
 
 use super::{
     Screen, button, cell, choice, counted_toggle, group, hidden, input, line, wallet_kind,
 };
-use crate::action::{Action, Contract, Field, Go, Path, Pick, Tab, Toggle};
+use crate::action::{Action, AddressType, Contract, Field, Go, Path, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::view::{Item, Level, Page, PageId, Row, Secret, Table, Tone};
@@ -52,6 +52,13 @@ impl Screen for Wallet {
                     Path::Bip44 => SolanaPath::Bip44,
                 };
                 return Reply::call(Call::SetSolanaPath(self.id, path));
+            }
+            Action::Pick(Pick::AddressType(kind)) => {
+                let kind = match kind {
+                    AddressType::NativeSegwit => BitcoinType::NativeSegwit,
+                    AddressType::Taproot => BitcoinType::Taproot,
+                };
+                return Reply::call(Call::SetBitcoinType(self.id, kind));
             }
             Action::Go(Go::Reveal) => {
                 return Reply::nav(Nav::Push(Box::new(Reveal::new(self.id))));
@@ -342,6 +349,23 @@ fn choices(wallet: &WalletInfo) -> Vec<Item> {
                     text::PATH_BIP44,
                     Pick::Path(Path::Bip44),
                     path == SolanaPath::Bip44,
+                ),
+            ],
+        ));
+    }
+    if let Some(kind) = wallet.bitcoin {
+        items.push(pair(
+            text::BITCOIN_TYPE,
+            [
+                (
+                    text::NATIVE_SEGWIT,
+                    Pick::AddressType(AddressType::NativeSegwit),
+                    kind == BitcoinType::NativeSegwit,
+                ),
+                (
+                    text::TAPROOT,
+                    Pick::AddressType(AddressType::Taproot),
+                    kind == BitcoinType::Taproot,
                 ),
             ],
         ));

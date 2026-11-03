@@ -1,5 +1,5 @@
 use bahaa_engine::{
-    Caution, ChainFamily, EngineError, FeeItem, Replace, SentStatus, Status, TonContract,
+    Caution, ChainFamily, EngineError, FeeItem, RateUnit, Replace, SentStatus, Status, TonContract,
 };
 
 use crate::action::{Channel, Direction, Tab};
@@ -28,7 +28,7 @@ pub(crate) const WATCH_ONLY: &str = "Watch only";
 pub(crate) const WATCH_ADDED: &str = "Watching the address";
 pub(crate) const COUNT_IN_TOTAL: &str = "Count in my total";
 pub(crate) const IMPORT_KEY: &str = "Import a private key";
-pub(crate) const IMPORT_KEY_TEXT: &str = "Paste a private key exported from another wallet. One key is one account, on EVM networks, Tron, TON or Solana.";
+pub(crate) const IMPORT_KEY_TEXT: &str = "Paste a private key exported from another wallet. One key is one account, on EVM networks, Tron, TON, Solana or Bitcoin.";
 pub(crate) const PRIVATE_KEY: &str = "Private key";
 pub(crate) const USE_FOR: &str = "Use it for";
 pub(crate) const EVM_NETWORKS: &str = "EVM networks";
@@ -123,6 +123,22 @@ pub(crate) const COPY_ID: &str = "Copy transaction id";
 pub(crate) const OPEN_EXPLORER: &str = "Open in explorer";
 pub(crate) const SPEED_UP: &str = "Speed up";
 pub(crate) const CANCEL_SEND: &str = "Cancel this send";
+pub(crate) const WAITING: &str = "Waiting for";
+pub(crate) const PENDING_NOTE: &str = "Taking long? Speed up sends it again with a higher fee, and Cancel keeps the money in your wallet. Both show the new fee and the expected wait before you confirm anything.";
+pub(crate) const EXPECTED_WAIT: &str = "Expected wait";
+pub(crate) const EXTRA_COST: &str = "Extra cost";
+pub(crate) const WAS_GOING_TO: &str = "Was going to";
+pub(crate) const SPEED_UP_NOTE: &str = "This sends the same transfer again with a higher fee. Only one of the two can go through, so you pay one fee, not two.";
+pub(crate) const CANCEL_NOTE: &str = "This replaces your pending transfer with one that keeps the money in your wallet. Only one of the two can go through: if the original confirms first, the cancel fails and costs nothing.";
+pub(crate) const ESTIMATE_NOTE: &str =
+    "Waits are estimates from what the network asks for right now, not promises.";
+pub(crate) const FEW_SECONDS: &str = "a few seconds";
+pub(crate) const SLOW: &str = "slow, others pay a higher tip";
+pub(crate) const STUCK: &str = "stuck at today's fees";
+pub(crate) const SECOND: &str = "second";
+pub(crate) const MINUTE: &str = "minute";
+pub(crate) const HOUR: &str = "hour";
+pub(crate) const DAY: &str = "day";
 
 pub(crate) const SEND: &str = "Send";
 pub(crate) const AMOUNT: &str = "Amount";
@@ -203,6 +219,9 @@ pub(crate) const V4R2: &str = "V4R2 (older)";
 pub(crate) const SOLANA_PATH: &str = "Solana path";
 pub(crate) const PATH_BIP44_CHANGE: &str = "Phantom, Solflare";
 pub(crate) const PATH_BIP44: &str = "Trust Wallet";
+pub(crate) const BITCOIN_TYPE: &str = "Bitcoin addresses";
+pub(crate) const NATIVE_SEGWIT: &str = "Native SegWit (bc1q)";
+pub(crate) const TAPROOT: &str = "Taproot (bc1p)";
 pub(crate) const SHOW_PHRASE: &str = "Show recovery phrase";
 pub(crate) const SHOW_KEY: &str = "Show private key";
 pub(crate) const PRIVACY: &str = "Privacy";
@@ -357,6 +376,40 @@ pub(crate) fn with_value(amount: &str, value: &str) -> String {
     format!("{amount} ≈ {value}")
 }
 
+pub(crate) fn changed(before: &str, after: &str) -> String {
+    format!("{before} → {after}")
+}
+
+pub(crate) fn duration(count: u64, unit: &str) -> String {
+    if count == 1 {
+        format!("1 {unit}")
+    } else {
+        format!("{count} {unit}s")
+    }
+}
+
+pub(crate) fn about(span: &str) -> String {
+    format!("about {span}")
+}
+
+pub(crate) fn more_than(span: &str) -> String {
+    format!("more than {span}")
+}
+
+pub(crate) fn rate_label(unit: RateUnit) -> &'static str {
+    match unit {
+        RateUnit::SatPerVbyte => "Fee rate",
+        RateUnit::Gwei => "Fee limit",
+    }
+}
+
+pub(crate) fn rate_unit(unit: RateUnit) -> &'static str {
+    match unit {
+        RateUnit::SatPerVbyte => "sat/vB",
+        RateUnit::Gwei => "gwei",
+    }
+}
+
 pub(crate) fn at_most(fee: &str) -> String {
     format!("at most {fee}")
 }
@@ -419,6 +472,13 @@ pub(crate) fn replace_title(how: Replace) -> &'static str {
     }
 }
 
+pub(crate) fn replace_note(how: Replace) -> &'static str {
+    match how {
+        Replace::SpeedUp => SPEED_UP_NOTE,
+        Replace::Cancel => CANCEL_NOTE,
+    }
+}
+
 pub(crate) fn receive_note(network: &str) -> String {
     format!("Only send {network} assets to this address.")
 }
@@ -439,12 +499,31 @@ pub(crate) fn dropped(amount: &str) -> String {
     format!("Sending {amount} was dropped by the network")
 }
 
-pub(crate) fn unreachable(networks: &[String]) -> String {
+fn named(networks: &[String]) -> String {
     match networks {
-        [one] => format!("Can't reach {one}"),
-        [one, two] => format!("Can't reach {one} and {two}"),
-        many => format!("Can't reach {} networks", many.len()),
+        [one] => one.clone(),
+        [one, two] => format!("{one} and {two}"),
+        many => format!("{} networks", many.len()),
     }
+}
+
+pub(crate) fn unreachable(networks: &[String]) -> String {
+    format!("Can't reach {}", named(networks))
+}
+
+pub(crate) fn loading(networks: &[String]) -> String {
+    format!("Loading {}…", named(networks))
+}
+
+pub(crate) fn total_pending(networks: &[String]) -> String {
+    format!(
+        "Still loading {}. The total isn't final yet.",
+        named(networks)
+    )
+}
+
+pub(crate) fn history_pending(networks: &[String]) -> String {
+    format!("Still reading the history of {}.", named(networks))
 }
 
 pub(crate) fn hidden_amount(symbol: &str) -> String {

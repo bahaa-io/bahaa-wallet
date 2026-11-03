@@ -25,8 +25,9 @@ impl Screen for Networks {
                     .iter()
                     .find(|health| health.network == network.id);
                 let balances = match health {
-                    None => cell(text::NOT_CHECKED, Tone::Waiting),
                     Some(health) if health.problem.is_some() => cell(text::UNREACHABLE, Tone::Bad),
+                    None => cell(text::NOT_CHECKED, Tone::Waiting),
+                    Some(health) if health.loading => cell(text::NOT_CHECKED, Tone::Waiting),
                     Some(_) => cell(text::REACHABLE, Tone::Good),
                 };
                 let updated = health
@@ -36,6 +37,9 @@ impl Screen for Networks {
                     None => cell(text::NO_VALUE, Tone::Muted),
                     Some(health) if health.history_problem.is_some() => {
                         cell(text::HISTORY_FAILED, Tone::Warning)
+                    }
+                    Some(health) if health.history_loading => {
+                        cell(text::NOT_CHECKED, Tone::Waiting)
                     }
                     Some(_) => cell(text::HISTORY_OK, Tone::Good),
                 };

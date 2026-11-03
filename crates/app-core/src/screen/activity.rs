@@ -7,7 +7,7 @@ use super::{
 };
 use crate::action::{Action, Direction, Go, Pick, Toggle};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Item, Level, Line, Page, PageId, Request, Row, Table, Tone};
+use crate::view::{Item, Level, Line, Note, Page, PageId, Request, Row, Table, Tone};
 use crate::{format, text};
 
 #[derive(Default)]
@@ -88,16 +88,25 @@ impl Screen for List {
                 rows,
                 empty: empty.to_owned(),
             }),
-            notes: (hidden > 0)
-                .then(|| note(Level::Info, text::spam_hidden(hidden)))
-                .into_iter()
-                .collect(),
+            notes: Self::notes(ctx, hidden),
             ..Page::default()
         }
     }
 }
 
 impl List {
+    fn notes(ctx: &Ctx<'_>, hidden: usize) -> Vec<Note> {
+        let mut notes = Vec::new();
+        let reading = ctx.pending(true);
+        if !reading.is_empty() {
+            notes.push(note(Level::Info, text::history_pending(&reading)));
+        }
+        if hidden > 0 {
+            notes.push(note(Level::Info, text::spam_hidden(hidden)));
+        }
+        notes
+    }
+
     fn form(&self, ctx: &Ctx<'_>) -> Vec<Item> {
         let directions = [Direction::All, Direction::Received, Direction::Sent]
             .into_iter()
@@ -248,9 +257,9 @@ impl Screen for Transfer {
         let (title, headline, mut lines, notes) = match &activity.kind {
             ActivityKind::Sent(tx) => {
                 let replaceable = tx.status.is_open()
-                    && ctx
-                        .network(&tx.network)
-                        .is_some_and(|network| network.family() == ChainFamily::Evm);
+                    && ctx.network(&tx.network).is_some_and(|network| {
+                        matches!(network.family(), ChainFamily::Evm | ChainFamily::Bitcoin)
+                    });
                 if replaceable {
                     buttons.push(button(text::SPEED_UP, Action::Pick(Pick::SpeedUp)));
                     buttons.push(button(text::CANCEL_SEND, Action::Pick(Pick::Cancel)));
@@ -260,24 +269,35 @@ impl Screen for Transfer {
                     || text::at_most(&format::exact(tx.fee_max, &symbol)),
                     |paid| format::exact(paid, &symbol),
                 );
-                let mut lines = vec![
-                    toned_line(
-                        text::STATUS,
-                        text::status(&tx.status),
-                        status_tone(&tx.status),
-                    ),
+                let mut lines = vec![toned_line(
+                    text::STATUS,
+                    text::status(&tx.status),
+                    status_tone(&tx.status),
+                )];
+                if tx.status.is_open() {
+                    lines.push(line(
+                        text::WAITING,
+                        format::span(ctx.now.saturating_sub(tx.created_at)),
+                    ));
+                }
+                lines.extend([
                     line(text::FROM, ctx.party(&tx.from, &tx.network)),
                     line(text::TO, ctx.shown(&tx.to, &tx.network)),
                     line(text::FEE, fee),
-                ];
+                ]);
                 if let Some(memo) = &tx.memo {
                     lines.push(line(text::MEMO, memo.clone()));
                 }
+                let notes = if replaceable {
+                    vec![note(Level::Info, text::PENDING_NOTE)]
+                } else {
+                    Vec::new()
+                };
                 (
                     text::SENT_TITLE,
                     ctx.exact(tx.amount, &ctx.symbol(&tx.asset)),
                     lines,
-                    Vec::new(),
+                    notes,
                 )
             }
             ActivityKind::SentElsewhere(moved) => (

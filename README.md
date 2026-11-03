@@ -59,6 +59,7 @@ Your wallets and settings are kept.
 | Tron | TRX | USDT |
 | TON | GRAM | USDT |
 | Solana | SOL | USDT, USDC |
+| Bitcoin | BTC | none |
 
 You can add any other token by its contract address. Test networks (BSC testnet, Tron Nile, TON testnet and Solana Devnet) are available too, hidden until you turn them on.
 
@@ -66,8 +67,9 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 
 - **Wallets:** create or import 12- and 24-word phrases, TON's own phrases, or a single private key for any network, with several wallets and accounts.
 - **Balances:** coins and tokens on every network, valued in USD, EUR or IRT.
+- **Bitcoin:** Native SegWit and Taproot, found from your phrase's history, with a fresh address for every payment.
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
-- **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks.
+- **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks and Bitcoin.
 - **Activity:** one timeline of what you sent and received, with spam flagged and hidden.
 - **Privacy:** hide every balance with one switch.
 
@@ -75,7 +77,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 
 - **Encrypted vault.** Your recovery phrases are locked with your password, using Argon2id and XChaCha20-Poly1305. Secrets are wiped from memory after use, and are never printed or logged.
 - **Encrypted local data.** Your history, contacts, tokens and accounts are encrypted too, and only open after you unlock. The wallet locks itself after a few idle minutes.
-- **Verified, not trusted.** TON balances and history are checked against validator-signed proofs. Every network reply is size-limited and read strictly.
+- **Verified, not trusted.** TON balances and history are checked against validator-signed proofs. Bitcoin coins and history are checked against block headers and their proof of work. Every network reply is size-limited and read strictly.
 - **Built to survive bad data.** The code that reads network data has been fuzzed with more than 100 million hostile inputs. A misbehaving server can at most fail its own request.
 - **Signed updates.** The app only installs releases signed with the Bahaa release key, and checks each file's checksum first.
 - **Pure Rust.** There's no OpenSSL, and unsafe code is forbidden.
@@ -86,7 +88,9 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Coins received on EVM networks** show in the balance but not in activity. Finding them needs paid indexing, and the wallet uses no API keys.
 - **Short past history** for imported wallets on EVM networks and Tron, because free servers keep only recent records.
 - **Some memos aren't shown:** on received Tron token transfers, and TON's encrypted comments.
-- **Speed up and cancel are EVM only.** Tron, TON and Solana can't replace a sent transaction.
+- **Speed up and cancel are EVM and Bitcoin only.** Tron, TON and Solana can't replace a sent transaction.
+- **Expected waits are estimates:** from the servers' fee estimates on Bitcoin, from typical block times elsewhere.
+- **Bitcoin:** Native SegWit and Taproot only (not older 1… and 3… wallets), no test network yet, and coins on the way count before their first block.
 - **Solana Token-2022 tokens** can't be added yet, only classic Solana tokens.
 - **EVM memos only go with coins** sent to a plain address. With tokens and contracts, they would break the call.
 - **Only listed networks** for now, and values only for assets Bahaa prices.

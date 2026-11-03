@@ -2,7 +2,8 @@ use bahaa_engine::{Address, AssetId, Holding, MAX_MEMO, NetworkId, WalletId, is_
 
 use super::{Screen, button, cell, input, line, network_cell, network_line, note, toned_line};
 use crate::action::{Action, Field, Pick};
-use crate::core::{Ctx, Reply};
+use crate::call::{Call, Outcome};
+use crate::core::{Ctx, Nav, Reply};
 use crate::view::{Level, Page, PageId, Request, Row, Table, Tone};
 use crate::{format, links, parse, text};
 
@@ -13,9 +14,16 @@ struct Target {
     network: NetworkId,
 }
 
+impl Target {
+    fn lookup(&self) -> Call {
+        Call::ReceiveAddress(self.network.clone(), self.address)
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Receive {
     target: Option<Target>,
+    shown: Option<Address>,
     picked: bool,
     asset: Option<AssetId>,
     amount: String,
@@ -23,16 +31,26 @@ pub(crate) struct Receive {
 }
 
 impl Receive {
-    pub(crate) fn for_holding(holding: &Holding) -> Self {
-        Self {
-            target: Some(Target {
-                wallet: holding.wallet,
-                address: holding.address,
-                network: holding.asset.network().clone(),
-            }),
+    pub(crate) fn for_holding(holding: &Holding) -> Reply {
+        let target = Target {
+            wallet: holding.wallet,
+            address: holding.address,
+            network: holding.asset.network().clone(),
+        };
+        let call = target.lookup();
+        let screen = Self {
+            target: Some(target),
             asset: Some(holding.asset.clone()),
             ..Self::default()
+        };
+        Reply {
+            call: Some(call),
+            ..Reply::nav(Nav::Push(Box::new(screen)))
         }
+    }
+
+    fn address(&self, target: &Target) -> Address {
+        self.shown.unwrap_or(target.address)
     }
 
     fn targets(ctx: &Ctx<'_>) -> Vec<Target> {
@@ -142,22 +160,15 @@ impl Receive {
         if memo_allowed {
             form.push(input(Field::Memo, text::MEMO_OPTIONAL, &self.memo).into());
         }
+        let address = self.address(target);
         Page {
             id: PageId::Receive,
             title: text::receive_title(&network.name),
-            headline: Some(format::grouped(
-                &ctx.shown(&target.address, &target.network),
-            )),
+            headline: Some(format::grouped(&ctx.shown(&address, &target.network))),
             lines,
             form,
             notes: vec![note(Level::Info, text::receive_note(&network.name))],
-            qr: Some(links::request(
-                network,
-                &target.address,
-                &asset,
-                amount,
-                memo,
-            )),
+            qr: Some(links::request(network, &address, &asset, amount, memo)),
             buttons: vec![button(text::COPY_ADDRESS, Action::Copy)],
             ..Page::default()
         }
@@ -170,17 +181,27 @@ impl Screen for Receive {
             Action::Pick(Pick::Target(position)) if self.target.is_none() => {
                 self.target = Self::targets(ctx).into_iter().nth(*position);
                 self.picked = self.target.is_some();
+                if let Some(target) = &self.target {
+                    return Reply::call(target.lookup());
+                }
             }
             Action::Type(Field::Amount, value) => self.amount.clone_from(value),
             Action::Type(Field::Memo, value) => self.memo.clone_from(value),
             Action::Copy => {
                 if let Some(target) = &self.target {
                     return Reply::request(Request::Copy(
-                        ctx.shown(&target.address, &target.network),
+                        ctx.shown(&self.address(target), &target.network),
                     ));
                 }
             }
             _ => {}
+        }
+        Reply::default()
+    }
+
+    fn done(&mut self, outcome: Outcome, _ctx: &Ctx<'_>) -> Reply {
+        if let Outcome::Receiving(Ok(address)) = outcome {
+            self.shown = Some(address);
         }
         Reply::default()
     }

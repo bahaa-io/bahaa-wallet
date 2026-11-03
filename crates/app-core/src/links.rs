@@ -8,6 +8,8 @@ use crate::{format, text};
 const EVM: &str = "ethereum:";
 const TON: &str = "ton://transfer/";
 const SOLANA: &str = "solana:";
+const BITCOIN: &str = "bitcoin:";
+const REQUIRED: &str = "req-";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Payment {
@@ -29,6 +31,12 @@ pub(crate) fn read(
     }
     if let Some(rest) = text.strip_prefix(SOLANA) {
         return Some(solana(rest, registry, decimals));
+    }
+    if text
+        .get(..BITCOIN.len())
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case(BITCOIN))
+    {
+        return Some(bitcoin(&text[BITCOIN.len()..], registry));
     }
     text.strip_prefix(TON).map(|rest| ton(rest, registry))
 }
@@ -82,7 +90,11 @@ pub(crate) fn request(
                 ("memo", memo),
             ],
         ),
-        ChainKind::Tron { .. } | ChainKind::Bitcoin { .. } => shown,
+        ChainKind::Bitcoin { .. } => query(
+            format!("{BITCOIN}{shown}"),
+            [("amount", amount.map(|amount| amount.to_string()))],
+        ),
+        ChainKind::Tron { .. } => shown,
     }
 }
 
@@ -222,15 +234,49 @@ fn solana(
         None => AssetId::Native(network.id.clone()),
     };
     if let Some(amount) = amount {
-        if amount.starts_with('.') || amount.ends_with('.') {
-            return Err(text::LINK_INVALID.to_owned());
-        }
         let places = decimals(&asset).ok_or_else(|| text::LINK_UNKNOWN_TOKEN.to_owned())?;
-        let amount = Amount::parse(&amount, places).map_err(|_| text::LINK_INVALID.to_owned())?;
-        payment.units = Some(amount.units());
+        payment.units = Some(decimal(&amount, places)?);
     }
     payment.network = Some(network);
     Ok(payment)
+}
+
+fn bitcoin(rest: &str, registry: &Registry) -> Result<Payment, String> {
+    let (target, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let to =
+        Address::parse(ChainFamily::Bitcoin, &decode(target)?).map_err(|err| err.to_string())?;
+    let Address::Bitcoin { testnet, .. } = to else {
+        return Err(text::LINK_INVALID.to_owned());
+    };
+    let network = registry
+        .networks()
+        .find(|network| network.family() == ChainFamily::Bitcoin && network.testnet == testnet)
+        .cloned()
+        .ok_or_else(|| text::LINK_UNKNOWN_NETWORK.to_owned())?;
+    let mut units = None;
+    for (key, value) in pairs(query)? {
+        if key == "amount" {
+            units = Some(decimal(&value, network.native.decimals)?);
+        } else if key.starts_with(REQUIRED) {
+            return Err(text::LINK_UNSUPPORTED.to_owned());
+        }
+    }
+    Ok(Payment {
+        network: Some(network),
+        to,
+        token: None,
+        units,
+        memo: None,
+    })
+}
+
+fn decimal(amount: &str, places: u8) -> Result<U256, String> {
+    if amount.starts_with('.') || amount.ends_with('.') {
+        return Err(text::LINK_INVALID.to_owned());
+    }
+    Amount::parse(amount, places)
+        .map(|amount| amount.units())
+        .map_err(|_| text::LINK_INVALID.to_owned())
 }
 
 fn pairs(query: &str) -> Result<Vec<(String, String)>, String> {
@@ -486,6 +532,59 @@ mod tests {
                 "solana:{SOLANA_OWNER}?amount=1&spl-token=So11111111111111111111111111111111111111112"
             )),
             text::LINK_UNKNOWN_TOKEN
+        );
+    }
+
+    const BITCOIN_TO: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+
+    #[test]
+    fn bitcoin_links_carry_the_amount_in_coins() {
+        let registry = registry();
+        let network = registry.get(&"bitcoin".parse().unwrap()).unwrap();
+        let to = Address::parse(ChainFamily::Bitcoin, BITCOIN_TO).unwrap();
+        let asset = AssetId::Native(network.id.clone());
+        let amount = Amount::parse("0.0005", 8).unwrap();
+        let link = request(network, &to, &asset, Some(amount), None);
+        assert_eq!(link, format!("bitcoin:{BITCOIN_TO}?amount=0.0005"));
+        assert_eq!(request(network, &to, &asset, None, None), BITCOIN_TO);
+        let payment = read(&link, &registry, decimals(&registry))
+            .unwrap()
+            .unwrap();
+        assert_eq!(payment.network.unwrap().id, network.id);
+        assert_eq!((payment.to, payment.units), (to, Some(U256::from(50_000))));
+        let shouted = format!(
+            "BITCOIN:{}?amount=1&label=Shop&message=Order%2042",
+            BITCOIN_TO.to_uppercase()
+        );
+        let payment = read(&shouted, &registry, decimals(&registry))
+            .unwrap()
+            .unwrap();
+        assert_eq!(payment.units, Some(U256::from(100_000_000)));
+        assert_eq!(payment.memo, None);
+    }
+
+    #[test]
+    fn bitcoin_links_with_required_extras_or_odd_amounts_are_refused() {
+        let registry = registry();
+        let error = |link: String| {
+            read(&link, &registry, decimals(&registry))
+                .unwrap()
+                .unwrap_err()
+        };
+        assert_eq!(
+            error(format!("bitcoin:{BITCOIN_TO}?req-pop=1")),
+            text::LINK_UNSUPPORTED
+        );
+        for amount in [".5", "1.", "0.000000001", "-1"] {
+            assert_eq!(
+                error(format!("bitcoin:{BITCOIN_TO}?amount={amount}")),
+                text::LINK_INVALID,
+                "{amount}"
+            );
+        }
+        assert_eq!(
+            error("bitcoin:tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_owned()),
+            text::LINK_UNKNOWN_NETWORK
         );
     }
 }

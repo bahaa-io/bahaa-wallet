@@ -1,4 +1,4 @@
-use bahaa_engine::{Address, Amount, Fiat, Network, Price, TonForm};
+use bahaa_engine::{Address, Amount, FeeRate, Fiat, Network, Price, TonForm, Wait};
 
 use crate::text;
 
@@ -11,6 +11,8 @@ const HEX_PREFIX: &str = "0x";
 const MINUTE: u64 = 60;
 const HOUR: u64 = 60 * MINUTE;
 const DAY: u64 = 24 * HOUR;
+const FEW_SECONDS: u64 = 10;
+const SECONDS_STEP: u64 = 5;
 
 pub(crate) fn amount(amount: Amount, symbol: &str) -> String {
     let text = amount.to_string();
@@ -93,6 +95,32 @@ pub(crate) fn ago(time: u64, now: u64) -> String {
     }
 }
 
+pub(crate) fn span(seconds: u64) -> String {
+    if seconds <= FEW_SECONDS {
+        return text::FEW_SECONDS.to_owned();
+    }
+    match seconds {
+        0..MINUTE => text::duration(seconds / SECONDS_STEP * SECONDS_STEP, text::SECOND),
+        MINUTE..HOUR => text::duration(seconds / MINUTE, text::MINUTE),
+        HOUR..DAY => text::duration(seconds / HOUR, text::HOUR),
+        _ => text::duration(seconds / DAY, text::DAY),
+    }
+}
+
+pub(crate) fn wait(wait: Wait) -> String {
+    match wait {
+        Wait::About(seconds) if seconds > FEW_SECONDS => text::about(&span(seconds)),
+        Wait::About(_) => text::FEW_SECONDS.to_owned(),
+        Wait::Over(seconds) => text::more_than(&span(seconds)),
+        Wait::Slow => text::SLOW.to_owned(),
+        Wait::Stuck => text::STUCK.to_owned(),
+    }
+}
+
+pub(crate) fn rate(rate: FeeRate) -> String {
+    amount(rate.amount, text::rate_unit(rate.unit))
+}
+
 pub(crate) fn when(time: u64) -> String {
     let days = time / DAY;
     let seconds = time % DAY;
@@ -164,6 +192,32 @@ mod tests {
 
     fn amount_of(text: &str, decimals: u8) -> Amount {
         Amount::parse(text, decimals).unwrap()
+    }
+
+    #[test]
+    fn waits_read_as_rounded_spans() {
+        assert_eq!(wait(Wait::About(1)), "a few seconds");
+        assert_eq!(wait(Wait::About(10)), "a few seconds");
+        assert_eq!(wait(Wait::About(18)), "about 15 seconds");
+        assert_eq!(wait(Wait::About(60)), "about 1 minute");
+        assert_eq!(wait(Wait::About(1_200)), "about 20 minutes");
+        assert_eq!(wait(Wait::About(3_600)), "about 1 hour");
+        assert_eq!(wait(Wait::About(14_400)), "about 4 hours");
+        assert_eq!(wait(Wait::About(86_400)), "about 1 day");
+        assert_eq!(wait(Wait::Over(302_400)), "more than 3 days");
+        assert_eq!(wait(Wait::Stuck), text::STUCK);
+        assert_eq!(wait(Wait::Slow), text::SLOW);
+        assert_eq!(span(125), "2 minutes");
+        let rate = FeeRate {
+            amount: amount_of("2.5", 3),
+            unit: bahaa_engine::RateUnit::SatPerVbyte,
+        };
+        assert_eq!(self::rate(rate), "2.5 sat/vB");
+        let limit = FeeRate {
+            amount: amount_of("3.123456789", 9),
+            unit: bahaa_engine::RateUnit::Gwei,
+        };
+        assert_eq!(self::rate(limit), "3.123456 gwei");
     }
 
     #[test]

@@ -61,17 +61,22 @@ impl Portfolio {
         list
     }
 
-    fn left_out(&self, ctx: &Ctx<'_>) -> Vec<Note> {
+    fn notes(&self, ctx: &Ctx<'_>) -> Vec<Note> {
+        let mut notes = Vec::new();
+        let loading = ctx.pending(false);
+        if !loading.is_empty() {
+            notes.push(note(Level::Info, text::total_pending(&loading)));
+        }
         let count = ctx
             .data
             .wallets
             .iter()
             .filter(|wallet| !wallet.counted)
             .count();
-        if self.filter.is_some() || count == 0 {
-            return Vec::new();
+        if self.filter.is_none() && count > 0 {
+            notes.push(note(Level::Info, text::left_out(count)));
         }
-        vec![note(Level::Info, text::left_out(count))]
+        notes
     }
 }
 
@@ -146,7 +151,7 @@ impl Screen for Portfolio {
                 rows,
                 empty: text::NO_ASSETS.to_owned(),
             }),
-            notes: self.left_out(ctx),
+            notes: self.notes(ctx),
             ..Page::default()
         }
     }
@@ -186,10 +191,9 @@ impl Screen for Asset {
                 };
                 Reply::nav(Nav::Push(Box::new(Send::new(Some(source)))))
             }
-            Action::Go(Go::ReceiveAsset) => largest(self.holdings(ctx))
-                .map_or_else(Reply::default, |holding| {
-                    Reply::nav(Nav::Push(Box::new(Receive::for_holding(holding))))
-                }),
+            Action::Go(Go::ReceiveAsset) => {
+                largest(self.holdings(ctx)).map_or_else(Reply::default, Receive::for_holding)
+            }
             _ => Reply::default(),
         }
     }

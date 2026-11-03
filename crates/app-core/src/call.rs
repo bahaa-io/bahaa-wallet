@@ -1,6 +1,6 @@
 use bahaa_engine::{
-    Account, Activity, Address, AssetId, Caution, ChainFamily, Contact, CustomToken, Draft,
-    DraftId, Engine, EngineError, NetworkId, NewPhrase, PhraseKind, Replace, SecretString,
+    Account, Activity, Address, AssetId, BitcoinType, Caution, ChainFamily, Contact, CustomToken,
+    Draft, DraftId, Engine, EngineError, NetworkId, NewPhrase, PhraseKind, Replace, SecretString,
     SendRequest, SentTx, Settings, SolanaPath, TonContract, WalletId, WalletInfo,
 };
 
@@ -21,6 +21,8 @@ pub(crate) enum Call {
     RemoveAccount(WalletId, u32),
     SetTonContract(WalletId, TonContract),
     SetSolanaPath(WalletId, SolanaPath),
+    SetBitcoinType(WalletId, BitcoinType),
+    ReceiveAddress(NetworkId, Address),
     Reveal(WalletId, SecretString),
     ChangePassword(SecretString, SecretString),
     SetSettings(Settings),
@@ -43,6 +45,7 @@ pub(crate) enum Outcome {
     Sent(Result<SentTx, EngineError>),
     Cautions(Result<Vec<Caution>, EngineError>),
     Token(Result<CustomToken, EngineError>),
+    Receiving(Result<Address, EngineError>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +107,10 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
             done(engine.set_ton_contract(wallet, contract).await)
         }
         Call::SetSolanaPath(wallet, path) => done(engine.set_solana_path(wallet, path).await),
+        Call::SetBitcoinType(wallet, kind) => done(engine.set_bitcoin_type(wallet, kind).await),
+        Call::ReceiveAddress(network, address) => {
+            Outcome::Receiving(engine.receive_address(network, address).await)
+        }
         Call::Reveal(wallet, password) => Outcome::Revealed(engine.reveal(wallet, password).await),
         Call::ChangePassword(old, new) => done(engine.change_password(old, new).await),
         Call::SetSettings(settings) => done(engine.set_settings(settings).await),

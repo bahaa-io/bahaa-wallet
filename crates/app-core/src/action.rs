@@ -92,6 +92,7 @@ pub enum Pick {
     AutoLock(u16),
     Contract(Contract),
     Path(Path),
+    AddressType(AddressType),
     AddAccount,
     RemoveAccount(u32),
     RemoveToken(usize),
@@ -132,6 +133,7 @@ pub enum Family {
     Tron,
     Ton,
     Solana,
+    Bitcoin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,4 +166,10 @@ pub enum Contract {
 pub enum Path {
     Bip44Change,
     Bip44,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddressType {
+    NativeSegwit,
+    Taproot,
 }

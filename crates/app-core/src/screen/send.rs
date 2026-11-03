@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 
 use bahaa_engine::{
-    Address, Amount, AssetId, Caution, ChainFamily, Contact, Draft, EngineError, Holding, MAX_MEMO,
-    NetworkId, Replace, SendRequest, Spend, WalletId, is_plain_text,
+    Address, Amount, AssetId, Caution, ChainFamily, Contact, Draft, EngineError, FeeQuote, Holding,
+    MAX_MEMO, NetworkId, Replace, SendRequest, Spend, WalletId, is_plain_text,
 };
 
 use super::activity::Transfer;
@@ -14,7 +14,7 @@ use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::links::{self, Payment};
-use crate::view::{Input, Level, Note, Page, PageId, Row, Secret, Table, Tone};
+use crate::view::{Input, Level, Line, Note, Page, PageId, Row, Secret, Table, Tone};
 use crate::{format, parse, text};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -489,28 +489,33 @@ impl Send {
         let transfer = &draft.transfer;
         let network = transfer.asset.network();
         let fee_symbol = ctx.native_symbol(network);
-        let fee_value = ctx
-            .price(&AssetId::Native(network.clone()))
-            .and_then(|price| {
-                price
-                    .value_of(draft.fee.expected(), ctx.fiat().places())
-                    .ok()
-            });
-        let mut recipient = format::grouped(&ctx.shown(&transfer.to, network));
-        if let Some(contact) = ctx.contact(network, &transfer.to) {
-            recipient = text::with_name(&recipient, &contact.name);
-        }
-        let mut lines = vec![line(text::TO, recipient), network_line(ctx, network)];
+        let how = self.replacing.as_ref().map(|(_, _, how)| *how);
+        let original = self
+            .replacing
+            .as_ref()
+            .and_then(|(network, id, _)| ctx.sent(network, id));
+        let named = |address: &Address| {
+            let shown = format::grouped(&ctx.shown(address, network));
+            match ctx.contact(network, address) {
+                Some(contact) => text::with_name(&shown, &contact.name),
+                None => shown,
+            }
+        };
+        let (headline, mut lines) = match (how, original) {
+            (Some(Replace::Cancel), Some(original)) => (
+                format::exact(original.amount, &ctx.symbol(&original.asset)),
+                vec![line(text::WAS_GOING_TO, named(&original.to))],
+            ),
+            _ => (
+                format::exact(transfer.amount, &ctx.symbol(&transfer.asset)),
+                vec![line(text::TO, named(&transfer.to))],
+            ),
+        };
+        lines.push(network_line(ctx, network));
         if let Some(memo) = &transfer.memo {
             lines.push(line(text::MEMO, memo.clone()));
         }
-        lines.push(line(
-            text::FEE,
-            text::with_value(
-                &format::exact(draft.fee.expected(), &fee_symbol),
-                &format::fiat(fee_value, ctx.fiat()),
-            ),
-        ));
+        lines.extend(fee_lines(&draft.fee, network, ctx));
         let left = remaining(draft, at, ctx.now);
         if ctx.data.settings.developer_mode {
             let from = format::short(&ctx.shown(&transfer.from, network));
@@ -536,13 +541,17 @@ impl Send {
             .iter()
             .map(|caution| note(Level::Warning, text::caution(caution, ctx)))
             .collect();
+        if let Some(how) = how {
+            notes.push(note(Level::Info, text::replace_note(how)));
+            notes.push(note(Level::Info, text::ESTIMATE_NOTE));
+        }
         if left == 0 {
             notes.push(note(Level::Info, text::QUOTE_GONE));
         }
         Page {
             id: PageId::Review,
-            title: text::REVIEW.to_owned(),
-            headline: Some(format::exact(transfer.amount, &ctx.symbol(&transfer.asset))),
+            title: how.map_or(text::REVIEW, text::replace_title).to_owned(),
+            headline: Some(headline),
             lines,
             notes,
             error: self.error.clone(),
@@ -605,6 +614,57 @@ fn source_of(holding: &Holding) -> Source {
         address: holding.address,
         asset: holding.asset.clone(),
     }
+}
+
+fn fee_lines(fee: &FeeQuote, network: &NetworkId, ctx: &Ctx<'_>) -> Vec<Line> {
+    let symbol = ctx.native_symbol(network);
+    let valued = |amount: Amount| {
+        let value = ctx
+            .price(&AssetId::Native(network.clone()))
+            .and_then(|price| price.value_of(amount, ctx.fiat().places()).ok());
+        text::with_value(
+            &format::exact(amount, &symbol),
+            &format::fiat(value, ctx.fiat()),
+        )
+    };
+    let (pace, expected) = (fee.pace(), fee.expected());
+    let mut lines = Vec::new();
+    if let Some(before) = fee.replaced() {
+        lines.push(line(
+            text::FEE,
+            text::changed(&format::exact(before.fee, &symbol), &valued(expected)),
+        ));
+        if let Ok(extra) = expected.checked_sub(before.fee)
+            && !extra.is_zero()
+        {
+            lines.push(line(text::EXTRA_COST, valued(extra)));
+        }
+        if let (Some(old), Some(new)) = (before.pace.rate, pace.rate) {
+            lines.push(line(
+                text::rate_label(new.unit),
+                text::changed(&format::rate(old), &format::rate(new)),
+            ));
+        }
+        match (before.pace.wait, pace.wait) {
+            (Some(old), Some(new)) => lines.push(line(
+                text::EXPECTED_WAIT,
+                text::changed(&format::wait(old), &format::wait(new)),
+            )),
+            (None, Some(new)) => lines.push(line(text::EXPECTED_WAIT, format::wait(new))),
+            (_, None) => {}
+        }
+    } else {
+        lines.push(line(text::FEE, valued(expected)));
+        if let Some(wait) = pace.wait {
+            lines.push(line(text::EXPECTED_WAIT, format::wait(wait)));
+        }
+        if let Some(rate) = pace.rate
+            && ctx.data.settings.developer_mode
+        {
+            lines.push(line(text::rate_label(rate.unit), format::rate(rate)));
+        }
+    }
+    lines
 }
 
 fn remaining(draft: &Draft, at: u64, now: u64) -> u64 {
@@ -722,5 +782,92 @@ impl Screen for Send {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bahaa_engine::{
+        Amount, FeeItem, FeeLine, FeeQuote, FeeRate, Pace, RateUnit, Registry, Replaced, Wait,
+    };
+
+    use super::fee_lines;
+    use crate::core::{Ctx, Data, Host};
+
+    fn btc(text: &str) -> Amount {
+        Amount::parse(text, 8).unwrap()
+    }
+
+    fn sats(text: &str) -> FeeRate {
+        FeeRate {
+            amount: Amount::parse(text, 3).unwrap(),
+            unit: RateUnit::SatPerVbyte,
+        }
+    }
+
+    fn shown(quote: &FeeQuote, data: &Data) -> Vec<(String, String)> {
+        let registry = Registry::builtin().unwrap();
+        let host = Host {
+            folder: String::new(),
+            updates: false,
+        };
+        let ctx = Ctx {
+            registry: &registry,
+            data,
+            host: &host,
+            now: 0,
+        };
+        fee_lines(quote, &"bitcoin".parse().unwrap(), &ctx)
+            .into_iter()
+            .map(|line| (line.label, line.value))
+            .collect()
+    }
+
+    fn quote(fee: &str) -> FeeQuote {
+        let lines = vec![FeeLine {
+            item: FeeItem::Size { vbytes: 141 },
+            amount: btc(fee),
+        }];
+        FeeQuote::new(btc(fee), btc(fee), lines)
+            .unwrap()
+            .paced(Pace {
+                rate: Some(sats("3")),
+                wait: Some(Wait::About(1_200)),
+            })
+    }
+
+    #[test]
+    fn a_speed_up_compares_the_fee_rate_and_wait_with_the_pending_transfer() {
+        let replacing = quote("0.00000423").replacing(Replaced {
+            fee: btc("0.00000282"),
+            pace: Pace {
+                rate: Some(sats("2")),
+                wait: Some(Wait::About(3_600)),
+            },
+        });
+        let pairs = [
+            ("Fee", "0.00000282 BTC → 0.00000423 BTC ≈ —"),
+            ("Extra cost", "0.00000141 BTC ≈ —"),
+            ("Fee rate", "2 sat/vB → 3 sat/vB"),
+            ("Expected wait", "about 1 hour → about 20 minutes"),
+        ];
+        assert_eq!(
+            shown(&replacing, &Data::default()),
+            pairs.map(|(label, value)| (label.to_owned(), value.to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_send_shows_its_wait_and_only_developers_see_the_rate() {
+        let mut data = Data::default();
+        let plain = shown(&quote("0.00000423"), &data);
+        assert_eq!(
+            plain[1],
+            ("Expected wait".to_owned(), "about 20 minutes".to_owned())
+        );
+        assert_eq!(plain.len(), 2);
+        data.settings.developer_mode = true;
+        let detailed = shown(&quote("0.00000423"), &data);
+        assert_eq!(detailed[2], ("Fee rate".to_owned(), "3 sat/vB".to_owned()));
     }
 }

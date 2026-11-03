@@ -26,9 +26,9 @@ pub enum KeyError {
         "a Solana private key is the base58 text wallets export, or a key file's list of 64 numbers"
     )]
     SolanaFormat,
-    #[error("a Bitcoin private key is the WIF text wallets export, starting with K, L or c")]
+    #[error("a Bitcoin private key is WIF text, starting with K, L or c")]
     BitcoinFormat,
-    #[error("this Bitcoin key is in the old uncompressed form, which this wallet does not use")]
+    #[error("old uncompressed Bitcoin keys are not supported")]
     Uncompressed,
     #[error("a private key only has the characters 0-9 and a-f")]
     NotHex,
