@@ -888,6 +888,7 @@ dependencies = [
 name = "bahaa-testkit"
 version = "0.6.0"
 dependencies = [
+ "bahaa-chain",
  "serde_json",
  "tokio",
  "url",

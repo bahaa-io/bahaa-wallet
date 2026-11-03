@@ -89,20 +89,10 @@ pub(crate) fn quantity(value: &Value) -> Result<U256, ChainError> {
 
 #[cfg(test)]
 mod tests {
+    use bahaa_testkit::kind;
     use serde_json::json;
 
     use super::*;
-
-    fn kind(failure: &Failure<ChainError>) -> &'static str {
-        match failure {
-            Failure::Retry(_) => "retry",
-            Failure::RateLimited(..) => "limited",
-            Failure::Unreachable(_) => "unreachable",
-            Failure::Unsupported(ChainError::Pruned) => "pruned",
-            Failure::Unsupported(_) => "unsupported",
-            Failure::Fatal(_) => "fatal",
-        }
-    }
 
     #[test]
     fn classifies_node_errors_like_phase_zero_saw_them() {

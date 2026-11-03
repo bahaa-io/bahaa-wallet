@@ -144,18 +144,9 @@ pub(crate) fn fuzz(value: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use bahaa_testkit::kind;
 
-    fn kind(failure: &Failure<ChainError>) -> &'static str {
-        match failure {
-            Failure::Retry(_) => "retry",
-            Failure::RateLimited(..) => "limited",
-            Failure::Unreachable(_) => "unreachable",
-            Failure::Unsupported(ChainError::Pruned) => "pruned",
-            Failure::Unsupported(_) => "unsupported",
-            Failure::Fatal(_) => "fatal",
-        }
-    }
+    use super::*;
 
     #[test]
     fn classifies_what_the_public_servers_answer() {

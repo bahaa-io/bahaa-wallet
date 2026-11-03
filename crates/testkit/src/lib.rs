@@ -4,6 +4,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bahaa_chain::{ChainError, Failure};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -108,5 +109,16 @@ async fn read(socket: &mut TcpStream) -> Option<Request> {
                 body: request[end + 4..end + 4 + length].to_vec(),
             });
         }
+    }
+}
+
+pub fn kind(failure: &Failure<ChainError>) -> &'static str {
+    match failure {
+        Failure::Retry(_) => "retry",
+        Failure::RateLimited(..) => "limited",
+        Failure::Unreachable(_) => "unreachable",
+        Failure::Unsupported(ChainError::Pruned) => "pruned",
+        Failure::Unsupported(_) => "unsupported",
+        Failure::Fatal(_) => "fatal",
     }
 }
