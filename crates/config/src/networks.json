@@ -687,9 +687,9 @@
     "global_id": -3,
     "zero_state": "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879e95a128",
     "checkpoint": {
-      "seqno": 95492287,
-      "root_hash": "040dcff55ae7428512024b2535a4d230b0a7b621df784822c8aea7bd58680dcf",
-      "file_hash": "ef4c6068323cdde394c1008d6209cebc95da0e4aec873c55840f7285c6ada3c5"
+      "seqno": 95528900,
+      "root_hash": "8ada37076222de977db69916d9b94c712a4c7b80b8d60e0252fcd8c8fcb3a0be",
+      "file_hash": "138c43c9c96a8a82585324b8ff6c91c8a8649966ac9a004c247de9fadc6ed1fd"
     },
     "testnet": true,
     "native": {
