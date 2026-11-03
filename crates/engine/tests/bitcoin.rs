@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use bahaa_config::Registry;
 use bahaa_crypto::{ExposeSecret, SecretString};
-use bahaa_engine::{Engine, Event, SendRequest, SentStatus, Spend, WalletKind};
+use bahaa_engine::{Engine, Event, Replace, SendRequest, SentStatus, Spend, WalletKind};
 use bahaa_testkit::electrum::{Ledger, Log, sender};
 use bahaa_types::{Address, Amount, AssetId, BitcoinType, ChainFamily};
 use common::{BITCOIN_GENESIS, Scratch, bitcoin_network, config, settled, until};
@@ -179,4 +179,52 @@ async fn a_phrase_used_with_taproot_is_found_there_and_remembered() {
         kind(engine.wallets().await.unwrap()),
         Some(BitcoinType::Taproot)
     );
+}
+
+#[tokio::test]
+async fn a_speed_up_replaces_the_pending_send_and_retires_it_once_confirmed() {
+    let (_scratch, engine, ledger) = started().await;
+    let mut events = engine.events();
+    let wallet = engine
+        .import(SecretString::from(PHRASE), SecretString::from(""))
+        .await
+        .unwrap();
+    let mut portfolio = engine.portfolio();
+    until(&mut portfolio, |portfolio| !portfolio.holdings.is_empty()).await;
+    let request = SendRequest {
+        wallet,
+        account: 0,
+        asset: "bitcoin".parse::<AssetId>().unwrap(),
+        to: address(FRIEND),
+        amount: Spend::Exact(Amount::parse("0.0002", 8).unwrap()),
+        memo: None,
+    };
+    let draft = engine.prepare_send(request).await.unwrap();
+    let first = engine
+        .confirm_send(draft.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    let faster = engine
+        .replace(
+            "bitcoin".parse().unwrap(),
+            first.id.clone(),
+            Replace::SpeedUp,
+        )
+        .await
+        .unwrap();
+    assert_eq!(faster.replaces.as_deref(), Some(first.id.as_str()));
+    assert_eq!(faster.fee.expected().to_string(), "0.00000423");
+    let second = engine
+        .confirm_send(faster.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    ledger
+        .lock()
+        .unwrap()
+        .confirm(&second.id, &address(SECOND), 900_001);
+    let done = settled(&mut events, &second.id).await;
+    assert_eq!(done.status, SentStatus::Confirmed);
+    let history = engine.history().await.unwrap();
+    let retired = history.iter().find(|tx| tx.id == first.id).unwrap();
+    assert_eq!(retired.status, SentStatus::Dropped);
 }

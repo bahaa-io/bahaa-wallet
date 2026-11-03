@@ -14,8 +14,8 @@ use ruint::aliases::U256;
 
 use crate::script::{dust, hash160, key_address, locking};
 use crate::tx::{
-    Input, MAX_SIGNATURE, Output, SEQUENCE, Tx, VERSION, id_of, id_text, parse, read_signature,
-    signature,
+    Input, MAX_SIGNATURE, Outpoint, Output, SEQUENCE, Tx, VERSION, id_of, id_text, parse,
+    read_signature, signature,
 };
 
 use super::BitcoinChain;
@@ -29,8 +29,8 @@ const SCHNORR_BYTES: usize = 64;
 #[derive(Clone, Debug)]
 pub struct BitcoinPlan {
     pub(super) transfer: Transfer,
-    tx: Tx,
-    spent: Vec<Coin>,
+    pub(super) tx: Tx,
+    pub(super) spent: Vec<Coin>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -208,18 +208,20 @@ impl BitcoinChain {
         }
         let from = from.ok_or_else(|| unusual.clone())?;
         let mut paid = Vec::new();
-        let mut changes = 0;
+        let mut changes = Vec::new();
         for output in &tx.outputs {
             let address = self
                 .address(&output.script)
                 .ok_or_else(|| unusual.clone())?;
             if self.takes_change(&from, &address) {
-                changes += 1;
+                changes.push((address, output.value));
             } else {
                 paid.push((address, output.value));
             }
         }
-        let ([(to, value)], 0 | 1) = (paid.as_slice(), changes) else {
+        let (([(to, value)], [] | [_]) | ([], [(to, value)])) =
+            (paid.as_slice(), changes.as_slice())
+        else {
             return Err(unusual);
         };
         Ok(Decoded {
@@ -229,7 +231,7 @@ impl BitcoinChain {
             amount: self.sats(*value)?,
             everything: false,
             memo: None,
-            sequence: None,
+            sequence: tx.inputs.first().map(|input| conflict(&input.previous)),
             expires_at: None,
         })
     }
@@ -289,7 +291,7 @@ impl BitcoinChain {
         self.sats(spent.checked_sub(paid).ok_or_else(ChainError::malformed)?)
     }
 
-    async fn rate(&self) -> Result<u64, ChainError> {
+    pub(super) async fn rate(&self) -> Result<u64, ChainError> {
         Ok(self
             .sources
             .rates()
@@ -341,13 +343,19 @@ impl BitcoinChain {
             .or_else(|| outputs.first().copied())
     }
 
-    fn takes_change(&self, from: &Address, address: &Address) -> bool {
+    pub(super) fn takes_change(&self, from: &Address, address: &Address) -> bool {
         let book = self.book();
         match book.place(address) {
             Some(place) => place.owner == *from && place.branch == CHANGE,
             None => address == from && !book.owns(from),
         }
     }
+}
+
+fn conflict(outpoint: &Outpoint) -> u64 {
+    let mut head = [0u8; 8];
+    head.copy_from_slice(&outpoint.txid[..8]);
+    u64::from_le_bytes(head) ^ u64::from(outpoint.vout)
 }
 
 fn pick(
@@ -420,7 +428,7 @@ fn pick(
     Err(amount.saturating_add(fee))
 }
 
-fn cost(coins: &[Coin], outputs: &[Output], rate: u64) -> (u64, u64) {
+pub(super) fn cost(coins: &[Coin], outputs: &[Output], rate: u64) -> (u64, u64) {
     let (sorted, mut draft) = unsigned(coins, outputs.to_vec());
     for (input, coin) in draft.inputs.iter_mut().zip(&sorted) {
         input.witness = match script(&coin.address) {
@@ -432,7 +440,7 @@ fn cost(coins: &[Coin], outputs: &[Output], rate: u64) -> (u64, u64) {
     (size, size.saturating_mul(rate).div_ceil(1_000))
 }
 
-fn unsigned(coins: &[Coin], mut outputs: Vec<Output>) -> (Vec<Coin>, Tx) {
+pub(super) fn unsigned(coins: &[Coin], mut outputs: Vec<Output>) -> (Vec<Coin>, Tx) {
     let mut coins = coins.to_vec();
     coins.sort_by_key(|coin| coin.outpoint);
     let inputs = coins
@@ -459,7 +467,6 @@ mod tests {
     use bahaa_types::BitcoinScript;
 
     use super::*;
-    use crate::tx::Outpoint;
 
     fn coin(value: u64, confirmed: bool, n: u8) -> Coin {
         Coin {

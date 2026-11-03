@@ -15,6 +15,7 @@ use ruint::aliases::U256;
 mod account;
 mod incoming;
 mod proven;
+mod replace;
 mod send;
 
 pub use send::BitcoinPlan;
@@ -210,15 +211,13 @@ impl Chain for BitcoinChain {
         &plan.transfer
     }
 
-    fn replace(
+    async fn replace(
         &self,
-        _original: &Signed,
-        _account: u32,
-        _how: Replace,
-    ) -> impl Future<Output = Result<(BitcoinPlan, FeeQuote), ChainError>> + Send {
-        std::future::ready(Err(ChainError::Unsupported(
-            "replacing a Bitcoin transfer yet",
-        )))
+        original: &Signed,
+        account: u32,
+        how: Replace,
+    ) -> Result<(BitcoinPlan, FeeQuote), ChainError> {
+        Box::pin(self.replacement(original, account, how)).await
     }
 
     fn sign(&self, plan: &BitcoinPlan, seed: &Seed) -> Result<Signed, ChainError> {
