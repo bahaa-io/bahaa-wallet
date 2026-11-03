@@ -63,6 +63,22 @@ pub(crate) fn coins(owner: &[u8; 20], to: &[u8; 20], sun: i64) -> Contract {
     contract(TRANSFER_TYPE, TRANSFER_URL, transfer.encode_to_vec())
 }
 
+pub(crate) fn call(
+    owner: &[u8; 20],
+    contract: &[u8; 20],
+    data: Vec<u8>,
+    call_value: i64,
+) -> Contract {
+    let trigger = TriggerSmartContract {
+        owner_address: tron(owner),
+        contract_address: tron(contract),
+        call_value,
+        data,
+        ..TriggerSmartContract::default()
+    };
+    self::contract(TRIGGER_TYPE, TRIGGER_URL, trigger.encode_to_vec())
+}
+
 pub(crate) fn token(owner: &[u8; 20], token: &[u8; 20], data: Vec<u8>) -> Contract {
     let trigger = TriggerSmartContract {
         owner_address: tron(owner),
@@ -132,18 +148,61 @@ pub(crate) fn sign(raw: Raw, key: &SecretKey) -> Result<(Vec<u8>, [u8; 32]), Cha
     Ok((tx.encode_to_vec(), id))
 }
 
-pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, ChainError> {
+pub(crate) struct ParsedCall {
+    pub id: [u8; 32],
+    pub from: [u8; 20],
+    pub contract: [u8; 20],
+    pub data: Vec<u8>,
+    pub call_value: u64,
+}
+
+fn envelope(bytes: &[u8]) -> Result<(Raw, [u8; 32], [u8; 20]), ChainError> {
     let invalid = || ChainError::Invalid("not a signed Tron transaction");
     let tx = Transaction::decode(bytes).map_err(|_| invalid())?;
     if tx.encode_to_vec() != bytes {
         return Err(invalid());
     }
-    let raw = tx.raw_data.as_ref().ok_or_else(invalid)?;
+    let raw = tx.raw_data.ok_or_else(invalid)?;
     let [signature] = tx.signature.as_slice() else {
         return Err(invalid());
     };
-    let id = txid(raw);
+    let id = txid(&raw);
     let signer = recover(&id, signature).ok_or_else(invalid)?;
+    Ok((raw, id, signer))
+}
+
+pub(crate) fn parse_call(bytes: &[u8]) -> Result<ParsedCall, ChainError> {
+    let invalid = || ChainError::Invalid("not a signed Tron contract call");
+    let (raw, id, signer) = envelope(bytes)?;
+    let [contract] = raw.contract.as_slice() else {
+        return Err(invalid());
+    };
+    let parameter = contract.parameter.as_ref().ok_or_else(invalid)?;
+    if (contract.kind, parameter.type_url.as_str()) != (TRIGGER_TYPE, TRIGGER_URL)
+        || !raw.data.is_empty()
+    {
+        return Err(invalid());
+    }
+    let trigger: TriggerSmartContract = exact(&parameter.value).ok_or_else(invalid)?;
+    let call_value = u64::try_from(trigger.call_value).map_err(|_| invalid())?;
+    if trigger.call_token_value != 0
+        || trigger.token_id != 0
+        || address(&trigger.owner_address) != Some(signer)
+    {
+        return Err(invalid());
+    }
+    Ok(ParsedCall {
+        id,
+        from: signer,
+        contract: address(&trigger.contract_address).ok_or_else(invalid)?,
+        data: trigger.data,
+        call_value,
+    })
+}
+
+pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, ChainError> {
+    let (raw, id, signer) = envelope(bytes)?;
+    let raw = &raw;
     let (owner, action) = action(raw)?;
     if owner != signer {
         return Err(ChainError::Invalid(

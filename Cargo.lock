@@ -920,6 +920,7 @@ dependencies = [
  "bahaa-solana",
  "bahaa-testkit",
  "bahaa-ton",
+ "bahaa-tron",
  "bahaa-types",
  "base64 0.23.1",
  "bs58",

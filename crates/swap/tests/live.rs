@@ -7,8 +7,11 @@ use bahaa_config::Registry;
 use bahaa_crypto::{Mnemonic, WordCount};
 use bahaa_evm::EvmChain;
 use bahaa_solana::SolanaChain;
-use bahaa_swap::{Cow, Jupiter, Method, OneClick, Providers, Relay, Request, StonFi, SwapError};
+use bahaa_swap::{
+    Cow, Jupiter, Method, OneClick, Providers, Relay, Request, StonFi, SunSwap, SwapError,
+};
 use bahaa_ton::TonChain;
+use bahaa_tron::TronChain;
 use bahaa_types::{Address, Amount, ChainFamily};
 
 fn evm() -> Address {
@@ -240,4 +243,50 @@ async fn live_stonfi_routes_name_the_pools_the_chain_confirms() {
             Err(other) => panic!("{other:?}"),
         }
     }
+}
+
+#[tokio::test]
+#[ignore = "talks to Tron"]
+async fn live_sunswap_routes_pass_tron_s_own_simulation() {
+    let registry = Registry::builtin().unwrap();
+    let chain = TronChain::new(registry.get(&"tron".parse().unwrap()).unwrap().clone()).unwrap();
+    let sunswap = SunSwap::new(&Providers::builtin().unwrap().sunswap).unwrap();
+    let holder = Address::parse(ChainFamily::Tron, "TRovmURrSa5937phqN8yUCpqqiGt7vuTyR").unwrap();
+    let mut asked = request(
+        "tron",
+        "10",
+        6,
+        "tron/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        6,
+        holder,
+        holder,
+    );
+    asked.native_decimals = 6;
+    let (route, order) = sunswap.quote(&chain, &asked, now()).await.unwrap();
+    assert_eq!((route.provider, route.method), ("SunSwap", Method::Pool));
+    let contract = order.contract.unwrap();
+    let swap = ContractSwap {
+        account: 0,
+        from: holder,
+        call: contract.call,
+        spender: contract.spender,
+        sell: asked.sell.clone(),
+        amount: asked.amount,
+        buy: Some((asked.buy.clone(), route.minimum)),
+        ours: true,
+        spent: None,
+    };
+    let (plans, fee) = chain.prepare_swap(&swap).await.unwrap();
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].checked());
+    assert!(fee.expected() <= fee.max());
+    let mut greedy = swap.clone();
+    greedy.buy = Some((
+        asked.buy.clone(),
+        route.expected.checked_add(route.expected).unwrap(),
+    ));
+    assert_eq!(
+        chain.prepare_swap(&greedy).await.unwrap_err().to_string(),
+        "the swap would pay less than its minimum"
+    );
 }

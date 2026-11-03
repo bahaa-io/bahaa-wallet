@@ -7,4 +7,4 @@ mod http;
 mod proto;
 mod tx;
 
-pub use chain::{TronChain, TronPlan, derive};
+pub use chain::{TronCall, TronChain, TronPlan, derive};

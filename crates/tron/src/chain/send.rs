@@ -127,7 +127,7 @@ impl TronChain {
         Ok(())
     }
 
-    async fn prices(&self) -> Result<Prices, ChainError> {
+    pub(super) async fn prices(&self) -> Result<Prices, ChainError> {
         let cached = *self.prices.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((at, prices)) = cached
             && at.elapsed() < PRICES_FOR
@@ -161,7 +161,7 @@ impl TronChain {
         Ok(prices)
     }
 
-    async fn resources(&self, owner: &[u8; 20]) -> Result<Resources, ChainError> {
+    pub(super) async fn resources(&self, owner: &[u8; 20]) -> Result<Resources, ChainError> {
         let reply = self
             .http
             .post(
@@ -198,7 +198,7 @@ impl TronChain {
             .ok_or_else(|| ChainError::Network("an endpoint sent no energy estimate".to_owned()))
     }
 
-    async fn anchor(&self) -> Result<Anchor, ChainError> {
+    pub(super) async fn anchor(&self) -> Result<Anchor, ChainError> {
         let reply = self
             .http
             .post("wallet/getblock", json!({"detail": false}))
@@ -231,7 +231,7 @@ impl TronChain {
         })
     }
 
-    fn fee_quote(&self, quote: Quote) -> Result<FeeQuote, ChainError> {
+    pub(super) fn fee_quote(&self, quote: Quote) -> Result<FeeQuote, ChainError> {
         let trx = |sun: u64| amount(U256::from(sun), self.network.native.decimals);
         let lines = quote
             .lines

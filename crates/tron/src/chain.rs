@@ -12,9 +12,11 @@ use futures_util::future::{try_join, try_join_all, try_join3};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
+mod calls;
 mod incoming;
 mod send;
 
+pub use calls::TronCall;
 pub use send::TronPlan;
 
 use crate::fees::Prices;

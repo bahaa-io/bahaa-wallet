@@ -20,6 +20,16 @@ pub struct Providers {
     pub cow: CowConfig,
     pub jupiter: JupiterConfig,
     pub stonfi: StonFiConfig,
+    pub sunswap: SunSwapConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SunSwapConfig {
+    pub network: NetworkId,
+    pub router: String,
+    pub wrapped: String,
+    pub fee_bps: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]

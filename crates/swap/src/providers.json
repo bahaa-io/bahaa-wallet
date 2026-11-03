@@ -559,5 +559,11 @@
         "pton": "EQBnGWMCf3-FZZq1W4IWcWiGAc3PHuZ0_H-7sad2oY00o83S"
       }
     ]
+  },
+  "sunswap": {
+    "network": "tron",
+    "router": "TKzxdSv2FZKQrEqkKVgp5DcwEXBEKMg2Ax",
+    "wrapped": "TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR",
+    "fee_bps": 30
   }
 }

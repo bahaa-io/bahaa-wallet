@@ -12,6 +12,7 @@ bahaa-chain.workspace = true
 bahaa-evm.workspace = true
 bahaa-solana.workspace = true
 bahaa-ton.workspace = true
+bahaa-tron.workspace = true
 bahaa-types.workspace = true
 base64.workspace = true
 bs58.workspace = true

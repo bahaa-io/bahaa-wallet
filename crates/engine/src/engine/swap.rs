@@ -5,8 +5,8 @@ use bahaa_chain::{ChainError, ContractSwap, FeeQuote, MAX_MEMO, Step, Transfer};
 use bahaa_store::{SentStatus, SentTx, SwapRecord, SwapStatus};
 use bahaa_swap::{
     Across, Charged, Comment, Cost, CostKind, Cow, Jupiter, KyberSwap, OneClick, Order, Pools,
-    Progress, Provider, Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, StonFi, SwapError,
-    Velora, rank,
+    Progress, Provider, Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, StonFi, SunSwap,
+    SwapError, Velora, rank,
 };
 use bahaa_types::{Address, Amount, AssetId, BitcoinScript, NetworkId, is_plain_text};
 use futures_util::future::join_all;
@@ -74,6 +74,7 @@ pub(crate) struct Swappers {
     cow: Cow,
     jupiter: Jupiter,
     stonfi: StonFi,
+    sunswap: SunSwap,
 }
 
 impl Swappers {
@@ -89,6 +90,7 @@ impl Swappers {
             cow: Cow::new(&providers.cow, client.clone())?,
             jupiter: Jupiter::new(&providers.jupiter, client.clone())?,
             stonfi: StonFi::new(&providers.stonfi, client)?,
+            sunswap: SunSwap::new(&providers.sunswap)?,
         })
     }
 
@@ -117,6 +119,9 @@ impl Swappers {
         }
         if chain.ton().is_some() && self.stonfi.covers(request) {
             providers.push(Provider::StonFi);
+        }
+        if chain.tron().is_some() && self.sunswap.covers(request) {
+            providers.push(Provider::SunSwap);
         }
         providers
     }
@@ -211,6 +216,10 @@ impl Swappers {
                 let ton = chain.ton().ok_or(SwapError::Unsupported)?;
                 self.stonfi.quote(ton, request, now).await
             }
+            Provider::SunSwap => {
+                let tron = chain.tron().ok_or(SwapError::Unsupported)?;
+                self.sunswap.quote(tron, request, now).await
+            }
         }
     }
 
@@ -230,7 +239,8 @@ impl Swappers {
             | Provider::PancakeSwap
             | Provider::KyberSwap
             | Provider::Velora
-            | Provider::Jupiter => Err(SwapError::Unsupported),
+            | Provider::Jupiter
+            | Provider::SunSwap => Err(SwapError::Unsupported),
         }
     }
 }
