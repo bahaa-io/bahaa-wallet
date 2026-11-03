@@ -68,3 +68,43 @@ async fn every_server_reads_the_same_history() {
     }
     assert_eq!(seen[0], seen[1]);
 }
+
+#[tokio::test]
+#[ignore = "needs the public Esplora and Electrum servers"]
+async fn esplora_reads_what_electrum_reads() {
+    let electrum = BitcoinChain::new(bitcoin_on(&Url::parse(SERVERS[0]).unwrap())).unwrap();
+    electrum.derive(&seed(), 0).unwrap();
+    for base in [
+        "https://blockstream.info/api/",
+        "https://mempool.emzy.de/api/",
+    ] {
+        let mut network =
+            common::bitcoin_with(&[(bahaa_config::Protocol::Esplora, Url::parse(base).unwrap())]);
+        network.endpoints.remove(0);
+        network.endpoints[0].min_gap_ms = 200;
+        let esplora = BitcoinChain::new(network).unwrap();
+        esplora.derive(&seed(), 0).unwrap();
+        let held = esplora
+            .balances(&address(FIRST), &[native()])
+            .await
+            .unwrap();
+        let scanned = esplora
+            .scan(&address(FIRST), &[native()], None)
+            .await
+            .unwrap()
+            .unwrap();
+        let reference = electrum
+            .scan(&address(FIRST), &[native()], None)
+            .await
+            .unwrap()
+            .unwrap();
+        println!(
+            "{base}: {} held, {} received, {} sent",
+            held[0].amount,
+            scanned.found.len(),
+            scanned.sent.len()
+        );
+        assert_eq!(scanned.found, reference.found);
+        assert_eq!(scanned.sent, reference.sent);
+    }
+}

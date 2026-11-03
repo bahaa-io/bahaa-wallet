@@ -608,6 +608,7 @@ dependencies = [
  "bahaa-crypto",
  "bahaa-types",
  "futures-util",
+ "reqwest",
  "ripemd",
  "ruint",
  "rustls",

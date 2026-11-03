@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use bahaa_chain::{ChainError, Failure, Pool};
-use bahaa_config::{Endpoint, Feature};
+use bahaa_chain::{ChainError, Failure, Pool, TxId};
+use bahaa_config::Endpoint;
 use bahaa_types::{hex, to_plain_text};
 use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
@@ -11,10 +11,14 @@ use rustls_platform_verifier::ConfigVerifierExt;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
+
+use crate::source::{Seen, Unspent, already, rate};
+use crate::tx::{Hash, MAX_MONEY, Outpoint};
 
 const MAX_REPLY: u64 = 4 * 1024 * 1024;
 const MAX_REFUSAL: usize = 200;
@@ -23,17 +27,19 @@ const CONNECT: Duration = Duration::from_secs(5);
 const ANSWER: Duration = Duration::from_secs(20);
 const CLIENT: &str = concat!("bahaa-wallet/", env!("CARGO_PKG_VERSION"));
 const PROTOCOL: &str = "1.4";
+const FEE_TARGET: u32 = 2;
+const SATS_PER_COIN: u64 = 100_000_000;
 
-pub(crate) type Call = (&'static str, Value);
+type Call = (&'static str, Value);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Refusal {
-    pub method: &'static str,
-    pub message: String,
+struct Refusal {
+    method: &'static str,
+    message: String,
 }
 
 impl Refusal {
-    pub(crate) fn failure(&self) -> Failure<ChainError> {
+    fn failure(&self) -> Failure<ChainError> {
         Failure::Retry(ChainError::Network(format!(
             "an Electrum server refused {}: {}",
             self.method, self.message
@@ -41,7 +47,7 @@ impl Refusal {
     }
 }
 
-pub(crate) type Answer = Result<Box<RawValue>, Refusal>;
+type Answer = Result<Box<RawValue>, Refusal>;
 
 trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -82,22 +88,120 @@ impl Electrum {
         })
     }
 
-    pub(crate) async fn batch<T>(
+    pub(crate) async fn histories(
         &self,
-        need: Option<Feature>,
+        scripts: &[Vec<u8>],
+    ) -> Result<Vec<Vec<Seen>>, ChainError> {
+        let lists = self
+            .batch(&each("blockchain.scripthash.get_history", scripts), results)
+            .await?;
+        lists.iter().map(|list| entries(list, seen)).collect()
+    }
+
+    pub(crate) async fn unspent(
+        &self,
+        scripts: &[Vec<u8>],
+    ) -> Result<Vec<Vec<Unspent>>, ChainError> {
+        let lists = self
+            .batch(&each("blockchain.scripthash.listunspent", scripts), results)
+            .await?;
+        lists.iter().map(|list| entries(list, unspent)).collect()
+    }
+
+    pub(crate) async fn transactions(
+        &self,
+        ids: &[Hash],
+    ) -> Result<Vec<Option<Vec<u8>>>, ChainError> {
+        let calls: Vec<Call> = ids
+            .iter()
+            .map(|id| ("blockchain.transaction.get", json!([hex::encode(id)])))
+            .collect();
+        let raws = self
+            .batch(&calls, |answers| {
+                answers
+                    .into_iter()
+                    .map(|answer| match answer {
+                        Ok(raw) => text(&raw).map(Some).ok_or_else(malformed),
+                        Err(refusal) if missing(&refusal.message) => Ok(None),
+                        Err(refusal) => Err(refusal.failure()),
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .await?;
+        raws.into_iter()
+            .map(|raw| {
+                raw.map(|raw| hex::decode(&raw).ok_or_else(ChainError::malformed))
+                    .transpose()
+            })
+            .collect()
+    }
+
+    pub(crate) async fn headers(&self, heights: &[u64]) -> Result<Vec<Vec<u8>>, ChainError> {
+        let calls: Vec<Call> = heights
+            .iter()
+            .map(|height| ("blockchain.block.header", json!([height])))
+            .collect();
+        let headers = self.batch(&calls, results).await?;
+        headers
+            .iter()
+            .map(|header| {
+                header
+                    .as_str()
+                    .and_then(hex::decode)
+                    .ok_or_else(ChainError::malformed)
+            })
+            .collect()
+    }
+
+    pub(crate) async fn rates(&self) -> Result<Vec<u64>, ChainError> {
+        let calls = [
+            ("blockchain.estimatefee", json!([FEE_TARGET])),
+            ("blockchain.relayfee", json!([])),
+        ];
+        self.batch(&calls, |answers| {
+            answers
+                .into_iter()
+                .filter_map(|answer| match answer {
+                    Ok(raw) => rate(raw.get(), SATS_PER_COIN).map(Ok),
+                    Err(refusal) => Some(Err(refusal.failure())),
+                })
+                .collect()
+        })
+        .await
+    }
+
+    pub(crate) async fn broadcast(&self, raw: &[u8], id: &TxId) -> Result<TxId, ChainError> {
+        let call = [(
+            "blockchain.transaction.broadcast",
+            json!([hex::encode(raw)]),
+        )];
+        self.batch_all(&call, |answers| match answers.into_iter().next() {
+            Some(Ok(raw)) if text(&raw).as_deref() == Some(id.as_str()) => Ok(id.clone()),
+            Some(Ok(_)) => Err(Failure::Retry(ChainError::Network(
+                "an Electrum server named another transaction".to_owned(),
+            ))),
+            Some(Err(refusal)) if already(&refusal.message) => Ok(id.clone()),
+            Some(Err(refusal)) => Err(Failure::Fatal(ChainError::Rejected(refusal.message))),
+            None => Err(malformed()),
+        })
+        .await
+    }
+
+    async fn batch<T>(
+        &self,
         calls: &[Call],
         judge: impl Fn(Vec<Answer>) -> Result<T, Failure<ChainError>>,
     ) -> Result<T, ChainError> {
         let judge = &judge;
         Ok(self
             .pool
-            .call(need, |endpoint| async move {
+            .call(None, |endpoint| async move {
                 judge(self.exchange(&endpoint, calls).await?)
             })
             .await?)
     }
 
-    pub(crate) async fn batch_all<T>(
+    async fn batch_all<T>(
         &self,
         calls: &[Call],
         judge: impl Fn(Vec<Answer>) -> Result<T, Failure<ChainError>>,
@@ -314,11 +418,61 @@ fn lost(text: &str) -> Failure<ChainError> {
     Failure::Retry(ChainError::Network(text.to_owned()))
 }
 
-pub(crate) fn text(raw: &RawValue) -> Option<String> {
+fn malformed() -> Failure<ChainError> {
+    Failure::Retry(ChainError::malformed())
+}
+
+fn each(method: &'static str, scripts: &[Vec<u8>]) -> Vec<Call> {
+    scripts
+        .iter()
+        .map(|script| (method, json!([scripthash(script)])))
+        .collect()
+}
+
+fn scripthash(script: &[u8]) -> String {
+    let mut hash: [u8; 32] = Sha256::digest(script).into();
+    hash.reverse();
+    hex::encode(&hash)
+}
+
+fn entries<T>(list: &Value, read: fn(&Value) -> Option<T>) -> Result<Vec<T>, ChainError> {
+    list.as_array()
+        .ok_or_else(ChainError::malformed)?
+        .iter()
+        .map(|entry| read(entry).ok_or_else(ChainError::malformed))
+        .collect()
+}
+
+fn seen(entry: &Value) -> Option<Seen> {
+    Some(Seen {
+        txid: hex::decode_array(entry["tx_hash"].as_str()?)?,
+        height: entry["height"].as_i64()?,
+    })
+}
+
+fn unspent(entry: &Value) -> Option<Unspent> {
+    Some(Unspent {
+        outpoint: Outpoint {
+            txid: hex::decode_array(entry["tx_hash"].as_str()?)?,
+            vout: u32::try_from(entry["tx_pos"].as_u64()?).ok()?,
+        },
+        value: entry["value"]
+            .as_u64()
+            .filter(|value| *value <= MAX_MONEY)?,
+        confirmed: entry["height"].as_i64()? > 0,
+    })
+}
+
+fn missing(message: &str) -> bool {
+    let message = message.to_lowercase();
+    message.contains("missing transaction") || message.contains("no such mempool")
+}
+
+fn text(raw: &RawValue) -> Option<String> {
     serde_json::from_str(raw.get()).ok()
 }
 
-pub(crate) fn results(answers: Vec<Answer>) -> Result<Vec<Value>, Failure<ChainError>> {
+fn results(answers: Vec<Answer>) -> Result<Vec<Value>, Failure<ChainError>> {
     answers
         .into_iter()
         .map(|answer| {
@@ -326,4 +480,25 @@ pub(crate) fn results(answers: Vec<Answer>) -> Result<Vec<Value>, Failure<ChainE
             serde_json::from_str(raw.get()).map_err(|_| lost("an answer is not JSON"))
         })
         .collect()
+}
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(value: &Value) {
+    let _ = entries(value, seen);
+    let _ = entries(value, unspent);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scripthashes_are_reversed_sha256_of_the_script() {
+        let genesis_payout =
+            hex::decode("76a91462e907b15cbf27d5425399ebf6f0fb50ebb88f1888ac").unwrap();
+        assert_eq!(
+            scripthash(&genesis_payout),
+            "8b01df4e368ea28f8dc0423bcf7a4923e3a12d307c875e47a0cfbf90b5c39161"
+        );
+    }
 }

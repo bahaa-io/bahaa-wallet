@@ -1,9 +1,24 @@
-pub fn json(bytes: &[u8]) {
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
-        crate::chain::fuzz(&value);
-    }
-}
+use bahaa_types::hex;
+use serde_json::Value;
+
+use crate::{electrum, esplora, header, source, tx};
 
 pub fn raw(bytes: &[u8]) {
-    crate::tx::fuzz(bytes);
+    tx::fuzz(bytes);
+}
+
+pub fn json(bytes: &[u8]) {
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return;
+    };
+    electrum::fuzz(&value);
+    esplora::fuzz(&value);
+    if let Some(text) = value.as_str() {
+        let _ = source::rate(text, 1_000);
+        if let Some(raw) = hex::decode(text) {
+            tx::fuzz(&raw);
+            let _ = header::time(&raw);
+            let _ = header::block_hash(&raw);
+        }
+    }
 }

@@ -5,11 +5,10 @@ use std::ops::Range;
 use bahaa_chain::ChainError;
 use bahaa_crypto::ExtendedPublic;
 use bahaa_types::{Address, BitcoinScript};
-use serde_json::{Value, json};
 
-use crate::electrum::{Call, results};
-use crate::script::{key_address, locking, scripthash};
-use crate::tx::{Hash, MAX_MONEY, Outpoint, id_of};
+use crate::script::{key_address, locking};
+use crate::source::Seen;
+use crate::tx::Outpoint;
 
 use super::BitcoinChain;
 
@@ -44,12 +43,6 @@ pub(crate) struct Coin {
     pub value: u64,
     pub confirmed: bool,
     pub address: Address,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Seen {
-    pub txid: Hash,
-    pub height: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,87 +211,43 @@ impl BitcoinChain {
         Ok(Used { histories, change })
     }
 
-    async fn histories(&self, addresses: &[Address]) -> Result<Vec<Vec<Seen>>, ChainError> {
-        let calls: Vec<Call> = addresses
-            .iter()
-            .map(|address| Ok(("blockchain.scripthash.get_history", json!([hash(address)?]))))
-            .collect::<Result<_, ChainError>>()?;
-        let lists = self.electrum.batch(None, &calls, results).await?;
-        lists
-            .iter()
-            .map(|list| {
-                list.as_array()
-                    .ok_or_else(ChainError::malformed)?
-                    .iter()
-                    .map(|entry| seen(entry).ok_or_else(ChainError::malformed))
-                    .collect()
-            })
-            .collect()
+    pub(crate) async fn histories(
+        &self,
+        addresses: &[Address],
+    ) -> Result<Vec<Vec<Seen>>, ChainError> {
+        self.sources.histories(&scripts(addresses)?).await
     }
 
     async fn unspent(&self, addresses: &[Address]) -> Result<Vec<Coin>, ChainError> {
-        let calls: Vec<Call> = addresses
+        let lists = self.sources.unspent(&scripts(addresses)?).await?;
+        let mut coins: Vec<Coin> = addresses
             .iter()
-            .map(|address| Ok(("blockchain.scripthash.listunspent", json!([hash(address)?]))))
-            .collect::<Result<_, ChainError>>()?;
-        let lists = self.electrum.batch(None, &calls, results).await?;
-        let mut coins = Vec::new();
-        for (address, list) in addresses.iter().zip(lists) {
-            for entry in list.as_array().ok_or_else(ChainError::malformed)? {
-                coins.push(coin(entry, *address).ok_or_else(ChainError::malformed)?);
-            }
-        }
+            .zip(lists)
+            .flat_map(|(address, list)| {
+                list.into_iter().map(|found| Coin {
+                    outpoint: found.outpoint,
+                    value: found.value,
+                    confirmed: found.confirmed,
+                    address: *address,
+                })
+            })
+            .collect();
         coins.sort_by_key(|coin| coin.outpoint);
         coins.dedup_by_key(|coin| coin.outpoint);
         Ok(coins)
     }
 }
 
-fn seen(entry: &Value) -> Option<Seen> {
-    Some(Seen {
-        txid: id_of(entry["tx_hash"].as_str()?).ok()?,
-        height: entry["height"].as_i64()?,
-    })
-}
-
-fn coin(entry: &Value, address: Address) -> Option<Coin> {
-    let value = entry["value"]
-        .as_u64()
-        .filter(|value| *value <= MAX_MONEY)?;
-    Some(Coin {
-        outpoint: Outpoint {
-            txid: id_of(entry["tx_hash"].as_str()?).ok()?,
-            vout: u32::try_from(entry["tx_pos"].as_u64()?).ok()?,
-        },
-        value,
-        confirmed: entry["height"].as_i64()? > 0,
-        address,
-    })
-}
-
-pub(crate) fn hash(address: &Address) -> Result<String, ChainError> {
-    Ok(scripthash(&locking(script(address)?)))
+fn scripts(addresses: &[Address]) -> Result<Vec<Vec<u8>>, ChainError> {
+    addresses
+        .iter()
+        .map(|address| Ok(locking(script(address)?)))
+        .collect()
 }
 
 pub(crate) fn script(address: &Address) -> Result<BitcoinScript, ChainError> {
     match address {
         Address::Bitcoin { script, .. } => Ok(*script),
         _ => Err(ChainError::Invalid("not a Bitcoin address")),
-    }
-}
-
-#[cfg(fuzzing)]
-pub(crate) fn fuzz(value: &Value) {
-    if let Some(list) = value.as_array() {
-        for entry in list {
-            let _ = seen(entry);
-            let _ = coin(
-                entry,
-                Address::Bitcoin {
-                    script: BitcoinScript::WitnessKeyHash([0; 20]),
-                    testnet: false,
-                },
-            );
-        }
     }
 }

@@ -13,6 +13,7 @@ bahaa-config.workspace = true
 bahaa-crypto.workspace = true
 bahaa-types.workspace = true
 futures-util.workspace = true
+reqwest.workspace = true
 ripemd.workspace = true
 ruint.workspace = true
 rustls.workspace = true

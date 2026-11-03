@@ -3,19 +3,17 @@ use std::collections::{HashMap, HashSet};
 
 use bahaa_chain::{ChainError, Movement, ScanCursor, Scanned, TxId, WalkEnd, covered, now};
 use bahaa_config::Feature;
-use bahaa_types::{Address, AssetId, hex};
-use serde_json::json;
+use bahaa_types::{Address, AssetId};
 
-use super::account::{Book, Seen};
+use super::account::Book;
 use super::{BitcoinChain, spent};
-use crate::electrum::{Call, results};
+use crate::header::time;
+use crate::source::Seen;
 use crate::tx::{Hash, Tx, id_text};
 
 const MARGIN: u64 = 7_200;
 const PAGE: usize = 20;
 const MAX_LOOKUPS: usize = 20;
-const HEADER_BYTES: usize = 80;
-const TIME_AT: usize = 68;
 
 #[derive(Default)]
 struct Found {
@@ -132,23 +130,14 @@ impl BitcoinChain {
     }
 
     async fn times(&self, page: &[Seen]) -> Result<Vec<u64>, ChainError> {
-        let calls: Vec<Call> = page
+        let heights = page
             .iter()
-            .map(|seen| ("blockchain.block.header", json!([seen.height])))
-            .collect();
-        let headers = self
-            .electrum
-            .batch(Some(Feature::History), &calls, results)
-            .await?;
+            .map(|seen| u64::try_from(seen.height).map_err(|_| ChainError::malformed()))
+            .collect::<Result<Vec<u64>, _>>()?;
+        let headers = self.sources.headers(&heights).await?;
         headers
             .iter()
-            .map(|header| {
-                header
-                    .as_str()
-                    .and_then(hex::decode)
-                    .and_then(|bytes| time(&bytes))
-                    .ok_or_else(ChainError::malformed)
-            })
+            .map(|header| time(header).ok_or_else(ChainError::malformed))
             .collect()
     }
 
@@ -225,32 +214,5 @@ impl BitcoinChain {
                 memo: None,
             },
         )))
-    }
-}
-
-fn time(header: &[u8]) -> Option<u64> {
-    if header.len() != HEADER_BYTES {
-        return None;
-    }
-    let bytes = header.get(TIME_AT..TIME_AT + 4)?.try_into().ok()?;
-    Some(u64::from(u32::from_le_bytes(bytes)))
-}
-
-#[cfg(fuzzing)]
-pub(crate) fn fuzz(value: &serde_json::Value) {
-    if let Some(bytes) = value.as_str().and_then(hex::decode) {
-        let _ = time(&bytes);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn block_times_come_from_the_header() {
-        let genesis = hex::decode("0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d1dac2b7c").unwrap();
-        assert_eq!(time(&genesis), Some(1_231_006_505));
-        assert_eq!(time(&genesis[..79]), None);
     }
 }

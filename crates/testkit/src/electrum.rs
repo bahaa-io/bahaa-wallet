@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bahaa_types::{Address, BitcoinScript, hex};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use url::Url;
+
+use crate::{Reply, Request};
 
 pub type Log = Arc<Mutex<Vec<(String, Value)>>>;
 
@@ -68,6 +71,7 @@ pub struct Ledger {
     pub transactions: HashMap<String, String>,
     pub broadcast: Vec<String>,
     pub refusal: Option<String>,
+    blocks: HashMap<String, u64>,
 }
 
 impl Ledger {
@@ -122,15 +126,7 @@ impl Ledger {
             "blockchain.block.header" => json!(header(params[0].as_u64().unwrap())),
             "blockchain.estimatefee" => serde_json::from_str("2e-05").unwrap(),
             "blockchain.relayfee" => serde_json::from_str("1e-06").unwrap(),
-            "blockchain.transaction.broadcast" => {
-                if let Some(refusal) = &self.refusal {
-                    return Err(refusal.clone());
-                }
-                let id = witnessless_id(&hex::decode(&key).unwrap());
-                self.broadcast.push(key.clone());
-                self.transactions.insert(id.clone(), key);
-                json!(id)
-            }
+            "blockchain.transaction.broadcast" => json!(self.accept(&key)?),
             "blockchain.transaction.get" => match self.transactions.get(&key) {
                 Some(raw) => json!(raw),
                 None => return Err("missing transaction".to_owned()),
@@ -138,6 +134,106 @@ impl Ledger {
             other => return Err(format!("unknown method {other}")),
         })
     }
+}
+
+impl Ledger {
+    fn accept(&mut self, raw: &str) -> Result<String, String> {
+        if let Some(refusal) = &self.refusal {
+            return Err(refusal.clone());
+        }
+        let id = witnessless_id(&hex::decode(raw).unwrap());
+        self.broadcast.push(raw.to_owned());
+        self.transactions.insert(id.clone(), raw.to_owned());
+        Ok(id)
+    }
+
+    pub fn esplora(&mut self, request: &Request) -> Reply {
+        let text = |status, body: String| Reply {
+            status,
+            headers: Vec::new(),
+            body,
+            delay: Duration::ZERO,
+        };
+        let path = request.path().trim_start_matches('/').to_owned();
+        let parts: Vec<&str> = path.split('/').collect();
+        let electrum_key = |plain: &str| {
+            let mut bytes = hex::decode(plain).unwrap();
+            bytes.reverse();
+            hex::encode(&bytes)
+        };
+        let status = |height: i64| {
+            if height > 0 {
+                json!({"confirmed": true, "block_height": height})
+            } else {
+                json!({"confirmed": false})
+            }
+        };
+        match parts.as_slice() {
+            ["tx"] => match self.accept(&String::from_utf8_lossy(&request.body)) {
+                Ok(id) => text(200, id),
+                Err(refusal) => text(400, refusal),
+            },
+            ["block-height", height] => {
+                let height: u64 = height.parse().unwrap();
+                if height == 0 {
+                    return text(200, self.genesis.clone());
+                }
+                let hash = txid(&hex::decode(&header(height)).unwrap());
+                self.blocks.insert(hash.clone(), height);
+                text(200, hash)
+            }
+            ["block", hash, "header"] => match self.blocks.get(*hash) {
+                Some(height) => text(200, header(*height)),
+                None => text(404, String::new()),
+            },
+            ["scripthash", hash, "txs"] => {
+                let seen = self
+                    .histories
+                    .get(&electrum_key(hash))
+                    .cloned()
+                    .unwrap_or_default();
+                let listed: Vec<Value> = seen
+                    .iter()
+                    .rev()
+                    .map(|entry| {
+                        json!({"txid": entry["tx_hash"], "status": status(entry["height"].as_i64().unwrap())})
+                    })
+                    .collect();
+                Reply::json(200, &json!(listed))
+            }
+            ["scripthash", _, "txs", "chain", _] => Reply::json(200, &json!([])),
+            ["scripthash", hash, "utxo"] => {
+                let coins = self
+                    .unspent
+                    .get(&electrum_key(hash))
+                    .cloned()
+                    .unwrap_or_default();
+                let listed: Vec<Value> = coins
+                    .iter()
+                    .map(|coin| {
+                        json!({"txid": coin["tx_hash"], "vout": coin["tx_pos"], "value": coin["value"], "status": status(coin["height"].as_i64().unwrap())})
+                    })
+                    .collect();
+                Reply::json(200, &json!(listed))
+            }
+            ["tx", id, "hex"] => match self.transactions.get(*id) {
+                Some(raw) => text(200, raw.clone()),
+                None => text(404, "Transaction not found".to_owned()),
+            },
+            ["fee-estimates"] => text(200, "{\"1\": 3.5, \"2\": 2.0}".to_owned()),
+            _ => text(404, String::new()),
+        }
+    }
+}
+
+pub async fn serve_esplora(log: Log, ledger: Arc<Mutex<Ledger>>) -> Url {
+    crate::serve(move |request| {
+        log.lock()
+            .unwrap()
+            .push((request.path().to_owned(), Value::Null));
+        ledger.lock().unwrap().esplora(&request)
+    })
+    .await
 }
 
 fn witnessless_id(raw: &[u8]) -> String {

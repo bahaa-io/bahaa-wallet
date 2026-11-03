@@ -43,6 +43,7 @@ pub enum Protocol {
     TonApi,
     SolanaRpc,
     Electrum,
+    Esplora,
 }
 
 impl Protocol {
@@ -52,7 +53,7 @@ impl Protocol {
             Self::TronHttp => ChainFamily::Tron,
             Self::TonLiteservers | Self::TonCenter | Self::TonApi => ChainFamily::Ton,
             Self::SolanaRpc => ChainFamily::Solana,
-            Self::Electrum => ChainFamily::Bitcoin,
+            Self::Electrum | Self::Esplora => ChainFamily::Bitcoin,
         }
     }
 
@@ -68,7 +69,12 @@ impl Protocol {
             Feature::Logs => self == Self::JsonRpc,
             Feature::History => matches!(
                 self,
-                Self::TronHttp | Self::TonCenter | Self::TonApi | Self::SolanaRpc | Self::Electrum
+                Self::TronHttp
+                    | Self::TonCenter
+                    | Self::TonApi
+                    | Self::SolanaRpc
+                    | Self::Electrum
+                    | Self::Esplora
             ),
         }
     }

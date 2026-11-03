@@ -223,11 +223,11 @@ fn integer(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-fn sha256d(data: &[u8]) -> Hash {
+pub(crate) fn sha256d(data: &[u8]) -> Hash {
     Sha256::digest(Sha256::digest(data)).into()
 }
 
-fn shown(mut hash: Hash) -> Hash {
+pub(crate) fn shown(mut hash: Hash) -> Hash {
     hash.reverse();
     hash
 }

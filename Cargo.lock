@@ -739,6 +739,7 @@ dependencies = [
  "bahaa-testkit",
  "bahaa-types",
  "futures-util",
+ "reqwest",
  "ripemd",
  "ruint",
  "rustls",

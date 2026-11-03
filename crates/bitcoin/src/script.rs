@@ -1,4 +1,4 @@
-use bahaa_types::{Address, BitcoinScript, hex};
+use bahaa_types::{Address, BitcoinScript};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 
@@ -66,14 +66,10 @@ pub(crate) fn dust(script: BitcoinScript) -> u64 {
     }
 }
 
-pub(crate) fn scripthash(script: &[u8]) -> String {
-    let mut hash: [u8; 32] = Sha256::digest(script).into();
-    hash.reverse();
-    hex::encode(&hash)
-}
-
 #[cfg(test)]
 mod tests {
+    use bahaa_types::hex;
+
     use super::*;
 
     fn parsed(text: &str) -> BitcoinScript {
@@ -137,14 +133,5 @@ mod tests {
         for odd in [&b""[..], &[0x6a, 0x01, 0x00], &[0x00, 0x14, 1, 2, 3]] {
             assert_eq!(read(odd), None);
         }
-    }
-
-    #[test]
-    fn electrum_scripthashes_are_reversed_sha256() {
-        let script = locking(parsed("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"));
-        assert_eq!(
-            scripthash(&script),
-            "8b01df4e368ea28f8dc0423bcf7a4923e3a12d307c875e47a0cfbf90b5c39161"
-        );
     }
 }

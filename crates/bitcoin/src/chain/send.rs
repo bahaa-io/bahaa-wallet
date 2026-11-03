@@ -2,15 +2,13 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use bahaa_chain::{
-    ChainError, Decoded, Failure, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus,
+    ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus,
 };
 use bahaa_crypto::{Seed, compressed, secp256k1_sign};
-use bahaa_types::{Address, AssetId, BitcoinScript, Price, hex};
+use bahaa_types::{Address, AssetId, BitcoinScript};
 use futures_util::future::try_join;
 use ruint::aliases::U256;
-use serde_json::{Value, json};
 
-use crate::electrum::{Answer, Call, results, text};
 use crate::script::{KEY_HASH_DUST, dust, hash160, key_address, locking};
 use crate::tx::{
     Input, MAX_SIGNATURE, Output, SEQUENCE, Tx, VERSION, id_of, id_text, parse, signature,
@@ -18,12 +16,10 @@ use crate::tx::{
 };
 
 use super::BitcoinChain;
-use super::account::{CHANGE, Coin, Funds, hash, script};
+use super::account::{CHANGE, Coin, Funds, script};
 
-const FEE_TARGET: u32 = 2;
 const FLOOR_RATE: u64 = 1_000;
 const MAX_RATE: u64 = 5_000_000;
-const SATS_PER_COIN: u64 = 100_000_000;
 const KEY_BYTES: usize = 33;
 
 #[derive(Clone, Debug)]
@@ -190,23 +186,7 @@ impl BitcoinChain {
     }
 
     pub(super) async fn push(&self, signed: &Signed) -> Result<TxId, ChainError> {
-        let id = signed.id.clone();
-        let call = [(
-            "blockchain.transaction.broadcast",
-            json!([hex::encode(&signed.bytes)]),
-        )];
-        self.electrum
-            .batch_all(&call, |answers| match first(answers)? {
-                Ok(raw) if text(&raw).as_deref() == Some(id.as_str()) => Ok(id.clone()),
-                Ok(_) => Err(Failure::Retry(ChainError::Network(
-                    "an Electrum server named another transaction".to_owned(),
-                ))),
-                Err(refusal) if refusal.message.to_lowercase().contains("already") => {
-                    Ok(id.clone())
-                }
-                Err(refusal) => Err(Failure::Fatal(ChainError::Rejected(refusal.message))),
-            })
-            .await
+        self.sources.broadcast(&signed.bytes, &signed.id).await
     }
 
     pub(super) async fn lookup(&self, id: &TxId) -> Result<TxStatus, ChainError> {
@@ -222,16 +202,14 @@ impl BitcoinChain {
             .ok_or(ChainError::Invalid(
                 "this is not a transfer this wallet makes",
             ))?;
-        let call = [("blockchain.scripthash.get_history", json!([hash(&ours)?]))];
-        let history = self.electrum.batch(None, &call, results).await?;
-        let height = history
-            .first()
-            .and_then(Value::as_array)
-            .ok_or_else(ChainError::malformed)?
-            .iter()
-            .find(|entry| entry["tx_hash"] == id.as_str())
-            .and_then(|entry| entry["height"].as_i64())
-            .unwrap_or(0);
+        let wanted = id_of(id.as_str())?;
+        let height = self
+            .histories(&[ours])
+            .await?
+            .into_iter()
+            .flatten()
+            .find(|seen| seen.txid == wanted)
+            .map_or(0, |seen| seen.height);
         if height <= 0 {
             return Ok(TxStatus::Pending);
         }
@@ -265,22 +243,11 @@ impl BitcoinChain {
     }
 
     async fn rate(&self) -> Result<u64, ChainError> {
-        let calls: [Call; 2] = [
-            ("blockchain.estimatefee", json!([FEE_TARGET])),
-            ("blockchain.relayfee", json!([])),
-        ];
-        let rates = self
-            .electrum
-            .batch(None, &calls, |answers| {
-                answers
-                    .into_iter()
-                    .map(|answer| Ok(per_kvb(answer.map_err(|refusal| refusal.failure())?.get())))
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .await?;
-        Ok(rates
+        Ok(self
+            .sources
+            .rates()
+            .await?
             .into_iter()
-            .flatten()
             .fold(FLOOR_RATE, u64::max)
             .min(MAX_RATE))
     }
@@ -304,20 +271,6 @@ impl BitcoinChain {
             None => address == from && !book.owns(from),
         }
     }
-}
-
-fn first(answers: Vec<Answer>) -> Result<Answer, Failure<ChainError>> {
-    answers
-        .into_iter()
-        .next()
-        .ok_or_else(|| Failure::Retry(ChainError::malformed()))
-}
-
-fn per_kvb(text: &str) -> Option<u64> {
-    let price = Price::parse(text).ok()?;
-    let coin = bahaa_types::Amount::new(U256::from(SATS_PER_COIN), 0).ok()?;
-    let sats = price.value_of(coin, 0).ok()?;
-    u64::try_from(sats.units()).ok()
 }
 
 fn pick(
@@ -415,16 +368,6 @@ fn unsigned(coins: &[Coin], mut outputs: Vec<Output>) -> Tx {
     }
 }
 
-#[cfg(fuzzing)]
-pub(crate) fn fuzz(value: &Value) {
-    if let Some(text) = value.as_str() {
-        let _ = per_kvb(text);
-        if let Some(bytes) = hex::decode(text) {
-            crate::tx::fuzz(&bytes);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use bahaa_types::BitcoinScript;
@@ -456,15 +399,6 @@ mod tests {
 
     const TO: [u8; 22] = [0; 22];
     const CHANGE_SCRIPT: [u8; 22] = [1; 22];
-
-    #[test]
-    fn electrum_fee_rates_are_read_exactly_from_their_text() {
-        assert_eq!(per_kvb("1.002e-05"), Some(1_002));
-        assert_eq!(per_kvb("0.00001002"), Some(1_002));
-        assert_eq!(per_kvb("1e-6"), Some(100));
-        assert_eq!(per_kvb("-1"), None);
-        assert_eq!(per_kvb("\"x\""), None);
-    }
 
     #[test]
     fn exact_sends_take_confirmed_coins_first_and_keep_real_change() {

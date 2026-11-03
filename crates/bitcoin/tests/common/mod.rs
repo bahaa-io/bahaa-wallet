@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use bahaa_config::{Network, Registry};
+use bahaa_config::{Endpoint, Feature, Network, Protocol, Registry};
 use bahaa_crypto::{Mnemonic, Seed};
 use bahaa_types::{Address, AssetId, ChainFamily};
 use url::Url;
@@ -26,9 +26,23 @@ const SPEC: &str = r##"[{
 }]"##;
 
 pub fn bitcoin_on(url: &Url) -> Network {
+    let mut network = bitcoin_with(&[]);
+    network.endpoints[0].url = url.clone();
+    network
+}
+
+pub fn bitcoin_with(extra: &[(Protocol, Url)]) -> Network {
     let registry = Registry::from_json(SPEC).unwrap();
     let mut network = registry.get(&"bitcoin".parse().unwrap()).unwrap().clone();
-    network.endpoints[0].url = url.clone();
+    network
+        .endpoints
+        .extend(extra.iter().map(|(protocol, url)| Endpoint {
+            protocol: *protocol,
+            url: url.clone(),
+            features: vec![Feature::History],
+            min_gap_ms: 0,
+            history_gap_ms: 0,
+        }));
     network
 }
 
