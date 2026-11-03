@@ -7,7 +7,7 @@ use bahaa_crypto::{
     TonPhraseError, WordCount,
 };
 use bahaa_store::StoreKey;
-use bahaa_types::{Address, ChainFamily, TonContract, hex};
+use bahaa_types::{Address, ChainFamily, SolanaPath, TonContract, hex};
 use bahaa_vault::{KdfParams, Vault, VaultError};
 use thiserror::Error;
 
@@ -41,6 +41,7 @@ pub struct WalletInfo {
     pub passphrase: bool,
     pub kind: WalletKind,
     pub ton: Option<TonContract>,
+    pub solana: Option<SolanaPath>,
     pub counted: bool,
 }
 
@@ -104,6 +105,8 @@ pub enum KeyringError {
     TonPassphrase,
     #[error("this wallet has no TON account")]
     NoTon,
+    #[error("only recovery phrases have a Solana path")]
+    NoSolana,
     #[error("this is a watch-only wallet, it has no keys")]
     WatchOnly,
     #[error("only a watch-only wallet can be left out of the total")]
@@ -239,6 +242,7 @@ impl Keyring {
                     passphrase,
                     kind,
                     ton: entry.phrase.contract(),
+                    solana: entry.phrase.solana_path(),
                     counted: entry.phrase.counted(),
                 }
             })
@@ -253,7 +257,7 @@ impl Keyring {
         self.session()?;
         let mnemonic = Mnemonic::generate(words.words())?;
         let phrase = mnemonic.phrase();
-        let id = self.add(bip39(mnemonic, passphrase)?)?;
+        let id = self.add(bip39(mnemonic, passphrase, Some(SolanaPath::default()))?)?;
         Ok((id, phrase))
     }
 
@@ -292,6 +296,21 @@ impl Keyring {
         contract: TonContract,
     ) -> Result<(), KeyringError> {
         self.edit(id, contract, Phrase::contract_mut, KeyringError::NoTon)
+    }
+
+    pub fn set_solana_path(&mut self, id: WalletId, path: SolanaPath) -> Result<(), KeyringError> {
+        self.edit(id, Some(path), Phrase::solana_mut, KeyringError::NoSolana)
+    }
+
+    pub fn undetected(&self) -> Result<Vec<WalletId>, KeyringError> {
+        Ok(self
+            .session()?
+            .contents
+            .entries
+            .iter()
+            .filter(|entry| entry.phrase.undetected())
+            .map(|entry| WalletId(entry.id))
+            .collect())
     }
 
     pub fn set_counted(&mut self, id: WalletId, counted: bool) -> Result<(), KeyringError> {
@@ -455,11 +474,11 @@ impl fmt::Debug for Keyring {
     }
 }
 
-pub(crate) fn used_contract(w5: Option<u64>, v4r2: Option<u64>) -> TonContract {
-    if v4r2 > w5 {
-        TonContract::V4R2
+pub(crate) fn most_recent<T>(default: (T, Option<u64>), other: (T, Option<u64>)) -> T {
+    if other.1 > default.1 {
+        other.0
     } else {
-        TonContract::W5
+        default.0
     }
 }
 
@@ -533,18 +552,22 @@ fn parse(phrase: &str, passphrase: &str, kind: Option<PhraseKind>) -> Result<Phr
                 .flatten();
             match (multi, native) {
                 (Ok(_), Some(_)) => Err(KeyringError::Ambiguous),
-                (Ok(mnemonic), None) => bip39(mnemonic, passphrase),
+                (Ok(mnemonic), None) => bip39(mnemonic, passphrase, None),
                 (Err(_), Some(mnemonic)) => Ok(ton(mnemonic)),
                 (Err(err), None) => Err(err.into()),
             }
         }
-        Some(PhraseKind::Bip39) => bip39(Mnemonic::parse(phrase)?, passphrase),
+        Some(PhraseKind::Bip39) => bip39(Mnemonic::parse(phrase)?, passphrase, None),
         Some(PhraseKind::Ton) if !passphrase.is_empty() => Err(KeyringError::TonPassphrase),
         Some(PhraseKind::Ton) => Ok(ton(TonMnemonic::parse(phrase)?)),
     }
 }
 
-fn bip39(mnemonic: Mnemonic, passphrase: &str) -> Result<Phrase, KeyringError> {
+fn bip39(
+    mnemonic: Mnemonic,
+    passphrase: &str,
+    solana: Option<SolanaPath>,
+) -> Result<Phrase, KeyringError> {
     payload::check_passphrase(passphrase)?;
     let mut owned = String::with_capacity(passphrase.len());
     owned.push_str(passphrase);
@@ -552,6 +575,7 @@ fn bip39(mnemonic: Mnemonic, passphrase: &str) -> Result<Phrase, KeyringError> {
         mnemonic,
         passphrase: SecretString::from(owned),
         contract: TonContract::W5,
+        solana,
     })
 }
 
@@ -600,12 +624,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_most_recently_used_contract_wins_and_w5_breaks_ties() {
-        assert_eq!(used_contract(None, None), TonContract::W5);
-        assert_eq!(used_contract(None, Some(1)), TonContract::V4R2);
-        assert_eq!(used_contract(Some(1), None), TonContract::W5);
-        assert_eq!(used_contract(Some(5), Some(9)), TonContract::V4R2);
-        assert_eq!(used_contract(Some(9), Some(5)), TonContract::W5);
-        assert_eq!(used_contract(Some(7), Some(7)), TonContract::W5);
+    fn the_most_recently_used_choice_wins_and_the_default_breaks_ties() {
+        let used = |w5, v4r2| most_recent((TonContract::W5, w5), (TonContract::V4R2, v4r2));
+        assert_eq!(used(None, None), TonContract::W5);
+        assert_eq!(used(None, Some(1)), TonContract::V4R2);
+        assert_eq!(used(Some(1), None), TonContract::W5);
+        assert_eq!(used(Some(5), Some(9)), TonContract::V4R2);
+        assert_eq!(used(Some(9), Some(5)), TonContract::W5);
+        assert_eq!(used(Some(7), Some(7)), TonContract::W5);
     }
 }

@@ -8,7 +8,7 @@ use bahaa_chain::{
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
-use bahaa_types::{Address, AssetId, MAX_DECIMALS, to_plain_text};
+use bahaa_types::{Address, AssetId, MAX_DECIMALS, SolanaPath, to_plain_text};
 use ed25519_dalek::SigningKey;
 use futures_util::future::try_join_all;
 use ruint::aliases::U256;
@@ -118,7 +118,7 @@ impl Chain for SolanaChain {
     }
 
     fn derive(&self, seed: &Seed, account: u32) -> Result<Address, ChainError> {
-        derive(seed, account)
+        derive(seed, account, SolanaPath::default())
     }
 
     async fn balances(
@@ -190,12 +190,13 @@ impl Chain for SolanaChain {
     }
 
     fn sign(&self, plan: &SolanaPlan, seed: &Seed) -> Result<Signed, ChainError> {
-        let key = key(seed, plan.transfer.account)?;
-        if Address::Solana(key.verifying_key().to_bytes()) != plan.transfer.from {
-            return Err(ChainError::Invalid(
+        let key = SolanaPath::ALL
+            .into_iter()
+            .filter_map(|path| key(seed, plan.transfer.account, path).ok())
+            .find(|key| Address::Solana(key.verifying_key().to_bytes()) == plan.transfer.from)
+            .ok_or(ChainError::Invalid(
                 "this seed does not own the sending account",
-            ));
-        }
+            ))?;
         let (bytes, signature) = tx::sign(&plan.message, &key);
         Ok(Signed {
             id: TxId::new(bs58::encode(signature).into_string())?,
@@ -279,16 +280,19 @@ impl Chain for SolanaChain {
     }
 }
 
-pub fn derive(seed: &Seed, account: u32) -> Result<Address, ChainError> {
+pub fn derive(seed: &Seed, account: u32, path: SolanaPath) -> Result<Address, ChainError> {
     Ok(Address::Solana(
-        key(seed, account)?.verifying_key().to_bytes(),
+        key(seed, account, path)?.verifying_key().to_bytes(),
     ))
 }
 
-fn key(seed: &Seed, account: u32) -> Result<SigningKey, ChainError> {
-    let path: DerivationPath = format!("m/44'/501'/{account}'/0'")
-        .parse()
-        .map_err(|_| ChainError::Invalid("account index out of range"))?;
+fn key(seed: &Seed, account: u32, path: SolanaPath) -> Result<SigningKey, ChainError> {
+    let path: DerivationPath = match path {
+        SolanaPath::Bip44Change => format!("m/44'/501'/{account}'/0'"),
+        SolanaPath::Bip44 => format!("m/44'/501'/{account}'"),
+    }
+    .parse()
+    .map_err(|_| ChainError::Invalid("account index out of range"))?;
     Ok(bahaa_crypto::ed25519(seed, &path)?)
 }
 
@@ -377,9 +381,14 @@ mod tests {
     fn derives_the_accounts_phantom_derives() {
         let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let seed = Mnemonic::parse(phrase).unwrap().to_seed("");
+        let phantom = SolanaPath::Bip44Change;
         assert_eq!(
-            derive(&seed, 0).unwrap().to_string(),
+            derive(&seed, 0, phantom).unwrap().to_string(),
             "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
+        );
+        assert_eq!(
+            derive(&seed, 0, SolanaPath::Bip44).unwrap().to_string(),
+            "GjJyeC1r2RgkuoCWMyPYkCWSGSGLcz266EaAkLA27AhL"
         );
         let other = Mnemonic::parse(
             "shoot island position soft burden budget tooth cruel issue economy destroy above",
@@ -387,11 +396,22 @@ mod tests {
         .unwrap()
         .to_seed("");
         assert_eq!(
-            derive(&other, 1).unwrap().to_string(),
+            derive(&other, 1, phantom).unwrap().to_string(),
             "4ejVGsCvYtbePCNKns8rRpYHboAJ1rsJBxgnMGo4EVba"
         );
+        assert_eq!(
+            derive(&other, 0, SolanaPath::Bip44).unwrap().to_string(),
+            "2bUBiBNZyD29gP1oV6de7nxowMLoDBtopMMTGgMvjG5m"
+        );
+        assert_eq!(
+            derive(&other, 1, SolanaPath::Bip44).unwrap().to_string(),
+            "Hj1BkTvb59CqjHjKK6xuToQAVR7Lm4HuXBxfYReypRVG"
+        );
         let single = ed25519_seed(&[7; 32]);
-        assert_eq!(derive(&single, 0).unwrap(), derive(&single, 3).unwrap());
+        assert_eq!(
+            derive(&single, 0, phantom).unwrap(),
+            derive(&single, 3, SolanaPath::Bip44).unwrap()
+        );
     }
 
     fn token(owner: &Key, mint: &Key, units: u64, state: u8) -> Account {

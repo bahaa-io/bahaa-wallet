@@ -49,6 +49,11 @@ impl SolanaChain {
             .any(|endpoint| endpoint.has(Feature::History))
     }
 
+    pub async fn last_used(&self, address: &Address) -> Result<Option<u64>, ChainError> {
+        let newest = self.listed(&bytes(address)?, None, 1).await?;
+        Ok(newest.first().map(|entry| entry.time))
+    }
+
     pub async fn scan(
         &self,
         owner: &Address,
@@ -115,7 +120,7 @@ impl SolanaChain {
         let mut oldest = None;
         let mut looked = 0;
         loop {
-            let page = match self.listed(&history.address, before.as_ref()).await {
+            let page = match self.listed(&history.address, before.as_ref(), PAGE).await {
                 Ok(page) => page,
                 Err(err) => {
                     return match oldest {
@@ -166,8 +171,9 @@ impl SolanaChain {
         &self,
         address: &Key,
         before: Option<&TxId>,
+        limit: usize,
     ) -> Result<Vec<Listed>, ChainError> {
-        let mut options = json!({"limit": PAGE, "commitment": "finalized"});
+        let mut options = json!({"limit": limit, "commitment": "finalized"});
         if let Some(before) = before {
             options["before"] = json!(before.as_str());
         }

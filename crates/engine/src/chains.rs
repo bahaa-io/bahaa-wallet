@@ -14,6 +14,8 @@ use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock};
 use bahaa_ton::{TonChain, TonPlan};
 use bahaa_tron::{TronChain, TronPlan};
 use bahaa_types::{Address, AssetId, ChainFamily, NetworkId, TonContract};
+
+use crate::WalletInfo;
 use futures_util::FutureExt;
 use futures_util::future::join_all;
 
@@ -61,13 +63,17 @@ impl AnyChain {
         &self,
         seed: &Seed,
         account: u32,
-        contract: TonContract,
+        wallet: &WalletInfo,
     ) -> Result<Address, ChainError> {
         match self {
             Self::Evm(_) => bahaa_evm::derive(seed, account),
             Self::Tron(_) => bahaa_tron::derive(seed, account),
-            Self::Ton(chain) => chain.derive_as(seed, account, contract),
-            Self::Solana(_) => bahaa_solana::derive(seed, account),
+            Self::Ton(chain) => {
+                chain.derive_as(seed, account, wallet.ton.unwrap_or(TonContract::W5))
+            }
+            Self::Solana(_) => {
+                bahaa_solana::derive(seed, account, wallet.solana.unwrap_or_default())
+            }
         }
     }
 
@@ -284,6 +290,13 @@ pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
 pub(crate) fn ton_mainnet(chains: &[AnyChain]) -> Option<&TonChain> {
     chains.iter().find_map(|chain| match chain {
         AnyChain::Ton(ton) if !ton.network().testnet => Some(&**ton),
+        _ => None,
+    })
+}
+
+pub(crate) fn solana_mainnet(chains: &[AnyChain]) -> Option<&SolanaChain> {
+    chains.iter().find_map(|chain| match chain {
+        AnyChain::Solana(solana) if !solana.network().testnet => Some(solana),
         _ => None,
     })
 }

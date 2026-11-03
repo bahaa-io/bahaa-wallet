@@ -1,12 +1,13 @@
 use bahaa_crypto::{ExposeSecret, KEY_BYTES, Mnemonic, SecretString, TON_WORDS, TonMnemonic};
-use bahaa_types::{Address, ChainFamily, TonContract};
+use bahaa_types::{Address, ChainFamily, SolanaPath, TonContract};
 use zeroize::Zeroizing;
 
 use crate::KeyringError;
 
-const VERSION: u8 = 7;
+const VERSION: u8 = 8;
 const FIRST_VERSION: u8 = 1;
 const CONTRACT_VERSION: u8 = 3;
+const SOLANA_PATH_VERSION: u8 = 8;
 const MAX_WALLETS: usize = 64;
 const MAX_PASSPHRASE: usize = 1024;
 const BIP39: u8 = 0;
@@ -19,12 +20,16 @@ const FAMILY_TON: u8 = 2;
 const FAMILY_SOLANA: u8 = 3;
 const W5: u8 = 0;
 const V4R2: u8 = 1;
+const UNKNOWN_PATH: u8 = 0;
+const BIP44_CHANGE: u8 = 1;
+const BIP44: u8 = 2;
 
 pub enum Phrase {
     Bip39 {
         mnemonic: Mnemonic,
         passphrase: SecretString,
         contract: TonContract,
+        solana: Option<SolanaPath>,
     },
     Ton {
         mnemonic: TonMnemonic,
@@ -60,6 +65,24 @@ impl Phrase {
             | Self::Ton { contract, .. }
             | Self::TonKey { contract, .. } => Some(contract),
             Self::Key { .. } | Self::Watch { .. } => None,
+        }
+    }
+
+    pub fn solana_path(&self) -> Option<SolanaPath> {
+        match self {
+            Self::Bip39 { solana, .. } => Some(solana.unwrap_or_default()),
+            _ => None,
+        }
+    }
+
+    pub fn undetected(&self) -> bool {
+        matches!(self, Self::Bip39 { solana: None, .. })
+    }
+
+    pub fn solana_mut(&mut self) -> Option<&mut Option<SolanaPath>> {
+        match self {
+            Self::Bip39 { solana, .. } => Some(solana),
+            _ => None,
         }
     }
 
@@ -166,6 +189,13 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
                 TonContract::V4R2 => V4R2,
             });
         }
+        if let Phrase::Bip39 { solana, .. } = &entry.phrase {
+            out.push(match solana {
+                None => UNKNOWN_PATH,
+                Some(SolanaPath::Bip44Change) => BIP44_CHANGE,
+                Some(SolanaPath::Bip44) => BIP44,
+            });
+        }
     }
     Ok(out)
 }
@@ -242,10 +272,21 @@ fn read_bip39(reader: &mut Reader<'_>, version: u8) -> Result<Phrase, KeyringErr
     } else {
         TonContract::W5
     };
+    let solana = if version >= SOLANA_PATH_VERSION {
+        match reader.take(1)?[0] {
+            UNKNOWN_PATH => None,
+            BIP44_CHANGE => Some(SolanaPath::Bip44Change),
+            BIP44 => Some(SolanaPath::Bip44),
+            _ => return Err(KeyringError::Damaged),
+        }
+    } else {
+        None
+    };
     Ok(Phrase::Bip39 {
         mnemonic,
         passphrase: SecretString::from(owned),
         contract,
+        solana,
     })
 }
 
@@ -350,13 +391,14 @@ mod tests {
         }
     }
 
-    fn multi(contract: TonContract) -> Entry {
+    fn multi(contract: TonContract, solana: Option<SolanaPath>) -> Entry {
         Entry {
             id: 1,
             phrase: Phrase::Bip39 {
                 mnemonic: Mnemonic::from_entropy(&[7; 16]).unwrap(),
                 passphrase: SecretString::from("extra".to_owned()),
                 contract,
+                solana,
             },
         }
     }
@@ -377,6 +419,7 @@ mod tests {
             mnemonic,
             passphrase,
             contract,
+            solana,
         } = &contents.entries[0].phrase
         else {
             panic!("an old vault holds multi-chain phrases");
@@ -384,6 +427,7 @@ mod tests {
         assert_eq!(mnemonic.expose_entropy(), [7; 16]);
         assert_eq!(passphrase.expose_secret(), "pw");
         assert_eq!(*contract, TonContract::W5);
+        assert_eq!(*solana, None);
     }
 
     #[test]
@@ -485,10 +529,14 @@ mod tests {
 
     #[test]
     fn both_kinds_of_phrase_round_trip() {
-        for contract in [TonContract::W5, TonContract::V4R2] {
+        let paths = [None, Some(SolanaPath::Bip44Change), Some(SolanaPath::Bip44)];
+        for (contract, solana) in [TonContract::W5, TonContract::V4R2, TonContract::W5]
+            .into_iter()
+            .zip(paths)
+        {
             let contents = Contents {
                 next_id: 3,
-                entries: vec![multi(contract), ton(contract)],
+                entries: vec![multi(contract, solana), ton(contract)],
             };
             let decoded = decode(&encode(&contents).unwrap()).unwrap();
             assert_eq!(decoded.next_id, 3);
@@ -503,9 +551,14 @@ mod tests {
             assert_eq!(mnemonic.phrase().expose_secret(), TON);
             assert!(matches!(
                 &decoded.entries[0].phrase,
-                Phrase::Bip39 { passphrase, contract: read, .. }
-                    if passphrase.expose_secret() == "extra" && *read == contract
+                Phrase::Bip39 { passphrase, contract: read, solana: path, .. }
+                    if passphrase.expose_secret() == "extra" && *read == contract && *path == solana
             ));
+            assert_eq!(decoded.entries[1].phrase.solana_path(), None);
+            assert_eq!(decoded.entries[0].phrase.undetected(), solana.is_none());
+            let mut unknown = encode(&contents).unwrap().to_vec();
+            unknown[1 + 4 + 2 + 4 + 1 + 1 + 16 + 2 + 5 + 1] = 3;
+            assert!(matches!(decode(&unknown), Err(KeyringError::Damaged)));
         }
     }
 

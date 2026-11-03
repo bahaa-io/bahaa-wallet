@@ -35,6 +35,17 @@ pub enum TonContract {
     V4R2,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SolanaPath {
+    #[default]
+    Bip44Change,
+    Bip44,
+}
+
+impl SolanaPath {
+    pub const ALL: [Self; 2] = [Self::Bip44Change, Self::Bip44];
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TonForm {
     pub bounceable: bool,

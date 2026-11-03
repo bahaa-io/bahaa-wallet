@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use bahaa_config::{Endpoint, Feature, Network, Protocol, Registry};
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Engine, Event, SendRequest, SentStatus, SentTx, Spend, WalletKind};
+use bahaa_engine::{Engine, Event, SendRequest, SentStatus, SentTx, SolanaPath, Spend, WalletKind};
 use bahaa_types::{Address, Amount, AssetId, ChainFamily};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -81,6 +81,9 @@ fn answer(ledger: &Mutex<Ledger>, call: &Value) -> Value {
             json!({"context": {"slot": 1}, "value": {"blockhash": "Aiyo4Fg2XByNaEhKv3LtX5h9Q8Y2kzhhCZhsnV5fBsrw", "lastValidBlockHeight": 9}})
         }
         "getRecentPrioritizationFees" => json!([{"slot": 1, "prioritizationFee": 1_000}]),
+        "getSignaturesForAddress" if params[0] == FRIEND && params[1]["limit"] == 1 => json!([
+            {"signature": "vGWaZAYtYPZpRsBbKL1LyTZS2Upj7muftZzAH4PJfWif3XAk8vFEiV9XVtDeVRWAURJVpFYBt1sbRXxrdBRMCAQ", "slot": 9, "blockTime": 1_793_637_863, "err": null}
+        ]),
         "getSignaturesForAddress" => json!([]),
         "simulateTransaction" => {
             json!({"context": {"slot": 1}, "value": {"err": null, "logs": [], "unitsConsumed": 450}})
@@ -209,4 +212,52 @@ async fn a_solana_key_and_a_watched_address_hold_only_their_account() {
             .all(|holding| holding.asset.network().as_str() == "solana")
     );
     assert!(held.holdings.iter().any(|holding| holding.wallet == key));
+}
+
+#[tokio::test]
+async fn a_phrase_used_on_the_short_path_is_found_there_and_remembered() {
+    let scratch = Scratch::new();
+    let ledger = Arc::new(Mutex::new(Ledger::default()));
+    let url = common::node(move |call| (answer(&ledger, call), Duration::ZERO)).await;
+    let registry = Registry::with_networks(vec![solana(url)]).unwrap();
+    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let trust = "shoot island position soft burden budget tooth cruel issue economy destroy above";
+    let wallet = engine
+        .import(SecretString::from(trust), SecretString::from(""))
+        .await
+        .unwrap();
+    let mut portfolio = engine.portfolio();
+    until(&mut portfolio, |portfolio| {
+        portfolio
+            .holdings
+            .iter()
+            .any(|holding| holding.address.to_string() == FRIEND)
+    })
+    .await;
+    let path = |wallets: &[bahaa_engine::WalletInfo]| {
+        wallets
+            .iter()
+            .find(|info| info.id == wallet)
+            .unwrap()
+            .solana
+    };
+    assert_eq!(
+        path(&engine.wallets().await.unwrap()),
+        Some(SolanaPath::Bip44)
+    );
+    engine.lock().await.unwrap();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    assert_eq!(
+        path(&engine.wallets().await.unwrap()),
+        Some(SolanaPath::Bip44)
+    );
+    engine
+        .set_solana_path(wallet, SolanaPath::Bip44Change)
+        .await
+        .unwrap();
+    assert_eq!(
+        path(&engine.wallets().await.unwrap()),
+        Some(SolanaPath::Bip44Change)
+    );
 }

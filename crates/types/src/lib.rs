@@ -6,7 +6,7 @@ mod ids;
 mod price;
 mod text;
 
-pub use address::{Address, AddressError, TonContract, TonForm};
+pub use address::{Address, AddressError, SolanaPath, TonContract, TonForm};
 pub use amount::{Amount, AmountError, MAX_DECIMALS};
 pub use asset::{AssetError, AssetId};
 pub use ids::{ChainFamily, IdError, NetworkId, PriceId};

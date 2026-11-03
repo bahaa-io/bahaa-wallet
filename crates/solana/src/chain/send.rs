@@ -464,6 +464,7 @@ pub(super) fn fuzz(value: &Value) {
 mod tests {
     use bahaa_config::Registry;
     use bahaa_crypto::Mnemonic;
+    use bahaa_types::SolanaPath;
 
     use super::*;
 
@@ -489,7 +490,7 @@ mod tests {
         let network = registry.get(&"solana".parse().unwrap()).unwrap().clone();
         let chain = SolanaChain::new(network).unwrap();
         let seed = Mnemonic::from_entropy(&[0x5c; 16]).unwrap().to_seed("");
-        let key = super::super::key(&seed, 0).unwrap();
+        let key = super::super::key(&seed, 0, SolanaPath::default()).unwrap();
         let from = key.verifying_key().to_bytes();
         let blockhash = chain.blockhash().await.unwrap();
         let shape = Shape {

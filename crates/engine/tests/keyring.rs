@@ -4,8 +4,8 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 use bahaa_crypto::{ExposeSecret, Mnemonic, SeedKind, TonPhraseError, WordCount};
-use bahaa_engine::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletKind};
-use bahaa_types::{Address, ChainFamily, TonContract};
+use bahaa_engine::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletKind};
+use bahaa_types::{Address, ChainFamily, SolanaPath, TonContract};
 use bahaa_vault::{KdfParams, Vault};
 
 const FAST: KdfParams = KdfParams {
@@ -439,6 +439,56 @@ fn a_private_key_is_one_account_on_the_family_it_was_imported_for() {
             &key[2..]
         );
     }
+}
+
+#[test]
+fn imported_phrases_wait_for_their_solana_path_and_keep_it() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    let (fresh, _) = keyring.generate(NewPhrase::Twelve, "").unwrap();
+    let imported = keyring.import(HARDHAT, "").unwrap();
+    let key = keyring
+        .import_key(
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+            ChainFamily::Evm,
+        )
+        .unwrap();
+    assert_eq!(keyring.undetected().unwrap(), [imported]);
+    let paths: Vec<Option<SolanaPath>> = keyring
+        .wallets()
+        .unwrap()
+        .iter()
+        .map(|wallet| wallet.solana)
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            Some(SolanaPath::Bip44Change),
+            Some(SolanaPath::Bip44Change),
+            None
+        ]
+    );
+    keyring
+        .set_solana_path(imported, SolanaPath::Bip44)
+        .unwrap();
+    assert_eq!(
+        keyring.set_solana_path(key, SolanaPath::Bip44).unwrap_err(),
+        KeyringError::NoSolana
+    );
+    let keyring = reopened(&scratch);
+    assert_eq!(keyring.undetected().unwrap(), Vec::<WalletId>::new());
+    let solana = |id| {
+        keyring
+            .wallets()
+            .unwrap()
+            .into_iter()
+            .find(|wallet| wallet.id == id)
+            .unwrap()
+            .solana
+    };
+    assert_eq!(solana(imported), Some(SolanaPath::Bip44));
+    assert_eq!(solana(fresh), Some(SolanaPath::Bip44Change));
 }
 
 #[test]

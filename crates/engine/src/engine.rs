@@ -20,7 +20,7 @@ use bahaa_store::{
     Contact, CustomToken, Outgoing, Received, Scan, SentTx, Store, StoreError, StoreKey,
     TrustedBlock,
 };
-use bahaa_types::{Address, AssetId, ChainFamily, NetworkId, TonContract};
+use bahaa_types::{Address, AssetId, ChainFamily, NetworkId, SolanaPath, TonContract};
 use bahaa_vault::KdfParams;
 use futures_util::future::join;
 use thiserror::Error;
@@ -141,6 +141,7 @@ enum Command {
     AddAccount(WalletId, Reply<Vec<Account>>),
     RemoveAccount(WalletId, u32, Reply<()>),
     SetTonContract(WalletId, TonContract, Reply<()>),
+    SetSolanaPath(WalletId, SolanaPath, Reply<()>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
     ChangePassword(SecretString, SecretString, Reply<()>),
     CheckPassword(SecretString, Reply<()>),
@@ -170,6 +171,7 @@ enum Notice {
     Delivered(Box<Delivered>),
     Tracked(Vec<SentTx>),
     TokenRead(Box<TokenRead>),
+    Detected(u64, Vec<(WalletId, SolanaPath)>),
 }
 
 impl Command {
@@ -416,6 +418,15 @@ impl Engine {
             .await
     }
 
+    pub async fn set_solana_path(
+        &self,
+        wallet: WalletId,
+        path: SolanaPath,
+    ) -> Result<(), EngineError> {
+        self.ask(|reply| Command::SetSolanaPath(wallet, path, reply))
+            .await
+    }
+
     pub async fn reveal(
         &self,
         id: WalletId,
@@ -648,7 +659,7 @@ impl Worker {
                 () = at(deadline) => self.lock(),
                 () = at(next_refresh) => self.start_refresh(),
                 () = at(next_track) => self.start_tracking(),
-                Some(notice) = self.notices.recv() => self.notice(notice),
+                Some(notice) = self.notices.recv() => self.notice(notice).await,
                 Ok(()) = self.prices.changed(), if has_market => {
                     self.remember_prices();
                     self.publish_portfolio();
@@ -719,6 +730,7 @@ impl Worker {
             | Command::AddAccount(..)
             | Command::RemoveAccount(..)
             | Command::SetTonContract(..)
+            | Command::SetSolanaPath(..)
             | Command::Reveal(..)
             | Command::ChangePassword(..)
             | Command::CheckPassword(..)
@@ -790,6 +802,11 @@ impl Worker {
                 self.changed(move |keyring| keyring.set_ton_contract(id, contract))
                     .await,
             ),
+            Command::SetSolanaPath(id, path, reply) => answer(
+                reply,
+                self.changed(move |keyring| keyring.set_solana_path(id, path))
+                    .await,
+            ),
             Command::Reveal(id, password, reply) => {
                 let result = self
                     .keyring(move |keyring| keyring.reveal(id, password.expose_secret().as_bytes()))
@@ -855,14 +872,73 @@ impl Worker {
         Ok(())
     }
 
-    fn notice(&mut self, notice: Notice) {
+    async fn notice(&mut self, notice: Notice) {
         match notice {
             Notice::Fetched(fetched) => self.apply(fetched),
             Notice::Quoted(quoted) => self.quoted(*quoted),
             Notice::Delivered(delivered) => self.delivered(*delivered),
             Notice::Tracked(updates) => self.tracked(updates),
             Notice::TokenRead(read) => self.token_read(*read),
+            Notice::Detected(session, found) if session == self.session && !found.is_empty() => {
+                let _ = self
+                    .changed(move |keyring| {
+                        for (id, path) in found {
+                            keyring.set_solana_path(id, path)?;
+                        }
+                        Ok(())
+                    })
+                    .await;
+            }
+            Notice::Detected(..) => {}
         }
+    }
+
+    async fn detect_paths(&mut self) {
+        let chains = Arc::clone(&self.chains);
+        if chains::solana_mainnet(&chains).is_none() {
+            return;
+        }
+        let candidates = self
+            .keyring(|keyring| {
+                keyring
+                    .undetected()?
+                    .into_iter()
+                    .map(|id| {
+                        let seed = keyring.seed(id)?;
+                        let [standard, short] = SolanaPath::ALL;
+                        Ok((
+                            id,
+                            bahaa_solana::derive(seed, 0, standard)?,
+                            bahaa_solana::derive(seed, 0, short)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, EngineError>>()
+            })
+            .await;
+        let Some(candidates) = candidates.ok().filter(|candidates| !candidates.is_empty()) else {
+            return;
+        };
+        let (session, notices) = (self.session, self.notices_tx.clone());
+        tokio::spawn(async move {
+            let Some(chain) = chains::solana_mainnet(&chains) else {
+                return;
+            };
+            let mut found = Vec::new();
+            for (id, standard, short) in candidates {
+                if let (Ok(standard), Ok(short)) =
+                    join(chain.last_used(&standard), chain.last_used(&short)).await
+                {
+                    found.push((
+                        id,
+                        keyring::most_recent(
+                            (SolanaPath::Bip44Change, standard),
+                            (SolanaPath::Bip44, short),
+                        ),
+                    ));
+                }
+            }
+            let _ = notices.send(Notice::Detected(session, found)).await;
+        });
     }
 
     async fn keyring<T: Send + 'static, E: Into<EngineError> + Send + 'static>(
@@ -962,6 +1038,7 @@ impl Worker {
         self.activity();
         self.derive_accounts().await;
         self.start_tracking();
+        self.detect_paths().await;
     }
 
     async fn import(
@@ -996,6 +1073,9 @@ impl Worker {
             Err(err) => Err(err),
         };
         self.after_change(result.is_ok()).await;
+        if result.is_ok() {
+            self.detect_paths().await;
+        }
         let _ = reply.send(result);
     }
 
@@ -1008,7 +1088,10 @@ impl Worker {
         let used = match chains::ton_mainnet(&chains) {
             Some(chain) => {
                 match join(chain.last_used(&check.w5), chain.last_used(&check.v4r2)).await {
-                    (Ok(w5), Ok(v4r2)) => Ok(keyring::used_contract(w5, v4r2)),
+                    (Ok(w5), Ok(v4r2)) => Ok(keyring::most_recent(
+                        (TonContract::W5, w5),
+                        (TonContract::V4R2, v4r2),
+                    )),
                     (Err(err), _) | (_, Err(err)) => Err(err),
                 }
             }
@@ -1087,11 +1170,10 @@ impl Worker {
                         .map_or_else(|| vec![0], |(_, kept)| kept.clone());
                     for index in kept {
                         let mut derived = Vec::with_capacity(chains.len());
-                        let contract = wallet.ton.unwrap_or(TonContract::W5);
                         for chain in chains.iter().filter(|chain| chain.holds(wallet.kind)) {
                             let address = match watched {
                                 Some(address) => address,
-                                None => chain.derive(keyring.seed(wallet.id)?, index, contract)?,
+                                None => chain.derive(keyring.seed(wallet.id)?, index, &wallet)?,
                             };
                             derived.push((chain.family(), chain.network().id.clone(), address));
                         }
