@@ -39,3 +39,32 @@ async fn every_server_reads_the_same_account_and_quotes_a_fee() {
     }
     assert_eq!(seen[0], seen[1]);
 }
+
+#[tokio::test]
+#[ignore = "needs the public Electrum servers"]
+async fn every_server_reads_the_same_history() {
+    let mut seen = Vec::new();
+    for server in SERVERS {
+        let chain = BitcoinChain::new(bitcoin_on(&Url::parse(server).unwrap())).unwrap();
+        chain.derive(&seed(), 0).unwrap();
+        let scanned = chain
+            .scan(&address(FIRST), &[native()], None)
+            .await
+            .unwrap()
+            .unwrap();
+        println!(
+            "{server}: {} received, {} sent, cursor {:?}",
+            scanned.found.len(),
+            scanned.sent.len(),
+            scanned.cursor
+        );
+        for moved in scanned.found.iter().chain(&scanned.sent).take(4) {
+            println!(
+                "  {} {} {} -> {} at {}",
+                moved.id, moved.amount, moved.from, moved.to, moved.block
+            );
+        }
+        seen.push((scanned.found, scanned.sent));
+    }
+    assert_eq!(seen[0], seen[1]);
+}

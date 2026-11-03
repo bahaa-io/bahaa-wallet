@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::electrum::{Call, results};
 use crate::script::{key_address, locking, scripthash};
-use crate::tx::{MAX_MONEY, Outpoint, id_of};
+use crate::tx::{Hash, MAX_MONEY, Outpoint, id_of};
 
 use super::BitcoinChain;
 
@@ -44,6 +44,18 @@ pub(crate) struct Coin {
     pub value: u64,
     pub confirmed: bool,
     pub address: Address,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Seen {
+    pub txid: Hash,
+    pub height: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Used {
+    pub histories: Vec<(Address, Vec<Seen>)>,
+    pub change: Address,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +106,13 @@ impl Book {
         self.places.get(address).copied()
     }
 
+    pub(crate) fn holds(&self, owner: &Address, address: &Address) -> bool {
+        address == owner
+            || self
+                .place(address)
+                .is_some_and(|place| place.owner == *owner)
+    }
+
     pub(crate) fn addresses(
         &mut self,
         owner: &Address,
@@ -135,15 +154,30 @@ impl Book {
 
 impl BitcoinChain {
     pub(crate) async fn funds(&self, owner: &Address) -> Result<Funds, ChainError> {
-        let testnet = self.network.testnet;
         if !self.book().owns(owner) {
-            let coins = self.unspent(&[*owner]).await?;
             return Ok(Funds {
-                coins,
+                coins: self.unspent(&[*owner]).await?,
                 change: *owner,
             });
         }
-        let mut used = Vec::new();
+        let used = self.used(owner).await?;
+        let addresses: Vec<Address> = used.histories.iter().map(|(address, _)| *address).collect();
+        Ok(Funds {
+            coins: self.unspent(&addresses).await?,
+            change: used.change,
+        })
+    }
+
+    pub(crate) async fn used(&self, owner: &Address) -> Result<Used, ChainError> {
+        if !self.book().owns(owner) {
+            let histories = self.histories(&[*owner]).await?;
+            return Ok(Used {
+                histories: vec![(*owner, histories.into_iter().flatten().collect())],
+                change: *owner,
+            });
+        }
+        let testnet = self.network.testnet;
+        let mut histories = Vec::new();
         let mut next = [0u32; 2];
         let mut scanned = [0u32; 2];
         loop {
@@ -166,17 +200,11 @@ impl BitcoinChain {
             if asked.is_empty() {
                 break;
             }
-            let calls: Vec<Call> = asked
-                .iter()
-                .map(|(_, _, address)| {
-                    Ok(("blockchain.scripthash.get_history", json!([hash(address)?])))
-                })
-                .collect::<Result<_, ChainError>>()?;
-            let histories = self.electrum.batch(None, &calls, results).await?;
-            for ((branch, index, address), history) in asked.into_iter().zip(histories) {
-                let seen = history.as_array().ok_or_else(ChainError::malformed)?;
+            let addresses: Vec<Address> = asked.iter().map(|(_, _, address)| *address).collect();
+            let found = self.histories(&addresses).await?;
+            for ((branch, index, address), seen) in asked.into_iter().zip(found) {
                 if !seen.is_empty() {
-                    used.push(address);
+                    histories.push((address, seen));
                     next[branch] = next[branch].max(index + 1);
                 }
             }
@@ -187,10 +215,25 @@ impl BitcoinChain {
             .first()
             .copied()
             .ok_or_else(ChainError::overflow)?;
-        Ok(Funds {
-            coins: self.unspent(&used).await?,
-            change,
-        })
+        Ok(Used { histories, change })
+    }
+
+    async fn histories(&self, addresses: &[Address]) -> Result<Vec<Vec<Seen>>, ChainError> {
+        let calls: Vec<Call> = addresses
+            .iter()
+            .map(|address| Ok(("blockchain.scripthash.get_history", json!([hash(address)?]))))
+            .collect::<Result<_, ChainError>>()?;
+        let lists = self.electrum.batch(None, &calls, results).await?;
+        lists
+            .iter()
+            .map(|list| {
+                list.as_array()
+                    .ok_or_else(ChainError::malformed)?
+                    .iter()
+                    .map(|entry| seen(entry).ok_or_else(ChainError::malformed))
+                    .collect()
+            })
+            .collect()
     }
 
     async fn unspent(&self, addresses: &[Address]) -> Result<Vec<Coin>, ChainError> {
@@ -209,6 +252,13 @@ impl BitcoinChain {
         coins.dedup_by_key(|coin| coin.outpoint);
         Ok(coins)
     }
+}
+
+fn seen(entry: &Value) -> Option<Seen> {
+    Some(Seen {
+        txid: id_of(entry["tx_hash"].as_str()?).ok()?,
+        height: entry["height"].as_i64()?,
+    })
 }
 
 fn coin(entry: &Value, address: Address) -> Option<Coin> {
@@ -241,6 +291,7 @@ pub(crate) fn script(address: &Address) -> Result<BitcoinScript, ChainError> {
 pub(crate) fn fuzz(value: &Value) {
     if let Some(list) = value.as_array() {
         for entry in list {
+            let _ = seen(entry);
             let _ = coin(
                 entry,
                 Address::Bitcoin {

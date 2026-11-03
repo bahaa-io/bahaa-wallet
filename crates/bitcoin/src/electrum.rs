@@ -314,6 +314,10 @@ fn lost(text: &str) -> Failure<ChainError> {
     Failure::Retry(ChainError::Network(text.to_owned()))
 }
 
+pub(crate) fn text(raw: &RawValue) -> Option<String> {
+    serde_json::from_str(raw.get()).ok()
+}
+
 pub(crate) fn results(answers: Vec<Answer>) -> Result<Vec<Value>, Failure<ChainError>> {
     answers
         .into_iter()

@@ -1,23 +1,27 @@
+use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus,
-    amount, on_network,
+    Balance, Chain, ChainError, Decoded, Failure, FeeQuote, Replace, Signed, Transfer, TxId,
+    TxStatus, amount, on_network,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{
     DerivationPath, SecretKey, Seed, SeedKind, compressed, secp256k1, secp256k1_extended,
 };
-use bahaa_types::{Address, AssetId};
+use bahaa_types::{Address, AssetId, hex};
 use ruint::aliases::U256;
+use serde_json::json;
 
 mod account;
+mod incoming;
 mod send;
 
 pub use send::BitcoinPlan;
 
-use crate::electrum::Electrum;
-use crate::script::key_address;
+use crate::electrum::{Call, Electrum, text};
+use crate::script::{key_address, read};
+use crate::tx::{Hash, Outpoint, Output, Tx, id_text, parse};
 use account::Book;
 
 #[derive(Debug)]
@@ -64,6 +68,67 @@ impl BitcoinChain {
 
     fn sats(&self, units: u64) -> Result<bahaa_types::Amount, ChainError> {
         amount(U256::from(units), self.network.native.decimals)
+    }
+
+    async fn transactions(&self, ids: &[Hash]) -> Result<Vec<Option<Tx>>, ChainError> {
+        let calls: Vec<Call> = ids
+            .iter()
+            .map(|id| ("blockchain.transaction.get", json!([id_text(id)])))
+            .collect();
+        let raws = self
+            .electrum
+            .batch(None, &calls, |answers| {
+                answers
+                    .into_iter()
+                    .map(|answer| match answer {
+                        Ok(raw) => text(&raw)
+                            .map(Some)
+                            .ok_or_else(|| Failure::Retry(ChainError::malformed())),
+                        Err(refusal) if missing(&refusal.message) => Ok(None),
+                        Err(refusal) => Err(refusal.failure()),
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .await?;
+        ids.iter()
+            .zip(raws)
+            .map(|(id, raw)| {
+                let Some(raw) = raw else {
+                    return Ok(None);
+                };
+                let tx = parse(&hex::decode(&raw).ok_or_else(ChainError::malformed)?)?;
+                if tx.id() != *id {
+                    return Err(ChainError::Network(
+                        "an Electrum server sent another transaction".to_owned(),
+                    ));
+                }
+                Ok(Some(tx))
+            })
+            .collect()
+    }
+
+    async fn load(
+        &self,
+        known: &mut HashMap<Hash, Tx>,
+        ids: impl IntoIterator<Item = Hash>,
+    ) -> Result<(), ChainError> {
+        let mut wanted: Vec<Hash> = ids
+            .into_iter()
+            .filter(|id| *id != [0; 32] && !known.contains_key(id))
+            .collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        for (id, tx) in wanted.iter().zip(self.transactions(&wanted).await?) {
+            known.insert(*id, tx.ok_or_else(ChainError::malformed)?);
+        }
+        Ok(())
+    }
+
+    fn address(&self, script: &[u8]) -> Option<Address> {
+        Some(Address::Bitcoin {
+            script: read(script)?,
+            testnet: self.network.testnet,
+        })
     }
 
     fn native(&self, assets: &[AssetId]) -> Result<(), ChainError> {
@@ -158,8 +223,21 @@ impl Chain for BitcoinChain {
     fn know(&self, _contract: &Address, _decimals: u8) {}
 }
 
+fn spent<'a>(known: &'a HashMap<Hash, Tx>, point: &Outpoint) -> Option<&'a Output> {
+    known
+        .get(&point.txid)?
+        .outputs
+        .get(usize::try_from(point.vout).ok()?)
+}
+
+fn missing(message: &str) -> bool {
+    let message = message.to_lowercase();
+    message.contains("missing transaction") || message.contains("no such mempool")
+}
+
 #[cfg(fuzzing)]
 pub(crate) fn fuzz(value: &serde_json::Value) {
     account::fuzz(value);
+    incoming::fuzz(value);
     send::fuzz(value);
 }

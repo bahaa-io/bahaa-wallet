@@ -149,6 +149,9 @@ impl AnyChain {
                 Self::Solana(chain) if chain.can_scan() => {
                     chain.scan(address, assets, cursor).await
                 }
+                Self::Bitcoin(chain) if chain.can_scan() => {
+                    chain.scan(address, assets, cursor).await
+                }
                 Self::Evm(_)
                 | Self::Tron(_)
                 | Self::Ton(_)

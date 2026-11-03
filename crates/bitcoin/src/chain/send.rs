@@ -1,4 +1,5 @@
 use std::cmp::Reverse;
+use std::collections::HashMap;
 
 use bahaa_chain::{
     ChainError, Decoded, Failure, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus,
@@ -7,11 +8,10 @@ use bahaa_crypto::{Seed, compressed, secp256k1_sign};
 use bahaa_types::{Address, AssetId, BitcoinScript, Price, hex};
 use futures_util::future::try_join;
 use ruint::aliases::U256;
-use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use crate::electrum::{Answer, Call, results};
-use crate::script::{KEY_HASH_DUST, dust, hash160, key_address, locking, read};
+use crate::electrum::{Answer, Call, results, text};
+use crate::script::{KEY_HASH_DUST, dust, hash160, key_address, locking};
 use crate::tx::{
     Input, MAX_SIGNATURE, Output, SEQUENCE, Tx, VERSION, id_of, id_text, parse, signature,
     signs_everything,
@@ -210,7 +210,7 @@ impl BitcoinChain {
     }
 
     pub(super) async fn lookup(&self, id: &TxId) -> Result<TxStatus, ChainError> {
-        let Some(tx) = self.transaction(id.as_str()).await? else {
+        let Some(Some(tx)) = self.transactions(&[id_of(id.as_str())?]).await?.pop() else {
             return Ok(TxStatus::NotFound);
         };
         let ours = tx
@@ -242,42 +242,16 @@ impl BitcoinChain {
         })
     }
 
-    async fn transaction(&self, id: &str) -> Result<Option<Tx>, ChainError> {
-        let wanted = id_of(id)?;
-        let call = [("blockchain.transaction.get", json!([id]))];
-        let raw = self
-            .electrum
-            .batch(None, &call, |answers| match first(answers)? {
-                Ok(raw) => text(&raw)
-                    .map(Some)
-                    .ok_or_else(|| Failure::Retry(ChainError::malformed())),
-                Err(refusal) if missing(&refusal.message) => Ok(None),
-                Err(refusal) => Err(refusal.failure()),
-            })
-            .await?;
-        let Some(raw) = raw else {
-            return Ok(None);
-        };
-        let tx = parse(&hex::decode(&raw).ok_or_else(ChainError::malformed)?)?;
-        if tx.id() != wanted {
-            return Err(ChainError::Network(
-                "an Electrum server sent another transaction".to_owned(),
-            ));
-        }
-        Ok(Some(tx))
-    }
-
     async fn fee_of(&self, tx: &Tx) -> Result<bahaa_types::Amount, ChainError> {
+        let mut known = HashMap::new();
+        self.load(
+            &mut known,
+            tx.inputs.iter().map(|input| input.previous.txid),
+        )
+        .await?;
         let mut spent = 0u64;
         for input in &tx.inputs {
-            let previous = self
-                .transaction(&id_text(&input.previous.txid))
-                .await?
-                .ok_or_else(ChainError::malformed)?;
-            let output = usize::try_from(input.previous.vout)
-                .ok()
-                .and_then(|at| previous.outputs.get(at))
-                .ok_or_else(ChainError::malformed)?;
+            let output = super::spent(&known, &input.previous).ok_or_else(ChainError::malformed)?;
             spent = spent
                 .checked_add(output.value)
                 .ok_or_else(ChainError::overflow)?;
@@ -323,13 +297,6 @@ impl BitcoinChain {
         }
     }
 
-    fn address(&self, script: &[u8]) -> Option<Address> {
-        Some(Address::Bitcoin {
-            script: read(script)?,
-            testnet: self.network.testnet,
-        })
-    }
-
     fn takes_change(&self, from: &Address, address: &Address) -> bool {
         let book = self.book();
         match book.place(address) {
@@ -344,15 +311,6 @@ fn first(answers: Vec<Answer>) -> Result<Answer, Failure<ChainError>> {
         .into_iter()
         .next()
         .ok_or_else(|| Failure::Retry(ChainError::malformed()))
-}
-
-fn text(raw: &RawValue) -> Option<String> {
-    serde_json::from_str(raw.get()).ok()
-}
-
-fn missing(message: &str) -> bool {
-    let message = message.to_lowercase();
-    message.contains("missing transaction") || message.contains("no such mempool")
 }
 
 fn per_kvb(text: &str) -> Option<u64> {

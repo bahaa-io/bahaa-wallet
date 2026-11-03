@@ -31,15 +31,33 @@ pub fn txid(raw: &[u8]) -> String {
     hex::encode(&hash)
 }
 
-pub fn funding(value: u64, to: &Address, salt: u8) -> (String, String) {
+pub fn sender(salt: u8) -> Address {
+    Address::Bitcoin {
+        script: BitcoinScript::WitnessKeyHash([salt; 20]),
+        testnet: false,
+    }
+}
+
+pub fn time_of(height: u64) -> u64 {
+    1_200_000_000 + height * 600
+}
+
+fn transaction(previous: &[u8; 32], value: u64, to: &Address) -> (String, String) {
     let mut raw = vec![2, 0, 0, 0, 1];
-    raw.extend_from_slice(&[salt; 32]);
+    raw.extend_from_slice(previous);
     raw.extend_from_slice(&[0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 1]);
     raw.extend_from_slice(&value.to_le_bytes());
     raw.push(22);
     raw.extend_from_slice(&locking(to));
     raw.extend_from_slice(&[0, 0, 0, 0]);
     (txid(&raw), hex::encode(&raw))
+}
+
+fn header(height: u64) -> String {
+    let mut raw = vec![0u8; 80];
+    let time = u32::try_from(time_of(height)).unwrap();
+    raw[68..72].copy_from_slice(&time.to_le_bytes());
+    hex::encode(&raw)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -61,17 +79,25 @@ impl Ledger {
     }
 
     pub fn fund(&mut self, to: &Address, value: u64, salt: u8) -> String {
-        let (id, raw) = funding(value, to, salt);
+        self.fund_at(to, value, salt, 900_000)
+    }
+
+    pub fn fund_at(&mut self, to: &Address, value: u64, salt: u8, height: u64) -> String {
+        let (source, source_raw) = transaction(&[salt; 32], value + 1_000, &sender(salt));
+        let mut previous: [u8; 32] = hex::decode_array(&source).unwrap();
+        previous.reverse();
+        let (id, raw) = transaction(&previous, value, to);
+        self.transactions.insert(source, source_raw);
+        self.transactions.insert(id.clone(), raw);
         let key = scripthash(to);
         self.histories
             .entry(key.clone())
             .or_default()
-            .push(json!({"tx_hash": id, "height": 900_000}));
+            .push(json!({"tx_hash": id, "height": height}));
         self.unspent
             .entry(key)
             .or_default()
-            .push(json!({"tx_hash": id, "tx_pos": 0, "height": 900_000, "value": value}));
-        self.transactions.insert(id.clone(), raw);
+            .push(json!({"tx_hash": id, "tx_pos": 0, "height": height, "value": value}));
         id
     }
 
@@ -93,6 +119,7 @@ impl Ledger {
             "blockchain.scripthash.listunspent" => {
                 json!(self.unspent.get(&key).cloned().unwrap_or_default())
             }
+            "blockchain.block.header" => json!(header(params[0].as_u64().unwrap())),
             "blockchain.estimatefee" => serde_json::from_str("2e-05").unwrap(),
             "blockchain.relayfee" => serde_json::from_str("1e-06").unwrap(),
             "blockchain.transaction.broadcast" => {

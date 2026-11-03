@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use bahaa_config::Registry;
 use bahaa_crypto::{ExposeSecret, SecretString};
-use bahaa_engine::{Engine, SendRequest, SentStatus, Spend, WalletKind};
-use bahaa_testkit::electrum::{Ledger, Log};
+use bahaa_engine::{Engine, Event, SendRequest, SentStatus, Spend, WalletKind};
+use bahaa_testkit::electrum::{Ledger, Log, sender};
 use bahaa_types::{Address, Amount, AssetId, ChainFamily};
 use common::{BITCOIN_GENESIS, Scratch, bitcoin_network, config, settled, until};
 
@@ -45,6 +45,18 @@ async fn a_phrase_holds_bitcoin_across_its_addresses_and_sends_it() {
     let held = until(&mut portfolio, |portfolio| !portfolio.holdings.is_empty()).await;
     assert_eq!(held.holdings[0].address.to_string(), FIRST);
     assert_eq!(held.holdings[0].amount.to_string(), "0.0005");
+    let arrived = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Ok(Event::Received(arrivals)) = events.recv().await {
+                return arrivals;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(arrived[0].received.from, sender(1));
+    assert_eq!(arrived[0].received.to, address(FIRST));
+    assert_eq!(arrived[0].received.amount.to_string(), "0.0005");
     let request = SendRequest {
         wallet,
         account: 0,
