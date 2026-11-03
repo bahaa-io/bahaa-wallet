@@ -17,3 +17,4 @@ mod vm;
 mod wallet;
 
 pub use chain::{TonChain, TonPlan};
+pub use comment::read_comment;

@@ -38,6 +38,10 @@ pub(crate) fn bytes(cell: &Cell) -> Option<Vec<u8>> {
     Some(out)
 }
 
+pub fn read_comment(body: &[u8]) -> Option<String> {
+    text(&*crate::cells::root(body)?)
+}
+
 pub(crate) fn text(cell: &Cell) -> Option<String> {
     let text = String::from_utf8(bytes(cell)?).ok()?;
     (!text.is_empty() && is_plain_text(&text, MAX_MEMO)).then_some(text)
@@ -64,6 +68,20 @@ fn snake(cell: &Cell, skip: usize, out: &mut Vec<u8>, depth: usize) -> Option<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relay_deposit_comment_reads_as_its_text() {
+        use base64::Engine as _;
+        let body = base64::engine::general_purpose::STANDARD
+            .decode("te6cckEBAQEASAAAjAAAAAAweGRjODg4MjFjMTJlMTFlNGIxNGQxODg1YzVlNGExNmVjYzQ1ZWJkOTczYWI4ZmI5NjAwNGQ0NmU0M2QyM2JmYjVE1Ir+")
+            .unwrap();
+        assert_eq!(
+            read_comment(&body).as_deref(),
+            Some("0xdc88821c12e11e4b14d1885c5e4a16ecc45ebd973ab8fb96004d46e43d23bfb5")
+        );
+        assert_eq!(read_comment(&body[..body.len() - 1]), None);
+        assert_eq!(read_comment(b"not a bag of cells"), None);
+    }
 
     #[test]
     fn comments_of_any_length_read_back_exactly() {
