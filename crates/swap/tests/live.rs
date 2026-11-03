@@ -1,7 +1,11 @@
 #![allow(clippy::unwrap_used)]
 
+use bahaa_chain::Chain;
 use bahaa_chain::now;
-use bahaa_swap::{OneClick, Providers, Relay, Request};
+use bahaa_config::Registry;
+use bahaa_crypto::{Mnemonic, WordCount};
+use bahaa_evm::EvmChain;
+use bahaa_swap::{Cow, OneClick, Providers, Relay, Request, SwapError};
 use bahaa_types::{Address, Amount, ChainFamily};
 
 fn evm() -> Address {
@@ -77,4 +81,55 @@ async fn live_relay_gives_plain_deposits_from_ethereum_and_ton() {
         assert_eq!(route.expected, order.expected);
         assert_ne!(order.deposit, asked.from);
     }
+}
+
+#[tokio::test]
+#[ignore = "talks to CoW"]
+async fn live_cow_accepts_our_signature_and_only_misses_the_balance() {
+    let registry = Registry::builtin().unwrap();
+    let chain = EvmChain::new(registry.get(&"bsc".parse().unwrap()).unwrap().clone()).unwrap();
+    let seed = Mnemonic::generate(WordCount::Twelve).unwrap().to_seed("");
+    let me = chain.derive(&seed, 0).unwrap();
+    let cow = Cow::new(
+        &Providers::builtin().unwrap().cow,
+        bahaa_chain::http::client().unwrap(),
+    )
+    .unwrap();
+    let asked = request(
+        "bsc/0x55d398326f99059fF775485246999027B3197955",
+        "50",
+        18,
+        "bsc",
+        18,
+        me,
+        me,
+    );
+    let (route, order) = cow.quote(&asked, now()).await.unwrap();
+    assert!(route.minimum < route.expected);
+    let typed = order.typed.unwrap();
+    assert_eq!(order.reference, typed.uid());
+    let signature = chain.sign_typed(&typed.digest(), &seed, 0, &me).unwrap();
+    let bsc = "bsc".parse().unwrap();
+    let refused = cow
+        .place(&bsc, &typed.body(&signature).to_string(), &typed.uid())
+        .await
+        .unwrap_err();
+    let SwapError::Refused(reason) = refused else {
+        panic!("{refused:?}");
+    };
+    let mut forged = signature;
+    forged[10] ^= 1;
+    let other = cow
+        .place(&bsc, &typed.body(&forged).to_string(), &typed.uid())
+        .await
+        .unwrap_err();
+    assert_ne!(other, SwapError::Refused(reason.clone()), "{other:?}");
+    let lower = reason.to_lowercase();
+    assert!(!lower.contains("signature"), "{reason}");
+    assert!(
+        ["balance", "allowance", "funds"]
+            .iter()
+            .any(|word| lower.contains(word)),
+        "{reason}"
+    );
 }

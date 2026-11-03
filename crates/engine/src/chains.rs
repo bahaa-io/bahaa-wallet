@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bahaa_bitcoin::{BitcoinChain, BitcoinPlan};
 use bahaa_chain::{
-    Balance, Chain, ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, Movement,
+    Approval, Balance, Chain, ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, Movement,
     PlannedCall, Replace, ScanCursor, Scanned, Signed, Transfer, TxId, TxStatus,
 };
 use bahaa_config::{Coin, Network, Registry};
@@ -132,6 +132,39 @@ impl AnyChain {
             }
         })
         .await
+    }
+
+    pub(crate) async fn prepare_approval(
+        &self,
+        approval: &Approval,
+    ) -> Result<(Vec<AnyCall>, FeeQuote), ChainError> {
+        shielded(async {
+            match self {
+                Self::Evm(chain) => {
+                    let (plans, fee) = chain.prepare_approval(approval).await?;
+                    Ok((plans.into_iter().map(AnyCall::Evm).collect(), fee))
+                }
+                Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                    Err(ChainError::Unsupported("swaps through contracts"))
+                }
+            }
+        })
+        .await
+    }
+
+    pub(crate) fn sign_typed(
+        &self,
+        digest: &[u8; 32],
+        seed: &Seed,
+        account: u32,
+        from: &Address,
+    ) -> Result<[u8; 65], ChainError> {
+        match self {
+            Self::Evm(chain) => chain.sign_typed(digest, seed, account, from),
+            Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("signed orders"))
+            }
+        }
     }
 
     pub(crate) async fn recheck(

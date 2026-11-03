@@ -17,7 +17,13 @@ pub(crate) async fn fetch(request: RequestBuilder) -> Result<Value, SwapError> {
     if status.is_client_error() {
         let reason = value
             .ok()
-            .and_then(|value| value.get("message")?.as_str().map(clean))
+            .and_then(|value| {
+                let text = |field: &str| value.get(field).and_then(Value::as_str);
+                text("message")
+                    .or_else(|| text("description"))
+                    .or_else(|| text("errorType"))
+                    .map(clean)
+            })
             .filter(|reason| !reason.is_empty())
             .unwrap_or_else(|| format!("the provider refused the request ({status})"));
         return Err(SwapError::Refused(reason));

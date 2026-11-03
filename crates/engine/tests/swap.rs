@@ -463,3 +463,137 @@ async fn a_pool_swap_whose_price_moved_after_the_review_is_refused_at_signing() 
     assert_eq!(sent.lock().unwrap().len(), 0);
     assert_eq!(engine.history().await.unwrap().len(), 0);
 }
+
+struct CowSide {
+    placed: Mutex<Vec<Value>>,
+    uid: Mutex<String>,
+}
+
+async fn cow(side: Arc<CowSide>) -> Url {
+    serve(move |request| {
+        let path = request.path().to_owned();
+        if path.ends_with("/quote") {
+            let body = request.json();
+            let amount: u128 = body["sellAmountBeforeFee"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            let fee = 8_000_000_000_000_000u128;
+            return Reply::json(
+                200,
+                &json!({
+                    "quote": {
+                        "sellToken": body["sellToken"],
+                        "buyToken": body["buyToken"],
+                        "receiver": body["receiver"],
+                        "sellAmount": (amount - fee).to_string(),
+                        "feeAmount": fee.to_string(),
+                        "buyAmount": "71583606250152798",
+                        "kind": "sell",
+                        "validTo": 1_900_000_000u32,
+                    },
+                    "id": 7,
+                }),
+            );
+        }
+        if path.ends_with("/orders") {
+            side.placed.lock().unwrap().push(request.json());
+            return Reply::json(201, &json!(side.uid.lock().unwrap().clone()));
+        }
+        Reply::json(200, &json!({"status": "fulfilled"}))
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_cow_order_is_signed_with_its_approval_and_placed_once_the_approval_confirms() {
+    let scratch = Scratch::new();
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let shared = Arc::clone(&sent);
+    let paid = Arc::new(AtomicU64::new(0));
+    let node = common::node(move |call| (pool_node(&shared, call, &paid), Duration::ZERO)).await;
+    let side = Arc::new(CowSide {
+        placed: Mutex::new(Vec::new()),
+        uid: Mutex::new(String::new()),
+    });
+    let dead = Url::parse("http://127.0.0.1:9/").unwrap();
+    let mut providers = Providers::builtin().unwrap();
+    providers.relay.url = dead.clone();
+    providers.kyberswap.url = dead.clone();
+    providers.velora.url = dead.clone();
+    providers.oneclick.url = dead.clone();
+    providers.cow.url = cow(Arc::clone(&side)).await;
+    providers.pools.clear();
+    let registry = Registry::with_networks(vec![common::network("bsc", node)]).unwrap();
+    let mut config = config(&scratch, registry, None);
+    config.swaps = Some(providers);
+    let engine = Engine::start(config).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    let mut events = engine.events();
+    let draft = engine.prepare_swap(usdt_to_bnb(wallet)).await.unwrap();
+    let index = draft
+        .routes
+        .iter()
+        .position(|ranked| ranked.route.provider == "CoW Swap")
+        .unwrap();
+    let route = &draft.routes[index].route;
+    assert_eq!(route.method, Method::Auction);
+    assert_eq!(route.expected.to_string(), "0.071583606250152798");
+    assert_eq!(route.minimum.to_string(), "0.071225688218902034");
+    let costs: Vec<(CostKind, Charged)> = route
+        .costs
+        .iter()
+        .map(|cost| (cost.kind, cost.charged))
+        .collect();
+    assert!(costs.contains(&(CostKind::NetworkFee, Charged::InQuote)));
+    assert!(costs.contains(&(CostKind::NetworkFee, Charged::Extra)));
+    let review = engine.choose_swap(draft.id, index).await.unwrap();
+    assert_eq!(review.steps.len(), 2);
+    assert!(matches!(review.steps[0], Step::Approve { .. }));
+    assert!(review.order.typed.is_some());
+    assert!(
+        engine
+            .confirm_send(review.draft.id, SecretString::from("pw"))
+            .await
+            .is_err()
+    );
+    let review = engine.choose_swap(draft.id, index).await.unwrap();
+    let record = engine
+        .confirm_order(review.draft.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    assert_eq!(record.provider, "cow");
+    assert_eq!(record.id, record.reference);
+    assert_eq!(record.id.len(), 114);
+    *side.uid.lock().unwrap() = record.id.clone();
+    let done = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(Event::SwapUpdated(swap)) = events.recv().await
+                && swap.status == SwapStatus::Done
+            {
+                return swap;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(done.id, record.id);
+    assert_eq!(
+        sent.lock().unwrap().len(),
+        1,
+        "only the approval is a transaction"
+    );
+    let placed = side.placed.lock().unwrap().clone();
+    assert_eq!(placed.len(), 1);
+    let order = &placed[0];
+    assert_eq!(order["receiver"], HARDHAT_0.to_lowercase());
+    assert_eq!(order["sellAmount"], "50000000000000000000");
+    assert_eq!(order["buyAmount"], "71225688218902034");
+    assert_eq!(order["feeAmount"], "0");
+    assert_eq!(order["signature"].as_str().unwrap().len(), 132);
+}

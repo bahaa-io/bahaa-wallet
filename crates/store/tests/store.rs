@@ -221,6 +221,8 @@ fn swap(status: SwapStatus) -> SwapRecord {
         created_at: 1_760_000_000,
         updated_at: 1_760_000_000,
         status,
+        order: None,
+        approval: None,
     }
 }
 

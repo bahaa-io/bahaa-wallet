@@ -6,12 +6,13 @@ use bahaa_chain::{
     Step as CallStep, Transfer, TxId, TxStatus, check_call, check_signed,
 };
 use bahaa_crypto::{DeriveError, ExposeSecret, SecretString};
-use bahaa_store::{MAX_REASON, SentKind, SentStatus, SentTx};
+use bahaa_store::{MAX_REASON, SentKind, SentStatus, SentTx, SwapRecord};
+use bahaa_swap::TypedOrder;
 use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text, to_plain_text};
 use futures_util::future::join_all;
 use tokio::time::Instant;
 
-use super::swap::SwapLink;
+use super::swap::{SwapLink, order_record};
 use super::{EngineError, Event, Notice, Reply, Worker};
 use crate::caution::Caution;
 use crate::chains::{AnyCall, AnyChain, AnyPlan};
@@ -56,6 +57,12 @@ pub(super) enum Planned {
     Calls {
         calls: Vec<AnyCall>,
         swap: Box<ContractSwap>,
+    },
+    Order {
+        approvals: Vec<AnyCall>,
+        typed: Box<TypedOrder>,
+        account: u32,
+        from: Address,
     },
 }
 
@@ -385,6 +392,10 @@ impl Worker {
                         check_signed(&transfer, &decoded)?;
                         Ok::<_, EngineError>(Signing::Transfer(Box::new((signed, decoded))))
                     }
+                    Planned::Order { .. } => Err(ChainError::Invalid(
+                        "this swap is a signed order, confirm it as an order",
+                    )
+                    .into()),
                     Planned::Calls { calls, .. } => calls
                         .iter()
                         .map(|call| {
@@ -416,6 +427,92 @@ impl Worker {
             self.save(record.clone())?;
         }
         Ok((chain, batch, draft.swap))
+    }
+
+    pub(super) async fn confirm_order(
+        &mut self,
+        id: DraftId,
+        password: SecretString,
+        reply: Reply<SwapRecord>,
+    ) {
+        let (chain, batch, record) = match self.sign_order(id, password).await {
+            Ok(signed) => signed,
+            Err(err) => {
+                let _ = reply.send(Err(err));
+                return;
+            }
+        };
+        if let Err(err) = self.save_swap(record.clone()) {
+            let _ = reply.send(Err(err));
+            return;
+        }
+        if !batch.is_empty() {
+            let (ignored, _) = tokio::sync::oneshot::channel();
+            self.deliver(chain, batch, ignored, None);
+        }
+        self.schedule_polling();
+        let _ = reply.send(Ok(record));
+    }
+
+    async fn sign_order(
+        &mut self,
+        id: DraftId,
+        password: SecretString,
+    ) -> Result<(usize, Vec<(SentTx, Signed)>, SwapRecord), EngineError> {
+        let draft = self.drafts.remove(&id).ok_or(EngineError::UnknownDraft)?;
+        if Instant::now() >= draft.expires {
+            return Err(EngineError::DraftExpired);
+        }
+        let Planned::Order {
+            approvals,
+            typed,
+            account,
+            from,
+        } = draft.plan.clone()
+        else {
+            return Err(ChainError::Invalid("this draft is not a signed order").into());
+        };
+        let chains = Arc::clone(&self.chains);
+        let (wallet, chain) = (draft.wallet, draft.chain);
+        let digest = typed.digest();
+        let signed = self
+            .keyring(move |keyring| {
+                keyring.check_password(password.expose_secret().as_bytes())?;
+                let seed = keyring.seed(wallet)?;
+                let chain = &chains[chain];
+                let calls = approvals
+                    .iter()
+                    .map(|call| {
+                        let signed = chain.sign_call(call, seed)?;
+                        let decoded = chain.decode_call(&signed)?;
+                        check_call(call.planned(), &decoded)?;
+                        Ok((signed, decoded, call.planned().step.clone(), call.fee_max()))
+                    })
+                    .collect::<Result<Vec<_>, EngineError>>()?;
+                let signature = chain.sign_typed(&digest, seed, account, &from)?;
+                Ok::<_, EngineError>((calls, signature))
+            })
+            .await;
+        let (calls, signature) = match signed {
+            Err(EngineError::Keyring(KeyringError::WrongPassword)) => {
+                self.drafts.insert(id, draft);
+                return Err(KeyringError::WrongPassword.into());
+            }
+            other => other?,
+        };
+        let batch = self.sent_calls(&draft, calls)?;
+        for (record, _) in &batch {
+            self.save(record.clone())?;
+        }
+        let link = draft
+            .swap
+            .ok_or(ChainError::Invalid("this draft is not a swap"))?;
+        let approval = batch.last().map(|(record, _)| record.id.clone());
+        Ok((
+            chain,
+            batch,
+            order_record(link, &typed, &signature, approval),
+        ))
     }
 
     fn sent_transfer(

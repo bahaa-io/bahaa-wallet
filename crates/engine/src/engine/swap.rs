@@ -4,12 +4,14 @@ use std::time::Duration;
 use bahaa_chain::{ChainError, ContractSwap, FeeQuote, MAX_MEMO, Step, Transfer};
 use bahaa_store::{SentStatus, SentTx, SwapRecord, SwapStatus};
 use bahaa_swap::{
-    Across, Charged, Comment, Cost, CostKind, KyberSwap, OneClick, Order, Pools, Progress,
+    Across, Charged, Comment, Cost, CostKind, Cow, KyberSwap, OneClick, Order, Pools, Progress,
     Provider, Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, SwapError, Velora, rank,
 };
 use bahaa_types::{Address, Amount, AssetId, BitcoinScript, NetworkId, is_plain_text};
 use futures_util::future::join_all;
 use tokio::time::Instant;
+
+mod cow;
 
 use super::send::{NewDraft, Planned, Spend};
 use super::{Draft, EngineError, Event, Notice, Reply, Worker};
@@ -68,6 +70,7 @@ pub(crate) struct Swappers {
     kyber: KyberSwap,
     velora: Velora,
     across: Across,
+    cow: Cow,
 }
 
 impl Swappers {
@@ -79,7 +82,8 @@ impl Swappers {
             pools: Pools::new(&providers.pools)?,
             kyber: KyberSwap::new(&providers.kyberswap, client.clone())?,
             velora: Velora::new(&providers.velora, client.clone())?,
-            across: Across::new(&providers.across, client)?,
+            across: Across::new(&providers.across, client.clone())?,
+            cow: Cow::new(&providers.cow, client)?,
         })
     }
 
@@ -95,6 +99,7 @@ impl Swappers {
                 (Provider::KyberSwap, self.kyber.covers(request)),
                 (Provider::Velora, self.velora.covers(request)),
                 (Provider::Across, self.across.covers(request)),
+                (Provider::Cow, self.cow.covers(request)),
             ];
             providers.extend(
                 covered
@@ -186,6 +191,7 @@ impl Swappers {
                 let evm = chain.evm().ok_or(SwapError::Unsupported)?;
                 self.velora.quote(evm, request, now).await
             }
+            Provider::Cow => self.cow.quote(request, now).await,
         }
     }
 
@@ -199,6 +205,7 @@ impl Swappers {
             Provider::OneClick => self.oneclick.status(reference).await,
             Provider::Relay => self.relay.status(reference).await,
             Provider::Across => self.across.status(network, reference).await,
+            Provider::Cow => self.cow.status(network, reference).await,
             Provider::Uniswap | Provider::PancakeSwap | Provider::KyberSwap | Provider::Velora => {
                 Err(SwapError::Unsupported)
             }
@@ -234,6 +241,8 @@ pub(super) struct SwapLink {
     request: Request,
     order: Order,
 }
+
+pub(super) use cow::record as order_record;
 
 struct Found {
     request: Request,
@@ -349,7 +358,9 @@ async fn priced(
 }
 
 fn network_fee(route: &mut Route, fee: &FeeQuote) {
-    route.costs.retain(|cost| cost.kind != CostKind::NetworkFee);
+    route
+        .costs
+        .retain(|cost| cost.kind != CostKind::NetworkFee || cost.charged == Charged::InQuote);
     route.costs.push(Cost {
         kind: CostKind::NetworkFee,
         asset: AssetId::Native(route.sell.network().clone()),
@@ -444,6 +455,16 @@ async fn checked(
         let mut request = asked.clone();
         async move {
             let order = match order {
+                Some(order) if order.typed.is_some() => {
+                    return Box::pin(cow::listed(
+                        chain,
+                        swappers,
+                        account,
+                        &request,
+                        (provider, route, order),
+                    ))
+                    .await;
+                }
                 Some(order) if order.contract.is_some() => order,
                 deposit => return Ok((provider, route, deposit)),
             };
@@ -707,6 +728,16 @@ impl Worker {
                 let chain = &chains[picked.chain];
                 let now = bahaa_chain::now();
                 let (mut route, mut order) = swappers.order(&picked, chain, now).await?;
+                if order.typed.is_some() {
+                    return Box::pin(cow::ordered(
+                        chain,
+                        &swappers,
+                        &picked,
+                        &mut request,
+                        (route, order),
+                    ))
+                    .await;
+                }
                 if order.contract.is_some() {
                     return Box::pin(call_order(
                         chain,
@@ -852,6 +883,8 @@ impl Worker {
             created_at: now,
             updated_at: now,
             status: SwapStatus::Waiting,
+            order: None,
+            approval: None,
         };
         if self.save_swap(record).is_err() {
             return;
@@ -907,13 +940,27 @@ impl Worker {
         let Some(swappers) = self.swappers.clone().filter(|_| !open.is_empty()) else {
             return;
         };
+        let approvals: Vec<Option<SentStatus>> = open
+            .iter()
+            .map(|swap| {
+                let id = swap.approval.as_ref()?;
+                self.history
+                    .iter()
+                    .find(|tx| tx.network == swap.network && tx.id == *id)
+                    .map(|tx| tx.status.clone())
+                    .or(Some(SentStatus::Sending))
+            })
+            .collect();
         let notices = self.notices_tx.clone();
         self.polling = Some(tokio::spawn(async move {
-            let jobs = open.into_iter().map(|swap| {
+            let jobs = open.into_iter().zip(approvals).map(|(swap, approval)| {
                 let swappers = Arc::clone(&swappers);
                 async move {
                     let provider =
                         Provider::from_key(&swap.provider).filter(|key| !key.on_chain())?;
+                    if let Some(body) = swap.order.clone() {
+                        return cow::placed(&swappers, swap, &body, approval).await;
+                    }
                     let status = stored(
                         swappers
                             .status(provider, &swap.network, &swap.reference)
@@ -964,7 +1011,7 @@ impl Worker {
         self.swap_drafts.clear();
     }
 
-    fn save_swap(&mut self, record: SwapRecord) -> Result<(), EngineError> {
+    pub(super) fn save_swap(&mut self, record: SwapRecord) -> Result<(), EngineError> {
         self.store.save_swap(&record)?;
         match self
             .swaps
@@ -1092,6 +1139,7 @@ mod tests {
             minimum: amount,
             expires_at: 0,
             contract: None,
+            typed: None,
         }
     }
 

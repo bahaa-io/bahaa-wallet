@@ -163,6 +163,7 @@ impl Pools {
                 spender: (!native_in).then_some(router),
                 ours: true,
             }),
+            typed: None,
         };
         Ok((route, order))
     }

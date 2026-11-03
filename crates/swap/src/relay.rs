@@ -210,6 +210,7 @@ impl Relay {
             minimum,
             expires_at: now.saturating_add(QUOTE_LIFE),
             contract,
+            typed: None,
         };
         Ok((route, order))
     }

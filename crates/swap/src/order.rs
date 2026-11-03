@@ -1,4 +1,6 @@
 use bahaa_chain::Call;
+
+use crate::cow::TypedOrder;
 use bahaa_types::{Address, Amount, AssetId, TonForm};
 use serde::Deserialize;
 use thiserror::Error;
@@ -21,6 +23,8 @@ pub enum Provider {
     Across,
     #[serde(rename = "velora")]
     Velora,
+    #[serde(rename = "cow")]
+    Cow,
 }
 
 impl Provider {
@@ -33,6 +37,7 @@ impl Provider {
             Self::KyberSwap => "KyberSwap",
             Self::Across => "Across",
             Self::Velora => "Velora",
+            Self::Cow => "CoW Swap",
         }
     }
 
@@ -45,6 +50,7 @@ impl Provider {
             Self::KyberSwap => "kyberswap",
             Self::Across => "across",
             Self::Velora => "velora",
+            Self::Cow => "cow",
         }
     }
 
@@ -57,6 +63,7 @@ impl Provider {
             Self::KyberSwap,
             Self::Across,
             Self::Velora,
+            Self::Cow,
         ]
         .into_iter()
         .find(|provider| provider.key() == key)
@@ -103,6 +110,7 @@ pub struct Order {
     pub minimum: Amount,
     pub expires_at: u64,
     pub contract: Option<Contract>,
+    pub typed: Option<TypedOrder>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

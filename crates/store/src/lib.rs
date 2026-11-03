@@ -20,6 +20,7 @@ const SETTINGS_KEY: &str = "settings";
 const MAX_NAME: usize = 40;
 const MAX_TX_ID: usize = 128;
 pub const MAX_REASON: usize = 200;
+const MAX_ORDER: usize = 4_096;
 pub const MAX_QUOTES: usize = 512;
 const MAX_MEMO: usize = 120;
 
@@ -153,6 +154,10 @@ pub struct SwapRecord {
     pub created_at: u64,
     pub updated_at: u64,
     pub status: SwapStatus,
+    #[serde(default)]
+    pub order: Option<String>,
+    #[serde(default)]
+    pub approval: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,6 +460,12 @@ impl Store {
     pub fn save_swap(&self, swap: &SwapRecord) -> Result<(), StoreError> {
         let short = |text: &str| is_plain_text(text, MAX_TX_ID);
         if !short(&swap.id) || !short(&swap.provider) || !short(&swap.reference) {
+            return Err(StoreError::Invalid("not a swap"));
+        }
+        let order_fits = swap.order.as_ref().is_none_or(|order| {
+            order.len() <= MAX_ORDER && serde_json::from_str::<serde_json::Value>(order).is_ok()
+        });
+        if !order_fits || swap.approval.as_ref().is_some_and(|id| !short(id)) {
             return Err(StoreError::Invalid("not a swap"));
         }
         if let SwapStatus::Failed(reason) = &swap.status

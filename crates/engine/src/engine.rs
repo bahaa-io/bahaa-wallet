@@ -160,6 +160,7 @@ enum Command {
     PrepareSend(SendRequest, Reply<Draft>),
     Replace(NetworkId, String, Replace, Reply<Draft>),
     ConfirmSend(DraftId, SecretString, Reply<SentTx>),
+    ConfirmOrder(DraftId, SecretString, Reply<SwapRecord>),
     PrepareSwap(SwapRequest, Reply<SwapDraft>),
     ChooseSwap(SwapId, usize, Reply<SwapReview>),
     Swaps(Reply<Vec<SwapRecord>>),
@@ -559,6 +560,15 @@ impl Engine {
         self.ask(Command::Swaps).await
     }
 
+    pub async fn confirm_order(
+        &self,
+        draft: DraftId,
+        password: SecretString,
+    ) -> Result<SwapRecord, EngineError> {
+        self.ask(|reply| Command::ConfirmOrder(draft, password, reply))
+            .await
+    }
+
     pub async fn confirm_send(
         &self,
         draft: DraftId,
@@ -794,6 +804,9 @@ impl Worker {
             Command::PrepareSend(request, reply) => self.prepare_send(&request, reply),
             Command::Replace(network, id, how, reply) => {
                 self.replace_send(&network, &id, how, reply);
+            }
+            Command::ConfirmOrder(id, password, reply) => {
+                self.confirm_order(id, password, reply).await;
             }
             Command::ConfirmSend(id, password, reply) => {
                 self.confirm_send(id, password, reply).await;

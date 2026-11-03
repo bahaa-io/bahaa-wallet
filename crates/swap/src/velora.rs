@@ -247,6 +247,7 @@ impl Velora {
                 spender: (!native_in).then_some(augustus),
                 ours: false,
             }),
+            typed: None,
         };
         Ok((route, order))
     }

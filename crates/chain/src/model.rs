@@ -131,6 +131,15 @@ pub struct ContractSwap {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Approval {
+    pub account: u32,
+    pub from: Address,
+    pub asset: AssetId,
+    pub spender: Address,
+    pub amount: Amount,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     Approve {
         asset: AssetId,

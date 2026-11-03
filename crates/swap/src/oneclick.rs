@@ -216,6 +216,7 @@ impl OneClick {
             minimum,
             expires_at: now.saturating_add(QUOTE_LIFE).min(request.deadline),
             contract: None,
+            typed: None,
         };
         Ok((route, Some(order)))
     }

@@ -3,17 +3,17 @@ use std::collections::BTreeMap;
 use alloy_consensus::TxEip1559;
 use alloy_primitives::TxKind;
 use bahaa_chain::{
-    Call, ChainError, ContractSwap, DecodedCall, FeeItem, FeeQuote, PlannedCall, Signed, Step,
-    TRANSFER_EVENT, TxId, enough,
+    Approval, Call, ChainError, ContractSwap, DecodedCall, FeeItem, FeeQuote, PlannedCall, Signed,
+    Step, TRANSFER_EVENT, TxId, enough,
 };
 use bahaa_config::Feature;
-use bahaa_crypto::Seed;
+use bahaa_crypto::{Seed, secp256k1_address};
 use bahaa_types::{Address, Amount, AssetId, to_plain_text};
 use futures_util::future::try_join3;
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
-use super::{EvmChain, Route, bytes, hex, signed, word};
+use super::{EvmChain, Fees, Route, bytes, hex, key, signed, word};
 use crate::rpc::quantity;
 use crate::tx;
 
@@ -124,6 +124,24 @@ impl EvmChain {
         }
         let steps = self.steps(swap, allowance)?;
         let (gas, checked) = self.gas(&from, &steps, swap, allowance).await?;
+        let (plans, fees) = self.finish(steps, &gas, nonce, checked).await?;
+        let needed = swap
+            .call
+            .value
+            .units()
+            .checked_add(fees.max)
+            .ok_or_else(ChainError::overflow)?;
+        enough(native.0, needed, held.native, native.1)?;
+        Ok((plans, self.fee_quote(fees)?))
+    }
+
+    async fn finish(
+        &self,
+        steps: Vec<PlannedCall>,
+        gas: &[Gas],
+        nonce: u64,
+        checked: bool,
+    ) -> Result<(Vec<EvmCall>, Fees), ChainError> {
         let (base, tip) = self.fees().await?;
         let max_fee = base
             .checked_mul(U256::from(2u8))
@@ -141,7 +159,7 @@ impl EvmChain {
             max_fee,
         )?;
         let mut plans = Vec::with_capacity(steps.len());
-        for (index, (planned, gas)) in steps.into_iter().zip(gas).enumerate() {
+        for (index, (planned, gas)) in steps.into_iter().zip(gas.iter().copied()).enumerate() {
             let tx = TxEip1559 {
                 chain_id: self.chain_id,
                 nonce: nonce
@@ -171,14 +189,7 @@ impl EvmChain {
             });
         }
         fees.lines = merged(fees.lines)?;
-        let needed = swap
-            .call
-            .value
-            .units()
-            .checked_add(fees.max)
-            .ok_or_else(ChainError::overflow)?;
-        enough(native.0, needed, held.native, native.1)?;
-        Ok((plans, self.fee_quote(fees)?))
+        Ok((plans, fees))
     }
 
     pub async fn recheck(&self, swap: &ContractSwap, plans: &[EvmCall]) -> Result<(), ChainError> {
@@ -198,6 +209,27 @@ impl EvmChain {
             ));
         }
         self.gas(&from, &steps, swap, allowance).await.map(|_| ())
+    }
+
+    pub fn sign_typed(
+        &self,
+        digest: &[u8; 32],
+        seed: &Seed,
+        account: u32,
+        from: &Address,
+    ) -> Result<[u8; 65], ChainError> {
+        let key = key(seed, account)?;
+        if Address::Evm(secp256k1_address(&key.public_key())) != *from {
+            return Err(ChainError::Invalid(
+                "this seed does not own the sending account",
+            ));
+        }
+        let (rs, odd) = bahaa_crypto::secp256k1_sign(&key, digest)
+            .map_err(|_| ChainError::Invalid("signing failed"))?;
+        let mut signature = [0u8; 65];
+        signature[..64].copy_from_slice(&rs);
+        signature[64] = 27 + u8::from(odd);
+        Ok(signature)
     }
 
     pub fn sign_call(&self, plan: &EvmCall, seed: &Seed) -> Result<Signed, ChainError> {
@@ -301,17 +333,19 @@ impl EvmChain {
     }
 
     fn steps(&self, swap: &ContractSwap, allowance: U256) -> Result<Vec<PlannedCall>, ChainError> {
-        let mut steps = Vec::new();
-        if let (Some(contract), Some(spender)) = (swap.sell.contract(), swap.spender)
-            && allowance < swap.amount.units()
-        {
-            if !allowance.is_zero() {
-                let nothing =
-                    Amount::zero(swap.amount.decimals()).map_err(|_| ChainError::overflow())?;
-                steps.push(self.approval(swap, contract, spender, nothing)?);
-            }
-            steps.push(self.approval(swap, contract, spender, swap.amount)?);
-        }
+        let mut steps = match swap.spender.filter(|_| swap.sell.contract().is_some()) {
+            Some(spender) => self.approvals(
+                &Approval {
+                    account: swap.account,
+                    from: swap.from,
+                    asset: swap.sell.clone(),
+                    spender,
+                    amount: swap.amount,
+                },
+                allowance,
+            )?,
+            None => Vec::new(),
+        };
         steps.push(PlannedCall {
             step: Step::Swap,
             account: swap.account,
@@ -321,27 +355,123 @@ impl EvmChain {
         Ok(steps)
     }
 
-    fn approval(
+    fn approvals(
         &self,
-        swap: &ContractSwap,
-        contract: &Address,
-        spender: Address,
-        amount: Amount,
-    ) -> Result<PlannedCall, ChainError> {
-        Ok(PlannedCall {
-            step: Step::Approve {
-                asset: swap.sell.clone(),
-                spender,
-                amount,
-            },
-            account: swap.account,
-            from: swap.from,
-            call: Call {
-                to: *contract,
-                value: self.native(U256::ZERO)?,
-                data: approve_data(&bytes(&spender)?, amount.units()),
-            },
-        })
+        approval: &Approval,
+        allowance: U256,
+    ) -> Result<Vec<PlannedCall>, ChainError> {
+        let contract = approval
+            .asset
+            .contract()
+            .ok_or(ChainError::Invalid("only tokens need an approval"))?;
+        if allowance >= approval.amount.units() {
+            return Ok(Vec::new());
+        }
+        let step = |amount: Amount| -> Result<PlannedCall, ChainError> {
+            Ok(PlannedCall {
+                step: Step::Approve {
+                    asset: approval.asset.clone(),
+                    spender: approval.spender,
+                    amount,
+                },
+                account: approval.account,
+                from: approval.from,
+                call: Call {
+                    to: *contract,
+                    value: self.native(U256::ZERO)?,
+                    data: approve_data(&bytes(&approval.spender)?, amount.units()),
+                },
+            })
+        };
+        let mut steps = Vec::new();
+        if !allowance.is_zero() {
+            steps.push(step(
+                Amount::zero(approval.amount.decimals()).map_err(|_| ChainError::overflow())?,
+            )?);
+        }
+        steps.push(step(approval.amount)?);
+        Ok(steps)
+    }
+
+    pub async fn prepare_approval(
+        &self,
+        approval: &Approval,
+    ) -> Result<(Vec<EvmCall>, FeeQuote), ChainError> {
+        let from = bytes(&approval.from)?;
+        let token = bytes(
+            approval
+                .asset
+                .contract()
+                .ok_or(ChainError::Invalid("only tokens need an approval"))?,
+        )?;
+        let spender = bytes(&approval.spender)?;
+        let (held, nonce, allowance) = try_join3(
+            self.held(&from, Some(&token)),
+            self.nonce(&from),
+            self.allowance(&token, &from, &spender),
+        )
+        .await?;
+        enough(
+            &self.symbol(&token),
+            approval.amount.units(),
+            held.token,
+            approval.amount.decimals(),
+        )?;
+        let steps = self.approvals(approval, allowance)?;
+        if steps.is_empty() {
+            let nothing = self.native(U256::ZERO)?;
+            return Ok((Vec::new(), FeeQuote::new(nothing, nothing, Vec::new())?));
+        }
+        let gas = self.approval_gas(&from, &steps).await?;
+        let (plans, fees) = self.finish(steps, &gas, nonce, true).await?;
+        let native = &self.network.native;
+        enough(&native.symbol, fees.max, held.native, native.decimals)?;
+        Ok((plans, self.fee_quote(fees)?))
+    }
+
+    async fn approval_gas(
+        &self,
+        from: &[u8; 20],
+        steps: &[PlannedCall],
+    ) -> Result<Vec<Gas>, ChainError> {
+        let calls = steps
+            .iter()
+            .map(|step| call_json(from, &step.call))
+            .collect::<Result<Vec<_>, ChainError>>()?;
+        let params =
+            json!([{"blockStateCalls": [{"calls": calls}], "validation": false}, "latest"]);
+        let limit = |used: u64| used.saturating_add(used / 4);
+        if let Some(reply) = self.rpc.call_if_served("eth_simulateV1", params).await? {
+            let simulated = simulated(&reply, steps.len())?;
+            if simulated.iter().any(|call| !call.ok) {
+                return Err(ChainError::Rejected(
+                    "the token refuses this approval".to_owned(),
+                ));
+            }
+            return Ok(simulated
+                .iter()
+                .map(|call| Gas {
+                    used: call.used,
+                    limit: limit(call.peak),
+                })
+                .collect());
+        }
+        let first = steps.first().ok_or_else(ChainError::overflow)?;
+        let route = Route {
+            call_to: bytes(&first.call.to)?,
+            value: U256::ZERO,
+            data: first.call.data.clone(),
+            token: None,
+            decimals: self.network.native.decimals,
+        };
+        let estimate = self.estimate(from, &route).await?;
+        Ok(steps
+            .iter()
+            .map(|_| Gas {
+                used: estimate,
+                limit: limit(estimate).saturating_add(estimate / 4),
+            })
+            .collect())
     }
 
     async fn gas(

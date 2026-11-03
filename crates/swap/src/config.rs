@@ -17,6 +17,23 @@ pub struct Providers {
     pub kyberswap: KyberConfig,
     pub across: AcrossConfig,
     pub velora: VeloraConfig,
+    pub cow: CowConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CowConfig {
+    pub url: Url,
+    pub settlement: String,
+    pub relayer: String,
+    pub networks: BTreeMap<NetworkId, CowNetwork>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CowNetwork {
+    pub path: String,
+    pub chain: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
