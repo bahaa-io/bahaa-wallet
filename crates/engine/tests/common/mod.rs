@@ -7,7 +7,8 @@ use std::time::Duration;
 use adnl::AdnlPeer;
 use adnl::crypto::{KeyPair, SecretKey};
 use bahaa_config::{
-    ChainKind, Checkpoint, Coin, Endpoint, Explorer, Feature, Network, Protocol, Registry,
+    BlockCheckpoint, ChainKind, Checkpoint, Coin, Endpoint, Explorer, Feature, Network, Protocol,
+    Registry,
 };
 use bahaa_engine::{EngineConfig, Event, SentTx};
 use bahaa_market::MarketConfig;
@@ -137,6 +138,11 @@ pub fn bitcoin_network(url: Url) -> Network {
         color: "#f7931a".parse().unwrap(),
         kind: ChainKind::Bitcoin {
             genesis: bahaa_types::hex::decode_array(BITCOIN_GENESIS).unwrap(),
+            checkpoint: BlockCheckpoint {
+                height: bahaa_testkit::electrum::CHECKPOINT,
+                hash: bahaa_testkit::electrum::checkpoint(),
+            },
+            pow_limit: bahaa_testkit::electrum::POW_LIMIT,
         },
         testnet: false,
         native: Coin {

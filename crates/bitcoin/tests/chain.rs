@@ -191,3 +191,27 @@ async fn another_seed_cannot_sign_for_this_account() {
     .to_seed("");
     assert!(chain.sign(&plan, &other).is_err());
 }
+
+#[tokio::test]
+async fn a_server_cannot_invent_coins() {
+    let mut inflated = funded();
+    for coins in inflated.unspent.values_mut() {
+        coins[0]["value"] = 90_000.into();
+    }
+    let (chain, _, _) = started(inflated).await;
+    chain.derive(&seed(), 0).unwrap();
+    let failed = chain
+        .balances(&address(FIRST), &[native()])
+        .await
+        .unwrap_err();
+    assert!(failed.to_string().contains("could not prove"), "{failed}");
+    let mut forged = funded();
+    forged.forge_proofs = true;
+    let (chain, _, _) = started(forged).await;
+    chain.derive(&seed(), 0).unwrap();
+    let failed = chain
+        .balances(&address(FIRST), &[native()])
+        .await
+        .unwrap_err();
+    assert!(failed.to_string().contains("could not prove"), "{failed}");
+}

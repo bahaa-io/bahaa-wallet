@@ -143,7 +143,15 @@ pub enum ChainKind {
     },
     Bitcoin {
         genesis: [u8; 32],
+        checkpoint: BlockCheckpoint,
+        pow_limit: u32,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockCheckpoint {
+    pub height: u64,
+    pub hash: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,6 +284,8 @@ struct Spec {
     zero_state: Option<String>,
     #[serde(default)]
     checkpoint: Option<CheckpointSpec>,
+    #[serde(default)]
+    pow_limit: Option<String>,
     testnet: bool,
     native: Coin,
     #[serde(default)]
@@ -285,19 +295,47 @@ struct Spec {
 }
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum CheckpointSpec {
+    Ton(KeyBlockSpec),
+    Bitcoin(BlockSpec),
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CheckpointSpec {
+struct KeyBlockSpec {
     seqno: u32,
     root_hash: String,
     file_hash: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BlockSpec {
+    height: u64,
+    hash: String,
+}
+
 impl CheckpointSpec {
-    fn read(&self) -> Option<Checkpoint> {
+    fn ton(&self) -> Option<Checkpoint> {
+        let Self::Ton(spec) = self else {
+            return None;
+        };
         Some(Checkpoint {
-            seqno: (self.seqno > 0 && i32::try_from(self.seqno).is_ok()).then_some(self.seqno)?,
-            root_hash: block_id(Some(&self.root_hash))?,
-            file_hash: block_id(Some(&self.file_hash))?,
+            seqno: (spec.seqno > 0 && i32::try_from(spec.seqno).is_ok()).then_some(spec.seqno)?,
+            root_hash: block_id(Some(&spec.root_hash))?,
+            file_hash: block_id(Some(&spec.file_hash))?,
+        })
+    }
+
+    fn bitcoin(&self) -> Option<BlockCheckpoint> {
+        let Self::Bitcoin(spec) = self else {
+            return None;
+        };
+        Some(BlockCheckpoint {
+            height: (spec.height > 0 && spec.height.is_multiple_of(RETARGET_BLOCKS))
+                .then_some(spec.height)?,
+            hash: block_id(Some(&spec.hash))?,
         })
     }
 }
@@ -335,7 +373,7 @@ impl Spec {
                 checkpoint: self
                     .checkpoint
                     .as_ref()
-                    .and_then(CheckpointSpec::read)
+                    .and_then(CheckpointSpec::ton)
                     .ok_or("TON networks need a checkpoint key block with its two hashes")?,
             },
             (ChainFamily::Solana, None, None) => ChainKind::Solana {
@@ -345,6 +383,18 @@ impl Spec {
             (ChainFamily::Bitcoin, None, None) => ChainKind::Bitcoin {
                 genesis: block_id(self.genesis.as_deref())
                     .ok_or("Bitcoin networks need a 64 hex digit genesis")?,
+                checkpoint: self
+                    .checkpoint
+                    .as_ref()
+                    .and_then(CheckpointSpec::bitcoin)
+                    .ok_or(
+                        "Bitcoin networks need a checkpoint at the start of a difficulty period",
+                    )?,
+                pow_limit: self
+                    .pow_limit
+                    .as_deref()
+                    .and_then(|text| u32::from_str_radix(text, 16).ok())
+                    .ok_or("Bitcoin networks need their pow_limit in compact hex")?,
             },
             _ => return Err("only EVM networks have chain_id and fee"),
         };
@@ -354,11 +404,16 @@ impl Spec {
                     || self.global_id.is_some()
                     || self.zero_state.is_some()
                     || self.checkpoint.is_some()
+                    || self.pow_limit.is_some()
             }
-            ChainFamily::Tron | ChainFamily::Solana | ChainFamily::Bitcoin => {
-                self.global_id.is_some() || self.zero_state.is_some() || self.checkpoint.is_some()
+            ChainFamily::Tron | ChainFamily::Solana => {
+                self.global_id.is_some()
+                    || self.zero_state.is_some()
+                    || self.checkpoint.is_some()
+                    || self.pow_limit.is_some()
             }
-            ChainFamily::Ton => self.genesis.is_some(),
+            ChainFamily::Bitcoin => self.global_id.is_some() || self.zero_state.is_some(),
+            ChainFamily::Ton => self.genesis.is_some() || self.pow_limit.is_some(),
         };
         if foreign {
             return Err("a field belongs to another chain family");
@@ -469,6 +524,8 @@ impl Coin {
         Ok(())
     }
 }
+
+pub const RETARGET_BLOCKS: u64 = 2_016;
 
 fn block_id(text: Option<&str>) -> Option<[u8; 32]> {
     bahaa_types::hex::decode_array(text?)

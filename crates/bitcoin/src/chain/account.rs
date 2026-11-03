@@ -41,7 +41,7 @@ pub(crate) struct Place {
 pub(crate) struct Coin {
     pub outpoint: Outpoint,
     pub value: u64,
-    pub confirmed: bool,
+    pub height: i64,
     pub address: Address,
 }
 
@@ -147,18 +147,17 @@ impl Book {
 
 impl BitcoinChain {
     pub(crate) async fn funds(&self, owner: &Address) -> Result<Funds, ChainError> {
-        if !self.book().owns(owner) {
-            return Ok(Funds {
-                coins: self.unspent(&[*owner]).await?,
-                change: *owner,
-            });
-        }
-        let used = self.used(owner).await?;
-        let addresses: Vec<Address> = used.histories.iter().map(|(address, _)| *address).collect();
-        Ok(Funds {
-            coins: self.unspent(&addresses).await?,
-            change: used.change,
-        })
+        let (addresses, change) = if self.book().owns(owner) {
+            let used = self.used(owner).await?;
+            let addresses: Vec<Address> =
+                used.histories.iter().map(|(address, _)| *address).collect();
+            (addresses, used.change)
+        } else {
+            (vec![*owner], *owner)
+        };
+        let coins = self.unspent(&addresses).await?;
+        self.check(&coins).await?;
+        Ok(Funds { coins, change })
     }
 
     pub(crate) async fn used(&self, owner: &Address) -> Result<Used, ChainError> {
@@ -227,7 +226,7 @@ impl BitcoinChain {
                 list.into_iter().map(|found| Coin {
                     outpoint: found.outpoint,
                     value: found.value,
-                    confirmed: found.confirmed,
+                    height: found.height,
                     address: *address,
                 })
             })

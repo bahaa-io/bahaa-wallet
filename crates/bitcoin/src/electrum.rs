@@ -17,7 +17,9 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 
-use crate::source::{Seen, Unspent, already, rate};
+use crate::header::HEADER_BYTES;
+use crate::proof::Header;
+use crate::source::{Branch, Seen, Unspent, already, branch, rate};
 use crate::tx::{Hash, MAX_MONEY, Outpoint};
 
 const MAX_REPLY: u64 = 4 * 1024 * 1024;
@@ -150,6 +152,42 @@ impl Electrum {
                     .and_then(hex::decode)
                     .ok_or_else(ChainError::malformed)
             })
+            .collect()
+    }
+
+    pub(crate) async fn range(&self, start: u64, count: u64) -> Result<Vec<Header>, ChainError> {
+        let call = [("blockchain.block.headers", json!([start, count]))];
+        let reply = self.batch(&call, results).await?;
+        let bytes = reply
+            .first()
+            .and_then(|reply| reply["hex"].as_str())
+            .and_then(hex::decode)
+            .ok_or_else(ChainError::malformed)?;
+        let limit = usize::try_from(count).map_err(|_| ChainError::overflow())?;
+        if bytes.len() % HEADER_BYTES != 0 || bytes.len() / HEADER_BYTES > limit {
+            return Err(ChainError::malformed());
+        }
+        bytes
+            .chunks(HEADER_BYTES)
+            .map(|chunk| chunk.try_into().map_err(|_| ChainError::malformed()))
+            .collect()
+    }
+
+    pub(crate) async fn merkle(&self, items: &[(Hash, u64)]) -> Result<Vec<Branch>, ChainError> {
+        let calls: Vec<Call> = items
+            .iter()
+            .map(|(id, height)| {
+                (
+                    "blockchain.transaction.get_merkle",
+                    json!([hex::encode(id), height]),
+                )
+            })
+            .collect();
+        let replies = self.batch(&calls, results).await?;
+        items
+            .iter()
+            .zip(&replies)
+            .map(|((_, height), reply)| branch(reply, *height).ok_or_else(ChainError::malformed))
             .collect()
     }
 
@@ -459,7 +497,7 @@ fn unspent(entry: &Value) -> Option<Unspent> {
         value: entry["value"]
             .as_u64()
             .filter(|value| *value <= MAX_MONEY)?,
-        confirmed: entry["height"].as_i64()? > 0,
+        height: entry["height"].as_i64()?,
     })
 }
 

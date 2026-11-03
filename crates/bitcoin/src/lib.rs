@@ -5,6 +5,7 @@ mod esplora;
 #[doc(hidden)]
 pub mod fuzz;
 mod header;
+mod proof;
 mod script;
 mod source;
 mod tx;

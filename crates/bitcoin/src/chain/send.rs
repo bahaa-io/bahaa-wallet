@@ -210,11 +210,15 @@ impl BitcoinChain {
             .flatten()
             .find(|seen| seen.txid == wanted)
             .map_or(0, |seen| seen.height);
-        if height <= 0 {
+        let Ok(height) = u64::try_from(height) else {
+            return Ok(TxStatus::Pending);
+        };
+        if height == 0 {
             return Ok(TxStatus::Pending);
         }
+        self.prove(&[(wanted, height)]).await?;
         Ok(TxStatus::Confirmed {
-            block: u64::try_from(height).ok(),
+            block: Some(height),
             fee: self.fee_of(&tx).await.ok(),
             transaction: None,
         })
@@ -286,7 +290,7 @@ fn pick(
         script: script.to_vec(),
     };
     let mut ordered = funds.coins.clone();
-    ordered.sort_by_key(|coin| (!coin.confirmed, Reverse(coin.value)));
+    ordered.sort_by_key(|coin| (coin.height <= 0, Reverse(coin.value)));
     let total = |coins: &[Coin]| coins.iter().map(|coin| coin.value).sum::<u64>();
     if max {
         let held = total(&ordered);
@@ -382,7 +386,7 @@ mod tests {
                 vout: 0,
             },
             value,
-            confirmed,
+            height: if confirmed { 900_000 } else { 0 },
             address: Address::Bitcoin {
                 script: BitcoinScript::WitnessKeyHash([n; 20]),
                 testnet: false,

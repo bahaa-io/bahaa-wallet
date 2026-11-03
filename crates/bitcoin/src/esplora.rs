@@ -11,7 +11,7 @@ use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 
 use crate::header::block_hash;
-use crate::source::{Seen, Unspent, already, rate};
+use crate::source::{Branch, Seen, Unspent, already, branch, rate};
 use crate::tx::{Hash, MAX_MONEY, Outpoint};
 
 const PAGE: usize = 25;
@@ -67,6 +67,10 @@ impl Esplora {
 
     pub(crate) async fn headers(&self, heights: &[u64]) -> Result<Vec<Vec<u8>>, ChainError> {
         self.each(heights, Self::header).await
+    }
+
+    pub(crate) async fn merkle(&self, items: &[(Hash, u64)]) -> Result<Vec<Branch>, ChainError> {
+        self.each(items, Self::proof).await
     }
 
     pub(crate) async fn rates(&self) -> Result<Vec<u64>, ChainError> {
@@ -159,6 +163,16 @@ impl Esplora {
             Some(body) => decode(&body).map(Some),
             None => Ok(None),
         }
+    }
+
+    async fn proof(
+        &self,
+        endpoint: Endpoint,
+        item: &(Hash, u64),
+    ) -> Result<Branch, Failure<ChainError>> {
+        let (id, height) = item;
+        let path = format!("tx/{}/merkle-proof", hex::encode(id));
+        branch(&self.json(&endpoint, &path).await?, *height).ok_or_else(malformed)
     }
 
     async fn header(
@@ -278,17 +292,18 @@ fn entries<T>(list: &Value, read: fn(&Value) -> Option<T>) -> Result<Vec<T>, Fai
 }
 
 fn seen(entry: &Value) -> Option<Seen> {
-    let status = &entry["status"];
     Some(Seen {
         txid: hex::decode_array(entry["txid"].as_str()?)?,
-        height: if status["confirmed"].as_bool()? {
-            status["block_height"]
-                .as_i64()
-                .filter(|height| *height > 0)?
-        } else {
-            0
-        },
+        height: confirmed_height(&entry["status"])?,
     })
+}
+
+fn confirmed_height(status: &Value) -> Option<i64> {
+    if status["confirmed"].as_bool()? {
+        status["block_height"].as_i64().filter(|height| *height > 0)
+    } else {
+        Some(0)
+    }
 }
 
 fn unspent(entry: &Value) -> Option<Unspent> {
@@ -300,7 +315,7 @@ fn unspent(entry: &Value) -> Option<Unspent> {
         value: entry["value"]
             .as_u64()
             .filter(|value| *value <= MAX_MONEY)?,
-        confirmed: entry["status"]["confirmed"].as_bool()?,
+        height: confirmed_height(&entry["status"])?,
     })
 }
 

@@ -49,6 +49,10 @@ impl Tx {
         self.encode(self.inputs.iter().any(|input| !input.witness.is_empty()))
     }
 
+    pub(crate) fn stripped_size(&self) -> usize {
+        self.encode(false).len()
+    }
+
     pub(crate) fn id(&self) -> Hash {
         shown(sha256d(&self.encode(false)))
     }

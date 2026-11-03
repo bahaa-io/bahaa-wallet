@@ -5,7 +5,7 @@ mod common;
 use bahaa_bitcoin::BitcoinChain;
 use bahaa_chain::{Chain, Transfer};
 use bahaa_types::Amount;
-use common::{FIRST, FRIEND, address, bitcoin_on, native, seed};
+use common::{FIRST, FRIEND, address, mainnet_on, native, seed};
 use url::Url;
 
 const SERVERS: [&str; 2] = [
@@ -18,7 +18,7 @@ const SERVERS: [&str; 2] = [
 async fn every_server_reads_the_same_account_and_quotes_a_fee() {
     let mut seen = Vec::new();
     for server in SERVERS {
-        let chain = BitcoinChain::new(bitcoin_on(&Url::parse(server).unwrap())).unwrap();
+        let chain = BitcoinChain::new(mainnet_on(&Url::parse(server).unwrap())).unwrap();
         assert_eq!(chain.derive(&seed(), 0).unwrap(), address(FIRST));
         let held = chain.balances(&address(FIRST), &[native()]).await.unwrap();
         println!("{server}: {}", held[0].amount);
@@ -45,7 +45,7 @@ async fn every_server_reads_the_same_account_and_quotes_a_fee() {
 async fn every_server_reads_the_same_history() {
     let mut seen = Vec::new();
     for server in SERVERS {
-        let chain = BitcoinChain::new(bitcoin_on(&Url::parse(server).unwrap())).unwrap();
+        let chain = BitcoinChain::new(mainnet_on(&Url::parse(server).unwrap())).unwrap();
         chain.derive(&seed(), 0).unwrap();
         let scanned = chain
             .scan(&address(FIRST), &[native()], None)
@@ -72,7 +72,7 @@ async fn every_server_reads_the_same_history() {
 #[tokio::test]
 #[ignore = "needs the public Esplora and Electrum servers"]
 async fn esplora_reads_what_electrum_reads() {
-    let electrum = BitcoinChain::new(bitcoin_on(&Url::parse(SERVERS[0]).unwrap())).unwrap();
+    let electrum = BitcoinChain::new(mainnet_on(&Url::parse(SERVERS[0]).unwrap())).unwrap();
     electrum.derive(&seed(), 0).unwrap();
     for base in [
         "https://blockstream.info/api/",

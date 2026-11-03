@@ -56,11 +56,54 @@ fn transaction(previous: &[u8; 32], value: u64, to: &Address) -> (String, String
     (txid(&raw), hex::encode(&raw))
 }
 
-fn header(height: u64) -> String {
-    let mut raw = vec![0u8; 80];
-    let time = u32::try_from(time_of(height)).unwrap();
-    raw[68..72].copy_from_slice(&time.to_le_bytes());
-    hex::encode(&raw)
+pub const CHECKPOINT: u64 = 899_136;
+pub const POW_LIMIT: u32 = 0x207f_ffff;
+
+const TARGET: [u8; 3] = [0x7f, 0xff, 0xff];
+
+pub fn checkpoint() -> [u8; 32] {
+    hex::decode_array(&txid(&Ledger::default().header(CHECKPOINT))).unwrap()
+}
+
+fn sha256d(data: &[u8]) -> [u8; 32] {
+    Sha256::digest(Sha256::digest(data)).into()
+}
+
+fn internal(display: &str) -> [u8; 32] {
+    let mut bytes: [u8; 32] = hex::decode_array(display).unwrap();
+    bytes.reverse();
+    bytes
+}
+
+fn levels(ids: &[[u8; 32]]) -> Vec<Vec<[u8; 32]>> {
+    let mut levels = vec![ids.to_vec()];
+    while levels.last().unwrap().len() > 1 {
+        let level = levels.last().unwrap();
+        let next = level
+            .chunks(2)
+            .map(|pair| sha256d(&[pair[0], *pair.get(1).unwrap_or(&pair[0])].concat()))
+            .collect();
+        levels.push(next);
+    }
+    levels
+}
+
+fn mine(previous: [u8; 32], root: [u8; 32], height: u64) -> [u8; 80] {
+    let mut raw = [0u8; 80];
+    raw[..4].copy_from_slice(&0x2000_0000u32.to_le_bytes());
+    raw[4..36].copy_from_slice(&previous);
+    raw[36..68].copy_from_slice(&root);
+    raw[68..72].copy_from_slice(&u32::try_from(time_of(height)).unwrap().to_le_bytes());
+    raw[72..76].copy_from_slice(&POW_LIMIT.to_le_bytes());
+    for nonce in 0u32.. {
+        raw[76..80].copy_from_slice(&nonce.to_le_bytes());
+        let mut hash = sha256d(&raw);
+        hash.reverse();
+        if hash[..3] <= TARGET[..] {
+            break;
+        }
+    }
+    raw
 }
 
 #[derive(Clone, Debug, Default)]
@@ -71,7 +114,9 @@ pub struct Ledger {
     pub transactions: HashMap<String, String>,
     pub broadcast: Vec<String>,
     pub refusal: Option<String>,
+    pub forge_proofs: bool,
     blocks: HashMap<String, u64>,
+    headers: HashMap<u64, [u8; 80]>,
 }
 
 impl Ledger {
@@ -94,6 +139,7 @@ impl Ledger {
         self.transactions.insert(source, source_raw);
         self.transactions.insert(id.clone(), raw);
         let key = scripthash(to);
+        self.touched(height);
         self.histories
             .entry(key.clone())
             .or_default()
@@ -106,6 +152,7 @@ impl Ledger {
     }
 
     pub fn confirm(&mut self, id: &str, address: &Address, height: u64) {
+        self.touched(height);
         self.histories
             .entry(scripthash(address))
             .or_default()
@@ -123,7 +170,18 @@ impl Ledger {
             "blockchain.scripthash.listunspent" => {
                 json!(self.unspent.get(&key).cloned().unwrap_or_default())
             }
-            "blockchain.block.header" => json!(header(params[0].as_u64().unwrap())),
+            "blockchain.block.header" => {
+                json!(hex::encode(&self.header(params[0].as_u64().unwrap())))
+            }
+            "blockchain.block.headers" => {
+                let start = params[0].as_u64().unwrap();
+                let end = (start + params[1].as_u64().unwrap()).min(self.tip() + 1);
+                let headers: Vec<u8> = (start..end)
+                    .flat_map(|height| self.header(height))
+                    .collect();
+                json!({"count": end.saturating_sub(start), "hex": hex::encode(&headers), "max": 2016})
+            }
+            "blockchain.transaction.get_merkle" => self.proof(&key, params[1].as_u64().unwrap()),
             "blockchain.estimatefee" => serde_json::from_str("2e-05").unwrap(),
             "blockchain.relayfee" => serde_json::from_str("1e-06").unwrap(),
             "blockchain.transaction.broadcast" => json!(self.accept(&key)?),
@@ -137,6 +195,80 @@ impl Ledger {
 }
 
 impl Ledger {
+    fn touched(&mut self, height: u64) {
+        self.headers.retain(|known, _| *known < height);
+    }
+
+    fn entries(&self) -> impl Iterator<Item = &Value> {
+        self.histories
+            .values()
+            .chain(self.unspent.values())
+            .flatten()
+    }
+
+    fn tip(&self) -> u64 {
+        self.entries()
+            .filter_map(|entry| entry["height"].as_u64())
+            .max()
+            .unwrap_or(0)
+            .max(CHECKPOINT)
+    }
+
+    fn block(&self, height: u64) -> Vec<[u8; 32]> {
+        let mut ids: Vec<String> = self
+            .entries()
+            .filter(|entry| entry["height"].as_u64() == Some(height))
+            .map(|entry| entry["tx_hash"].as_str().unwrap().to_owned())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        if ids.is_empty() {
+            return vec![sha256d(&height.to_le_bytes())];
+        }
+        ids.iter().map(|id| internal(id)).collect()
+    }
+
+    fn header(&mut self, height: u64) -> [u8; 80] {
+        if let Some(known) = self.headers.get(&height) {
+            return *known;
+        }
+        let start = if height > CHECKPOINT {
+            (CHECKPOINT..height)
+                .rev()
+                .find(|known| self.headers.contains_key(known))
+                .map_or(CHECKPOINT, |known| known + 1)
+        } else {
+            height
+        };
+        for at in start..=height {
+            let previous = if at > CHECKPOINT {
+                sha256d(&self.headers[&(at - 1)])
+            } else {
+                [0; 32]
+            };
+            let root = levels(&self.block(at)).last().unwrap()[0];
+            self.headers.insert(at, mine(previous, root, at));
+        }
+        self.headers[&height]
+    }
+
+    fn proof(&self, id: &str, height: u64) -> Value {
+        let ids = self.block(height);
+        let wanted = internal(id);
+        let pos = ids.iter().position(|known| *known == wanted).unwrap();
+        let levels = levels(&ids);
+        let mut at = pos;
+        let mut merkle = Vec::new();
+        for level in &levels[..levels.len() - 1] {
+            let mut sibling = *level.get(at ^ 1).unwrap_or(&level[at]);
+            sibling.reverse();
+            sibling[0] ^= u8::from(self.forge_proofs);
+            merkle.push(hex::encode(&sibling));
+            at /= 2;
+        }
+        json!({"block_height": height, "merkle": merkle, "pos": pos})
+    }
+
     fn accept(&mut self, raw: &str) -> Result<String, String> {
         if let Some(refusal) = &self.refusal {
             return Err(refusal.clone());
@@ -178,14 +310,24 @@ impl Ledger {
                 if height == 0 {
                     return text(200, self.genesis.clone());
                 }
-                let hash = txid(&hex::decode(&header(height)).unwrap());
+                let hash = txid(&self.header(height));
                 self.blocks.insert(hash.clone(), height);
                 text(200, hash)
             }
-            ["block", hash, "header"] => match self.blocks.get(*hash) {
-                Some(height) => text(200, header(*height)),
+            ["block", hash, "header"] => match self.blocks.get(*hash).copied() {
+                Some(height) => text(200, hex::encode(&self.header(height))),
                 None => text(404, String::new()),
             },
+            ["tx", id, "merkle-proof"] => {
+                let height = self
+                    .entries()
+                    .find(|entry| entry["tx_hash"] == *id && entry["height"].as_u64() > Some(0))
+                    .and_then(|entry| entry["height"].as_u64());
+                match height {
+                    Some(height) => Reply::json(200, &self.proof(id, height)),
+                    None => text(404, String::new()),
+                }
+            }
             ["scripthash", hash, "txs"] => {
                 let seen = self
                     .histories

@@ -77,26 +77,7 @@ impl BitcoinChain {
                 looked += 1;
                 wanted.push((*seen, time));
             }
-            self.load(&mut known, wanted.iter().map(|(seen, _)| seen.txid))
-                .await?;
-            let previous: Vec<Hash> = wanted
-                .iter()
-                .flat_map(|(seen, _)| &known[&seen.txid].inputs)
-                .map(|input| input.previous.txid)
-                .filter(|id| mine.contains(id))
-                .collect();
-            self.load(&mut known, previous).await?;
-            let senders: Vec<Hash> = {
-                let book = self.book();
-                wanted
-                    .iter()
-                    .map(|(seen, _)| &known[&seen.txid])
-                    .filter(|tx| !self.spends(&book, owner, tx, &known))
-                    .filter_map(|tx| tx.inputs.first())
-                    .map(|input| input.previous.txid)
-                    .collect()
-            };
-            self.load(&mut known, senders).await?;
+            self.gather(owner, &mine, &wanted, &mut known).await?;
             let book = self.book();
             for (seen, time) in &wanted {
                 match self.movement(&book, owner, &known, *seen, *time)? {
@@ -129,12 +110,50 @@ impl BitcoinChain {
         }))
     }
 
+    async fn gather(
+        &self,
+        owner: &Address,
+        mine: &HashSet<Hash>,
+        wanted: &[(Seen, u64)],
+        known: &mut HashMap<Hash, Tx>,
+    ) -> Result<(), ChainError> {
+        self.load(known, wanted.iter().map(|(seen, _)| seen.txid))
+            .await?;
+        let proofs = wanted
+            .iter()
+            .map(|(seen, _)| {
+                u64::try_from(seen.height)
+                    .map(|height| (seen.txid, height))
+                    .map_err(|_| ChainError::malformed())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.prove(&proofs).await?;
+        let previous: Vec<Hash> = wanted
+            .iter()
+            .flat_map(|(seen, _)| &known[&seen.txid].inputs)
+            .map(|input| input.previous.txid)
+            .filter(|id| mine.contains(id))
+            .collect();
+        self.load(known, previous).await?;
+        let senders: Vec<Hash> = {
+            let book = self.book();
+            wanted
+                .iter()
+                .map(|(seen, _)| &known[&seen.txid])
+                .filter(|tx| !self.spends(&book, owner, tx, known))
+                .filter_map(|tx| tx.inputs.first())
+                .map(|input| input.previous.txid)
+                .collect()
+        };
+        self.load(known, senders).await
+    }
+
     async fn times(&self, page: &[Seen]) -> Result<Vec<u64>, ChainError> {
         let heights = page
             .iter()
             .map(|seen| u64::try_from(seen.height).map_err(|_| ChainError::malformed()))
             .collect::<Result<Vec<u64>, _>>()?;
-        let headers = self.sources.headers(&heights).await?;
+        let headers = self.headers(&heights).await?;
         headers
             .iter()
             .map(|header| time(header).ok_or_else(ChainError::malformed))

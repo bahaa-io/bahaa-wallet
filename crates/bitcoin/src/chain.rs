@@ -14,40 +14,52 @@ use ruint::aliases::U256;
 
 mod account;
 mod incoming;
+mod proven;
 mod send;
 
 pub use send::BitcoinPlan;
 
+use crate::proof::{ambiguous, unproven};
 use crate::script::{key_address, read};
 use crate::source::Sources;
 use crate::tx::{Hash, Outpoint, Output, Tx, parse};
 use account::Book;
+use proven::Trusted;
 
 #[derive(Debug)]
 pub struct BitcoinChain {
     network: Network,
     sources: Sources,
     book: Mutex<Book>,
+    trusted: Mutex<Trusted>,
+    syncing: tokio::sync::Mutex<()>,
 }
 
 impl BitcoinChain {
     pub fn new(network: Network) -> Result<Self, ChainError> {
-        let ChainKind::Bitcoin { genesis } = network.kind else {
+        let ChainKind::Bitcoin { genesis, .. } = network.kind else {
             return Err(ChainError::Invalid("not a Bitcoin network"));
         };
         Ok(Self {
             sources: Sources::new(&network, &genesis)?,
             network,
             book: Mutex::default(),
+            trusted: Mutex::default(),
+            syncing: tokio::sync::Mutex::new(()),
         })
     }
 
     pub fn forget(&self) {
         self.book().forget();
+        self.trusted().forget();
     }
 
     fn book(&self) -> MutexGuard<'_, Book> {
         self.book.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn trusted(&self) -> MutexGuard<'_, Trusted> {
+        self.trusted.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn path(&self, account: u32, rest: &str) -> Result<DerivationPath, ChainError> {
@@ -78,6 +90,9 @@ impl BitcoinChain {
                     return Ok(None);
                 };
                 let tx = parse(&raw)?;
+                if ambiguous(tx.stripped_size()) {
+                    return Err(unproven("a 64-byte transaction"));
+                }
                 if tx.id() != *id {
                     return Err(ChainError::Network(
                         "a server sent another transaction".to_owned(),

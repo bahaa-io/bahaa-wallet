@@ -118,7 +118,7 @@ async fn later_scans_read_only_the_new_part_and_a_two_hour_margin() {
     ledger
         .lock()
         .unwrap()
-        .fund_at(&address(SECOND), 5_000, 3, 920_000);
+        .fund_at(&address(SECOND), 5_000, 3, 900_200);
     let later = chain
         .scan(&address(FIRST), &[native()], Some(first.cursor))
         .await

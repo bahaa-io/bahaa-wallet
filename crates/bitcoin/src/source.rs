@@ -5,6 +5,7 @@ use ruint::aliases::U256;
 
 use crate::electrum::Electrum;
 use crate::esplora::Esplora;
+use crate::proof::Header;
 use crate::tx::{Hash, Outpoint};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,7 +18,13 @@ pub(crate) struct Seen {
 pub(crate) struct Unspent {
     pub outpoint: Outpoint,
     pub value: u64,
-    pub confirmed: bool,
+    pub height: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Branch {
+    pub pos: u64,
+    pub hashes: Vec<Hash>,
 }
 
 #[derive(Debug)]
@@ -88,6 +95,23 @@ impl Sources {
         .await
     }
 
+    pub(crate) async fn range(&self, start: u64, count: u64) -> Result<Vec<Header>, ChainError> {
+        match &self.electrum {
+            Some(electrum) => electrum.range(start, count).await,
+            None => Err(ChainError::Unsupported(
+                "header ranges without Electrum servers",
+            )),
+        }
+    }
+
+    pub(crate) async fn merkle(&self, items: &[(Hash, u64)]) -> Result<Vec<Branch>, ChainError> {
+        self.either(
+            |electrum| electrum.merkle(items),
+            |esplora| esplora.merkle(items),
+        )
+        .await
+    }
+
     pub(crate) async fn rates(&self) -> Result<Vec<u64>, ChainError> {
         self.either(Electrum::rates, Esplora::rates).await
     }
@@ -130,6 +154,20 @@ pub(crate) fn rate(text: &str, scale: u64) -> Option<u64> {
         .value_of(Amount::new(U256::from(scale), 0).ok()?, 0)
         .ok()?;
     u64::try_from(units.units()).ok()
+}
+
+pub(crate) fn branch(reply: &serde_json::Value, height: u64) -> Option<Branch> {
+    if reply["block_height"].as_u64()? != height {
+        return None;
+    }
+    Some(Branch {
+        pos: reply["pos"].as_u64()?,
+        hashes: reply["merkle"]
+            .as_array()?
+            .iter()
+            .map(|node| bahaa_types::hex::decode_array(node.as_str()?))
+            .collect::<Option<_>>()?,
+    })
 }
 
 pub(crate) fn already(message: &str) -> bool {
