@@ -6,7 +6,7 @@ use bahaa_chain::{Chain, ContractSwap, PlannedCall, Step, TxId, TxStatus, check_
 use bahaa_crypto::{Mnemonic, Seed, WordCount};
 use bahaa_evm::{EvmCall, EvmChain};
 use bahaa_swap::{
-    Across, KyberSwap, Method, Order, Pools, Providers, Relay, Request, Thorchain, Velora,
+    Across, Circle, KyberSwap, Method, Order, Pools, Providers, Relay, Request, Thorchain, Velora,
 };
 use bahaa_testkit::anvil::Anvil;
 use bahaa_types::{Address, Amount, AssetId};
@@ -404,4 +404,46 @@ async fn a_thorchain_deposit_into_bitcoin_takes_exactly_the_amount_on_a_forked_c
     let spent = before.checked_sub(held(&chain, &me, "base").await).unwrap();
     assert!(spent >= deposit.amount);
     assert!(spent <= deposit.amount.checked_add(fee.max()).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "needs a local anvil and internet: BAHAA_ANVIL=/path/to/anvil"]
+async fn a_circle_burn_takes_exactly_the_usdc_and_leaves_no_approval_on_a_forked_chain() {
+    let (anvil, chain, me, seed) = forked_on("base", "https://mainnet.base.org").await;
+    let usdc = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+    let Address::Evm(owner) = me else { panic!() };
+    anvil
+        .fund_token(usdc, &owner, &format!("{:x}", 500_000_000u64))
+        .await;
+    let circle = Circle::new(
+        &Providers::builtin().unwrap().circle,
+        bahaa_chain::http::client().unwrap(),
+    )
+    .unwrap();
+    let transfer = Request {
+        sell: format!("base/{usdc}").parse().unwrap(),
+        amount: Amount::parse("100", 6).unwrap(),
+        buy: "arbitrum/0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+            .parse()
+            .unwrap(),
+        buy_decimals: 6,
+        native_decimals: 18,
+        from: me,
+        to: me,
+        deadline: now() + 1_800,
+    };
+    let (route, order) = circle.quote(&transfer, now()).await.unwrap();
+    assert_eq!(route.method, Method::Issuer);
+    assert!(route.minimum < route.expected && route.expected < transfer.amount);
+    let mut swap = swap_of(&transfer, order);
+    swap.buy = None;
+    warm(&anvil, &swap).await;
+    let (plans, _) = chain.prepare_swap(&swap).await.unwrap();
+    assert_eq!(plans.len(), 2);
+    assert!(plans.iter().all(EvmCall::checked));
+    run(&chain, &seed, &plans).await;
+    assert_eq!(
+        held(&chain, &me, &format!("base/{usdc}")).await,
+        Amount::parse("400", 6).unwrap()
+    );
 }

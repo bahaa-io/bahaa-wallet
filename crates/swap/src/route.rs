@@ -16,13 +16,14 @@ pub enum Method {
     Escrow,
     Deposit,
     Validators,
+    Issuer,
 }
 
 impl Method {
     pub fn custody(self) -> Custody {
         match self {
             Self::Pool | Self::Aggregator | Self::Auction => Custody::Nobody,
-            Self::Escrow => Custody::Escrow,
+            Self::Escrow | Self::Issuer => Custody::Escrow,
             Self::Deposit | Self::Validators => Custody::Provider,
         }
     }

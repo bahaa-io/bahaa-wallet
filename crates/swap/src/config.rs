@@ -23,6 +23,15 @@ pub struct Providers {
     pub sunswap: SunSwapConfig,
     pub chainflip: ChainflipConfig,
     pub thorchain: ThorchainConfig,
+    pub circle: CircleConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CircleConfig {
+    pub url: Url,
+    pub messenger: String,
+    pub usdc: BTreeMap<AssetId, u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

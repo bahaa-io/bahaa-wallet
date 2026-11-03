@@ -1,6 +1,7 @@
 mod abi;
 mod across;
 mod chainflip;
+mod circle;
 mod config;
 mod cow;
 mod jupiter;
@@ -19,11 +20,12 @@ mod velora;
 
 pub use across::Across;
 pub use chainflip::Chainflip;
+pub use circle::Circle;
 pub use config::{
-    AcrossConfig, ChainflipAsset, ChainflipConfig, CowConfig, CowNetwork, JupiterConfig,
-    KyberConfig, OneClickConfig, PoolConfig, Providers, RelayChain, RelayConfig, RelayDeposit,
-    SpokeConfig, StonFiConfig, StonFiRouter, SunSwapConfig, ThorAsset, ThorchainConfig,
-    VeloraConfig,
+    AcrossConfig, ChainflipAsset, ChainflipConfig, CircleConfig, CowConfig, CowNetwork,
+    JupiterConfig, KyberConfig, OneClickConfig, PoolConfig, Providers, RelayChain, RelayConfig,
+    RelayDeposit, SpokeConfig, StonFiConfig, StonFiRouter, SunSwapConfig, ThorAsset,
+    ThorchainConfig, VeloraConfig,
 };
 pub use cow::{Cow, TypedOrder};
 pub use jupiter::Jupiter;

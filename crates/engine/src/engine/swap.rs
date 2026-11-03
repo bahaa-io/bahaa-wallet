@@ -4,8 +4,8 @@ use std::time::Duration;
 use bahaa_chain::{ChainError, ContractSwap, FeeQuote, MAX_MEMO, Step, Transfer};
 use bahaa_store::{SentStatus, SentTx, SwapRecord, SwapStatus};
 use bahaa_swap::{
-    Across, Chainflip, Charged, Comment, Cost, CostKind, Cow, Jupiter, KyberSwap, OneClick, Order,
-    Pools, Progress, Provider, Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, StonFi,
+    Across, Chainflip, Charged, Circle, Comment, Cost, CostKind, Cow, Jupiter, KyberSwap, OneClick,
+    Order, Pools, Progress, Provider, Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, StonFi,
     SunSwap, SwapError, Thorchain, Velora, rank,
 };
 use bahaa_types::{Address, Amount, AssetId, BitcoinScript, NetworkId, is_plain_text};
@@ -77,6 +77,7 @@ pub(crate) struct Swappers {
     sunswap: SunSwap,
     chainflip: Chainflip,
     thorchain: Thorchain,
+    circle: Circle,
 }
 
 impl Swappers {
@@ -93,7 +94,8 @@ impl Swappers {
             jupiter: Jupiter::new(&providers.jupiter, client.clone())?,
             stonfi: StonFi::new(&providers.stonfi, client.clone())?,
             chainflip: Chainflip::new(&providers.chainflip, client.clone()),
-            thorchain: Thorchain::new(&providers.thorchain, client)?,
+            thorchain: Thorchain::new(&providers.thorchain, client.clone())?,
+            circle: Circle::new(&providers.circle, client)?,
             sunswap: SunSwap::new(&providers.sunswap)?,
         })
     }
@@ -132,6 +134,9 @@ impl Swappers {
         }
         if chain.evm().is_some() && self.thorchain.covers(request) {
             providers.push(Provider::Thorchain);
+        }
+        if chain.evm().is_some() && self.circle.covers(request) {
+            providers.push(Provider::Circle);
         }
         providers
     }
@@ -232,6 +237,7 @@ impl Swappers {
             }
             Provider::Chainflip => self.chainflip.quote(request, now).await,
             Provider::Thorchain => self.thorchain.quote(request, now).await,
+            Provider::Circle => self.circle.quote(request, now).await,
         }
     }
 
@@ -249,6 +255,7 @@ impl Swappers {
             Provider::StonFi => self.stonfi.status(reference).await,
             Provider::Chainflip => self.chainflip.status(reference).await,
             Provider::Thorchain => self.thorchain.status(reference).await,
+            Provider::Circle => self.circle.status(network, reference).await,
             Provider::Uniswap
             | Provider::PancakeSwap
             | Provider::KyberSwap
