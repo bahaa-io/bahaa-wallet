@@ -141,6 +141,7 @@ enum Command {
     AddAccount(WalletId, Reply<Vec<Account>>),
     RemoveAccount(WalletId, u32, Reply<()>),
     Choose(WalletId, Choice, Reply<()>),
+    ReceiveAddress(NetworkId, Address, Reply<Address>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
     ChangePassword(SecretString, SecretString, Reply<()>),
     CheckPassword(SecretString, Reply<()>),
@@ -209,6 +210,7 @@ impl Command {
                 | Self::Contacts(_)
                 | Self::Cautions(..)
                 | Self::Tokens(_)
+                | Self::ReceiveAddress(..)
                 | Self::Shutdown(_)
         )
     }
@@ -454,6 +456,15 @@ impl Engine {
         kind: BitcoinType,
     ) -> Result<(), EngineError> {
         self.ask(|reply| Command::Choose(wallet, Choice::Bitcoin(kind), reply))
+            .await
+    }
+
+    pub async fn receive_address(
+        &self,
+        network: NetworkId,
+        address: Address,
+    ) -> Result<Address, EngineError> {
+        self.ask(|reply| Command::ReceiveAddress(network, address, reply))
             .await
     }
 
@@ -748,6 +759,9 @@ impl Worker {
             Command::Tokens(reply) => answer(reply, self.tokens()),
             Command::AddToken(asset, reply) => self.add_token(asset, reply),
             Command::RemoveToken(asset, reply) => answer(reply, self.remove_token(&asset)),
+            Command::ReceiveAddress(network, address, reply) => {
+                self.receive_address(&network, address, reply);
+            }
             Command::Touch | Command::Shutdown(_) => {}
             command @ (Command::Wallets(_)
             | Command::Accounts(_)
@@ -913,6 +927,38 @@ impl Worker {
             }
             Notice::Detected(..) => {}
         }
+    }
+
+    fn receive_address(&self, network: &NetworkId, address: Address, reply: Reply<Address>) {
+        let found = self.ensure_unlocked().and_then(|()| {
+            let chain = self
+                .chain_index(network)
+                .ok_or(EngineError::UnknownNetwork)?;
+            let family = self.chains[chain].family();
+            if !self
+                .accounts
+                .iter()
+                .any(|account| account.address == address && account.serves(network, family))
+            {
+                return Err(ChainError::Invalid(
+                    "this address is not one of this wallet's accounts",
+                )
+                .into());
+            }
+            Ok(chain)
+        });
+        let chain = match found {
+            Ok(chain) => chain,
+            Err(err) => {
+                let _ = reply.send(Err(err));
+                return;
+            }
+        };
+        let chains = Arc::clone(&self.chains);
+        tokio::spawn(async move {
+            let result = chains[chain].receive_address(&address).await;
+            let _ = reply.send(result.map_err(EngineError::from));
+        });
     }
 
     async fn detect_paths(&mut self) {

@@ -90,6 +90,13 @@ impl AnyChain {
         }
     }
 
+    pub(crate) async fn receive_address(&self, address: &Address) -> Result<Address, ChainError> {
+        match self {
+            Self::Bitcoin(chain) => shielded(chain.receive_address(address)).await,
+            Self::Evm(_) | Self::Tron(_) | Self::Ton(_) | Self::Solana(_) => Ok(*address),
+        }
+    }
+
     pub(crate) fn quote_life(&self) -> Option<Duration> {
         match self {
             Self::Solana(_) => Some(bahaa_solana::QUOTE_LIFE),

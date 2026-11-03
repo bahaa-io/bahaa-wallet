@@ -55,6 +55,7 @@ pub(crate) struct Coin {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Used {
     pub histories: Vec<(Address, Vec<Seen>)>,
+    pub receive: Address,
     pub change: Address,
 }
 
@@ -174,6 +175,13 @@ impl Book {
 }
 
 impl BitcoinChain {
+    pub async fn receive_address(&self, owner: &Address) -> Result<Address, ChainError> {
+        if !self.book().owns(owner) {
+            return Ok(*owner);
+        }
+        Ok(self.used(owner).await?.receive)
+    }
+
     pub(crate) async fn funds(&self, owner: &Address) -> Result<Funds, ChainError> {
         let (addresses, change) = if self.book().owns(owner) {
             let used = self.used(owner).await?;
@@ -194,6 +202,7 @@ impl BitcoinChain {
             let histories = self.histories(&[*owner]).await?;
             return Ok(Used {
                 histories: vec![(*owner, histories.into_iter().flatten().collect())],
+                receive: *owner,
                 change: *owner,
             });
         }
@@ -230,13 +239,18 @@ impl BitcoinChain {
                 }
             }
         }
-        let change = self
-            .book()
-            .addresses(owner, CHANGE, next[CHANGE]..next[CHANGE] + 1, testnet)?
-            .first()
-            .copied()
-            .ok_or_else(ChainError::overflow)?;
-        Ok(Used { histories, change })
+        let [receive, change] = [RECEIVE, CHANGE].map(|branch| {
+            self.book()
+                .addresses(owner, branch, next[branch]..next[branch] + 1, testnet)?
+                .first()
+                .copied()
+                .ok_or_else(ChainError::overflow)
+        });
+        Ok(Used {
+            histories,
+            receive: receive?,
+            change: change?,
+        })
     }
 
     pub(crate) async fn histories(

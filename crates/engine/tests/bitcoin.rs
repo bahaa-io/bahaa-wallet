@@ -228,3 +228,33 @@ async fn a_speed_up_replaces_the_pending_send_and_retires_it_once_confirmed() {
     let retired = history.iter().find(|tx| tx.id == first.id).unwrap();
     assert_eq!(retired.status, SentStatus::Dropped);
 }
+
+#[tokio::test]
+async fn the_receive_address_moves_past_used_ones_and_other_networks_keep_theirs() {
+    let (_scratch, engine, ledger) = started().await;
+    engine
+        .import(SecretString::from(PHRASE), SecretString::from(""))
+        .await
+        .unwrap();
+    let mut portfolio = engine.portfolio();
+    until(&mut portfolio, |portfolio| !portfolio.holdings.is_empty()).await;
+    let bitcoin: bahaa_types::NetworkId = "bitcoin".parse().unwrap();
+    let next = engine
+        .receive_address(bitcoin.clone(), address(FIRST))
+        .await
+        .unwrap();
+    assert_ne!(next, address(FIRST));
+    assert_ne!(next, address(SECOND));
+    ledger.lock().unwrap().fund(&next, 1_000, 9);
+    let after = engine
+        .receive_address(bitcoin.clone(), address(FIRST))
+        .await
+        .unwrap();
+    assert_ne!(after, next);
+    assert!(
+        engine
+            .receive_address(bitcoin, address(FRIEND))
+            .await
+            .is_err()
+    );
+}
