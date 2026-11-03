@@ -7,7 +7,7 @@ use std::time::Duration;
 use adnl::AdnlPeer;
 use adnl::crypto::{KeyPair, SecretKey};
 use bahaa_config::{ChainKind, Checkpoint, Endpoint, Feature, Network, Protocol, Registry};
-use bahaa_engine::EngineConfig;
+use bahaa_engine::{EngineConfig, Event, SentTx};
 use bahaa_market::MarketConfig;
 use bahaa_vault::KdfParams;
 use base64::Engine;
@@ -17,7 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use url::Url;
 
 pub const HARDHAT: &str = "test test test test test test test test test test test junk";
@@ -180,6 +180,32 @@ pub fn tron_network(url: Url) -> Network {
         history_gap_ms: 0,
     }];
     network
+}
+
+pub fn solana_network(url: Url) -> Network {
+    let mut network = Registry::builtin()
+        .unwrap()
+        .get(&"solana".parse().unwrap())
+        .unwrap()
+        .clone();
+    network.endpoints.truncate(1);
+    network.endpoints[0].url = url;
+    network
+}
+
+pub async fn settled(events: &mut broadcast::Receiver<Event>, id: &str) -> SentTx {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(Event::TxUpdated(tx)) = events.recv().await
+                && tx.id == id
+                && !tx.status.is_open()
+            {
+                return *tx;
+            }
+        }
+    })
+    .await
+    .unwrap()
 }
 
 pub fn config(scratch: &Scratch, registry: Registry, market: Option<MarketConfig>) -> EngineConfig {

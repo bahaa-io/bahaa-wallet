@@ -4,14 +4,14 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
-use bahaa_chain::{Chain, ChainError, FeeItem, Transfer, TxStatus, check_signed};
+use bahaa_chain::{Chain, ChainError, FeeItem, FeeQuote, Transfer, TxStatus, check_signed};
 use bahaa_solana::SolanaChain;
 use bahaa_types::{Amount, AssetId};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use common::{
-    FRIEND, Ledger, Log, OWNER, TOKEN, TOKEN_RENT, USDC, address, called, native, node, seed,
-    solana_on, token_account, usdc, wallet,
+    FRIEND, Ledger, Log, OWNER, TOKEN, USDC, address, called, native, node, seed, solana_on,
+    token_account, usdc, wallet,
 };
 use serde_json::{Value, json};
 
@@ -36,6 +36,13 @@ async fn connect(ledger: Ledger) -> (SolanaChain, Log) {
     (SolanaChain::new(solana_on(&[url])).unwrap(), log)
 }
 
+fn lines(fee: &FeeQuote) -> Vec<(FeeItem, String)> {
+    fee.lines()
+        .iter()
+        .map(|line| (line.item.clone(), line.amount.to_string()))
+        .collect()
+}
+
 fn transfer(asset: AssetId, amount: &str, decimals: u8) -> Transfer {
     Transfer {
         account: 0,
@@ -52,13 +59,8 @@ fn transfer(asset: AssetId, amount: &str, decimals: u8) -> Transfer {
 async fn a_coin_transfer_pays_its_signature_and_a_priority_fee_and_signs_as_quoted() {
     let (chain, log) = connect(ledger(1_000_000_000)).await;
     let (plan, fee) = chain.prepare(&transfer(native(), "0.1", 9)).await.unwrap();
-    let lines: Vec<(FeeItem, String)> = fee
-        .lines()
-        .iter()
-        .map(|line| (line.item.clone(), line.amount.to_string()))
-        .collect();
     assert_eq!(
-        lines,
+        lines(&fee),
         [
             (FeeItem::Signature, "0.000005".to_owned()),
             (FeeItem::Priority { units: 540 }, "0.000000001".to_owned()),
@@ -126,13 +128,8 @@ async fn a_token_transfer_opens_the_recipients_account_and_says_so() {
     let mut sent = transfer(usdc(), "2.5", 6);
     sent.memo = Some("invoice 12".to_owned());
     let (plan, fee) = chain.prepare(&sent).await.unwrap();
-    let lines: Vec<(FeeItem, String)> = fee
-        .lines()
-        .iter()
-        .map(|line| (line.item.clone(), line.amount.to_string()))
-        .collect();
     assert_eq!(
-        lines,
+        lines(&fee),
         [
             (FeeItem::Signature, "0.000005".to_owned()),
             (
@@ -151,7 +148,6 @@ async fn a_token_transfer_opens_the_recipients_account_and_says_so() {
         panic!("{too_much}");
     };
     assert_eq!(symbol, "USDC");
-    assert_eq!(TOKEN_RENT, 1_488_440);
 }
 
 #[tokio::test]

@@ -609,52 +609,32 @@ mod tests {
         );
     }
 
-    const SOLANA: &str = r##"[{
-        "id": "solana",
-        "name": "Solana",
-        "color": "#9945ff",
-        "family": "solana",
-        "genesis": "45296998a6f8e2a784db5d9f95e18fc23f70441a1039446801089879b08c7ef0",
-        "testnet": false,
-        "native": {"symbol": "SOL", "name": "Solana", "decimals": 9},
-        "tokens": [{"contract": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "name": "USD Coin", "decimals": 6}],
-        "endpoints": [
-            {"protocol": "solana-rpc", "url": "https://api.mainnet-beta.solana.com", "features": ["history"]},
-            {"protocol": "solana-rpc", "url": "https://solana-rpc.publicnode.com"}
-        ],
-        "explorer": {"tx": "https://solscan.io/tx/{tx}", "address": "https://solscan.io/account/{address}"}
-    }]"##;
-
     #[test]
     fn solana_networks_name_their_genesis_and_tokens_by_mint() {
-        let registry = Registry::from_json(SOLANA).unwrap();
-        let solana = registry.get(&"solana".parse().unwrap()).unwrap();
+        let solana = network("solana");
         assert_eq!(solana.family(), ChainFamily::Solana);
         let ChainKind::Solana { genesis } = solana.kind else {
             panic!("not a Solana network");
         };
         assert_eq!(genesis[..2], [0x45, 0x29]);
         assert_eq!(
-            solana.tokens[0].contract.to_string(),
+            solana.tokens[1].contract.to_string(),
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
         );
         assert!(solana.endpoints[0].has(Feature::History));
-        let broken = |edit: &dyn Fn(&mut Value)| {
-            let mut list: Value = serde_json::from_str(SOLANA).unwrap();
-            edit(&mut list[0]);
-            Registry::from_json(&list.to_string()).is_err()
-        };
+        assert!(!solana.endpoints[1].has(Feature::History));
+        let broken = |edit: &dyn Fn(&mut Value)| edited("solana", edit).is_err();
         assert!(broken(&|n| n["genesis"] = Value::Null));
-        assert!(broken(
-            &|n| n["genesis"] = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d".into()
-        ));
+        assert!(broken(&|n| {
+            n["genesis"] = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d".into();
+        }));
         assert!(broken(&|n| n["global_id"] = (-239).into()));
         assert!(broken(
             &|n| n["endpoints"][0]["protocol"] = "json-rpc".into()
         ));
-        assert!(broken(
-            &|n| n["tokens"][0]["contract"] = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".into()
-        ));
+        assert!(broken(&|n| {
+            n["tokens"][0]["contract"] = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".into();
+        }));
     }
 
     #[test]

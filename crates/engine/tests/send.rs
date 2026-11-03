@@ -10,14 +10,13 @@ use bahaa_chain::ChainError;
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
 use bahaa_engine::{
-    ActivityKind, Engine, EngineConfig, EngineError, Event, KeyringError, Replace, SendRequest,
+    ActivityKind, Engine, EngineConfig, EngineError, KeyringError, Replace, SendRequest,
     SentStatus, SentTx, Spend, WalletId,
 };
 use bahaa_types::{Address, Amount, ChainFamily};
-use common::{HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, USDT, config, result, unhex};
+use common::{HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, USDT, config, result, settled, unhex};
 use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
-use tokio::sync::broadcast;
 
 #[derive(Default)]
 struct Ledger {
@@ -114,21 +113,6 @@ async fn send(engine: &Engine, wallet: WalletId, amount: &str) -> Result<SentTx,
     engine
         .confirm_send(draft.id, SecretString::from("pw"))
         .await
-}
-
-async fn settled(events: &mut broadcast::Receiver<Event>, id: &str) -> SentTx {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Ok(Event::TxUpdated(tx)) = events.recv().await
-                && tx.id == id
-                && !tx.status.is_open()
-            {
-                return *tx;
-            }
-        }
-    })
-    .await
-    .unwrap()
 }
 
 #[tokio::test]

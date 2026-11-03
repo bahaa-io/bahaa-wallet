@@ -8,26 +8,10 @@ use bahaa_solana::SolanaChain;
 use bahaa_types::Amount;
 use common::{FRIEND, address, native, usdc};
 
-const MAINNET: &str = r##"[{
-    "id": "solana",
-    "name": "Solana",
-    "color": "#9945ff",
-    "family": "solana",
-    "genesis": "45296998a6f8e2a784db5d9f95e18fc23f70441a1039446801089879b08c7ef0",
-    "testnet": false,
-    "native": {"symbol": "SOL", "name": "Solana", "decimals": 9},
-    "tokens": [{"contract": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "name": "USD Coin", "decimals": 6}],
-    "endpoints": [
-        {"protocol": "solana-rpc", "url": "https://api.mainnet-beta.solana.com", "features": ["history"]},
-        {"protocol": "solana-rpc", "url": "https://solana-rpc.publicnode.com"}
-    ],
-    "explorer": {"tx": "https://solscan.io/tx/{tx}", "address": "https://solscan.io/account/{address}"}
-}]"##;
-
 const RICH: &str = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 
 fn mainnet() -> SolanaChain {
-    let registry = Registry::from_json(MAINNET).unwrap();
+    let registry = Registry::builtin().unwrap();
     SolanaChain::new(registry.get(&"solana".parse().unwrap()).unwrap().clone()).unwrap()
 }
 

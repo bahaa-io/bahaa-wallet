@@ -15,33 +15,20 @@ use url::Url;
 
 pub type Log = Arc<Mutex<Vec<(String, Value)>>>;
 
-pub const GENESIS: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
-pub const PHRASE: &str =
+const GENESIS: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 pub const OWNER: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
 pub const FRIEND: &str = "2bUBiBNZyD29gP1oV6de7nxowMLoDBtopMMTGgMvjG5m";
 pub const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 pub const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-pub const SYSTEM: &str = "11111111111111111111111111111111";
-pub const BLOCKHASH: &str = "Aiyo4Fg2XByNaEhKv3LtX5h9Q8Y2kzhhCZhsnV5fBsrw";
-pub const RENT: u64 = 650_240;
-pub const TOKEN_RENT: u64 = 1_488_440;
-
-const NETWORK: &str = r##"[{
-    "id": "solana",
-    "name": "Solana",
-    "color": "#9945ff",
-    "family": "solana",
-    "genesis": "45296998a6f8e2a784db5d9f95e18fc23f70441a1039446801089879b08c7ef0",
-    "testnet": false,
-    "native": {"symbol": "SOL", "name": "Solana", "decimals": 9},
-    "tokens": [{"contract": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "name": "USD Coin", "decimals": 6}],
-    "endpoints": [{"protocol": "solana-rpc", "url": "https://api.mainnet-beta.solana.com"}],
-    "explorer": {"tx": "https://solscan.io/tx/{tx}", "address": "https://solscan.io/account/{address}"}
-}]"##;
+const SYSTEM: &str = "11111111111111111111111111111111";
+const BLOCKHASH: &str = "Aiyo4Fg2XByNaEhKv3LtX5h9Q8Y2kzhhCZhsnV5fBsrw";
+const RENT: u64 = 650_240;
+const TOKEN_RENT: u64 = 1_488_440;
 
 pub fn solana_on(urls: &[Url]) -> Network {
-    let registry = Registry::from_json(NETWORK).unwrap();
+    let registry = Registry::builtin().unwrap();
     let mut network = registry.get(&"solana".parse().unwrap()).unwrap().clone();
     network.endpoints = urls
         .iter()
@@ -64,7 +51,7 @@ pub fn address(text: &str) -> Address {
     Address::parse(ChainFamily::Solana, text).unwrap()
 }
 
-pub fn key(text: &str) -> [u8; 32] {
+fn key(text: &str) -> [u8; 32] {
     let Address::Solana(key) = address(text) else {
         unreachable!()
     };

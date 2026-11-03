@@ -3,17 +3,16 @@
 mod common;
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bahaa_chain::FeeItem;
 use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Engine, Event, SendRequest, SentStatus, SentTx, Spend};
+use bahaa_engine::{Engine, SendRequest, SentStatus, Spend};
 use bahaa_types::{Address, Amount, ChainFamily};
-use common::{HARDHAT, Scratch, TRON_0_HEX, TRON_GENESIS, config};
+use common::{HARDHAT, Scratch, TRON_0_HEX, TRON_GENESIS, config, settled};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::broadcast;
 
 const TRON_1: &str = "TPjjvMwjPoDC32V2dGDYTkLH4E5LAtBZ6C";
 const TRON_1_HEX: &str = "419705bf55c3dcc6d277ebb8fe2a68762268822ba2";
@@ -103,21 +102,6 @@ fn answer(ledger: &Mutex<Ledger>, path: &str, body: &Value) -> Value {
         }
         _ => json!({"Error": "unexpected path"}),
     }
-}
-
-async fn settled(events: &mut broadcast::Receiver<Event>, id: &str) -> SentTx {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Ok(Event::TxUpdated(tx)) = events.recv().await
-                && tx.id == id
-                && !tx.status.is_open()
-            {
-                return *tx;
-            }
-        }
-    })
-    .await
-    .unwrap()
 }
 
 #[tokio::test]

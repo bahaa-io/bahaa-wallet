@@ -445,25 +445,10 @@ mod tests {
 
     use super::*;
 
-    const MAINNET: &str = r##"[{
-        "id": "solana",
-        "name": "Solana",
-        "color": "#9945ff",
-        "family": "solana",
-        "genesis": "45296998a6f8e2a784db5d9f95e18fc23f70441a1039446801089879b08c7ef0",
-        "testnet": false,
-        "native": {"symbol": "SOL", "name": "Solana", "decimals": 9},
-        "endpoints": [
-            {"protocol": "solana-rpc", "url": "https://api.mainnet-beta.solana.com"},
-            {"protocol": "solana-rpc", "url": "https://solana-rpc.publicnode.com"}
-        ],
-        "explorer": {"tx": "https://solscan.io/tx/{tx}", "address": "https://solscan.io/account/{address}"}
-    }]"##;
-
     #[tokio::test]
     #[ignore = "talks to the real Solana mainnet"]
     async fn live_nodes_accept_our_signature_and_refuse_only_the_empty_account() {
-        let registry = Registry::from_json(MAINNET).unwrap();
+        let registry = Registry::builtin().unwrap();
         let network = registry.get(&"solana".parse().unwrap()).unwrap().clone();
         let chain = SolanaChain::new(network).unwrap();
         let seed = Mnemonic::from_entropy(&[0x5c; 16]).unwrap().to_seed("");

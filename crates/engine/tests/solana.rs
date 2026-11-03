@@ -5,53 +5,24 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bahaa_config::{Endpoint, Feature, Network, Protocol, Registry};
+use bahaa_config::Registry;
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Engine, Event, SendRequest, SentStatus, SentTx, SolanaPath, Spend, WalletKind};
+use bahaa_engine::{Engine, SendRequest, SentStatus, SolanaPath, Spend, WalletId, WalletKind};
 use bahaa_types::{Address, Amount, AssetId, ChainFamily};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use common::{Scratch, config, result, until};
+use common::{Scratch, config, result, settled, until};
 use serde_json::{Value, json};
-use tokio::sync::broadcast;
-use url::Url;
 
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const OWNER: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
 const FRIEND: &str = "2bUBiBNZyD29gP1oV6de7nxowMLoDBtopMMTGgMvjG5m";
 const SYSTEM: &str = "11111111111111111111111111111111";
-const NETWORK: &str = r##"[{
-    "id": "solana",
-    "name": "Solana",
-    "color": "#9945ff",
-    "family": "solana",
-    "genesis": "45296998a6f8e2a784db5d9f95e18fc23f70441a1039446801089879b08c7ef0",
-    "testnet": false,
-    "native": {"symbol": "SOL", "name": "Solana", "decimals": 9},
-    "endpoints": [{"protocol": "solana-rpc", "url": "https://api.mainnet-beta.solana.com"}],
-    "explorer": {"tx": "https://solscan.io/tx/{tx}", "address": "https://solscan.io/account/{address}"}
-}]"##;
 
 #[derive(Default)]
 struct Ledger {
     sent: Vec<String>,
-}
-
-fn solana(url: Url) -> Network {
-    let mut network = Registry::from_json(NETWORK)
-        .unwrap()
-        .get(&"solana".parse().unwrap())
-        .unwrap()
-        .clone();
-    network.endpoints = vec![Endpoint {
-        protocol: Protocol::SolanaRpc,
-        url,
-        features: vec![Feature::History],
-        min_gap_ms: 0,
-        history_gap_ms: 0,
-    }];
-    network
 }
 
 fn account(lamports: u64) -> Value {
@@ -104,31 +75,32 @@ fn answer(ledger: &Mutex<Ledger>, call: &Value) -> Value {
     })
 }
 
-async fn settled(events: &mut broadcast::Receiver<Event>, id: &str) -> SentTx {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Ok(Event::TxUpdated(tx)) = events.recv().await
-                && tx.id == id
-                && !tx.status.is_open()
-            {
-                return *tx;
-            }
-        }
-    })
-    .await
-    .unwrap()
-}
-
-#[tokio::test]
-async fn a_recovery_phrase_holds_sol_and_sends_it_within_the_quote_life() {
+async fn started() -> (Scratch, Engine, Arc<Mutex<Ledger>>) {
     let scratch = Scratch::new();
     let ledger = Arc::new(Mutex::new(Ledger::default()));
     let shared = Arc::clone(&ledger);
     let url = common::node(move |call| (answer(&shared, call), Duration::ZERO)).await;
-    let registry = Registry::with_networks(vec![solana(url)]).unwrap();
+    let registry = Registry::with_networks(vec![common::solana_network(url)]).unwrap();
     let engine = Engine::start(config(&scratch, registry, None)).unwrap();
-    let mut events = engine.events();
     engine.create(SecretString::from("pw")).await.unwrap();
+    (scratch, engine, ledger)
+}
+
+async fn solana_path(engine: &Engine, wallet: WalletId) -> Option<SolanaPath> {
+    engine
+        .wallets()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|info| info.id == wallet)
+        .unwrap()
+        .solana
+}
+
+#[tokio::test]
+async fn a_recovery_phrase_holds_sol_and_sends_it_within_the_quote_life() {
+    let (_scratch, engine, ledger) = started().await;
+    let mut events = engine.events();
     let wallet = engine
         .import(SecretString::from(PHRASE), SecretString::from(""))
         .await
@@ -166,12 +138,7 @@ async fn a_recovery_phrase_holds_sol_and_sends_it_within_the_quote_life() {
 
 #[tokio::test]
 async fn a_solana_key_and_a_watched_address_hold_only_their_account() {
-    let scratch = Scratch::new();
-    let ledger = Arc::new(Mutex::new(Ledger::default()));
-    let url = common::node(move |call| (answer(&ledger, call), Duration::ZERO)).await;
-    let registry = Registry::with_networks(vec![solana(url)]).unwrap();
-    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
-    engine.create(SecretString::from("pw")).await.unwrap();
+    let (_scratch, engine, _) = started().await;
     let exported = bahaa_crypto::solana_keypair(&[0x9d; 32]);
     let key = engine
         .import_key(
@@ -216,12 +183,7 @@ async fn a_solana_key_and_a_watched_address_hold_only_their_account() {
 
 #[tokio::test]
 async fn a_phrase_used_on_the_short_path_is_found_there_and_remembered() {
-    let scratch = Scratch::new();
-    let ledger = Arc::new(Mutex::new(Ledger::default()));
-    let url = common::node(move |call| (answer(&ledger, call), Duration::ZERO)).await;
-    let registry = Registry::with_networks(vec![solana(url)]).unwrap();
-    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
-    engine.create(SecretString::from("pw")).await.unwrap();
+    let (_scratch, engine, _) = started().await;
     let trust = "shoot island position soft burden budget tooth cruel issue economy destroy above";
     let wallet = engine
         .import(SecretString::from(trust), SecretString::from(""))
@@ -235,29 +197,16 @@ async fn a_phrase_used_on_the_short_path_is_found_there_and_remembered() {
             .any(|holding| holding.address.to_string() == FRIEND)
     })
     .await;
-    let path = |wallets: &[bahaa_engine::WalletInfo]| {
-        wallets
-            .iter()
-            .find(|info| info.id == wallet)
-            .unwrap()
-            .solana
-    };
-    assert_eq!(
-        path(&engine.wallets().await.unwrap()),
-        Some(SolanaPath::Bip44)
-    );
+    assert_eq!(solana_path(&engine, wallet).await, Some(SolanaPath::Bip44));
     engine.lock().await.unwrap();
     engine.unlock(SecretString::from("pw")).await.unwrap();
-    assert_eq!(
-        path(&engine.wallets().await.unwrap()),
-        Some(SolanaPath::Bip44)
-    );
+    assert_eq!(solana_path(&engine, wallet).await, Some(SolanaPath::Bip44));
     engine
         .set_solana_path(wallet, SolanaPath::Bip44Change)
         .await
         .unwrap();
     assert_eq!(
-        path(&engine.wallets().await.unwrap()),
+        solana_path(&engine, wallet).await,
         Some(SolanaPath::Bip44Change)
     );
 }
