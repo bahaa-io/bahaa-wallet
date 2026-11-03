@@ -3,15 +3,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use bahaa_config::{Endpoint, Feature};
-use reqwest::StatusCode;
-use reqwest::header::RETRY_AFTER;
 use serde_json::{Value, json};
 use url::Url;
 
-use crate::{ChainError, Failure, Pool};
+use crate::{ChainError, Failure, Pool, http};
 
-const MAX_REPLY: usize = 4 * 1024 * 1024;
-const TIMEOUT: Duration = Duration::from_secs(15);
 const REFUSAL_MEMORY: Duration = Duration::from_secs(3600);
 
 pub trait Dialect: Send + Sync {
@@ -34,11 +30,7 @@ pub struct JsonRpc<D> {
 
 impl<D: Dialect> JsonRpc<D> {
     pub fn new(endpoints: Vec<Endpoint>, dialect: D) -> Result<Self, ChainError> {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("bahaa-wallet/", env!("CARGO_PKG_VERSION")))
-            .timeout(TIMEOUT)
-            .build()
-            .map_err(|err| ChainError::Network(err.to_string()))?;
+        let http = http::client()?;
         Ok(Self {
             dialect,
             pool: Pool::new(endpoints),
@@ -152,37 +144,12 @@ impl<D: Dialect> JsonRpc<D> {
         params: Value,
     ) -> Result<Value, Failure<ChainError>> {
         let network = |text: String| Failure::Retry(ChainError::Network(text));
-        let mut response = self
-            .http
-            .post(url.clone())
-            .json(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}))
-            .send()
-            .await
-            .map_err(|err| network(err.without_url().to_string()))?;
-        let status = response.status();
-        if status == StatusCode::TOO_MANY_REQUESTS {
-            let wait = response
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse().ok())
-                .map(Duration::from_secs);
-            return Err(Failure::RateLimited(
-                ChainError::Network("rate limited".to_owned()),
-                wait,
-            ));
-        }
-        let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|err| network(err.without_url().to_string()))?
-        {
-            if body.len() + chunk.len() > MAX_REPLY {
-                return Err(network("reply too large".to_owned()));
-            }
-            body.extend_from_slice(&chunk);
-        }
+        let (status, body) = http::exchange(
+            self.http
+                .post(url.clone())
+                .json(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})),
+        )
+        .await?;
         let reply: Option<Value> = serde_json::from_slice(&body).ok();
         let error = reply
             .as_ref()

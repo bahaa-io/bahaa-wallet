@@ -2,6 +2,7 @@ mod abi;
 mod chain;
 mod clock;
 mod history;
+pub mod http;
 mod model;
 mod pool;
 mod rpc;
