@@ -1,6 +1,6 @@
 use std::fmt;
 
-use bahaa_types::{Address, Amount, AssetId, is_plain_text, to_plain_text};
+use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text, to_plain_text};
 use ruint::aliases::U256;
 use thiserror::Error;
 
@@ -92,6 +92,16 @@ pub struct Transfer {
 }
 
 impl Transfer {
+    pub fn check(&self, network: &NetworkId) -> Result<(), ChainError> {
+        if self.asset.network() != network {
+            return Err(ChainError::Invalid("the asset belongs to another network"));
+        }
+        if !self.max && self.amount.is_zero() {
+            return Err(ChainError::Invalid("send more than zero"));
+        }
+        Ok(())
+    }
+
     pub fn take_all(&mut self, held: Amount) -> Result<(), ChainError> {
         if held.is_zero() {
             return Err(ChainError::Invalid("there is nothing to send"));
@@ -242,6 +252,17 @@ impl ChainError {
         Self::Invalid("fee overflow")
     }
 
+    pub fn insufficient(symbol: String, needed: U256, available: U256, decimals: u8) -> Self {
+        match (amount(needed, decimals), amount(available, decimals)) {
+            (Ok(needed), Ok(available)) => Self::Insufficient {
+                symbol,
+                needed,
+                available,
+            },
+            (Err(err), _) | (_, Err(err)) => err,
+        }
+    }
+
     pub fn malformed() -> Self {
         Self::Network("an endpoint sent a malformed reply".to_owned())
     }
@@ -259,6 +280,25 @@ impl Failure<ChainError> {
     pub fn unreachable(text: &str) -> Self {
         Self::Unreachable(ChainError::Network(text.to_owned()))
     }
+}
+
+pub fn enough(symbol: &str, needed: U256, held: U256, decimals: u8) -> Result<(), ChainError> {
+    if held < needed {
+        return Err(ChainError::insufficient(
+            symbol.to_owned(),
+            needed,
+            held,
+            decimals,
+        ));
+    }
+    Ok(())
+}
+
+pub fn on_network(network: &NetworkId, assets: &[AssetId]) -> Result<(), ChainError> {
+    if assets.iter().any(|asset| asset.network() != network) {
+        return Err(ChainError::Invalid("an asset belongs to another network"));
+    }
+    Ok(())
 }
 
 pub fn amount(units: U256, decimals: u8) -> Result<Amount, ChainError> {

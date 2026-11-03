@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use bahaa_chain::{
     ChainError, Failure, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus, amount,
+    enough,
 };
 use bahaa_types::to_plain_text;
 use base64::Engine;
@@ -13,7 +14,7 @@ use serde_json::{Value, json};
 
 use super::{SolanaChain, TOKEN_READ, bytes, held};
 use crate::programs::{Shape, TOKEN, TOKEN_2022, token_account};
-use crate::rpc::{Account, count, key, text};
+use crate::rpc::{self, Account, count, key, text};
 use crate::tx::{self, Key};
 
 const SIMULATION_LIMIT: u32 = 1_400_000;
@@ -188,12 +189,7 @@ impl SolanaChain {
     }
 
     fn sendable(&self, transfer: &Transfer) -> Result<(), ChainError> {
-        if transfer.asset.network() != &self.network.id {
-            return Err(ChainError::Invalid("the asset belongs to another network"));
-        }
-        if !transfer.max && transfer.amount.is_zero() {
-            return Err(ChainError::Invalid("send more than zero"));
-        }
+        transfer.check(&self.network.id)?;
         if transfer.from == transfer.to {
             return Err(ChainError::Invalid("send to another address"));
         }
@@ -312,11 +308,7 @@ impl SolanaChain {
         if found.is_null() {
             return Ok(TxStatus::Pending);
         }
-        if signature_of(&found).as_deref() != Some(id.as_str()) {
-            return Err(ChainError::Network(
-                "an endpoint answered for another transaction".to_owned(),
-            ));
-        }
+        tx::fetched(&rpc::encoded(&found["transaction"])?, id)?;
         Ok(TxStatus::Confirmed {
             block: Some(count(&found["slot"])?),
             fee: Some(amount(
@@ -336,25 +328,21 @@ struct Funds {
 
 impl Funds {
     fn cover(&self, needed: u64) -> Result<(), ChainError> {
-        if needed <= self.held {
-            Ok(())
-        } else {
-            Err(self.short(needed))
-        }
+        enough(
+            &self.symbol,
+            U256::from(needed),
+            U256::from(self.held),
+            self.decimals,
+        )
     }
 
     fn short(&self, needed: u64) -> ChainError {
-        match (
-            amount(U256::from(needed), self.decimals),
-            amount(U256::from(self.held), self.decimals),
-        ) {
-            (Ok(needed), Ok(available)) => ChainError::Insufficient {
-                symbol: self.symbol.clone(),
-                needed,
-                available,
-            },
-            (Err(err), _) | (_, Err(err)) => err,
-        }
+        ChainError::insufficient(
+            self.symbol.clone(),
+            U256::from(needed),
+            U256::from(self.held),
+            self.decimals,
+        )
     }
 }
 
@@ -435,16 +423,6 @@ fn accepted(
     }
 }
 
-fn signature_of(found: &Value) -> Option<String> {
-    let bytes = match found["transaction"].as_array().map(Vec::as_slice) {
-        Some([Value::String(encoded), Value::String(kind)]) if kind == "base64" => {
-            STANDARD.decode(encoded).ok()?
-        }
-        _ => return None,
-    };
-    Some(bs58::encode(bytes.get(1..65)?).into_string())
-}
-
 fn failure(err: &Value) -> String {
     to_plain_text(&format!("the transfer would fail: {err}"), MAX_REASON)
 }
@@ -452,7 +430,6 @@ fn failure(err: &Value) -> String {
 #[cfg(fuzzing)]
 pub(super) fn fuzz(value: &Value) {
     let _ = price(value);
-    let _ = signature_of(value);
     let _ = failure(&value["err"]);
     if let Some(Ok(id)) = value["result"].as_str().map(TxId::new) {
         let _ = accepted(Ok(value["result"].clone()), &id);
@@ -505,7 +482,7 @@ mod tests {
         let message = tx::compile(from, blockhash, &shape.instructions().unwrap()).unwrap();
         let (bytes, signature) = tx::sign(&message, &key);
         let signed = Signed {
-            id: TxId::new(bs58::encode(signature).into_string()).unwrap(),
+            id: tx::id(&signature).unwrap(),
             bytes,
         };
         let refused = chain.push(&signed).await.unwrap_err();

@@ -118,13 +118,13 @@ pub(crate) fn accounts(reply: &Value, asked: usize) -> Result<Vec<Option<Account
                 executable: entry["executable"]
                     .as_bool()
                     .ok_or_else(ChainError::malformed)?,
-                data: data(&entry["data"])?,
+                data: encoded(&entry["data"])?,
             })),
         })
         .collect()
 }
 
-fn data(value: &Value) -> Result<Vec<u8>, ChainError> {
+pub(crate) fn encoded(value: &Value) -> Result<Vec<u8>, ChainError> {
     match value.as_array().map(Vec::as_slice) {
         Some([Value::String(encoded), Value::String(kind)]) if kind == "base64" => STANDARD
             .decode(encoded)

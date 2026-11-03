@@ -1,10 +1,9 @@
-use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus,
-    amount,
+    Balance, Chain, ChainError, Decimals, Decoded, FeeQuote, Replace, Signed, Transfer, TxId,
+    TxStatus, amount, on_network,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
@@ -35,7 +34,7 @@ const METADATA_V1: u8 = 4;
 pub struct SolanaChain {
     network: Network,
     rpc: Rpc,
-    decimals: Mutex<HashMap<Key, u8>>,
+    decimals: Decimals,
     rent: Mutex<Option<(Instant, send::Rent)>>,
 }
 
@@ -53,7 +52,7 @@ impl SolanaChain {
         Ok(Self {
             network,
             rpc,
-            decimals: Mutex::new(HashMap::new()),
+            decimals: Decimals::default(),
             rent: Mutex::new(None),
         })
     }
@@ -71,29 +70,11 @@ impl SolanaChain {
     }
 
     fn known_decimals(&self, mint: &Key) -> Option<u8> {
-        self.network
-            .tokens
-            .iter()
-            .find(|token| token.contract == Address::Solana(*mint))
-            .map(|token| token.coin.decimals)
-            .or_else(|| {
-                self.decimals
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .get(mint)
-                    .copied()
-            })
+        self.decimals.get(&self.network, &Address::Solana(*mint))
     }
 
     fn symbol(&self, mint: &Key) -> String {
-        self.network
-            .tokens
-            .iter()
-            .find(|token| token.contract == Address::Solana(*mint))
-            .map_or_else(
-                || "this token".to_owned(),
-                |token| token.coin.symbol.clone(),
-            )
+        bahaa_chain::symbol(&self.network, &Address::Solana(*mint))
     }
 
     async fn token_decimals(&self, mint: &Key) -> Result<u8, ChainError> {
@@ -102,10 +83,7 @@ impl SolanaChain {
         }
         let found = self.accounts(&[*mint], Some(MINT_READ)).await?;
         let decimals = mint_decimals(found[0].as_ref())?;
-        self.decimals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*mint, decimals);
+        self.decimals.learn(Address::Solana(*mint), decimals);
         Ok(decimals)
     }
 }
@@ -127,12 +105,7 @@ impl Chain for SolanaChain {
         assets: &[AssetId],
     ) -> Result<Vec<Balance>, ChainError> {
         let owner = bytes(address)?;
-        if assets
-            .iter()
-            .any(|asset| asset.network() != &self.network.id)
-        {
-            return Err(ChainError::Invalid("an asset belongs to another network"));
-        }
+        on_network(&self.network.id, assets)?;
         let mints = assets
             .iter()
             .filter_map(AssetId::contract)
@@ -199,14 +172,14 @@ impl Chain for SolanaChain {
             ))?;
         let (bytes, signature) = tx::sign(&plan.message, &key);
         Ok(Signed {
-            id: TxId::new(bs58::encode(signature).into_string())?,
+            id: tx::id(&signature)?,
             bytes,
         })
     }
 
     fn decode(&self, signed: &Signed) -> Result<Decoded, ChainError> {
         let parsed = tx::parse(&signed.bytes)?;
-        if bs58::encode(parsed.signature).into_string() != signed.id.as_str() {
+        if tx::id(&parsed.signature)? != signed.id {
             return Err(ChainError::Mismatch("the transaction id"));
         }
         let shape = Shape::read(&parsed)?;
@@ -271,12 +244,7 @@ impl Chain for SolanaChain {
     }
 
     fn know(&self, contract: &Address, decimals: u8) {
-        if let Address::Solana(mint) = contract {
-            self.decimals
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(*mint, decimals);
-        }
+        self.decimals.learn(*contract, decimals);
     }
 }
 

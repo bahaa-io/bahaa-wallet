@@ -1,8 +1,8 @@
-use bahaa_chain::{ChainError, Transfer};
+use bahaa_chain::{ChainError, Transfer, enough};
 use bahaa_types::Address;
 use ruint::aliases::U256;
 
-use super::{TonChain, amount};
+use super::TonChain;
 use crate::cells::Account;
 use crate::emulate::{self, Emulated, Emulator, Hop};
 use crate::fees::{Config, Settings};
@@ -35,13 +35,7 @@ impl TonChain {
         let decimals = self.token_decimals(master).await?;
         let units = transfer.amount.units();
         let held = self.jetton_balance(&transfer.from, master).await?;
-        if held < units {
-            return Err(ChainError::Insufficient {
-                symbol: self.symbol(master),
-                needed: transfer.amount,
-                available: amount(held, decimals)?,
-            });
-        }
+        enough(&self.symbol(master), units, held, decimals)?;
         let ours = self.jetton_wallet(&transfer.from, master).await?;
         let theirs = self.jetton_wallet(&transfer.to, master).await?;
         if ours == theirs {

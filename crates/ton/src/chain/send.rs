@@ -1,4 +1,6 @@
-use bahaa_chain::{ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId};
+use bahaa_chain::{
+    ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId, enough,
+};
 use bahaa_crypto::Seed;
 use bahaa_types::{Address, Amount, AssetId, TonContract};
 use ed25519_dalek::{Signature, Signer};
@@ -120,13 +122,12 @@ impl TonChain {
             .checked_add(U256::from(own_max))
             .ok_or_else(ChainError::overflow)?;
         let decimals = self.network.native.decimals;
-        if wallet.balance < needed {
-            return Err(ChainError::Insufficient {
-                symbol: self.network.native.symbol.clone(),
-                needed: amount(needed, decimals)?,
-                available: amount(wallet.balance, decimals)?,
-            });
-        }
+        enough(
+            &self.network.native.symbol,
+            needed,
+            wallet.balance,
+            decimals,
+        )?;
         let gram = |nano: u64| amount(U256::from(nano), decimals);
         let lines = fee_lines(&fees, contract, contracts, gram)?;
         Ok((
@@ -140,12 +141,7 @@ impl TonChain {
     }
 
     fn sendable(&self, transfer: &Transfer) -> Result<(Option<Address>, u8), ChainError> {
-        if transfer.asset.network() != &self.network.id {
-            return Err(ChainError::Invalid("the asset belongs to another network"));
-        }
-        if !transfer.max && transfer.amount.is_zero() {
-            return Err(ChainError::Invalid("send more than zero"));
-        }
+        transfer.check(&self.network.id)?;
         let decimals = match transfer.asset.contract() {
             None => self.network.native.decimals,
             Some(master) => self

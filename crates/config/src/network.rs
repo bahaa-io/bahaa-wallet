@@ -176,6 +176,13 @@ impl Network {
         }
     }
 
+    pub fn token(&self, contract: &Address) -> Option<&Coin> {
+        self.tokens
+            .iter()
+            .find(|token| token.contract == *contract)
+            .map(|token| &token.coin)
+    }
+
     pub fn assets(&self) -> impl Iterator<Item = (AssetId, &Coin)> {
         std::iter::once((AssetId::Native(self.id.clone()), &self.native)).chain(
             self.tokens

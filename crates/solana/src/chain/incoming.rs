@@ -3,14 +3,12 @@ use bahaa_chain::{
 };
 use bahaa_config::Feature;
 use bahaa_types::{Address, AssetId};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
 use super::{SolanaChain, bytes};
 use crate::programs::{MEMO, MEMO_V1, token_account};
-use crate::rpc::{count, key};
+use crate::rpc::{self, count, key};
 use crate::tx::{self, Key};
 
 const PAGE: usize = 50;
@@ -220,18 +218,8 @@ fn movement(
             "an endpoint does not know a listed transaction yet".to_owned(),
         ));
     }
-    let raw = match found["transaction"].as_array().map(Vec::as_slice) {
-        Some([Value::String(encoded), Value::String(kind)]) if kind == "base64" => STANDARD
-            .decode(encoded)
-            .map_err(|_| ChainError::malformed())?,
-        _ => return Err(ChainError::malformed()),
-    };
-    let wire = tx::read(&raw).ok_or_else(ChainError::malformed)?;
-    if bs58::encode(wire.signatures[0]).into_string() != id.as_str() {
-        return Err(ChainError::Network(
-            "an endpoint answered for another transaction".to_owned(),
-        ));
-    }
+    let raw = rpc::encoded(&found["transaction"])?;
+    let wire = tx::fetched(&raw, id)?;
     let meta = &found["meta"];
     if !meta["err"].is_null() {
         return Ok(None);
@@ -431,10 +419,8 @@ mod tests {
     const BINANCE_USDC: &str = "3hNzYSQs2ziFhnXYzxNqQ1HGnW8pQs9Gf4KfoRErfw9i";
 
     fn id(found: &Value) -> TxId {
-        let raw = STANDARD
-            .decode(found["transaction"][0].as_str().unwrap())
-            .unwrap();
-        TxId::new(bs58::encode(&raw[1..65]).into_string()).unwrap()
+        let raw = rpc::encoded(&found["transaction"]).unwrap();
+        tx::id(&tx::read(&raw).unwrap().signatures[0]).unwrap()
     }
 
     #[test]
@@ -490,9 +476,7 @@ mod tests {
     #[test]
     fn opening_a_token_account_is_not_a_transfer() {
         let found = recorded("opening");
-        let raw = STANDARD
-            .decode(found["transaction"][0].as_str().unwrap())
-            .unwrap();
+        let raw = rpc::encoded(&found["transaction"]).unwrap();
         let wire = tx::read(&raw).unwrap();
         let payer = wire.keys[0];
         let paying = history(&Address::Solana(payer).to_string(), None);

@@ -1,4 +1,4 @@
-use bahaa_chain::ChainError;
+use bahaa_chain::{ChainError, TxId};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 pub(crate) type Key = [u8; 32];
@@ -111,6 +111,10 @@ pub(crate) fn sign(message: &[u8], key: &SigningKey) -> (Vec<u8>, [u8; SIGNATURE
     (transaction(message, &signature), signature)
 }
 
+pub(crate) fn id(signature: &[u8; SIGNATURE]) -> Result<TxId, ChainError> {
+    TxId::new(bs58::encode(signature).into_string())
+}
+
 pub(crate) fn transaction(message: &[u8], signature: &[u8; SIGNATURE]) -> Vec<u8> {
     let mut out = Vec::with_capacity(1 + SIGNATURE + message.len());
     out.push(1);
@@ -188,6 +192,16 @@ pub(crate) fn read(bytes: &[u8]) -> Option<Wire<'_>> {
         blockhash,
         instructions,
     })
+}
+
+pub(crate) fn fetched<'a>(bytes: &'a [u8], id: &TxId) -> Result<Wire<'a>, ChainError> {
+    let wire = read(bytes).ok_or_else(ChainError::malformed)?;
+    if self::id(&wire.signatures[0])? != *id {
+        return Err(ChainError::Network(
+            "an endpoint answered for another transaction".to_owned(),
+        ));
+    }
+    Ok(wire)
 }
 
 pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, ChainError> {

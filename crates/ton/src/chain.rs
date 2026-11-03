@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus,
-    amount,
+    Balance, Chain, ChainError, Decimals, Decoded, FeeQuote, Replace, Signed, Transfer, TxId,
+    TxStatus, amount, on_network,
 };
 use bahaa_config::{ChainKind, Checkpoint, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
@@ -30,7 +30,7 @@ pub struct TonChain {
     wallet_id: i32,
     jetton_wallets: Mutex<HashMap<(Address, Address), Address>>,
     contracts: Mutex<HashMap<Address, TonContract>>,
-    decimals: Mutex<HashMap<Address, u8>>,
+    decimals: Decimals,
 }
 
 impl TonChain {
@@ -50,7 +50,7 @@ impl TonChain {
             wallet_id: wallet::wallet_id(global_id),
             jetton_wallets: Mutex::new(HashMap::new()),
             contracts: Mutex::new(HashMap::new()),
-            decimals: Mutex::new(HashMap::new()),
+            decimals: Decimals::default(),
         })
     }
 
@@ -108,18 +108,7 @@ impl TonChain {
     }
 
     fn known_decimals(&self, master: &Address) -> Option<u8> {
-        self.network
-            .tokens
-            .iter()
-            .find(|token| token.contract == *master)
-            .map(|token| token.coin.decimals)
-            .or_else(|| {
-                self.decimals
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .get(master)
-                    .copied()
-            })
+        self.decimals.get(&self.network, master)
     }
 
     async fn token_decimals(&self, master: &Address) -> Result<u8, ChainError> {
@@ -130,14 +119,7 @@ impl TonChain {
     }
 
     fn symbol(&self, master: &Address) -> String {
-        self.network
-            .tokens
-            .iter()
-            .find(|token| token.contract == *master)
-            .map_or_else(
-                || "this token".to_owned(),
-                |token| token.coin.symbol.clone(),
-            )
+        bahaa_chain::symbol(&self.network, master)
     }
 
     async fn details(&self, master: &Address) -> Result<Coin, ChainError> {
@@ -259,11 +241,9 @@ impl Chain for TonChain {
         assets: &[AssetId],
     ) -> Result<Vec<Balance>, ChainError> {
         crate::cells::parts(address)?;
+        on_network(&self.network.id, assets)?;
         let mut balances = Vec::with_capacity(assets.len());
         for asset in assets {
-            if asset.network() != &self.network.id {
-                return Err(ChainError::Invalid("an asset belongs to another network"));
-            }
             let amount = match asset.contract() {
                 None => amount(
                     self.http.account(address).await?.balance,
@@ -329,12 +309,7 @@ impl Chain for TonChain {
     }
 
     fn know(&self, contract: &Address, decimals: u8) {
-        if matches!(contract, Address::Ton { .. }) {
-            self.decimals
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(*contract, decimals);
-        }
+        self.decimals.learn(*contract, decimals);
     }
 }
 

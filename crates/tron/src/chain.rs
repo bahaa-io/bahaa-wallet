@@ -1,10 +1,9 @@
-use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus,
-    abi_text, amount, now_ms,
+    Balance, Chain, ChainError, Decimals, Decoded, FeeQuote, Replace, Signed, Transfer, TxId,
+    TxStatus, abi_text, amount, now_ms, on_network,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
@@ -32,7 +31,7 @@ const NAME: &str = "name()";
 pub struct TronChain {
     network: Network,
     http: Http,
-    decimals: Mutex<HashMap<[u8; 20], u8>>,
+    decimals: Decimals,
     prices: Mutex<Option<(Instant, Prices)>>,
 }
 
@@ -45,7 +44,7 @@ impl TronChain {
         Ok(Self {
             network,
             http,
-            decimals: Mutex::new(HashMap::new()),
+            decimals: Decimals::default(),
             prices: Mutex::new(None),
         })
     }
@@ -75,29 +74,11 @@ impl TronChain {
     }
 
     fn known_decimals(&self, contract: &[u8; 20]) -> Option<u8> {
-        self.network
-            .tokens
-            .iter()
-            .find(|token| token.contract == Address::Tron(*contract))
-            .map(|token| token.coin.decimals)
-            .or_else(|| {
-                self.decimals
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .get(contract)
-                    .copied()
-            })
+        self.decimals.get(&self.network, &Address::Tron(*contract))
     }
 
     fn symbol(&self, contract: &[u8; 20]) -> String {
-        self.network
-            .tokens
-            .iter()
-            .find(|token| token.contract == Address::Tron(*contract))
-            .map_or_else(
-                || "this token".to_owned(),
-                |token| token.coin.symbol.clone(),
-            )
+        bahaa_chain::symbol(&self.network, &Address::Tron(*contract))
     }
 
     async fn token_decimals(
@@ -115,10 +96,7 @@ impl TronChain {
             .ok_or(ChainError::Invalid(
                 "this token reports impossible decimals",
             ))?;
-        self.decimals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*contract, decimals);
+        self.decimals.learn(Address::Tron(*contract), decimals);
         Ok(decimals)
     }
 
@@ -188,12 +166,7 @@ impl Chain for TronChain {
         assets: &[AssetId],
     ) -> Result<Vec<Balance>, ChainError> {
         let owner = bytes(address)?;
-        if assets
-            .iter()
-            .any(|asset| asset.network() != &self.network.id)
-        {
-            return Err(ChainError::Invalid("an asset belongs to another network"));
-        }
+        on_network(&self.network.id, assets)?;
         try_join_all(assets.iter().map(|asset| async {
             let (amount, staked) = match asset.contract() {
                 None => {
@@ -325,12 +298,7 @@ impl Chain for TronChain {
     }
 
     fn know(&self, contract: &Address, decimals: u8) {
-        if let Address::Tron(contract) = contract {
-            self.decimals
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(*contract, decimals);
-        }
+        self.decimals.learn(*contract, decimals);
     }
 }
 

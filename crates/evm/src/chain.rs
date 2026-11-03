@@ -1,11 +1,9 @@
-use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
-
 use alloy_consensus::TxEip1559;
 use alloy_primitives::TxKind;
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, Failure, FeeItem, FeeLine, FeeQuote, MAX_MEMO, Replace,
-    Signed, Transfer, TxId, TxStatus, abi_text, amount, parse_transfer, transfer_data,
+    Balance, Chain, ChainError, Decimals, Decoded, Failure, FeeItem, FeeLine, FeeQuote, MAX_MEMO,
+    Replace, Signed, Transfer, TxId, TxStatus, abi_text, amount, enough, on_network,
+    parse_transfer, transfer_data,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed, secp256k1_address};
@@ -32,7 +30,7 @@ pub struct EvmChain {
     network: Network,
     chain_id: u64,
     rpc: Rpc,
-    decimals: Mutex<HashMap<[u8; 20], u8>>,
+    decimals: Decimals,
 }
 
 struct Held {
@@ -56,7 +54,7 @@ impl EvmChain {
             network,
             chain_id,
             rpc,
-            decimals: Mutex::new(HashMap::new()),
+            decimals: Decimals::default(),
         })
     }
 
@@ -65,29 +63,11 @@ impl EvmChain {
     }
 
     fn known_decimals(&self, contract: &[u8; 20]) -> Option<u8> {
-        self.network
-            .tokens
-            .iter()
-            .find(|token| token.contract == Address::Evm(*contract))
-            .map(|token| token.coin.decimals)
-            .or_else(|| {
-                self.decimals
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .get(contract)
-                    .copied()
-            })
+        self.decimals.get(&self.network, &Address::Evm(*contract))
     }
 
     fn symbol(&self, contract: &[u8; 20]) -> String {
-        self.network
-            .tokens
-            .iter()
-            .find(|token| token.contract == Address::Evm(*contract))
-            .map_or_else(
-                || "this token".to_owned(),
-                |token| token.coin.symbol.clone(),
-            )
+        bahaa_chain::symbol(&self.network, &Address::Evm(*contract))
     }
 
     async fn token_decimals(&self, contract: &[u8; 20]) -> Result<u8, ChainError> {
@@ -101,10 +81,7 @@ impl EvmChain {
             .ok_or(ChainError::Invalid(
                 "this token reports impossible decimals",
             ))?;
-        self.decimals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*contract, decimals);
+        self.decimals.learn(Address::Evm(*contract), decimals);
         Ok(decimals)
     }
 
@@ -175,22 +152,6 @@ impl EvmChain {
 }
 
 impl EvmChain {
-    fn sendable(&self, transfer: &Transfer) -> Result<(), ChainError> {
-        self.serves(&transfer.asset)?;
-        if transfer.amount.is_zero() {
-            return Err(ChainError::Invalid("send more than zero"));
-        }
-        Ok(())
-    }
-
-    fn serves(&self, asset: &AssetId) -> Result<(), ChainError> {
-        if asset.network() == &self.network.id {
-            Ok(())
-        } else {
-            Err(ChainError::Invalid("the asset belongs to another network"))
-        }
-    }
-
     async fn held(&self, from: &[u8; 20], token: Option<&[u8; 20]>) -> Result<Held, ChainError> {
         let native = self.native_balance(from);
         match token {
@@ -226,13 +187,13 @@ impl EvmChain {
     ) -> Result<(), ChainError> {
         let balance = tx.value;
         let Some(left) = balance.checked_sub(max).filter(|left| !left.is_zero()) else {
-            return Err(insufficient(
+            return Err(ChainError::insufficient(
                 self.network.native.symbol.clone(),
                 max.checked_add(U256::from(1u8))
                     .ok_or_else(ChainError::overflow)?,
                 balance,
                 self.network.native.decimals,
-            )?);
+            ));
         };
         tx.value = left;
         transfer.amount = self.native(left)?;
@@ -363,34 +324,16 @@ impl EvmChain {
         route: &Route,
         max: U256,
     ) -> Result<(), ChainError> {
-        let native = held.native;
-        let native_decimals = self.network.native.decimals;
-        let native_symbol = || self.network.native.symbol.clone();
+        let (symbol, decimals) = (&self.network.native.symbol, self.network.native.decimals);
         let units = transfer.amount.units();
         match route.token {
             None => {
                 let needed = units.checked_add(max).ok_or_else(ChainError::overflow)?;
-                if native < needed {
-                    return Err(insufficient(
-                        native_symbol(),
-                        needed,
-                        native,
-                        native_decimals,
-                    )?);
-                }
+                enough(symbol, needed, held.native, decimals)?;
             }
             Some(contract) => {
-                if held.token < units {
-                    return Err(insufficient(
-                        self.symbol(&contract),
-                        units,
-                        held.token,
-                        route.decimals,
-                    )?);
-                }
-                if native < max {
-                    return Err(insufficient(native_symbol(), max, native, native_decimals)?);
-                }
+                enough(&self.symbol(&contract), units, held.token, route.decimals)?;
+                enough(symbol, max, held.native, decimals)?;
             }
         }
         Ok(())
@@ -442,12 +385,7 @@ impl Chain for EvmChain {
         assets: &[AssetId],
     ) -> Result<Vec<Balance>, ChainError> {
         let owner = bytes(address)?;
-        if assets
-            .iter()
-            .any(|asset| asset.network() != &self.network.id)
-        {
-            return Err(ChainError::Invalid("an asset belongs to another network"));
-        }
+        on_network(&self.network.id, assets)?;
         try_join_all(assets.iter().map(|asset| async {
             let amount = match asset.contract() {
                 None => self.native(self.native_balance(&owner).await?)?,
@@ -472,7 +410,7 @@ impl Chain for EvmChain {
 
     async fn prepare(&self, transfer: &Transfer) -> Result<(EvmPlan, FeeQuote), ChainError> {
         let from = bytes(&transfer.from)?;
-        self.serves(&transfer.asset)?;
+        transfer.check(&self.network.id)?;
         Self::memo_allowed(transfer)?;
         let token = transfer.asset.contract().map(bytes).transpose()?;
         let (held, nonce) = try_join(
@@ -484,7 +422,6 @@ impl Chain for EvmChain {
         let nonce = u64::try_from(quantity(&nonce)?)
             .map_err(|_| ChainError::Invalid("impossible nonce"))?;
         let mut transfer = self.resolve(&held, transfer).await?;
-        self.sendable(&transfer)?;
         let route = self.route(&transfer).await?;
         self.funds(&held, &transfer, &route, U256::ZERO)?;
         let estimate = self.estimate(&from, &route).await?;
@@ -675,12 +612,7 @@ impl Chain for EvmChain {
     }
 
     fn know(&self, contract: &Address, decimals: u8) {
-        if let Address::Evm(contract) = contract {
-            self.decimals
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(*contract, decimals);
-        }
+        self.decimals.learn(*contract, decimals);
     }
 }
 
@@ -695,19 +627,6 @@ fn key(seed: &Seed, account: u32) -> Result<bahaa_crypto::SecretKey, ChainError>
         .parse()
         .map_err(|_| ChainError::Invalid("account index out of range"))?;
     Ok(bahaa_crypto::secp256k1(seed, &path)?)
-}
-
-fn insufficient(
-    symbol: String,
-    needed: U256,
-    available: U256,
-    decimals: u8,
-) -> Result<ChainError, ChainError> {
-    Ok(ChainError::Insufficient {
-        symbol,
-        needed: amount(needed, decimals)?,
-        available: amount(available, decimals)?,
-    })
 }
 
 fn already_known(message: &str) -> bool {

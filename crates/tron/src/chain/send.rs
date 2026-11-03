@@ -1,7 +1,9 @@
 use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 
-use bahaa_chain::{ChainError, Failure, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus};
+use bahaa_chain::{
+    ChainError, Failure, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus, enough,
+};
 use bahaa_types::hex;
 use ruint::aliases::U256;
 use serde_json::{Value, json};
@@ -55,20 +57,13 @@ impl TronChain {
             self.network.native.decimals,
         );
         let funds = |units: U256, max: U256| -> Result<(), ChainError> {
+            let (symbol, places) = &native;
             if let (Some(contract), Some(held)) = (token, held) {
-                if held < units {
-                    return Err(insufficient(self.symbol(&contract), units, held, decimals)?);
-                }
-                if balance < max {
-                    return Err(insufficient(native.0.clone(), max, balance, native.1)?);
-                }
-                return Ok(());
+                enough(&self.symbol(&contract), units, held, decimals)?;
+                return enough(symbol, max, balance, *places);
             }
             let needed = units.checked_add(max).ok_or_else(ChainError::overflow)?;
-            if balance < needed {
-                return Err(insufficient(native.0.clone(), needed, balance, native.1)?);
-            }
-            Ok(())
+            enough(symbol, needed, balance, *places)
         };
         funds(transfer.amount.units(), U256::ZERO)?;
         let prices = self.prices().await?;
@@ -95,7 +90,7 @@ impl TronChain {
                     .map_err(|_| ChainError::Invalid("the amount is too large"))?;
                 if transfer.max {
                     let Some(most) = fees::most(sun, |sun| Ok(coins(sun)?.1.max))? else {
-                        return Err(short_of_fee(&native, coins(sun)?.1.max, balance)?);
+                        return Err(short_of_fee(&native, coins(sun)?.1.max, balance));
                     };
                     sun = most;
                     transfer.amount = amount(U256::from(sun), decimals)?;
@@ -123,12 +118,7 @@ impl TronChain {
     }
 
     fn sendable(&self, transfer: &Transfer) -> Result<(), ChainError> {
-        if transfer.asset.network() != &self.network.id {
-            return Err(ChainError::Invalid("the asset belongs to another network"));
-        }
-        if !transfer.max && transfer.amount.is_zero() {
-            return Err(ChainError::Invalid("send more than zero"));
-        }
+        transfer.check(&self.network.id)?;
         if transfer.asset.contract().is_none() && transfer.from == transfer.to {
             return Err(ChainError::Invalid(
                 "Tron does not allow sending TRX to the same account",
@@ -342,26 +332,13 @@ fn failure(outcome: Option<&str>, message: &Value) -> String {
     }
 }
 
-fn short_of_fee(
-    (symbol, decimals): &(String, u8),
-    fee: u64,
-    balance: U256,
-) -> Result<ChainError, ChainError> {
-    let needed = fee.checked_add(1).ok_or_else(ChainError::overflow)?;
-    insufficient(symbol.clone(), U256::from(needed), balance, *decimals)
-}
-
-fn insufficient(
-    symbol: String,
-    needed: U256,
-    available: U256,
-    decimals: u8,
-) -> Result<ChainError, ChainError> {
-    Ok(ChainError::Insufficient {
-        symbol,
-        needed: amount(needed, decimals)?,
-        available: amount(available, decimals)?,
-    })
+fn short_of_fee((symbol, decimals): &(String, u8), fee: u64, balance: U256) -> ChainError {
+    ChainError::insufficient(
+        symbol.clone(),
+        U256::from(fee).saturating_add(U256::from(1u8)),
+        balance,
+        *decimals,
+    )
 }
 
 #[cfg(fuzzing)]
