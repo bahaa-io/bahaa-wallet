@@ -24,6 +24,7 @@ fn request() -> Request {
         amount: Amount::parse("400", 6).unwrap(),
         buy: "ethereum".parse().unwrap(),
         buy_decimals: 18,
+        native_decimals: 6,
         from: Address::parse(ChainFamily::Tron, "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH").unwrap(),
         to: Address::parse(
             ChainFamily::Evm,

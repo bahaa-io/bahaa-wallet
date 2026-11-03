@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use bahaa_chain::{Wait, transfer_data};
+use bahaa_chain::{Call, Wait, transfer_data};
 use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, hex};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -12,7 +12,8 @@ use url::Url;
 
 use crate::config::{RelayChain, RelayConfig, RelayDeposit};
 use crate::order::{
-    Comment, Order, Progress, Provider, QUOTE_LIFE, Request, SwapError, parse_like, text_of,
+    Comment, Contract, Order, Progress, Provider, QUOTE_LIFE, Request, SwapError, parse_like,
+    text_of,
 };
 use crate::reply::{fetch, unreadable};
 use crate::route::{Charged, Cost, CostKind, Method, Route};
@@ -29,6 +30,7 @@ pub struct Relay {
     base: Url,
     chains: BTreeMap<NetworkId, RelayChain>,
     assets: BTreeSet<AssetId>,
+    contracts: Vec<Address>,
 }
 
 #[derive(Deserialize)]
@@ -88,13 +90,20 @@ struct Currency {
 }
 
 impl Relay {
-    pub fn new(config: &RelayConfig, client: Client) -> Self {
-        Self {
+    pub fn new(config: &RelayConfig, client: Client) -> Result<Self, SwapError> {
+        let contracts = config
+            .contracts
+            .iter()
+            .map(|text| Address::parse(ChainFamily::Evm, text))
+            .collect::<Result<_, _>>()
+            .map_err(|_| SwapError::Untrusted("the built-in Relay contracts are broken"))?;
+        Ok(Self {
             client,
             base: config.url.clone(),
             chains: config.chains.clone(),
             assets: config.assets.clone(),
-        }
+            contracts,
+        })
     }
 
     pub fn covers(&self, request: &Request) -> bool {
@@ -111,6 +120,7 @@ impl Relay {
             && match origin.deposit {
                 RelayDeposit::Address => true,
                 RelayDeposit::Comment => request.sell.contract().is_none(),
+                RelayDeposit::Call => matches!(request.from, Address::Evm(_)),
                 RelayDeposit::Unsupported => false,
             }
     }
@@ -142,7 +152,8 @@ impl Relay {
         });
         let reply = fetch(self.client.post(self.endpoint("quote")?).json(&body)).await?;
         let answer: Answer = serde_json::from_value(reply).map_err(|_| unreadable())?;
-        let (step, item, reference) = deposit_step(&answer)?;
+        let call_mode = origin.deposit == RelayDeposit::Call;
+        let (approval, step, item, reference) = deposit_step(&answer, call_mode)?;
         if answer.details.currency_in.amount != units {
             return Err(SwapError::Untrusted("the quote is for another amount"));
         }
@@ -156,18 +167,22 @@ impl Relay {
                 .ok_or_else(unreadable)?,
             request.buy_decimals,
         )?;
-        let (deposit, comment) = match origin.deposit {
+        let (deposit, comment, contract) = match origin.deposit {
             RelayDeposit::Address => {
                 let deposit = parse_like(
                     step.deposit_address.as_deref().ok_or_else(unreadable)?,
                     &request.from,
                 )?;
                 plain_transfer(&item.data, request, origin.id, &deposit)?;
-                (deposit, None)
+                (deposit, None, None)
             }
             RelayDeposit::Comment => {
                 let (deposit, body) = ton_message(&item.data, request)?;
-                (deposit, Some(Comment::TonBody(body)))
+                (deposit, Some(Comment::TonBody(body)), None)
+            }
+            RelayDeposit::Call => {
+                let contract = self.contract_call(&item.data, approval, request, origin.id)?;
+                (contract.call.to, None, Some(contract))
             }
             RelayDeposit::Unsupported => return Err(SwapError::Unsupported),
         };
@@ -194,9 +209,70 @@ impl Relay {
             expected,
             minimum,
             expires_at: now.saturating_add(QUOTE_LIFE),
-            contract: None,
+            contract,
         };
         Ok((route, order))
+    }
+
+    fn contract_call(
+        &self,
+        data: &Value,
+        approval: Option<&Item>,
+        request: &Request,
+        chain: u64,
+    ) -> Result<Contract, SwapError> {
+        let account = |value: &Value| {
+            field(value, "to")
+                .and_then(|text| Address::parse(ChainFamily::Evm, &text.to_ascii_lowercase()).ok())
+        };
+        let bytes = |value: &Value| {
+            field(value, "data").and_then(|text| hex::decode(text.strip_prefix("0x")?))
+        };
+        let to = account(data)
+            .filter(|to| self.contracts.contains(to))
+            .ok_or(SwapError::Untrusted(
+                "the provider asked to call an unknown contract",
+            ))?;
+        let units = request.amount.units();
+        let native_in = request.sell.contract().is_none();
+        let value = field(data, "value").and_then(|text| text.parse::<U256>().ok());
+        let from = field(data, "from")
+            .and_then(|text| Address::parse(ChainFamily::Evm, &text.to_ascii_lowercase()).ok());
+        let honest = from == Some(request.from)
+            && data.get("chainId").and_then(Value::as_u64) == Some(chain)
+            && value == Some(if native_in { units } else { U256::ZERO });
+        let call = bytes(data)
+            .filter(|call| honest && !call.is_empty())
+            .ok_or(SwapError::Untrusted(
+                "the provider asked for another amount or account",
+            ))?;
+        let spender = match (request.sell.contract(), approval) {
+            (None, None) => None,
+            (Some(_), None) => Some(to),
+            (Some(token), Some(approval)) => {
+                let approved = bytes(&approval.data)
+                    .filter(|_| account(&approval.data).as_ref() == Some(token))
+                    .and_then(|call| approved_spender(&call, units))
+                    .filter(|spender| self.contracts.contains(spender));
+                Some(approved.ok_or(SwapError::Untrusted(
+                    "the provider asked to approve an unknown contract",
+                ))?)
+            }
+            (None, Some(_)) => return Err(not_a_transfer()),
+        };
+        Ok(Contract {
+            call: Call {
+                to,
+                value: Amount::new(
+                    if native_in { units } else { U256::ZERO },
+                    request.native_decimals,
+                )
+                .map_err(|_| unreadable())?,
+                data: call,
+            },
+            spender,
+            ours: false,
+        })
     }
 
     pub async fn status(&self, reference: &str) -> Result<Progress, SwapError> {
@@ -227,10 +303,34 @@ impl Relay {
     }
 }
 
-fn deposit_step(answer: &Answer) -> Result<(&Step, &Item, String), SwapError> {
+fn field<'a>(value: &'a Value, name: &str) -> Option<&'a str> {
+    value.get(name).and_then(Value::as_str)
+}
+
+fn approved_spender(call: &[u8], units: U256) -> Option<Address> {
+    let approve = [0x09, 0x5e, 0xa7, 0xb3];
+    if call.len() != 68 || call[..4] != approve || call[4..16] != [0u8; 12] {
+        return None;
+    }
+    let amount = U256::from_be_slice(&call[36..68]);
+    let spender: [u8; 20] = call[16..36].try_into().ok()?;
+    (amount == units).then_some(Address::Evm(spender))
+}
+
+fn deposit_step(
+    answer: &Answer,
+    call_mode: bool,
+) -> Result<(Option<&Item>, &Step, &Item, String), SwapError> {
     let many = || SwapError::Untrusted("the provider asked for more than one transaction");
-    let [step] = answer.steps.as_slice() else {
-        return Err(many());
+    let (approval, step) = match answer.steps.as_slice() {
+        [step] => (None, step),
+        [first, step] if call_mode && first.id == "approve" && first.kind == "transaction" => {
+            let [approval] = first.items.as_slice() else {
+                return Err(many());
+            };
+            (Some(approval), step)
+        }
+        _ => return Err(many()),
     };
     let [item] = step.items.as_slice() else {
         return Err(many());
@@ -248,7 +348,7 @@ fn deposit_step(answer: &Answer) -> Result<(&Step, &Item, String), SwapError> {
                     .is_some_and(|digits| hex::decode(digits).is_some())
         })
         .ok_or_else(unreadable)?;
-    Ok((step, item, reference))
+    Ok((approval, step, item, reference))
 }
 
 fn relayer_fee(fees: Option<Fees>, request: &Request, origin: u64, sold: &str) -> Option<Cost> {

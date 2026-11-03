@@ -324,6 +324,7 @@ async fn pooled(scratch: &Scratch, paid: &Arc<AtomicU64>) -> (Engine, WalletId, 
     let mut providers = Providers::builtin().unwrap();
     providers.relay.url = dead.clone();
     providers.kyberswap.url = dead.clone();
+    providers.velora.url = dead.clone();
     providers.oneclick.url = dead;
     let mut config = config(scratch, registry, None);
     config.swaps = Some(providers);

@@ -5,10 +5,10 @@ use bahaa_chain::{ChainError, ContractSwap, FeeQuote, MAX_MEMO, Step, Transfer};
 use bahaa_store::{SentStatus, SentTx, SwapRecord, SwapStatus};
 use bahaa_swap::{
     Across, Charged, Comment, Cost, CostKind, KyberSwap, OneClick, Order, Pools, Progress,
-    Provider, Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, SwapError, rank,
+    Provider, Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, SwapError, Velora, rank,
 };
 use bahaa_types::{Address, Amount, AssetId, BitcoinScript, NetworkId, is_plain_text};
-use futures_util::future::{join, join_all};
+use futures_util::future::join_all;
 use tokio::time::Instant;
 
 use super::send::{NewDraft, Planned, Spend};
@@ -66,6 +66,7 @@ pub(crate) struct Swappers {
     relay: Relay,
     pools: Pools,
     kyber: KyberSwap,
+    velora: Velora,
     across: Across,
 }
 
@@ -74,11 +75,34 @@ impl Swappers {
         let client = bahaa_chain::http::client()?;
         Ok(Self {
             oneclick: OneClick::new(&providers.oneclick, client.clone())?,
-            relay: Relay::new(&providers.relay, client.clone()),
+            relay: Relay::new(&providers.relay, client.clone())?,
             pools: Pools::new(&providers.pools)?,
             kyber: KyberSwap::new(&providers.kyberswap, client.clone())?,
+            velora: Velora::new(&providers.velora, client.clone())?,
             across: Across::new(&providers.across, client)?,
         })
+    }
+
+    fn covering(&self, chain: &AnyChain, request: &Request) -> Vec<Provider> {
+        let mut providers = vec![Provider::OneClick, Provider::Relay];
+        if chain.evm().is_some() {
+            providers.extend(
+                self.pools
+                    .provider(request.sell.network())
+                    .filter(|_| self.pools.covers(request)),
+            );
+            let covered = [
+                (Provider::KyberSwap, self.kyber.covers(request)),
+                (Provider::Velora, self.velora.covers(request)),
+                (Provider::Across, self.across.covers(request)),
+            ];
+            providers.extend(
+                covered
+                    .into_iter()
+                    .filter_map(|(provider, covers)| covers.then_some(provider)),
+            );
+        }
+        providers
     }
 
     async fn quotes(
@@ -87,62 +111,23 @@ impl Swappers {
         request: &Request,
         now: u64,
     ) -> (Vec<Quote>, Vec<Unavailable>) {
-        let oneclick = async {
-            if !self.oneclick.covers(request) {
-                return Err(SwapError::Unsupported);
-            }
-            self.oneclick.quote(request, false, now).await
-        };
-        let relay = async {
-            if !self.relay.covers(request) {
-                return Err(SwapError::Unsupported);
-            }
-            let (route, order) = self.relay.quote(request, now).await?;
-            Ok((route, Some(order)))
-        };
-        let pools = async {
-            let evm = chain.evm().filter(|_| self.pools.covers(request))?;
-            Some(
-                self.pools
-                    .quote(evm, request, now)
-                    .await
-                    .map(|(route, order)| (route, Some(order))),
-            )
-        };
-        let kyber = async {
-            let evm = chain.evm().filter(|_| self.kyber.covers(request))?;
-            Some(
-                self.kyber
-                    .quote(evm, request, now)
-                    .await
-                    .map(|(route, order)| (route, Some(order))),
-            )
-        };
-        let across = async {
-            let evm = chain.evm().filter(|_| self.across.covers(request))?;
-            Some(
-                self.across
-                    .quote(evm, request, now)
-                    .await
-                    .map(|(route, order)| (route, Some(order))),
-            )
-        };
-        let ((oneclick, relay), (pools, (kyber, across))) =
-            join(join(oneclick, relay), join(pools, join(kyber, across))).await;
-        let mut answers = vec![(Provider::OneClick, oneclick), (Provider::Relay, relay)];
-        if let Some(answer) = pools {
-            let venue = self
-                .pools
-                .provider(request.sell.network())
-                .unwrap_or(Provider::Uniswap);
-            answers.push((venue, answer));
-        }
-        if let Some(answer) = kyber {
-            answers.push((Provider::KyberSwap, answer));
-        }
-        if let Some(answer) = across {
-            answers.push((Provider::Across, answer));
-        }
+        let asks = self
+            .covering(chain, request)
+            .into_iter()
+            .map(|provider| async move {
+                let answer = match provider {
+                    Provider::OneClick if !self.oneclick.covers(request) => {
+                        Err(SwapError::Unsupported)
+                    }
+                    Provider::OneClick => self.oneclick.quote(request, false, now).await,
+                    _ => self
+                        .fresh(provider, chain, request, now)
+                        .await
+                        .map(|(route, order)| (route, Some(order))),
+                };
+                (provider, answer)
+            });
+        let answers = join_all(asks).await;
         let mut quotes = Vec::new();
         let mut unavailable = Vec::new();
         for (provider, answer) in answers {
@@ -197,6 +182,10 @@ impl Swappers {
                 let evm = chain.evm().ok_or(SwapError::Unsupported)?;
                 self.across.quote(evm, request, now).await
             }
+            Provider::Velora => {
+                let evm = chain.evm().ok_or(SwapError::Unsupported)?;
+                self.velora.quote(evm, request, now).await
+            }
         }
     }
 
@@ -210,7 +199,7 @@ impl Swappers {
             Provider::OneClick => self.oneclick.status(reference).await,
             Provider::Relay => self.relay.status(reference).await,
             Provider::Across => self.across.status(network, reference).await,
-            Provider::Uniswap | Provider::PancakeSwap | Provider::KyberSwap => {
+            Provider::Uniswap | Provider::PancakeSwap | Provider::KyberSwap | Provider::Velora => {
                 Err(SwapError::Unsupported)
             }
         }
@@ -1069,6 +1058,7 @@ impl Worker {
                 amount,
                 buy: request.buy.clone(),
                 buy_decimals: bought.decimals,
+                native_decimals: self.chains[chain].network().native.decimals,
                 from,
                 to,
                 deadline: bahaa_chain::now().saturating_add(DEPOSIT_WINDOW),

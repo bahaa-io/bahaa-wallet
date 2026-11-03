@@ -46,7 +46,7 @@
       },
       "polygon": {
         "id": 137,
-        "deposit": "none"
+        "deposit": "call"
       },
       "arbitrum": {
         "id": 42161,
@@ -78,29 +78,34 @@
       }
     },
     "assets": [
-      "ethereum",
-      "ethereum/0xdAC17F958D2ee523a2206206994597C13D831ec7",
-      "ethereum/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-      "bsc",
-      "bsc/0x55d398326f99059fF775485246999027B3197955",
-      "bsc/0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
-      "polygon/0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
-      "polygon/0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
       "arbitrum",
       "arbitrum/0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
       "arbitrum/0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
       "avalanche/0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
       "base",
       "base/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "bsc",
+      "bsc/0x55d398326f99059fF775485246999027B3197955",
+      "bsc/0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+      "ethereum",
+      "ethereum/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "ethereum/0xdAC17F958D2ee523a2206206994597C13D831ec7",
       "optimism",
-      "optimism/0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
       "optimism/0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
-      "tron",
-      "tron/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
-      "ton",
+      "optimism/0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
+      "polygon",
+      "polygon/0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+      "polygon/0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
       "solana",
+      "solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
       "solana/Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-      "solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+      "ton",
+      "tron",
+      "tron/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    ],
+    "contracts": [
+      "0x4cd00e387622c35bddb9b4c962c136462338bc31",
+      "0x0729e2a4716d9f7dd17858d5d504426d228697f7"
     ]
   },
   "pools": {
@@ -244,6 +249,18 @@
       "base/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913": "usdc",
       "polygon/0xc2132D05D31c914a87C6611C10748AEb04B58e8F": "usdt",
       "polygon/0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359": "usdc"
+    }
+  },
+  "velora": {
+    "url": "https://api.paraswap.io/",
+    "augustus": "0x6a000f20005980200259b80c5102003040001068",
+    "chains": {
+      "ethereum": 1,
+      "bsc": 56,
+      "polygon": 137,
+      "arbitrum": 42161,
+      "optimism": 10,
+      "base": 8453
     }
   }
 }

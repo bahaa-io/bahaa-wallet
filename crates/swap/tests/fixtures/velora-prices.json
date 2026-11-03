@@ -1,0 +1,65 @@
+{
+ "priceRoute": {
+  "blockNumber": 131480544,
+  "network": 56,
+  "srcToken": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+  "srcDecimals": 18,
+  "srcAmount": "100000000000000000",
+  "destToken": "0x55d398326f99059fF775485246999027B3197955",
+  "destDecimals": 18,
+  "destAmount": "69737620244675472332",
+  "bestRoute": [
+   {
+    "percent": 100,
+    "swaps": [
+     {
+      "srcToken": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "srcDecimals": 18,
+      "destToken": "0x55d398326f99059fF775485246999027B3197955",
+      "destDecimals": 18,
+      "swapExchanges": [
+       {
+        "exchange": "uniswapv3",
+        "srcAmount": "100000000000000000",
+        "destAmount": "69737620244675472332",
+        "percent": 100,
+        "poolAddresses": [
+         "0x47a90a2d92a8367a91efa1906bfc8c1e05bf10c4"
+        ],
+        "poolIdentifiers": [
+         "uniswapv3_0x55d398326f99059ff775485246999027b3197955_0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c_100"
+        ],
+        "data": {
+         "gasUSD": "0.003218",
+         "path": [
+          {
+           "currentFee": "100",
+           "fee": "100",
+           "tokenIn": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+           "tokenOut": "0x55d398326f99059ff775485246999027b3197955"
+          }
+         ]
+        },
+        "targetExchange": "0x83c346ba3d4bf36b308705e24fad80999401854b"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "destAmountAfterFee": "69730646482651004785",
+  "gasCostUSD": "0.007383",
+  "gasCost": "192700",
+  "side": "SELL",
+  "version": "6.2",
+  "contractAddress": "0x6a000f20005980200259b80c5102003040001068",
+  "tokenTransferProxy": "0x6a000f20005980200259b80c5102003040001068",
+  "contractMethod": "swapExactAmountIn",
+  "partnerFee": 0.01,
+  "srcUSD": "69.66",
+  "destUSD": "69.68",
+  "partner": "anon",
+  "maxImpactReached": false,
+  "hmac": "e20b6aacbf6d9a82d415a95f351f37ccffa6632f"
+ }
+}

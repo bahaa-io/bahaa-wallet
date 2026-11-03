@@ -24,6 +24,7 @@ fn request() -> Request {
             .parse()
             .unwrap(),
         buy_decimals: 18,
+        native_decimals: 18,
         from: me(),
         to: me(),
         deadline: NOW + 1_800,

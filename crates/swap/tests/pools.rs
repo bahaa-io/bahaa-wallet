@@ -5,7 +5,7 @@ use std::time::Duration;
 use bahaa_chain::{Chain, ContractSwap, PlannedCall, Step, TxId, TxStatus, check_call, now};
 use bahaa_crypto::{Mnemonic, Seed, WordCount};
 use bahaa_evm::{EvmCall, EvmChain};
-use bahaa_swap::{Across, KyberSwap, Method, Order, Pools, Providers, Request};
+use bahaa_swap::{Across, KyberSwap, Method, Order, Pools, Providers, Relay, Request, Velora};
 use bahaa_testkit::anvil::Anvil;
 use bahaa_types::{Address, Amount, AssetId};
 use serde_json::json;
@@ -48,6 +48,7 @@ fn request(sell: &str, amount: &str, buy: &str, me: Address) -> Request {
         amount: Amount::parse(amount, 18).unwrap(),
         buy: buy.parse().unwrap(),
         buy_decimals: 18,
+        native_decimals: 18,
         from: me,
         to: me,
         deadline: now() + 1_800,
@@ -267,6 +268,7 @@ async fn an_across_deposit_takes_exactly_the_amount_on_a_forked_chain() {
             .parse()
             .unwrap(),
         buy_decimals: 6,
+        native_decimals: 18,
         from: me,
         to: me,
         deadline: now() + 1_800,
@@ -283,5 +285,82 @@ async fn an_across_deposit_takes_exactly_the_amount_on_a_forked_chain() {
     assert_eq!(
         held(&chain, &me, &format!("base/{usdc}")).await,
         Amount::parse("400", 6).unwrap()
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a local anvil and internet: BAHAA_ANVIL=/path/to/anvil"]
+async fn velora_routes_pass_the_check_and_pay_after_their_fee_on_a_forked_chain() {
+    let (anvil, chain, me, seed) = forked().await;
+    let usdt = format!("bsc/{USDT}");
+    let velora = Velora::new(
+        &Providers::builtin().unwrap().velora,
+        bahaa_chain::http::client().unwrap(),
+    )
+    .unwrap();
+    let buy = request("bsc", "1", &usdt, me);
+    let (route, order) = velora.quote(&chain, &buy, now()).await.unwrap();
+    assert_eq!(
+        (route.provider, route.method),
+        ("Velora", Method::Aggregator)
+    );
+    let buying = swap_of(&buy, order);
+    warm(&anvil, &buying).await;
+    let (plans, _) = chain.prepare_swap(&buying).await.unwrap();
+    run(&chain, &seed, &plans).await;
+    let bought = held(&chain, &me, &usdt).await;
+    assert!(bought >= route.minimum);
+
+    let half = Amount::new(bought.units() / ruint::aliases::U256::from(2u8), 18).unwrap();
+    let sell = request(&usdt, &half.to_string(), "bsc", me);
+    let (_, order) = velora.quote(&chain, &sell, now()).await.unwrap();
+    let selling = swap_of(&sell, order);
+    warm(&anvil, &selling).await;
+    let (plans, _) = chain.prepare_swap(&selling).await.unwrap();
+    assert_eq!(plans.len(), 2);
+    run(&chain, &seed, &plans).await;
+    assert_eq!(
+        held(&chain, &me, &usdt).await,
+        bought.checked_sub(half).unwrap()
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a local anvil and internet: BAHAA_ANVIL=/path/to/anvil"]
+async fn a_relay_call_from_polygon_takes_exactly_the_amount_on_a_forked_chain() {
+    let (anvil, chain, me, seed) =
+        forked_on("polygon", "https://polygon.drpc.org").await;
+    let usdt = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
+    let Address::Evm(owner) = me else { panic!() };
+    anvil
+        .fund_token(usdt, &owner, &format!("{:x}", 50_000_000u64))
+        .await;
+    let relay = Relay::new(
+        &Providers::builtin().unwrap().relay,
+        bahaa_chain::http::client().unwrap(),
+    )
+    .unwrap();
+    let deposit = Request {
+        sell: format!("polygon/{usdt}").parse().unwrap(),
+        amount: Amount::parse("20", 6).unwrap(),
+        buy: "base/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+            .parse()
+            .unwrap(),
+        buy_decimals: 6,
+        native_decimals: 18,
+        from: me,
+        to: me,
+        deadline: now() + 1_800,
+    };
+    let (_, order) = relay.quote(&deposit, now()).await.unwrap();
+    let mut swap = swap_of(&deposit, order);
+    swap.buy = None;
+    warm(&anvil, &swap).await;
+    let (plans, _) = chain.prepare_swap(&swap).await.unwrap();
+    assert_eq!(plans.len(), 2);
+    run(&chain, &seed, &plans).await;
+    assert_eq!(
+        held(&chain, &me, &format!("polygon/{usdt}")).await,
+        Amount::parse("30", 6).unwrap()
     );
 }

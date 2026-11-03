@@ -12,6 +12,7 @@ const ETHEREUM: &str = include_str!("fixtures/relay-ethereum.json");
 const BSC_USDT: &str = include_str!("fixtures/relay-bsc-usdt.json");
 const TRON: &str = include_str!("fixtures/relay-tron.json");
 const TON: &str = include_str!("fixtures/relay-ton.json");
+const POLYGON_USDT: &str = include_str!("fixtures/relay-polygon-usdt.json");
 const NOW: u64 = 1_793_720_000;
 const EVM: &str = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
 
@@ -32,6 +33,12 @@ fn request(
         amount: Amount::parse(amount, decimals).unwrap(),
         buy: buy.parse().unwrap(),
         buy_decimals,
+        native_decimals: match from.family() {
+            ChainFamily::Tron => 6,
+            ChainFamily::Ton | ChainFamily::Solana => 9,
+            ChainFamily::Bitcoin => 8,
+            ChainFamily::Evm => 18,
+        },
         from,
         to: evm(),
         deadline: NOW + 1_800,
@@ -58,7 +65,7 @@ async fn relay(answer: impl Fn(&Value) -> Value + Send + Sync + 'static) -> Rela
     .await;
     let mut config = Providers::builtin().unwrap().relay;
     config.url = url;
-    Relay::new(&config, reqwest::Client::new())
+    Relay::new(&config, reqwest::Client::new()).unwrap()
 }
 
 fn recorded(body: &Value) -> Value {
@@ -66,6 +73,7 @@ fn recorded(body: &Value) -> Value {
         1 => ETHEREUM,
         56 => BSC_USDT,
         728_126_428 => TRON,
+        137 => POLYGON_USDT,
         _ => TON,
     };
     serde_json::from_str(fixture).unwrap()
@@ -238,7 +246,8 @@ async fn anything_but_a_plain_transfer_of_the_exact_amount_is_refused() {
 async fn only_origins_with_keyless_plain_deposits_are_covered() {
     let relay = relay(recorded).await;
     assert!(relay.covers(&ether()));
-    assert!(!relay.covers(&request("polygon", "10", 18, "base", 18, evm())));
+    assert!(relay.covers(&request("polygon", "10", 18, "base", 18, evm())));
+    assert!(!relay.covers(&request("avalanche", "10", 18, "base", 18, evm())));
     assert!(!relay.covers(&request("solana", "1", 9, "base", 18, evm())));
     let ton = Address::parse(
         ChainFamily::Ton,
@@ -286,4 +295,73 @@ async fn relay_statuses_map_to_progress() {
         relay.status("surprise").await,
         Err(SwapError::Untrusted(_))
     ));
+}
+
+fn polygon_usdt() -> Request {
+    request(
+        "polygon/0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+        "20",
+        6,
+        "base/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        6,
+        evm(),
+    )
+}
+
+#[tokio::test]
+async fn a_polygon_deposit_is_a_checked_call_into_relay_s_depository() {
+    let relay = relay(recorded).await;
+    let (route, order) = relay.quote(&polygon_usdt(), NOW).await.unwrap();
+    assert_eq!(route.expected.to_string(), "19.953665");
+    assert_eq!(route.minimum.to_string(), "19.554591");
+    let contract = order.contract.unwrap();
+    let depository = Address::parse(
+        ChainFamily::Evm,
+        "0x4cd00e387622c35bddb9b4c962c136462338bc31",
+    )
+    .unwrap();
+    assert_eq!(contract.call.to, depository);
+    assert_eq!(contract.spender, Some(depository));
+    assert!(contract.call.value.is_zero());
+    assert_eq!(contract.call.value.decimals(), 18);
+    assert!(!contract.ours);
+    assert_eq!(order.deposit, depository);
+    assert_eq!(order.reference, request_id(POLYGON_USDT));
+}
+
+#[tokio::test]
+async fn a_polygon_call_to_an_unknown_contract_or_spender_is_refused() {
+    let elsewhere = |field: &'static str| {
+        move |body: &Value| {
+            let mut answer = recorded(body);
+            let index = usize::from(field == "deposit");
+            let data = &mut answer["steps"][index]["items"][0]["data"];
+            if field == "deposit" {
+                data["to"] = json!("0x7777777777777777777777777777777777777777");
+            } else {
+                let text = data["data"].as_str().unwrap().replace(
+                    "4cd00e387622c35bddb9b4c962c136462338bc31",
+                    "7777777777777777777777777777777777777777",
+                );
+                data["data"] = json!(text);
+            }
+            answer
+        }
+    };
+    assert_eq!(
+        relay(elsewhere("deposit"))
+            .await
+            .quote(&polygon_usdt(), NOW)
+            .await
+            .unwrap_err(),
+        SwapError::Untrusted("the provider asked to call an unknown contract")
+    );
+    assert_eq!(
+        relay(elsewhere("approve"))
+            .await
+            .quote(&polygon_usdt(), NOW)
+            .await
+            .unwrap_err(),
+        SwapError::Untrusted("the provider asked to approve an unknown contract")
+    );
 }

@@ -16,6 +16,15 @@ pub struct Providers {
     pub pools: BTreeMap<NetworkId, PoolConfig>,
     pub kyberswap: KyberConfig,
     pub across: AcrossConfig,
+    pub velora: VeloraConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VeloraConfig {
+    pub url: Url,
+    pub augustus: String,
+    pub chains: BTreeMap<NetworkId, u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -66,6 +75,7 @@ pub struct RelayConfig {
     pub url: Url,
     pub chains: BTreeMap<NetworkId, RelayChain>,
     pub assets: BTreeSet<AssetId>,
+    pub contracts: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -80,6 +90,7 @@ pub struct RelayChain {
 pub enum RelayDeposit {
     Address,
     Comment,
+    Call,
     #[serde(rename = "none")]
     Unsupported,
 }

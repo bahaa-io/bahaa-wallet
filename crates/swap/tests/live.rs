@@ -34,6 +34,12 @@ fn request(
         amount: Amount::parse(amount, decimals).unwrap(),
         buy: buy.parse().unwrap(),
         buy_decimals,
+        native_decimals: match from.family() {
+            ChainFamily::Tron => 6,
+            ChainFamily::Ton | ChainFamily::Solana => 9,
+            ChainFamily::Bitcoin => 8,
+            ChainFamily::Evm => 18,
+        },
         from,
         to,
         deadline: now() + 1_800,
@@ -62,7 +68,7 @@ async fn live_near_intents_signs_quotes_for_ton_and_tron() {
 #[ignore = "talks to Relay"]
 async fn live_relay_gives_plain_deposits_from_ethereum_and_ton() {
     let providers = Providers::builtin().unwrap();
-    let relay = Relay::new(&providers.relay, bahaa_chain::http::client().unwrap());
+    let relay = Relay::new(&providers.relay, bahaa_chain::http::client().unwrap()).unwrap();
     for asked in [
         request("ethereum", "0.1", 18, "base", 18, evm(), evm()),
         request("ton", "10", 9, "base", 18, ton(), evm()),
