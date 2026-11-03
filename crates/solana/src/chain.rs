@@ -272,19 +272,17 @@ fn bytes(address: &Address) -> Result<Key, ChainError> {
 }
 
 fn held(account: Option<&Account>, owner: &Key, mint: &Key) -> Result<u64, ChainError> {
-    let Some(account) = account else {
+    let Some(account) = account.filter(|account| account.owner == TOKEN) else {
         return Ok(0);
     };
     let data = &account.data;
-    let ours = account.owner == TOKEN
-        && data.len() >= TOKEN_READ
-        && data[..32] == mint[..]
-        && data[32..64] == owner[..]
-        && matches!(data[108], 1 | 2);
-    if !ours {
+    if data.len() < TOKEN_READ || data[..32] != mint[..] {
         return Err(ChainError::Network(
-            "an endpoint sent a token account that is not this wallet's".to_owned(),
+            "an endpoint sent a token account for another token".to_owned(),
         ));
+    }
+    if data[32..64] != owner[..] || !matches!(data[108], 1 | 2) {
+        return Ok(0);
     }
     data[64..72]
         .try_into()
@@ -397,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn token_balances_come_only_from_this_wallets_account() {
+    fn token_balances_come_only_from_this_wallets_account_and_gifts_there_are_ignored() {
         let (owner, mint) = ([1; 32], [2; 32]);
         assert_eq!(held(None, &owner, &mint), Ok(0));
         assert_eq!(
@@ -409,13 +407,7 @@ mod tests {
             Ok(5)
         );
         for bad in [
-            token(&[3; 32], &mint, 5, 1),
             token(&owner, &[3; 32], 5, 1),
-            token(&owner, &mint, 5, 0),
-            Account {
-                owner: TOKEN_2022,
-                ..token(&owner, &mint, 5, 1)
-            },
             Account {
                 data: vec![0; 64],
                 ..token(&owner, &mint, 5, 1)
@@ -423,6 +415,26 @@ mod tests {
         ] {
             assert!(held(Some(&bad), &owner, &mint).is_err());
         }
+        assert_eq!(
+            held(Some(&token(&[3; 32], &mint, 5, 1)), &owner, &mint),
+            Ok(0)
+        );
+        assert_eq!(
+            held(Some(&token(&owner, &mint, 5, 0)), &owner, &mint),
+            Ok(0)
+        );
+        let gifted = Account {
+            lamports: 1,
+            owner: [0; 32],
+            executable: false,
+            data: Vec::new(),
+        };
+        assert_eq!(held(Some(&gifted), &owner, &mint), Ok(0));
+        let elsewhere = Account {
+            owner: TOKEN_2022,
+            ..token(&owner, &mint, 5, 1)
+        };
+        assert_eq!(held(Some(&elsewhere), &owner, &mint), Ok(0));
     }
 
     fn mint(owner: Key, decimals: u8, initialized: u8) -> Account {

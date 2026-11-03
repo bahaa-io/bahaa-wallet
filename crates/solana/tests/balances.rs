@@ -47,11 +47,18 @@ async fn one_read_gives_the_coin_and_every_known_token() {
 }
 
 #[tokio::test]
-async fn a_token_account_that_is_not_ours_is_a_bad_reply() {
+async fn a_token_account_handed_to_someone_else_holds_nothing_here() {
     let mut ledger = Ledger::default();
     ledger
         .accounts
         .insert(OWNER_USDC.to_owned(), token_account(FRIEND, USDC, 5));
+    let url = node(Arc::new(Mutex::new(Vec::new())), ledger.clone()).await;
+    let chain = SolanaChain::new(solana_on(&[url])).unwrap();
+    let held = chain.balances(&address(OWNER), &[usdc()]).await.unwrap();
+    assert!(held[0].amount.is_zero());
+    ledger
+        .accounts
+        .insert(OWNER_USDC.to_owned(), token_account(OWNER, FRIEND, 5));
     let url = node(Arc::new(Mutex::new(Vec::new())), ledger).await;
     let chain = SolanaChain::new(solana_on(&[url])).unwrap();
     assert!(matches!(
