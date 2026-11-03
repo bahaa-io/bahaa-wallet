@@ -3,6 +3,7 @@ mod chain;
 mod clock;
 mod model;
 mod pool;
+mod rpc;
 
 pub use abi::{TRANSFER_EVENT, abi_text, parse_transfer, transfer_data};
 pub use chain::Chain;
@@ -13,3 +14,4 @@ pub use model::{
     memo_text,
 };
 pub use pool::{Failure, Pool, PoolError};
+pub use rpc::{Dialect, JsonRpc};

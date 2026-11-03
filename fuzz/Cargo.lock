@@ -607,9 +607,12 @@ dependencies = [
  "bahaa-crypto",
  "bahaa-types",
  "futures-util",
+ "reqwest",
  "ruint",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -653,10 +656,8 @@ dependencies = [
  "bahaa-crypto",
  "bahaa-types",
  "futures-util",
- "reqwest",
  "ruint",
  "serde_json",
- "url",
 ]
 
 [[package]]

@@ -18,7 +18,7 @@ mod logs;
 mod replace;
 mod rollup;
 
-use crate::rpc::{Rpc, quantity};
+use crate::rpc::{Evm, Rpc, quantity};
 use crate::tx;
 
 const BALANCE_OF: &str = "70a08231";
@@ -51,7 +51,7 @@ impl EvmChain {
         let ChainKind::Evm { chain_id, .. } = network.kind else {
             return Err(ChainError::Invalid("not an EVM network"));
         };
-        let rpc = Rpc::new(network.endpoints.clone(), chain_id)?;
+        let rpc = Rpc::new(network.endpoints.clone(), Evm { chain_id })?;
         Ok(Self {
             network,
             chain_id,
