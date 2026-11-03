@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bahaa_config::Registry;
+use bahaa_config::{Feature, Registry};
 use bahaa_crypto::SecretString;
 use bahaa_engine::SentKind;
 use bahaa_engine::swap::{Charged, CostKind, Method, Providers, Step, SwapStatus};
@@ -252,6 +252,12 @@ fn simulated(calls: &[Value], paid: u64) -> Value {
                 json!([])
             };
             let output = if data.starts_with("0xdd62ed3e") { word(0) } else { "0x".to_owned() };
+            let given = call["gas"]
+                .as_str()
+                .map(|gas| u64::from_str_radix(gas.trim_start_matches("0x"), 16).unwrap());
+            if call["to"] == PANCAKE && given.is_some_and(|gas| gas < 200_000) {
+                return json!({"status": "0x0", "gasUsed": call["gas"], "returnData": "0x", "logs": [], "error": {"message": "out of gas"}});
+            }
             json!({"status": "0x1", "gasUsed": "0x249f0", "returnData": output, "logs": logs})
         })
         .collect();
@@ -291,6 +297,7 @@ fn pool_node(sent: &Sent, call: &Value, paid: &AtomicU64) -> Value {
             json!(word(100_000_000_000_000_000_000))
         }
         "eth_call" => json!(word(0)),
+        "eth_estimateGas" => json!("0x249f0"),
         "eth_simulateV1" => {
             let calls = call["params"][0]["blockStateCalls"][0]["calls"]
                 .as_array()
@@ -315,12 +322,24 @@ fn pool_node(sent: &Sent, call: &Value, paid: &AtomicU64) -> Value {
 }
 
 async fn pooled(scratch: &Scratch, paid: &Arc<AtomicU64>) -> (Engine, WalletId, Sent) {
+    pooled_on(scratch, paid, true).await
+}
+
+async fn pooled_on(
+    scratch: &Scratch,
+    paid: &Arc<AtomicU64>,
+    simulates: bool,
+) -> (Engine, WalletId, Sent) {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let shared = Arc::clone(&sent);
     let paid = Arc::clone(paid);
     let url = common::node(move |call| (pool_node(&shared, call, &paid), Duration::ZERO)).await;
     let dead = Url::parse("http://127.0.0.1:9/").unwrap();
-    let registry = Registry::with_networks(vec![common::network("bsc", url)]).unwrap();
+    let mut network = common::network("bsc", url);
+    if !simulates {
+        network.endpoints[0].features = vec![Feature::Logs];
+    }
+    let registry = Registry::with_networks(vec![network]).unwrap();
     let mut providers = Providers::builtin().unwrap();
     providers.relay.url = dead.clone();
     providers.kyberswap.url = dead.clone();
@@ -376,6 +395,11 @@ async fn a_pool_swap_approves_exactly_is_checked_by_simulation_and_settles_when_
         .unwrap();
     assert_eq!(network.amount.to_string(), "0.0006");
     let review = engine.choose_swap(draft.id, index).await.unwrap();
+    assert_eq!(
+        review.draft.fee.max().to_string(),
+        "0.00140625",
+        "the swap's limit was raised until the simulation with that exact limit passed"
+    );
     assert_eq!(review.steps.len(), 2);
     assert!(matches!(
         &review.steps[0],
@@ -416,6 +440,41 @@ async fn a_pool_swap_approves_exactly_is_checked_by_simulation_and_settles_when_
     assert_eq!(
         (done.provider.as_str(), done.reference.as_str()),
         ("pancakeswap", tx.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn without_a_simulating_endpoint_only_our_own_single_call_swap_is_offered_unchecked() {
+    let scratch = Scratch::new();
+    let paid = Arc::new(AtomicU64::new(0));
+    let (engine, wallet, _sent) = pooled_on(&scratch, &paid, false).await;
+    let draft = engine
+        .prepare_swap(SwapRequest {
+            wallet,
+            account: 0,
+            sell: "bsc".parse().unwrap(),
+            buy: format!("bsc/{USDT}").parse().unwrap(),
+            amount: Spend::Exact(Amount::parse("0.1", 18).unwrap()),
+        })
+        .await
+        .unwrap();
+    let index = draft
+        .routes
+        .iter()
+        .position(|ranked| ranked.route.provider == "PancakeSwap")
+        .unwrap();
+    let review = engine.choose_swap(draft.id, index).await.unwrap();
+    assert!(!review.checked);
+    assert_eq!(review.steps, vec![Step::Swap]);
+    let approved = engine.prepare_swap(usdt_to_bnb(wallet)).await.unwrap();
+    let missing = approved
+        .unavailable
+        .iter()
+        .find(|missing| missing.provider == "PancakeSwap")
+        .unwrap();
+    assert_eq!(
+        missing.reason,
+        "this network does not support checking this swap before it is signed"
     );
 }
 

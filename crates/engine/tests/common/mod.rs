@@ -93,7 +93,7 @@ pub fn network(id: &str, url: Url) -> Network {
     network.endpoints = vec![Endpoint {
         protocol: Protocol::JsonRpc,
         url,
-        features: vec![Feature::Logs],
+        features: vec![Feature::Logs, Feature::Simulate],
         min_gap_ms: 0,
         history_gap_ms: 0,
     }];

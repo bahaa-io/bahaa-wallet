@@ -9,7 +9,7 @@ use bahaa_chain::{
 use bahaa_config::Feature;
 use bahaa_crypto::{Seed, secp256k1_address};
 use bahaa_types::{Address, Amount, AssetId, to_plain_text};
-use futures_util::future::try_join3;
+use futures_util::future::{try_join, try_join3, try_join4};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
@@ -27,6 +27,25 @@ const TRANSFER_BATCH: &str = "4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d98
 const MAX_LOGS: usize = 2_048;
 const MAX_TOPICS: usize = 4;
 const MAX_REASON: usize = 160;
+const GAS_TRIES: usize = 3;
+const OUT_OF_GAS: u64 = 16;
+
+#[derive(Clone, Copy, Debug)]
+struct Pricing {
+    base: U256,
+    tip: U256,
+    max_fee: U256,
+}
+
+impl Pricing {
+    fn new(base: U256, tip: U256) -> Result<Self, ChainError> {
+        let max_fee = base
+            .checked_mul(U256::from(2u8))
+            .and_then(|fee| fee.checked_add(tip))
+            .ok_or_else(ChainError::overflow)?;
+        Ok(Self { base, tip, max_fee })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvmCall {
@@ -105,12 +124,14 @@ impl EvmChain {
                 _ => Ok(U256::ZERO),
             }
         };
-        let (held, nonce, allowance) = try_join3(
+        let (held, nonce, allowance, (base, tip)) = Box::pin(try_join4(
             self.held(&from, token.as_ref()),
             self.nonce(&from),
             allowance,
-        )
+            self.fees(),
+        ))
         .await?;
+        let pricing = Pricing::new(base, tip)?;
         let units = swap.amount.units();
         let native = (&self.network.native.symbol, self.network.native.decimals);
         match token {
@@ -123,8 +144,8 @@ impl EvmChain {
             None => enough(native.0, units, held.native, native.1)?,
         }
         let steps = self.steps(swap, allowance)?;
-        let (gas, checked) = self.gas(&from, &steps, swap, allowance).await?;
-        let (plans, fees) = self.finish(steps, &gas, nonce, checked).await?;
+        let (gas, checked) = Box::pin(self.gas(&from, &steps, swap, allowance, &pricing)).await?;
+        let (plans, fees) = self.finish(steps, &gas, nonce, checked, &pricing).await?;
         let needed = swap
             .call
             .value
@@ -141,12 +162,9 @@ impl EvmChain {
         gas: &[Gas],
         nonce: u64,
         checked: bool,
+        pricing: &Pricing,
     ) -> Result<(Vec<EvmCall>, Fees), ChainError> {
-        let (base, tip) = self.fees().await?;
-        let max_fee = base
-            .checked_mul(U256::from(2u8))
-            .and_then(|fee| fee.checked_add(tip))
-            .ok_or_else(ChainError::overflow)?;
+        let Pricing { base, tip, max_fee } = *pricing;
         let total = |pick: fn(&Gas) -> u64| {
             gas.iter()
                 .try_fold(0u64, |sum, gas| sum.checked_add(pick(gas)))
@@ -208,7 +226,16 @@ impl EvmChain {
                 "the approval this swap relied on is gone, get a new quote",
             ));
         }
-        self.gas(&from, &steps, swap, allowance).await.map(|_| ())
+        let (base, _) = self.fees().await?;
+        let first = plans.first().ok_or_else(ChainError::overflow)?;
+        let pricing = Pricing {
+            base,
+            tip: U256::from(first.tx.max_priority_fee_per_gas),
+            max_fee: U256::from(first.tx.max_fee_per_gas),
+        };
+        Box::pin(self.gas(&from, &steps, swap, allowance, &pricing))
+            .await
+            .map(|_| ())
     }
 
     pub fn sign_typed(
@@ -422,8 +449,10 @@ impl EvmChain {
             let nothing = self.native(U256::ZERO)?;
             return Ok((Vec::new(), FeeQuote::new(nothing, nothing, Vec::new())?));
         }
-        let gas = self.approval_gas(&from, &steps).await?;
-        let (plans, fees) = self.finish(steps, &gas, nonce, true).await?;
+        let (gas, (base, tip)) = try_join(self.approval_gas(&from, &steps), self.fees()).await?;
+        let (plans, fees) = self
+            .finish(steps, &gas, nonce, true, &Pricing::new(base, tip)?)
+            .await?;
         let native = &self.network.native;
         enough(&native.symbol, fees.max, held.native, native.decimals)?;
         Ok((plans, self.fee_quote(fees)?))
@@ -441,7 +470,11 @@ impl EvmChain {
         let params =
             json!([{"blockStateCalls": [{"calls": calls}], "validation": false}, "latest"]);
         let limit = |used: u64| used.saturating_add(used / 4);
-        if let Some(reply) = self.rpc.call_if_served("eth_simulateV1", params).await? {
+        if let Some(reply) = self
+            .rpc
+            .call_offered(Feature::Simulate, "eth_simulateV1", params)
+            .await?
+        {
             let simulated = simulated(&reply, steps.len())?;
             if simulated.iter().any(|call| !call.ok) {
                 return Err(ChainError::Rejected(
@@ -480,6 +513,7 @@ impl EvmChain {
         steps: &[PlannedCall],
         swap: &ContractSwap,
         allowance: U256,
+        pricing: &Pricing,
     ) -> Result<(Vec<Gas>, bool), ChainError> {
         let mut calls = steps
             .iter()
@@ -502,23 +536,46 @@ impl EvmChain {
             }
             _ => None,
         };
-        let params = json!([{
-            "blockStateCalls": [{"calls": calls}],
-            "traceTransfers": true,
-            "validation": false,
-        }, "latest"]);
-        match self.rpc.call_if_served("eth_simulateV1", params).await? {
-            Some(reply) => {
-                let simulated = simulated(&reply, calls.len())?;
-                judge(from, swap, steps.len() - 1, &simulated, check)?;
-                let gas = simulated[..steps.len()]
+        match self.simulate_swap(&calls, None).await? {
+            Some(free) => {
+                judge(from, swap, steps.len() - 1, &free, check)?;
+                let mut limits: Vec<u64> = free[..steps.len()]
                     .iter()
-                    .map(|call| Gas {
-                        used: call.used,
-                        limit: call.peak.saturating_add(call.peak / 4),
-                    })
+                    .map(|call| call.peak.saturating_add(call.peak / 4))
                     .collect();
-                Ok((gas, true))
+                for _ in 0..GAS_TRIES {
+                    let bounded = self
+                        .simulate_swap(&calls, Some((&limits, pricing)))
+                        .await?
+                        .ok_or_else(ChainError::malformed)?;
+                    let short: Vec<usize> = bounded[..steps.len()]
+                        .iter()
+                        .zip(&limits)
+                        .enumerate()
+                        .filter(|(_, (call, limit))| {
+                            !call.ok && call.used >= *limit - *limit / OUT_OF_GAS
+                        })
+                        .map(|(index, _)| index)
+                        .collect();
+                    if short.is_empty() {
+                        judge(from, swap, steps.len() - 1, &bounded, check)?;
+                        let gas = bounded[..steps.len()]
+                            .iter()
+                            .zip(&limits)
+                            .map(|(call, limit)| Gas {
+                                used: call.used,
+                                limit: *limit,
+                            })
+                            .collect();
+                        return Ok((gas, true));
+                    }
+                    for index in short {
+                        limits[index] = limits[index].saturating_add(limits[index] / 2);
+                    }
+                }
+                Err(ChainError::Rejected(
+                    "the swap runs out of gas at every limit the wallet tried".to_owned(),
+                ))
             }
             None if swap.ours && steps.len() == 1 => {
                 let route = Route {
@@ -539,6 +596,44 @@ impl EvmChain {
                 "checking this swap before it is signed",
             )),
         }
+    }
+}
+
+impl EvmChain {
+    async fn simulate_swap(
+        &self,
+        calls: &[Value],
+        bounds: Option<(&[u64], &Pricing)>,
+    ) -> Result<Option<Vec<Simulated>>, ChainError> {
+        let bounded: Vec<Value> = calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| {
+                let mut call = call.clone();
+                if let Some((limits, pricing)) = bounds {
+                    if let Some(limit) = limits.get(index) {
+                        call["gas"] = json!(format!("{limit:#x}"));
+                    }
+                    call["maxFeePerGas"] = json!(format!("{:#x}", pricing.max_fee));
+                    call["maxPriorityFeePerGas"] = json!(format!("{:#x}", pricing.tip));
+                }
+                call
+            })
+            .collect();
+        let mut block = json!({"calls": bounded});
+        if let Some((_, pricing)) = bounds {
+            block["blockOverrides"] = json!({"baseFeePerGas": format!("{:#x}", pricing.base)});
+        }
+        let params = json!([{
+            "blockStateCalls": [block],
+            "traceTransfers": true,
+            "validation": false,
+        }, "latest"]);
+        self.rpc
+            .call_offered(Feature::Simulate, "eth_simulateV1", params)
+            .await?
+            .map(|reply| simulated(&reply, calls.len()))
+            .transpose()
     }
 }
 

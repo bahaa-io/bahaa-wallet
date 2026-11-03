@@ -37,18 +37,23 @@
         "protocol": "json-rpc",
         "url": "https://bsc-rpc.publicnode.com",
         "features": [
-          "logs"
+          "logs",
+          "simulate"
         ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://bsc-dataseed.bnbchain.org",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/bnb",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       },
       {
         "protocol": "json-rpc",
@@ -116,18 +121,23 @@
         "protocol": "json-rpc",
         "url": "https://ethereum-rpc.publicnode.com",
         "features": [
-          "logs"
+          "logs",
+          "simulate"
         ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://eth.drpc.org",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/eth",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       },
       {
         "protocol": "json-rpc",
@@ -188,18 +198,23 @@
         "protocol": "json-rpc",
         "url": "https://polygon-bor-rpc.publicnode.com",
         "features": [
-          "logs"
+          "logs",
+          "simulate"
         ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://polygon.drpc.org",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/matic",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       }
     ],
     "explorer": {
@@ -245,19 +260,24 @@
       {
         "protocol": "json-rpc",
         "url": "https://arbitrum-one-rpc.publicnode.com",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://arb1.arbitrum.io/rpc",
         "features": [
-          "logs"
+          "logs",
+          "simulate"
         ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://arbitrum.drpc.org",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       }
     ],
     "explorer": {
@@ -359,23 +379,30 @@
         "protocol": "json-rpc",
         "url": "https://base-rpc.publicnode.com",
         "features": [
-          "logs"
+          "logs",
+          "simulate"
         ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://mainnet.base.org",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://base.drpc.org",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/base",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       }
     ],
     "explorer": {
@@ -422,20 +449,24 @@
         "protocol": "json-rpc",
         "url": "https://optimism-rpc.publicnode.com",
         "features": [
-          "logs"
+          "logs",
+          "simulate"
         ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://mainnet.optimism.io",
         "features": [
-          "logs"
+          "logs",
+          "simulate"
         ]
       },
       {
         "protocol": "json-rpc",
         "url": "https://1rpc.io/op",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       }
     ],
     "explorer": {
@@ -677,7 +708,9 @@
       {
         "protocol": "json-rpc",
         "url": "https://bsc-testnet-rpc.publicnode.com",
-        "features": []
+        "features": [
+          "simulate"
+        ]
       }
     ],
     "explorer": {

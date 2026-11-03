@@ -66,7 +66,7 @@ impl Protocol {
 
     fn allows(self, feature: Feature) -> bool {
         match feature {
-            Feature::Logs | Feature::Private => self == Self::JsonRpc,
+            Feature::Logs | Feature::Private | Feature::Simulate => self == Self::JsonRpc,
             Feature::History => matches!(
                 self,
                 Self::TronHttp
@@ -86,6 +86,7 @@ pub enum Feature {
     Logs,
     History,
     Private,
+    Simulate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

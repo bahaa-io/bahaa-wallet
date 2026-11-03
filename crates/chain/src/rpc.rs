@@ -59,20 +59,21 @@ impl<D: Dialect> JsonRpc<D> {
             .await?)
     }
 
-    pub async fn call_if_served(
+    pub async fn call_offered(
         &self,
+        need: Feature,
         method: &str,
         params: Value,
     ) -> Result<Option<Value>, ChainError> {
         match self
             .pool
-            .call(None, |endpoint| {
+            .call(Some(need), |endpoint| {
                 self.attempt(endpoint, method, params.clone())
             })
             .await
         {
             Ok(value) => Ok(Some(value)),
-            Err(PoolError::Unserved(_)) => Ok(None),
+            Err(PoolError::NoEndpoint) => Ok(None),
             Err(err) => Err(err.into()),
         }
     }

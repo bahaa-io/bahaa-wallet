@@ -39,7 +39,7 @@ impl Anvil {
         network.endpoints = vec![Endpoint {
             protocol: Protocol::JsonRpc,
             url: url.clone(),
-            features: vec![Feature::Logs],
+            features: vec![Feature::Logs, Feature::Simulate],
             min_gap_ms: 0,
             history_gap_ms: 0,
         }];
