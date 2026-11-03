@@ -7,7 +7,7 @@ use bahaa_crypto::{
     TonPhraseError, WordCount,
 };
 use bahaa_store::StoreKey;
-use bahaa_types::{Address, ChainFamily, SolanaPath, TonContract, hex};
+use bahaa_types::{Address, BitcoinType, ChainFamily, SolanaPath, TonContract, hex};
 use bahaa_vault::{KdfParams, Vault, VaultError};
 use thiserror::Error;
 
@@ -42,6 +42,7 @@ pub struct WalletInfo {
     pub kind: WalletKind,
     pub ton: Option<TonContract>,
     pub solana: Option<SolanaPath>,
+    pub bitcoin: Option<BitcoinType>,
     pub counted: bool,
 }
 
@@ -107,6 +108,8 @@ pub enum KeyringError {
     NoTon,
     #[error("only recovery phrases have a Solana path")]
     NoSolana,
+    #[error("this wallet has no Bitcoin account")]
+    NoBitcoin,
     #[error("this is a watch-only wallet, it has no keys")]
     WatchOnly,
     #[error("only a watch-only wallet can be left out of the total")]
@@ -230,9 +233,10 @@ impl Keyring {
                         !passphrase.expose_secret().is_empty(),
                     ),
                     Phrase::Ton { .. } => (Some(WordCount::TwentyFour), false),
-                    Phrase::Key { .. } | Phrase::TonKey { .. } | Phrase::Watch { .. } => {
-                        (None, false)
-                    }
+                    Phrase::Key { .. }
+                    | Phrase::TonKey { .. }
+                    | Phrase::BitcoinKey { .. }
+                    | Phrase::Watch { .. } => (None, false),
                 };
                 let kind = kind_of(&entry.phrase);
                 WalletInfo {
@@ -243,6 +247,7 @@ impl Keyring {
                     kind,
                     ton: entry.phrase.contract(),
                     solana: entry.phrase.solana_path(),
+                    bitcoin: entry.phrase.bitcoin_type(),
                     counted: entry.phrase.counted(),
                 }
             })
@@ -257,7 +262,7 @@ impl Keyring {
         self.session()?;
         let mnemonic = Mnemonic::generate(words.words())?;
         let phrase = mnemonic.phrase();
-        let id = self.add(bip39(mnemonic, passphrase, Some(SolanaPath::default()))?)?;
+        let id = self.add(bip39(mnemonic, passphrase, true)?)?;
         Ok((id, phrase))
     }
 
@@ -302,13 +307,21 @@ impl Keyring {
         self.edit(id, Some(path), Phrase::solana_mut, KeyringError::NoSolana)
     }
 
-    pub fn undetected(&self) -> Result<Vec<WalletId>, KeyringError> {
+    pub fn set_bitcoin_type(
+        &mut self,
+        id: WalletId,
+        kind: BitcoinType,
+    ) -> Result<(), KeyringError> {
+        self.edit(id, Some(kind), Phrase::bitcoin_mut, KeyringError::NoBitcoin)
+    }
+
+    pub fn undetected(&self, family: ChainFamily) -> Result<Vec<WalletId>, KeyringError> {
         Ok(self
             .session()?
             .contents
             .entries
             .iter()
-            .filter(|entry| entry.phrase.undetected())
+            .filter(|entry| entry.phrase.undetected(family))
             .map(|entry| WalletId(entry.id))
             .collect())
     }
@@ -366,10 +379,9 @@ impl Keyring {
                 key,
                 family: ChainFamily::Solana,
             } => SecretString::from(bahaa_crypto::solana_keypair(key).to_string()),
-            Phrase::Key {
-                key,
-                family: ChainFamily::Bitcoin,
-            } => SecretString::from(bahaa_crypto::bitcoin_wif(key).to_string()),
+            Phrase::BitcoinKey { key, .. } => {
+                SecretString::from(bahaa_crypto::bitcoin_wif(key).to_string())
+            }
             Phrase::Key { key, .. } | Phrase::TonKey { key, .. } => {
                 SecretString::from(hex::encode(&**key))
             }
@@ -512,9 +524,9 @@ fn key_phrase(text: &str, family: ChainFamily) -> Result<Phrase, KeyringError> {
             key: bahaa_crypto::solana_private_key(text)?,
             family,
         },
-        ChainFamily::Bitcoin => Phrase::Key {
+        ChainFamily::Bitcoin => Phrase::BitcoinKey {
             key: bahaa_crypto::bitcoin_private_key(text)?,
-            family,
+            kind: None,
         },
     })
 }
@@ -525,6 +537,7 @@ fn kind_of(phrase: &Phrase) -> WalletKind {
         Phrase::Ton { .. } => WalletKind::Ton,
         Phrase::Key { family, .. } => WalletKind::Key(*family),
         Phrase::TonKey { .. } => WalletKind::Key(ChainFamily::Ton),
+        Phrase::BitcoinKey { .. } => WalletKind::Key(ChainFamily::Bitcoin),
         Phrase::Watch { address, .. } => WalletKind::Watch(address.family()),
     }
 }
@@ -560,22 +573,18 @@ fn parse(phrase: &str, passphrase: &str, kind: Option<PhraseKind>) -> Result<Phr
                 .flatten();
             match (multi, native) {
                 (Ok(_), Some(_)) => Err(KeyringError::Ambiguous),
-                (Ok(mnemonic), None) => bip39(mnemonic, passphrase, None),
+                (Ok(mnemonic), None) => bip39(mnemonic, passphrase, false),
                 (Err(_), Some(mnemonic)) => Ok(ton(mnemonic)),
                 (Err(err), None) => Err(err.into()),
             }
         }
-        Some(PhraseKind::Bip39) => bip39(Mnemonic::parse(phrase)?, passphrase, None),
+        Some(PhraseKind::Bip39) => bip39(Mnemonic::parse(phrase)?, passphrase, false),
         Some(PhraseKind::Ton) if !passphrase.is_empty() => Err(KeyringError::TonPassphrase),
         Some(PhraseKind::Ton) => Ok(ton(TonMnemonic::parse(phrase)?)),
     }
 }
 
-fn bip39(
-    mnemonic: Mnemonic,
-    passphrase: &str,
-    solana: Option<SolanaPath>,
-) -> Result<Phrase, KeyringError> {
+fn bip39(mnemonic: Mnemonic, passphrase: &str, fresh: bool) -> Result<Phrase, KeyringError> {
     payload::check_passphrase(passphrase)?;
     let mut owned = String::with_capacity(passphrase.len());
     owned.push_str(passphrase);
@@ -583,7 +592,8 @@ fn bip39(
         mnemonic,
         passphrase: SecretString::from(owned),
         contract: TonContract::W5,
-        solana,
+        solana: fresh.then(SolanaPath::default),
+        bitcoin: fresh.then(BitcoinType::default),
     })
 }
 
@@ -600,7 +610,7 @@ fn seed(phrase: &Phrase) -> Result<Option<Seed>, KeyringError> {
             family: ChainFamily::Solana,
         }
         | Phrase::TonKey { key, .. } => bahaa_crypto::ed25519_seed(key),
-        Phrase::Key { key, .. } => {
+        Phrase::Key { key, .. } | Phrase::BitcoinKey { key, .. } => {
             bahaa_crypto::secp256k1_seed(key).map_err(|_| KeyringError::Damaged)?
         }
         Phrase::Watch { .. } => return Ok(None),

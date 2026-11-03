@@ -8,7 +8,7 @@ use bahaa_config::Registry;
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_engine::{Engine, Event, SendRequest, SentStatus, Spend, WalletKind};
 use bahaa_testkit::electrum::{Ledger, Log, sender};
-use bahaa_types::{Address, Amount, AssetId, ChainFamily};
+use bahaa_types::{Address, Amount, AssetId, BitcoinType, ChainFamily};
 use common::{BITCOIN_GENESIS, Scratch, bitcoin_network, config, settled, until};
 
 const PHRASE: &str =
@@ -135,5 +135,48 @@ async fn a_bitcoin_key_and_a_watched_address_hold_one_address_each() {
             .unwrap()
             .expose_secret(),
         wif.as_str()
+    );
+}
+
+#[tokio::test]
+async fn a_phrase_used_with_taproot_is_found_there_and_remembered() {
+    const TAPROOT_FIRST: &str = "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr";
+    let mut ledger = Ledger::new(BITCOIN_GENESIS);
+    ledger.fund(&address(TAPROOT_FIRST), 40_000, 2);
+    let ledger = Arc::new(Mutex::new(ledger));
+    let url = bahaa_testkit::electrum::serve(Log::default(), Arc::clone(&ledger)).await;
+    let scratch = Scratch::new();
+    let registry = Registry::with_networks(vec![bitcoin_network(url)]).unwrap();
+    let engine = Engine::start(config(&scratch, registry, None)).unwrap();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .import(SecretString::from(PHRASE), SecretString::from(""))
+        .await
+        .unwrap();
+    let mut portfolio = engine.portfolio();
+    let held = until(&mut portfolio, |portfolio| {
+        portfolio
+            .holdings
+            .iter()
+            .any(|holding| holding.address.to_string() == TAPROOT_FIRST)
+    })
+    .await;
+    assert_eq!(held.holdings[0].amount.to_string(), "0.0004");
+    let kind = |wallets: Vec<bahaa_engine::WalletInfo>| {
+        wallets
+            .into_iter()
+            .find(|info| info.id == wallet)
+            .unwrap()
+            .bitcoin
+    };
+    assert_eq!(
+        kind(engine.wallets().await.unwrap()),
+        Some(BitcoinType::Taproot)
+    );
+    engine.lock().await.unwrap();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    assert_eq!(
+        kind(engine.wallets().await.unwrap()),
+        Some(BitcoinType::Taproot)
     );
 }

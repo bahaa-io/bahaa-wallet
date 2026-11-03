@@ -6,7 +6,9 @@ mod ids;
 mod price;
 mod text;
 
-pub use address::{Address, AddressError, BitcoinScript, SolanaPath, TonContract, TonForm};
+pub use address::{
+    Address, AddressError, BitcoinScript, BitcoinType, SolanaPath, TonContract, TonForm,
+};
 pub use amount::{Amount, AmountError, MAX_DECIMALS};
 pub use asset::{AssetError, AssetId};
 pub use ids::{ChainFamily, IdError, NetworkId, PriceId};

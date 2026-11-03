@@ -1,4 +1,5 @@
 use bahaa_chain::ChainError;
+use bahaa_crypto::tagged_hash;
 use bahaa_types::hex;
 use sha2::{Digest, Sha256};
 
@@ -12,6 +13,10 @@ const MAX_BYTES: usize = 4_000_000;
 const WITNESS_MARKER: u8 = 0x00;
 const WITNESS_FLAG: u8 = 0x01;
 const KEY_CODE: [u8; 4] = [0x19, 0x76, 0xa9, 0x14];
+const TAP_SIGHASH: &[u8] = b"TapSighash";
+const TAPROOT_EPOCH: u8 = 0;
+const SIGHASH_DEFAULT: u8 = 0;
+const KEY_PATH: u8 = 0;
 const KEY_CODE_END: [u8; 2] = [0x88, 0xac];
 
 pub(crate) type Hash = [u8; 32];
@@ -89,6 +94,33 @@ impl Tx {
         preimage.extend_from_slice(&self.lock_time.to_le_bytes());
         preimage.extend_from_slice(&u32::from(SIGHASH_ALL).to_le_bytes());
         sha256d(&preimage)
+    }
+
+    pub(crate) fn taproot_sighash(&self, index: usize, spent: &[Output]) -> Hash {
+        let mut prevouts = Vec::new();
+        let mut amounts = Vec::new();
+        let mut scripts = Vec::new();
+        let mut sequences = Vec::new();
+        for (input, output) in self.inputs.iter().zip(spent) {
+            outpoint(&mut prevouts, &input.previous);
+            amounts.extend_from_slice(&output.value.to_le_bytes());
+            compact(&mut scripts, output.script.len());
+            scripts.extend_from_slice(&output.script);
+            sequences.extend_from_slice(&input.sequence.to_le_bytes());
+        }
+        let mut outputs = Vec::new();
+        for output in &self.outputs {
+            write_output(&mut outputs, output);
+        }
+        let mut message = vec![TAPROOT_EPOCH, SIGHASH_DEFAULT];
+        message.extend_from_slice(&self.version.to_le_bytes());
+        message.extend_from_slice(&self.lock_time.to_le_bytes());
+        for part in [prevouts, amounts, scripts, sequences, outputs] {
+            message.extend_from_slice(&Sha256::digest(part));
+        }
+        message.push(KEY_PATH);
+        message.extend_from_slice(&u32::try_from(index).unwrap_or(u32::MAX).to_le_bytes());
+        tagged_hash(TAP_SIGHASH, &[&message])
     }
 
     fn encode(&self, witness: bool) -> Vec<u8> {
@@ -199,11 +231,38 @@ pub(crate) fn signature(compact: &[u8; 64]) -> Vec<u8> {
     out
 }
 
-pub(crate) fn signs_everything(signature: &[u8]) -> bool {
-    signature.len() <= MAX_SIGNATURE
-        && signature.first() == Some(&0x30)
-        && signature.get(1).map(|len| usize::from(*len) + 3) == Some(signature.len())
-        && signature.last() == Some(&SIGHASH_ALL)
+pub(crate) fn read_signature(signature: &[u8]) -> Option<[u8; 64]> {
+    let (&hash_type, der) = signature.split_last()?;
+    let [0x30, length, body @ ..] = der else {
+        return None;
+    };
+    if hash_type != SIGHASH_ALL || usize::from(*length) != body.len() {
+        return None;
+    }
+    let (r, rest) = read_integer(body)?;
+    let (s, rest) = read_integer(rest)?;
+    if !rest.is_empty() {
+        return None;
+    }
+    let mut out = [0u8; 64];
+    out[32 - r.len()..32].copy_from_slice(r);
+    out[64 - s.len()..].copy_from_slice(s);
+    Some(out)
+}
+
+fn read_integer(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+    let [0x02, length, rest @ ..] = bytes else {
+        return None;
+    };
+    let length = usize::from(*length);
+    let value = rest.get(..length)?;
+    let positive = value.first().is_some_and(|first| first & 0x80 == 0);
+    let minimal = value.len() == 1 || value[0] != 0 || value[1] & 0x80 != 0;
+    if !positive || !minimal {
+        return None;
+    }
+    let value = value.strip_prefix(&[0]).unwrap_or(value);
+    (value.len() <= 32).then_some((value, &rest[length..]))
 }
 
 pub(crate) fn id_text(id: &Hash) -> String {
@@ -360,7 +419,11 @@ mod tests {
         let signed = parse(&bytes(SIGNED)).unwrap();
         assert_eq!(signed.bytes(), bytes(SIGNED));
         assert_eq!(signed.inputs[1].witness[0], signature(&compact));
-        assert!(signs_everything(&signed.inputs[1].witness[0]));
+        let public: [u8; 33] = signed.inputs[1].witness[1].as_slice().try_into().unwrap();
+        let read = read_signature(&signed.inputs[1].witness[0]).unwrap();
+        assert_eq!(read, compact);
+        assert!(bahaa_crypto::secp256k1_verify(&public, &sighash, &read));
+        assert!(!bahaa_crypto::secp256k1_verify(&public, &[0; 32], &read));
     }
 
     #[test]
@@ -385,8 +448,29 @@ mod tests {
                 crate::script::hash160(&key),
             ));
             assert_eq!(hex::encode(&script), prevout["script"].as_str().unwrap());
-            assert!(signs_everything(&input.witness[0]));
+            assert!(read_signature(&input.witness[0]).is_some());
         }
+    }
+
+    #[test]
+    fn the_bip341_key_path_vector_has_the_published_sighash() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/bip341.json")).unwrap();
+        let tx = parse(&bytes(fixture["unsigned"].as_str().unwrap())).unwrap();
+        let spent: Vec<Output> = fixture["spent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|utxo| Output {
+                value: utxo["amountSats"].as_u64().unwrap(),
+                script: bytes(utxo["scriptPubKey"].as_str().unwrap()),
+            })
+            .collect();
+        let index = usize::try_from(fixture["index"].as_u64().unwrap()).unwrap();
+        assert_eq!(
+            hex::encode(&tx.taproot_sighash(index, &spent)),
+            fixture["sighash"].as_str().unwrap()
+        );
     }
 
     #[test]
@@ -400,10 +484,15 @@ mod tests {
             &encoded[encoded.len() - 4..],
             &[0x02, 0x01, 0x01, SIGHASH_ALL]
         );
-        assert!(signs_everything(&encoded));
+        assert_eq!(read_signature(&encoded), Some(compact));
         let mut other = encoded.clone();
         *other.last_mut().unwrap() = 0x02;
-        assert!(!signs_everything(&other));
+        assert_eq!(read_signature(&other), None);
+        let mut padded = encoded.clone();
+        padded.splice(4..5, [0x00, 0x00]);
+        padded[1] += 1;
+        padded[3] += 1;
+        assert_eq!(read_signature(&padded), None);
     }
 
     #[test]

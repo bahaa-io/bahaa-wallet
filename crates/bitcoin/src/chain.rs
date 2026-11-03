@@ -9,7 +9,7 @@ use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{
     DerivationPath, SecretKey, Seed, SeedKind, compressed, secp256k1, secp256k1_extended,
 };
-use bahaa_types::{Address, AssetId};
+use bahaa_types::{Address, AssetId, BitcoinType};
 use ruint::aliases::U256;
 
 mod account;
@@ -62,19 +62,57 @@ impl BitcoinChain {
         self.trusted.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn path(&self, account: u32, rest: &str) -> Result<DerivationPath, ChainError> {
+    pub fn derive_as(
+        &self,
+        seed: &Seed,
+        account: u32,
+        kind: BitcoinType,
+    ) -> Result<Address, ChainError> {
+        if seed.kind() == SeedKind::Bip39 {
+            let key = secp256k1_extended(seed, &self.path(kind, account, "")?)?;
+            return self.book().register(key, kind, self.network.testnet);
+        }
+        self.first(seed, account, kind)
+    }
+
+    pub fn first(
+        &self,
+        seed: &Seed,
+        account: u32,
+        kind: BitcoinType,
+    ) -> Result<Address, ChainError> {
+        let key = secp256k1(seed, &self.path(kind, account, "/0/0")?)?;
+        key_address(&compressed(&key.public_key())?, kind, self.network.testnet)
+    }
+
+    fn path(
+        &self,
+        kind: BitcoinType,
+        account: u32,
+        rest: &str,
+    ) -> Result<DerivationPath, ChainError> {
+        let purpose = match kind {
+            BitcoinType::NativeSegwit => 84,
+            BitcoinType::Taproot => 86,
+        };
         let coin = u32::from(self.network.testnet);
-        format!("m/84'/{coin}'/{account}'{rest}")
+        format!("m/{purpose}'/{coin}'/{account}'{rest}")
             .parse()
             .map_err(|_| ChainError::Invalid("account index out of range"))
     }
 
     fn key(&self, seed: &Seed, account: u32, address: &Address) -> Result<SecretKey, ChainError> {
-        let rest = match self.book().place(address) {
-            Some(place) => format!("/{}/{}", place.branch, place.index),
-            None => "/0/0".to_owned(),
+        let (kind, rest) = {
+            let book = self.book();
+            match book.place(address) {
+                Some(place) => (
+                    book.kind(&place.owner).unwrap_or_default(),
+                    format!("/{}/{}", place.branch, place.index),
+                ),
+                None => (BitcoinType::default(), "/0/0".to_owned()),
+            }
         };
-        Ok(secp256k1(seed, &self.path(account, &rest)?)?)
+        Ok(secp256k1(seed, &self.path(kind, account, &rest)?)?)
     }
 
     fn sats(&self, units: u64) -> Result<bahaa_types::Amount, ChainError> {
@@ -144,15 +182,7 @@ impl Chain for BitcoinChain {
     }
 
     fn derive(&self, seed: &Seed, account: u32) -> Result<Address, ChainError> {
-        if seed.kind() == SeedKind::Bip39 {
-            let key = secp256k1_extended(seed, &self.path(account, "")?)?;
-            return self.book().register(key, self.network.testnet);
-        }
-        let key = secp256k1(seed, &self.path(account, "/0/0")?)?;
-        Ok(key_address(
-            &compressed(&key.public_key())?,
-            self.network.testnet,
-        ))
+        self.derive_as(seed, account, BitcoinType::default())
     }
 
     async fn balances(
@@ -206,10 +236,10 @@ impl Chain for BitcoinChain {
     async fn status(
         &self,
         id: &TxId,
-        _from: &Address,
+        from: &Address,
         _expires_at: Option<u64>,
     ) -> Result<TxStatus, ChainError> {
-        self.lookup(id).await
+        self.lookup(id, from).await
     }
 
     fn token(&self, _contract: &Address) -> impl Future<Output = Result<Coin, ChainError>> + Send {

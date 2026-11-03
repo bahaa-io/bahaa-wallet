@@ -29,6 +29,20 @@ impl BitcoinChain {
             .any(|endpoint| endpoint.has(Feature::History))
     }
 
+    pub async fn last_used(&self, address: &Address) -> Result<Option<u64>, ChainError> {
+        let seen = self.histories(&[*address]).await?;
+        Ok(seen
+            .into_iter()
+            .flatten()
+            .map(|seen| {
+                u64::try_from(seen.height)
+                    .ok()
+                    .filter(|height| *height > 0)
+                    .unwrap_or(u64::MAX)
+            })
+            .max())
+    }
+
     pub async fn scan(
         &self,
         owner: &Address,

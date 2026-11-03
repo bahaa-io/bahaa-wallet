@@ -20,7 +20,7 @@ use bahaa_store::{
     Contact, CustomToken, Outgoing, Received, Scan, SentTx, Store, StoreError, StoreKey,
     TrustedBlock,
 };
-use bahaa_types::{Address, AssetId, ChainFamily, NetworkId, SolanaPath, TonContract};
+use bahaa_types::{Address, AssetId, BitcoinType, ChainFamily, NetworkId, SolanaPath, TonContract};
 use bahaa_vault::KdfParams;
 use futures_util::future::join;
 use thiserror::Error;
@@ -140,8 +140,7 @@ enum Command {
     Remove(WalletId, Reply<()>),
     AddAccount(WalletId, Reply<Vec<Account>>),
     RemoveAccount(WalletId, u32, Reply<()>),
-    SetTonContract(WalletId, TonContract, Reply<()>),
-    SetSolanaPath(WalletId, SolanaPath, Reply<()>),
+    Choose(WalletId, Choice, Reply<()>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
     ChangePassword(SecretString, SecretString, Reply<()>),
     CheckPassword(SecretString, Reply<()>),
@@ -171,7 +170,29 @@ enum Notice {
     Delivered(Box<Delivered>),
     Tracked(Vec<SentTx>),
     TokenRead(Box<TokenRead>),
-    Detected(u64, Vec<(WalletId, SolanaPath)>),
+    Detected(u64, Vec<(WalletId, Choice)>),
+}
+
+#[derive(Clone, Copy)]
+enum Choice {
+    Ton(TonContract),
+    Solana(SolanaPath),
+    Bitcoin(BitcoinType),
+}
+
+impl Choice {
+    fn apply(self, keyring: &mut Keyring, id: WalletId) -> Result<(), KeyringError> {
+        match self {
+            Self::Ton(contract) => keyring.set_ton_contract(id, contract),
+            Self::Solana(path) => keyring.set_solana_path(id, path),
+            Self::Bitcoin(kind) => keyring.set_bitcoin_type(id, kind),
+        }
+    }
+}
+
+enum Choices {
+    Solana(Address, Address),
+    Bitcoin(Address, Address),
 }
 
 impl Command {
@@ -414,7 +435,7 @@ impl Engine {
         wallet: WalletId,
         contract: TonContract,
     ) -> Result<(), EngineError> {
-        self.ask(|reply| Command::SetTonContract(wallet, contract, reply))
+        self.ask(|reply| Command::Choose(wallet, Choice::Ton(contract), reply))
             .await
     }
 
@@ -423,7 +444,16 @@ impl Engine {
         wallet: WalletId,
         path: SolanaPath,
     ) -> Result<(), EngineError> {
-        self.ask(|reply| Command::SetSolanaPath(wallet, path, reply))
+        self.ask(|reply| Command::Choose(wallet, Choice::Solana(path), reply))
+            .await
+    }
+
+    pub async fn set_bitcoin_type(
+        &self,
+        wallet: WalletId,
+        kind: BitcoinType,
+    ) -> Result<(), EngineError> {
+        self.ask(|reply| Command::Choose(wallet, Choice::Bitcoin(kind), reply))
             .await
     }
 
@@ -729,8 +759,7 @@ impl Worker {
             | Command::Remove(..)
             | Command::AddAccount(..)
             | Command::RemoveAccount(..)
-            | Command::SetTonContract(..)
-            | Command::SetSolanaPath(..)
+            | Command::Choose(..)
             | Command::Reveal(..)
             | Command::ChangePassword(..)
             | Command::CheckPassword(..)
@@ -797,15 +826,9 @@ impl Worker {
                 let result = self.remove_account(wallet, index).await;
                 let _ = reply.send(result);
             }
-            Command::SetTonContract(id, contract, reply) => answer(
+            Command::Choose(id, choice, reply) => answer(
                 reply,
-                self.changed(move |keyring| keyring.set_ton_contract(id, contract))
-                    .await,
-            ),
-            Command::SetSolanaPath(id, path, reply) => answer(
-                reply,
-                self.changed(move |keyring| keyring.set_solana_path(id, path))
-                    .await,
+                self.changed(move |keyring| choice.apply(keyring, id)).await,
             ),
             Command::Reveal(id, password, reply) => {
                 let result = self
@@ -882,10 +905,9 @@ impl Worker {
             Notice::Detected(session, found) if session == self.session && !found.is_empty() => {
                 let _ = self
                     .changed(move |keyring| {
-                        for (id, path) in found {
-                            keyring.set_solana_path(id, path)?;
-                        }
-                        Ok(())
+                        found
+                            .into_iter()
+                            .try_for_each(|(id, choice)| choice.apply(keyring, id))
                     })
                     .await;
             }
@@ -895,24 +917,40 @@ impl Worker {
 
     async fn detect_paths(&mut self) {
         let chains = Arc::clone(&self.chains);
-        if chains::solana_mainnet(&chains).is_none() {
+        if chains::solana_mainnet(&chains).is_none() && chains::bitcoin_mainnet(&chains).is_none() {
             return;
         }
+        let shared = Arc::clone(&chains);
         let candidates = self
-            .keyring(|keyring| {
-                keyring
-                    .undetected()?
-                    .into_iter()
-                    .map(|id| {
+            .keyring(move |keyring| {
+                let mut candidates = Vec::new();
+                if chains::solana_mainnet(&shared).is_some() {
+                    let [standard, short] = SolanaPath::ALL;
+                    for id in keyring.undetected(ChainFamily::Solana)? {
                         let seed = keyring.seed(id)?;
-                        let [standard, short] = SolanaPath::ALL;
-                        Ok((
+                        candidates.push((
                             id,
-                            bahaa_solana::derive(seed, 0, standard)?,
-                            bahaa_solana::derive(seed, 0, short)?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, EngineError>>()
+                            Choices::Solana(
+                                bahaa_solana::derive(seed, 0, standard)?,
+                                bahaa_solana::derive(seed, 0, short)?,
+                            ),
+                        ));
+                    }
+                }
+                if let Some(chain) = chains::bitcoin_mainnet(&shared) {
+                    let [segwit, taproot] = BitcoinType::ALL;
+                    for id in keyring.undetected(ChainFamily::Bitcoin)? {
+                        let seed = keyring.seed(id)?;
+                        candidates.push((
+                            id,
+                            Choices::Bitcoin(
+                                chain.first(seed, 0, segwit)?,
+                                chain.first(seed, 0, taproot)?,
+                            ),
+                        ));
+                    }
+                }
+                Ok::<_, EngineError>(candidates)
             })
             .await;
         let Some(candidates) = candidates.ok().filter(|candidates| !candidates.is_empty()) else {
@@ -920,22 +958,38 @@ impl Worker {
         };
         let (session, notices) = (self.session, self.notices_tx.clone());
         tokio::spawn(async move {
-            let Some(chain) = chains::solana_mainnet(&chains) else {
-                return;
-            };
             let mut found = Vec::new();
-            for (id, standard, short) in candidates {
-                if let (Ok(standard), Ok(short)) =
-                    join(chain.last_used(&standard), chain.last_used(&short)).await
-                {
-                    found.push((
-                        id,
-                        keyring::most_recent(
-                            (SolanaPath::Bip44Change, standard),
-                            (SolanaPath::Bip44, short),
-                        ),
-                    ));
-                }
+            for (id, choices) in candidates {
+                let choice = match (
+                    choices,
+                    chains::solana_mainnet(&chains),
+                    chains::bitcoin_mainnet(&chains),
+                ) {
+                    (Choices::Solana(standard, short), Some(chain), _) => {
+                        match join(chain.last_used(&standard), chain.last_used(&short)).await {
+                            (Ok(standard), Ok(short)) => {
+                                Some(Choice::Solana(keyring::most_recent(
+                                    (SolanaPath::Bip44Change, standard),
+                                    (SolanaPath::Bip44, short),
+                                )))
+                            }
+                            _ => None,
+                        }
+                    }
+                    (Choices::Bitcoin(segwit, taproot), _, Some(chain)) => {
+                        match join(chain.last_used(&segwit), chain.last_used(&taproot)).await {
+                            (Ok(segwit), Ok(taproot)) => {
+                                Some(Choice::Bitcoin(keyring::most_recent(
+                                    (BitcoinType::NativeSegwit, segwit),
+                                    (BitcoinType::Taproot, taproot),
+                                )))
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                found.extend(choice.map(|choice| (id, choice)));
             }
             let _ = notices.send(Notice::Detected(session, found)).await;
         });

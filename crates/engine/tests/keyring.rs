@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use bahaa_crypto::{ExposeSecret, Mnemonic, SeedKind, TonPhraseError, WordCount};
 use bahaa_engine::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletKind};
-use bahaa_types::{Address, ChainFamily, SolanaPath, TonContract};
+use bahaa_types::{Address, BitcoinType, ChainFamily, SolanaPath, TonContract};
 use bahaa_vault::{KdfParams, Vault};
 
 const FAST: KdfParams = KdfParams {
@@ -454,7 +454,7 @@ fn imported_phrases_wait_for_their_solana_path_and_keep_it() {
             ChainFamily::Evm,
         )
         .unwrap();
-    assert_eq!(keyring.undetected().unwrap(), [imported]);
+    assert_eq!(keyring.undetected(ChainFamily::Solana).unwrap(), [imported]);
     let paths: Vec<Option<SolanaPath>> = keyring
         .wallets()
         .unwrap()
@@ -477,7 +477,10 @@ fn imported_phrases_wait_for_their_solana_path_and_keep_it() {
         KeyringError::NoSolana
     );
     let keyring = reopened(&scratch);
-    assert_eq!(keyring.undetected().unwrap(), Vec::<WalletId>::new());
+    assert_eq!(
+        keyring.undetected(ChainFamily::Solana).unwrap(),
+        Vec::<WalletId>::new()
+    );
     let solana = |id| {
         keyring
             .wallets()
@@ -625,4 +628,49 @@ fn phrases_are_checked_with_the_rules_import_uses() {
         check_phrase(TON, "a passphrase"),
         Err(KeyringError::Mnemonic(_) | KeyringError::TonPhrase(TonPhraseError::NotTon))
     ));
+}
+
+#[test]
+fn phrases_and_bitcoin_keys_wait_for_their_bitcoin_type_and_keep_it() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    let (fresh, _) = keyring.generate(NewPhrase::Twelve, "").unwrap();
+    let imported = keyring.import(HARDHAT, "").unwrap();
+    let key = keyring
+        .import_key(
+            "KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98617",
+            ChainFamily::Bitcoin,
+        )
+        .unwrap();
+    assert_eq!(
+        keyring.undetected(ChainFamily::Bitcoin).unwrap(),
+        [imported, key]
+    );
+    keyring
+        .set_bitcoin_type(imported, BitcoinType::Taproot)
+        .unwrap();
+    keyring
+        .set_bitcoin_type(key, BitcoinType::NativeSegwit)
+        .unwrap();
+    let keyring = reopened(&scratch);
+    let kinds: Vec<Option<BitcoinType>> = keyring
+        .wallets()
+        .unwrap()
+        .iter()
+        .map(|wallet| wallet.bitcoin)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            Some(BitcoinType::NativeSegwit),
+            Some(BitcoinType::Taproot),
+            Some(BitcoinType::NativeSegwit)
+        ]
+    );
+    assert_eq!(
+        keyring.undetected(ChainFamily::Bitcoin).unwrap(),
+        Vec::<WalletId>::new()
+    );
+    assert_eq!(keyring.wallets().unwrap()[0].id, fresh);
 }

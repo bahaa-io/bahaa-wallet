@@ -1,8 +1,8 @@
-use bahaa_types::{Address, BitcoinScript};
+use bahaa_chain::ChainError;
+use bahaa_crypto::taproot_output;
+use bahaa_types::{Address, BitcoinScript, BitcoinType};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
-
-pub(crate) const KEY_HASH_DUST: u64 = 294;
 
 const DUP: u8 = 0x76;
 const HASH160: u8 = 0xa9;
@@ -18,11 +18,18 @@ pub(crate) fn hash160(data: &[u8]) -> [u8; 20] {
     Ripemd160::digest(Sha256::digest(data)).into()
 }
 
-pub(crate) fn key_address(public: &[u8; 33], testnet: bool) -> Address {
-    Address::Bitcoin {
-        script: BitcoinScript::WitnessKeyHash(hash160(public)),
-        testnet,
-    }
+pub(crate) fn key_address(
+    public: &[u8; 33],
+    kind: BitcoinType,
+    testnet: bool,
+) -> Result<Address, ChainError> {
+    let script = match kind {
+        BitcoinType::NativeSegwit => BitcoinScript::WitnessKeyHash(hash160(public)),
+        BitcoinType::Taproot => BitcoinScript::Taproot(
+            taproot_output(public).map_err(|_| ChainError::Invalid("an unusable Taproot key"))?,
+        ),
+    };
+    Ok(Address::Bitcoin { script, testnet })
 }
 
 pub(crate) fn locking(script: BitcoinScript) -> Vec<u8> {
@@ -61,7 +68,7 @@ pub(crate) fn dust(script: BitcoinScript) -> u64 {
     match script {
         BitcoinScript::PubkeyHash(_) => 546,
         BitcoinScript::ScriptHash(_) => 540,
-        BitcoinScript::WitnessKeyHash(_) => KEY_HASH_DUST,
+        BitcoinScript::WitnessKeyHash(_) => 294,
         BitcoinScript::WitnessScriptHash(_) | BitcoinScript::Taproot(_) => 330,
     }
 }
@@ -92,7 +99,12 @@ mod tests {
             ),
         ] {
             let key: [u8; 33] = hex::decode_array(key).unwrap();
-            assert_eq!(key_address(&key, false).to_string(), address);
+            assert_eq!(
+                key_address(&key, BitcoinType::NativeSegwit, false)
+                    .unwrap()
+                    .to_string(),
+                address
+            );
         }
     }
 

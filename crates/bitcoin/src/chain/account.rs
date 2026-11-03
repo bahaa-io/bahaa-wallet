@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use bahaa_chain::ChainError;
 use bahaa_crypto::ExtendedPublic;
-use bahaa_types::{Address, BitcoinScript};
+use bahaa_types::{Address, BitcoinScript, BitcoinType};
 
 use crate::script::{key_address, locking};
 use crate::source::Seen;
@@ -20,8 +20,15 @@ const MAX_INDEX: u32 = 1_000;
 
 #[derive(Debug, Default)]
 pub(crate) struct Book {
-    keychains: HashMap<Address, [Branch; 2]>,
+    keychains: HashMap<Address, Keychain>,
     places: HashMap<Address, Place>,
+    coins: HashMap<Outpoint, (Address, u64)>,
+}
+
+#[derive(Debug)]
+struct Keychain {
+    kind: BitcoinType,
+    branches: [Branch; 2],
 }
 
 #[derive(Debug)]
@@ -70,6 +77,7 @@ impl Book {
     pub(crate) fn register(
         &mut self,
         account: ExtendedPublic,
+        kind: BitcoinType,
         testnet: bool,
     ) -> Result<Address, ChainError> {
         let branch = |index: usize| {
@@ -79,9 +87,12 @@ impl Book {
             })
         };
         let receive = branch(RECEIVE)?;
-        let first = key_address(&receive.key.child(0)?.key(), testnet);
+        let first = key_address(&receive.key.child(0)?.key(), kind, testnet)?;
         if let Entry::Vacant(slot) = self.keychains.entry(first) {
-            slot.insert([receive, branch(CHANGE)?]);
+            slot.insert(Keychain {
+                kind,
+                branches: [receive, branch(CHANGE)?],
+            });
             self.addresses(&first, RECEIVE, 0..1, testnet)?;
         }
         Ok(first)
@@ -93,6 +104,22 @@ impl Book {
 
     pub(crate) fn owns(&self, owner: &Address) -> bool {
         self.keychains.contains_key(owner)
+    }
+
+    pub(crate) fn kind(&self, owner: &Address) -> Option<BitcoinType> {
+        self.keychains.get(owner).map(|keychain| keychain.kind)
+    }
+
+    pub(crate) fn coin(&self, outpoint: &Outpoint) -> Option<(Address, u64)> {
+        self.coins.get(outpoint).copied()
+    }
+
+    pub(crate) fn remember(&mut self, coins: &[Coin]) {
+        self.coins.extend(
+            coins
+                .iter()
+                .map(|coin| (coin.outpoint, (coin.address, coin.value))),
+        );
     }
 
     pub(crate) fn place(&self, address: &Address) -> Option<Place> {
@@ -121,11 +148,12 @@ impl Book {
         let keychain = self.keychains.get_mut(owner).ok_or(ChainError::Invalid(
             "this account is not loaded, unlock again",
         ))?;
-        let chain = &mut keychain[branch];
+        let kind = keychain.kind;
+        let chain = &mut keychain.branches[branch];
         for index in
             u32::try_from(chain.known.len()).map_err(|_| ChainError::overflow())?..range.end
         {
-            let address = key_address(&chain.key.child(index)?.key(), testnet);
+            let address = key_address(&chain.key.child(index)?.key(), kind, testnet)?;
             chain.known.push(address);
             self.places.insert(
                 address,
@@ -157,6 +185,7 @@ impl BitcoinChain {
         };
         let coins = self.unspent(&addresses).await?;
         self.check(&coins).await?;
+        self.book().remember(&coins);
         Ok(Funds { coins, change })
     }
 

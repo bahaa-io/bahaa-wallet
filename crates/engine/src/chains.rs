@@ -28,7 +28,7 @@ pub(crate) enum AnyChain {
     Tron(TronChain),
     Ton(Box<TonChain>),
     Solana(SolanaChain),
-    Bitcoin(BitcoinChain),
+    Bitcoin(Box<BitcoinChain>),
 }
 
 #[derive(Clone)]
@@ -78,7 +78,9 @@ impl AnyChain {
             Self::Solana(_) => {
                 bahaa_solana::derive(seed, account, wallet.solana.unwrap_or_default())
             }
-            Self::Bitcoin(chain) => chain.derive(seed, account),
+            Self::Bitcoin(chain) => {
+                chain.derive_as(seed, account, wallet.bitcoin.unwrap_or_default())
+            }
         }
     }
 
@@ -187,7 +189,7 @@ impl AnyChain {
                     AnyPlan::Solana,
                 )),
                 Self::Bitcoin(chain) => Ok(planned(
-                    chain,
+                    &**chain,
                     chain.prepare(transfer).await?,
                     AnyPlan::Bitcoin,
                 )),
@@ -225,7 +227,7 @@ impl AnyChain {
                     AnyPlan::Solana,
                 )),
                 Self::Bitcoin(chain) => Ok(planned(
-                    chain,
+                    &**chain,
                     chain.replace(original, account, how).await?,
                     AnyPlan::Bitcoin,
                 )),
@@ -320,7 +322,7 @@ pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
             ChainFamily::Solana => SolanaChain::new(network.clone()).ok().map(AnyChain::Solana),
             ChainFamily::Bitcoin => BitcoinChain::new(network.clone())
                 .ok()
-                .map(AnyChain::Bitcoin),
+                .map(|chain| AnyChain::Bitcoin(Box::new(chain))),
         })
         .collect()
 }
@@ -335,6 +337,13 @@ pub(crate) fn ton_mainnet(chains: &[AnyChain]) -> Option<&TonChain> {
 pub(crate) fn solana_mainnet(chains: &[AnyChain]) -> Option<&SolanaChain> {
     chains.iter().find_map(|chain| match chain {
         AnyChain::Solana(solana) if !solana.network().testnet => Some(solana),
+        _ => None,
+    })
+}
+
+pub(crate) fn bitcoin_mainnet(chains: &[AnyChain]) -> Option<&BitcoinChain> {
+    chains.iter().find_map(|chain| match chain {
+        AnyChain::Bitcoin(bitcoin) if !bitcoin.network().testnet => Some(&**bitcoin),
         _ => None,
     })
 }

@@ -8,7 +8,7 @@ use bahaa_bitcoin::BitcoinChain;
 use bahaa_chain::{Chain, ChainError, Transfer, TxStatus, check_signed};
 use bahaa_crypto::{Seed, secp256k1_seed};
 use bahaa_testkit::electrum::{Ledger, Log, called};
-use bahaa_types::{Amount, hex};
+use bahaa_types::{Amount, BitcoinType, hex};
 use common::{FIRST, FIRST_CHANGE, FRIEND, GENESIS, SECOND, address, bitcoin_on, native, seed};
 
 async fn started(ledger: Ledger) -> (BitcoinChain, Log, Arc<Mutex<Ledger>>) {
@@ -214,4 +214,45 @@ async fn a_server_cannot_invent_coins() {
         .await
         .unwrap_err();
     assert!(failed.to_string().contains("could not prove"), "{failed}");
+}
+
+#[tokio::test]
+async fn a_send_from_several_coins_signs_every_input_with_its_own_key() {
+    let mut ledger = funded();
+    ledger.fund(&address(SECOND), 7_000, 3);
+    let (chain, _, _) = started(ledger).await;
+    chain.derive(&seed(), 0).unwrap();
+    let (plan, _) = chain.prepare(&transfer("0", true)).await.unwrap();
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    let decoded = chain.decode(&signed).unwrap();
+    check_signed(chain.planned(&plan), &decoded).unwrap();
+    assert_eq!(decoded.amount.to_string(), "0.00056506");
+}
+
+#[tokio::test]
+async fn a_taproot_account_follows_bip86_and_signs_with_schnorr() {
+    const TAPROOT_FIRST: &str = "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr";
+    const TAPROOT_SECOND: &str = "bc1p4qhjn9zdvkux4e44uhx8tc55attvtyu358kutcqkudyccelu0was9fqzwh";
+    let mut ledger = Ledger::new(GENESIS);
+    ledger.fund(&address(TAPROOT_SECOND), 30_000, 1);
+    let (chain, _, ledger) = started(ledger).await;
+    let first = chain.derive_as(&seed(), 0, BitcoinType::Taproot).unwrap();
+    assert_eq!(first, address(TAPROOT_FIRST));
+    let held = chain.balances(&first, &[native()]).await.unwrap();
+    assert_eq!(held[0].amount.to_string(), "0.0003");
+    let transfer = Transfer {
+        from: first,
+        ..transfer("0.00025", false)
+    };
+    let (plan, fee) = chain.prepare(&transfer).await.unwrap();
+    assert_eq!(fee.expected().to_string(), "0.00000284");
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    let decoded = chain.decode(&signed).unwrap();
+    check_signed(chain.planned(&plan), &decoded).unwrap();
+    chain.broadcast(&signed).await.unwrap();
+    assert_eq!(ledger.lock().unwrap().broadcast.len(), 1);
+    let mut forged = signed.clone();
+    let last = forged.bytes.len() - 6;
+    forged.bytes[last] ^= 1;
+    assert!(chain.decode(&forged).is_err());
 }

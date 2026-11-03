@@ -1,13 +1,14 @@
 use bahaa_crypto::{ExposeSecret, KEY_BYTES, Mnemonic, SecretString, TON_WORDS, TonMnemonic};
-use bahaa_types::{Address, BitcoinScript, ChainFamily, SolanaPath, TonContract};
+use bahaa_types::{Address, BitcoinScript, BitcoinType, ChainFamily, SolanaPath, TonContract};
 use zeroize::Zeroizing;
 
 use crate::KeyringError;
 
-const VERSION: u8 = 9;
+const VERSION: u8 = 10;
 const FIRST_VERSION: u8 = 1;
 const CONTRACT_VERSION: u8 = 3;
 const SOLANA_PATH_VERSION: u8 = 8;
+const BITCOIN_TYPE_VERSION: u8 = 10;
 const MAX_WALLETS: usize = 64;
 const MAX_PASSPHRASE: usize = 1024;
 const BIP39: u8 = 0;
@@ -29,6 +30,9 @@ const V4R2: u8 = 1;
 const UNKNOWN_PATH: u8 = 0;
 const BIP44_CHANGE: u8 = 1;
 const BIP44: u8 = 2;
+const UNKNOWN_TYPE: u8 = 0;
+const NATIVE_SEGWIT: u8 = 1;
+const TAPROOT_TYPE: u8 = 2;
 
 pub enum Phrase {
     Bip39 {
@@ -36,6 +40,7 @@ pub enum Phrase {
         passphrase: SecretString,
         contract: TonContract,
         solana: Option<SolanaPath>,
+        bitcoin: Option<BitcoinType>,
     },
     Ton {
         mnemonic: TonMnemonic,
@@ -49,6 +54,10 @@ pub enum Phrase {
         key: Zeroizing<[u8; KEY_BYTES]>,
         contract: TonContract,
     },
+    BitcoinKey {
+        key: Zeroizing<[u8; KEY_BYTES]>,
+        kind: Option<BitcoinType>,
+    },
     Watch {
         address: Address,
         counted: bool,
@@ -61,7 +70,7 @@ impl Phrase {
             Self::Bip39 { contract, .. }
             | Self::Ton { contract, .. }
             | Self::TonKey { contract, .. } => Some(*contract),
-            Self::Key { .. } | Self::Watch { .. } => None,
+            Self::Key { .. } | Self::BitcoinKey { .. } | Self::Watch { .. } => None,
         }
     }
 
@@ -70,7 +79,7 @@ impl Phrase {
             Self::Bip39 { contract, .. }
             | Self::Ton { contract, .. }
             | Self::TonKey { contract, .. } => Some(contract),
-            Self::Key { .. } | Self::Watch { .. } => None,
+            Self::Key { .. } | Self::BitcoinKey { .. } | Self::Watch { .. } => None,
         }
     }
 
@@ -81,8 +90,31 @@ impl Phrase {
         }
     }
 
-    pub fn undetected(&self) -> bool {
-        matches!(self, Self::Bip39 { solana: None, .. })
+    pub fn bitcoin_type(&self) -> Option<BitcoinType> {
+        match self {
+            Self::Bip39 { bitcoin, .. } | Self::BitcoinKey { kind: bitcoin, .. } => {
+                Some(bitcoin.unwrap_or_default())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn bitcoin_mut(&mut self) -> Option<&mut Option<BitcoinType>> {
+        match self {
+            Self::Bip39 { bitcoin, .. } | Self::BitcoinKey { kind: bitcoin, .. } => Some(bitcoin),
+            _ => None,
+        }
+    }
+
+    pub fn undetected(&self, family: ChainFamily) -> bool {
+        match (self, family) {
+            (Self::Bip39 { solana, .. }, ChainFamily::Solana) => solana.is_none(),
+            (
+                Self::Bip39 { bitcoin, .. } | Self::BitcoinKey { kind: bitcoin, .. },
+                ChainFamily::Bitcoin,
+            ) => bitcoin.is_none(),
+            _ => false,
+        }
     }
 
     pub fn solana_mut(&mut self) -> Option<&mut Option<SolanaPath>> {
@@ -156,8 +188,7 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
                     ChainFamily::Evm => FAMILY_EVM,
                     ChainFamily::Tron => FAMILY_TRON,
                     ChainFamily::Solana => FAMILY_SOLANA,
-                    ChainFamily::Bitcoin => FAMILY_BITCOIN,
-                    ChainFamily::Ton => return Err(KeyringError::Damaged),
+                    ChainFamily::Ton | ChainFamily::Bitcoin => return Err(KeyringError::Damaged),
                 });
                 out.extend_from_slice(&**key);
             }
@@ -166,40 +197,14 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
                 out.push(FAMILY_TON);
                 out.extend_from_slice(&**key);
             }
+            Phrase::BitcoinKey { key, .. } => {
+                out.push(KEY);
+                out.push(FAMILY_BITCOIN);
+                out.extend_from_slice(&**key);
+            }
             Phrase::Watch { address, counted } => {
                 out.push(WATCH);
-                match address {
-                    Address::Evm(bytes) => {
-                        out.push(FAMILY_EVM);
-                        out.extend_from_slice(bytes);
-                    }
-                    Address::Tron(bytes) => {
-                        out.push(FAMILY_TRON);
-                        out.extend_from_slice(bytes);
-                    }
-                    Address::Ton { workchain, hash } => {
-                        out.push(FAMILY_TON);
-                        out.extend_from_slice(&workchain.to_be_bytes());
-                        out.extend_from_slice(hash);
-                    }
-                    Address::Solana(bytes) => {
-                        out.push(FAMILY_SOLANA);
-                        out.extend_from_slice(bytes);
-                    }
-                    Address::Bitcoin { script, testnet } => {
-                        out.push(FAMILY_BITCOIN);
-                        let (kind, bytes): (u8, &[u8]) = match script {
-                            BitcoinScript::PubkeyHash(hash) => (PUBKEY_HASH, hash),
-                            BitcoinScript::ScriptHash(hash) => (SCRIPT_HASH, hash),
-                            BitcoinScript::WitnessKeyHash(hash) => (WITNESS_KEY_HASH, hash),
-                            BitcoinScript::WitnessScriptHash(hash) => (WITNESS_SCRIPT_HASH, hash),
-                            BitcoinScript::Taproot(key) => (TAPROOT, key),
-                        };
-                        out.push(kind);
-                        out.extend_from_slice(bytes);
-                        out.push(u8::from(*testnet));
-                    }
-                }
+                watched(&mut out, address);
                 out.push(u8::from(*counted));
             }
         }
@@ -216,8 +221,52 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
                 Some(SolanaPath::Bip44) => BIP44,
             });
         }
+        if let Phrase::Bip39 { bitcoin, .. } | Phrase::BitcoinKey { kind: bitcoin, .. } =
+            &entry.phrase
+        {
+            out.push(match bitcoin {
+                None => UNKNOWN_TYPE,
+                Some(BitcoinType::NativeSegwit) => NATIVE_SEGWIT,
+                Some(BitcoinType::Taproot) => TAPROOT_TYPE,
+            });
+        }
     }
     Ok(out)
+}
+
+fn watched(out: &mut Vec<u8>, address: &Address) {
+    match address {
+        Address::Evm(bytes) => {
+            out.push(FAMILY_EVM);
+            out.extend_from_slice(bytes);
+        }
+        Address::Tron(bytes) => {
+            out.push(FAMILY_TRON);
+            out.extend_from_slice(bytes);
+        }
+        Address::Ton { workchain, hash } => {
+            out.push(FAMILY_TON);
+            out.extend_from_slice(&workchain.to_be_bytes());
+            out.extend_from_slice(hash);
+        }
+        Address::Solana(bytes) => {
+            out.push(FAMILY_SOLANA);
+            out.extend_from_slice(bytes);
+        }
+        Address::Bitcoin { script, testnet } => {
+            out.push(FAMILY_BITCOIN);
+            let (kind, bytes): (u8, &[u8]) = match script {
+                BitcoinScript::PubkeyHash(hash) => (PUBKEY_HASH, hash),
+                BitcoinScript::ScriptHash(hash) => (SCRIPT_HASH, hash),
+                BitcoinScript::WitnessKeyHash(hash) => (WITNESS_KEY_HASH, hash),
+                BitcoinScript::WitnessScriptHash(hash) => (WITNESS_SCRIPT_HASH, hash),
+                BitcoinScript::Taproot(key) => (TAPROOT, key),
+            };
+            out.push(kind);
+            out.extend_from_slice(bytes);
+            out.push(u8::from(*testnet));
+        }
+    }
 }
 
 fn bip39(
@@ -260,7 +309,7 @@ pub fn decode(bytes: &[u8]) -> Result<Contents, KeyringError> {
         let phrase = match kind {
             BIP39 => read_bip39(&mut reader, version)?,
             TON => read_ton(&mut reader)?,
-            KEY => read_key(&mut reader)?,
+            KEY => read_key(&mut reader, version)?,
             WATCH => read_watch(&mut reader)?,
             _ => return Err(KeyringError::Damaged),
         };
@@ -307,7 +356,20 @@ fn read_bip39(reader: &mut Reader<'_>, version: u8) -> Result<Phrase, KeyringErr
         passphrase: SecretString::from(owned),
         contract,
         solana,
+        bitcoin: read_type(reader, version)?,
     })
+}
+
+fn read_type(reader: &mut Reader<'_>, version: u8) -> Result<Option<BitcoinType>, KeyringError> {
+    if version < BITCOIN_TYPE_VERSION {
+        return Ok(None);
+    }
+    match reader.take(1)?[0] {
+        UNKNOWN_TYPE => Ok(None),
+        NATIVE_SEGWIT => Ok(Some(BitcoinType::NativeSegwit)),
+        TAPROOT_TYPE => Ok(Some(BitcoinType::Taproot)),
+        _ => Err(KeyringError::Damaged),
+    }
 }
 
 fn read_ton(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
@@ -322,7 +384,7 @@ fn read_ton(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
     })
 }
 
-fn read_key(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
+fn read_key(reader: &mut Reader<'_>, version: u8) -> Result<Phrase, KeyringError> {
     let family = reader.take(1)?[0];
     let mut key = Zeroizing::new([0u8; KEY_BYTES]);
     key.copy_from_slice(reader.take(KEY_BYTES)?);
@@ -343,9 +405,9 @@ fn read_key(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
             key,
             family: ChainFamily::Solana,
         },
-        FAMILY_BITCOIN => Phrase::Key {
+        FAMILY_BITCOIN => Phrase::BitcoinKey {
             key,
-            family: ChainFamily::Bitcoin,
+            kind: read_type(reader, version)?,
         },
         _ => return Err(KeyringError::Damaged),
     })
@@ -435,7 +497,11 @@ mod tests {
         }
     }
 
-    fn multi(contract: TonContract, solana: Option<SolanaPath>) -> Entry {
+    fn multi(
+        contract: TonContract,
+        solana: Option<SolanaPath>,
+        bitcoin: Option<BitcoinType>,
+    ) -> Entry {
         Entry {
             id: 1,
             phrase: Phrase::Bip39 {
@@ -443,6 +509,7 @@ mod tests {
                 passphrase: SecretString::from("extra".to_owned()),
                 contract,
                 solana,
+                bitcoin,
             },
         }
     }
@@ -464,10 +531,12 @@ mod tests {
             passphrase,
             contract,
             solana,
+            bitcoin,
         } = &contents.entries[0].phrase
         else {
             panic!("an old vault holds multi-chain phrases");
         };
+        assert_eq!(*bitcoin, None);
         assert_eq!(mnemonic.expose_entropy(), [7; 16]);
         assert_eq!(passphrase.expose_secret(), "pw");
         assert_eq!(*contract, TonContract::W5);
@@ -490,12 +559,7 @@ mod tests {
 
     #[test]
     fn private_keys_round_trip_with_their_family() {
-        for family in [
-            ChainFamily::Evm,
-            ChainFamily::Tron,
-            ChainFamily::Solana,
-            ChainFamily::Bitcoin,
-        ] {
+        for family in [ChainFamily::Evm, ChainFamily::Tron, ChainFamily::Solana] {
             let contents = Contents {
                 next_id: 4,
                 entries: vec![Entry {
@@ -512,6 +576,43 @@ mod tests {
                 Phrase::Key { key, family: read } if **key == [9; KEY_BYTES] && *read == family
             ));
             assert_eq!(decoded.entries[0].phrase.contract(), None);
+        }
+    }
+
+    #[test]
+    fn bitcoin_keys_round_trip_with_their_address_type() {
+        for kind in [
+            None,
+            Some(BitcoinType::NativeSegwit),
+            Some(BitcoinType::Taproot),
+        ] {
+            let contents = Contents {
+                next_id: 2,
+                entries: vec![Entry {
+                    id: 1,
+                    phrase: Phrase::BitcoinKey {
+                        key: Zeroizing::new([6; KEY_BYTES]),
+                        kind,
+                    },
+                }],
+            };
+            let encoded = encode(&contents).unwrap();
+            let decoded = decode(&encoded).unwrap();
+            assert!(matches!(
+                &decoded.entries[0].phrase,
+                Phrase::BitcoinKey { key, kind: read } if **key == [6; KEY_BYTES] && *read == kind
+            ));
+            assert_eq!(
+                decoded.entries[0].phrase.undetected(ChainFamily::Bitcoin),
+                kind.is_none()
+            );
+            let mut older = encoded.to_vec();
+            older[0] = BITCOIN_TYPE_VERSION - 1;
+            older.pop();
+            assert!(matches!(
+                &decode(&older).unwrap().entries[0].phrase,
+                Phrase::BitcoinKey { kind: None, .. }
+            ));
         }
     }
 
@@ -591,13 +692,19 @@ mod tests {
     #[test]
     fn both_kinds_of_phrase_round_trip() {
         let paths = [None, Some(SolanaPath::Bip44Change), Some(SolanaPath::Bip44)];
-        for (contract, solana) in [TonContract::W5, TonContract::V4R2, TonContract::W5]
+        let kinds = [
+            Some(BitcoinType::Taproot),
+            None,
+            Some(BitcoinType::NativeSegwit),
+        ];
+        for ((contract, solana), bitcoin) in [TonContract::W5, TonContract::V4R2, TonContract::W5]
             .into_iter()
             .zip(paths)
+            .zip(kinds)
         {
             let contents = Contents {
                 next_id: 3,
-                entries: vec![multi(contract, solana), ton(contract)],
+                entries: vec![multi(contract, solana, bitcoin), ton(contract)],
             };
             let decoded = decode(&encode(&contents).unwrap()).unwrap();
             assert_eq!(decoded.next_id, 3);
@@ -612,14 +719,23 @@ mod tests {
             assert_eq!(mnemonic.phrase().expose_secret(), TON);
             assert!(matches!(
                 &decoded.entries[0].phrase,
-                Phrase::Bip39 { passphrase, contract: read, solana: path, .. }
-                    if passphrase.expose_secret() == "extra" && *read == contract && *path == solana
+                Phrase::Bip39 { passphrase, contract: read, solana: path, bitcoin: kind, .. }
+                    if passphrase.expose_secret() == "extra"
+                        && *read == contract
+                        && *path == solana
+                        && *kind == bitcoin
             ));
             assert_eq!(decoded.entries[1].phrase.solana_path(), None);
-            assert_eq!(decoded.entries[0].phrase.undetected(), solana.is_none());
-            let mut unknown = encode(&contents).unwrap().to_vec();
-            unknown[1 + 4 + 2 + 4 + 1 + 1 + 16 + 2 + 5 + 1] = 3;
-            assert!(matches!(decode(&unknown), Err(KeyringError::Damaged)));
+            assert_eq!(decoded.entries[1].phrase.bitcoin_type(), None);
+            let phrase = &decoded.entries[0].phrase;
+            assert_eq!(phrase.undetected(ChainFamily::Solana), solana.is_none());
+            assert_eq!(phrase.undetected(ChainFamily::Bitcoin), bitcoin.is_none());
+            let path_at = 1 + 4 + 2 + 4 + 1 + 1 + 16 + 2 + 5 + 1;
+            for at in [path_at, path_at + 1] {
+                let mut unknown = encode(&contents).unwrap().to_vec();
+                unknown[at] = 3;
+                assert!(matches!(decode(&unknown), Err(KeyringError::Damaged)));
+            }
         }
     }
 

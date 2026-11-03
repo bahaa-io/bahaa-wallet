@@ -12,14 +12,17 @@ use crate::{Reply, Request};
 pub type Log = Arc<Mutex<Vec<(String, Value)>>>;
 
 fn locking(address: &Address) -> Vec<u8> {
-    let Address::Bitcoin {
-        script: BitcoinScript::WitnessKeyHash(hash),
-        ..
-    } = address
-    else {
-        panic!("the fake Electrum server only holds native SegWit addresses")
-    };
-    [&[0x00, 0x14][..], hash].concat()
+    match address {
+        Address::Bitcoin {
+            script: BitcoinScript::WitnessKeyHash(hash),
+            ..
+        } => [&[0x00, 0x14][..], hash].concat(),
+        Address::Bitcoin {
+            script: BitcoinScript::Taproot(key),
+            ..
+        } => [&[0x51, 0x20][..], key].concat(),
+        _ => panic!("the fake Electrum server holds native SegWit and Taproot addresses"),
+    }
 }
 
 pub fn scripthash(address: &Address) -> String {
@@ -50,8 +53,9 @@ fn transaction(previous: &[u8; 32], value: u64, to: &Address) -> (String, String
     raw.extend_from_slice(previous);
     raw.extend_from_slice(&[0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 1]);
     raw.extend_from_slice(&value.to_le_bytes());
-    raw.push(22);
-    raw.extend_from_slice(&locking(to));
+    let script = locking(to);
+    raw.push(u8::try_from(script.len()).unwrap());
+    raw.extend_from_slice(&script);
     raw.extend_from_slice(&[0, 0, 0, 0]);
     (txid(&raw), hex::encode(&raw))
 }
