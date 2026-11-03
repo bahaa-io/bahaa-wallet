@@ -2,7 +2,7 @@ use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 
 use bahaa_chain::{
-    ChainError, Failure, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus, enough,
+    ChainError, Failure, FeeLine, FeeQuote, Pace, Signed, Transfer, TxId, TxStatus, enough,
 };
 use bahaa_types::hex;
 use ruint::aliases::U256;
@@ -243,7 +243,8 @@ impl TronChain {
                 })
             })
             .collect::<Result<Vec<_>, ChainError>>()?;
-        FeeQuote::new(trx(quote.max)?, trx(quote.expected)?, lines)
+        Ok(FeeQuote::new(trx(quote.max)?, trx(quote.expected)?, lines)?
+            .paced(Pace::blocks(1, self.network.block_ms)))
     }
 
     pub(super) async fn push(&self, signed: &Signed) -> Result<TxId, ChainError> {

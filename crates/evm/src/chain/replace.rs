@@ -1,10 +1,10 @@
 use alloy_consensus::TxEip1559;
 use alloy_primitives::TxKind;
-use bahaa_chain::{Chain, ChainError, FeeQuote, Replace, Signed, Transfer};
+use bahaa_chain::{Chain, ChainError, FeeQuote, Pace, Replace, Replaced, Signed, Transfer, Wait};
 use bahaa_types::{Address, Amount, AssetId};
 use ruint::aliases::U256;
 
-use super::{EvmChain, EvmPlan, PLAIN_GAS, Route, bytes};
+use super::{EvmChain, EvmPlan, PLAIN_GAS, Route, bytes, gwei};
 use crate::tx;
 
 const BUMP: (u128, u128) = (9, 8);
@@ -23,19 +23,22 @@ impl EvmChain {
         let decoded = self.decode(original)?;
         let from = old.from;
         let native = AssetId::Native(self.network.id.clone());
-        let (transfer, route, gas_limit) = match how {
+        let TxKind::Call(target) = old.tx.to else {
+            return Err(ChainError::Invalid("contract creation is not a transfer"));
+        };
+        let original_route = Route {
+            call_to: target.into_array(),
+            value: old.tx.value,
+            data: old.tx.input.to_vec(),
+            token: decoded.asset.contract().map(bytes).transpose()?,
+            decimals: decoded.amount.decimals(),
+        };
+        let used = self
+            .estimate(&from, &original_route)
+            .await
+            .map(|gas| gas.min(old.tx.gas_limit));
+        let (transfer, route, gas_limit, estimate, used) = match how {
             Replace::SpeedUp => {
-                let TxKind::Call(target) = old.tx.to else {
-                    return Err(ChainError::Invalid("contract creation is not a transfer"));
-                };
-                let token = decoded.asset.contract().map(bytes).transpose()?;
-                let route = Route {
-                    call_to: target.into_array(),
-                    value: old.tx.value,
-                    data: old.tx.input.to_vec(),
-                    token,
-                    decimals: decoded.amount.decimals(),
-                };
                 let transfer = Transfer {
                     account,
                     from: decoded.from,
@@ -45,7 +48,8 @@ impl EvmChain {
                     max: false,
                     memo: decoded.memo,
                 };
-                (transfer, route, old.tx.gas_limit)
+                let used = used?;
+                (transfer, original_route, old.tx.gas_limit, used, used)
             }
             Replace::Cancel => {
                 let route = Route {
@@ -65,15 +69,18 @@ impl EvmChain {
                     max: false,
                     memo: None,
                 };
-                (transfer, route, PLAIN_GAS)
+                (
+                    transfer,
+                    route,
+                    PLAIN_GAS,
+                    PLAIN_GAS,
+                    used.unwrap_or(old.tx.gas_limit),
+                )
             }
         };
-        let estimate = match how {
-            Replace::SpeedUp => self.estimate(&from, &route).await?.min(gas_limit),
-            Replace::Cancel => PLAIN_GAS,
-        };
-        let (base, tip) = self.fees().await?;
-        let tip = tip.max(bumped(old.tx.max_priority_fee_per_gas)?);
+        let (base, market_tip) = self.fees().await?;
+        let before = self.before(&old.tx, used, base, market_tip)?;
+        let tip = market_tip.max(bumped(old.tx.max_priority_fee_per_gas)?);
         let max_fee = base
             .checked_mul(U256::from(2u8))
             .and_then(|fee| fee.checked_add(tip))
@@ -103,8 +110,43 @@ impl EvmChain {
                 transfer,
                 tx: replacement,
             },
-            self.fee_quote(fees)?,
+            self.fee_quote(fees)?.replacing(before),
         ))
+    }
+}
+
+impl EvmChain {
+    fn before(
+        &self,
+        old: &TxEip1559,
+        estimate: u64,
+        base: U256,
+        market_tip: U256,
+    ) -> Result<Replaced, ChainError> {
+        let old_max = U256::from(old.max_fee_per_gas);
+        let old_tip = U256::from(old.max_priority_fee_per_gas);
+        let price = base
+            .checked_add(old_tip)
+            .ok_or_else(ChainError::overflow)?
+            .min(old_max);
+        let wait = if old_max < base {
+            Wait::Stuck
+        } else if old_tip < market_tip {
+            Wait::Slow
+        } else {
+            Wait::blocks(1, self.network.block_ms)
+        };
+        Ok(Replaced {
+            fee: self.native(
+                U256::from(estimate)
+                    .checked_mul(price)
+                    .ok_or_else(ChainError::overflow)?,
+            )?,
+            pace: Pace {
+                rate: gwei(old_max),
+                wait: Some(wait),
+            },
+        })
     }
 }
 

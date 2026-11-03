@@ -5,7 +5,7 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use bahaa_bitcoin::BitcoinChain;
-use bahaa_chain::{Chain, ChainError, Transfer, TxStatus, check_signed};
+use bahaa_chain::{Chain, ChainError, RateUnit, Transfer, TxStatus, Wait, check_signed};
 use bahaa_crypto::{Seed, secp256k1_seed};
 use bahaa_testkit::electrum::{Ledger, Log, called};
 use bahaa_types::{Amount, BitcoinType, hex};
@@ -73,6 +73,10 @@ async fn a_send_spends_the_largest_confirmed_coin_and_reads_back_from_its_bytes(
     let (plan, fee) = chain.prepare(&transfer("0.00025", false)).await.unwrap();
     assert_eq!(fee.expected().to_string(), "0.00000282");
     assert_eq!(fee.max(), fee.expected());
+    let pace = fee.pace();
+    assert_eq!(pace.rate.unwrap().amount.to_string(), "2");
+    assert_eq!(pace.rate.unwrap().unit, RateUnit::SatPerVbyte);
+    assert_eq!(pace.wait, Some(Wait::About(1_200)));
     let signed = chain.sign(&plan, &seed()).unwrap();
     let decoded = chain.decode(&signed).unwrap();
     check_signed(chain.planned(&plan), &decoded).unwrap();
@@ -83,10 +87,7 @@ async fn a_send_spends_the_largest_confirmed_coin_and_reads_back_from_its_bytes(
         ledger.lock().unwrap().broadcast,
         [hex::encode(&signed.bytes)]
     );
-    assert_eq!(
-        called(&log, "blockchain.estimatefee")[0],
-        serde_json::json!([2])
-    );
+    assert!(called(&log, "blockchain.estimatefee").contains(&serde_json::json!([2])));
     let max = chain.prepare(&transfer("0", true)).await.unwrap();
     assert_eq!(chain.planned(&max.0).amount.to_string(), "0.00049644");
 }

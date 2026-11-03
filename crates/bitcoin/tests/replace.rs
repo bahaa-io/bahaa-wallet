@@ -5,7 +5,7 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use bahaa_bitcoin::BitcoinChain;
-use bahaa_chain::{Chain, Replace, Signed, Transfer, check_signed};
+use bahaa_chain::{Chain, Replace, Signed, Transfer, Wait, check_signed};
 use bahaa_testkit::electrum::{Ledger, Log};
 use bahaa_types::Amount;
 use common::{FIRST, FIRST_CHANGE, FRIEND, GENESIS, SECOND, address, bitcoin_on, native, seed};
@@ -38,6 +38,11 @@ async fn a_speed_up_pays_more_from_the_change_and_keeps_the_payment() {
     let (chain, original) = sent("0.00025", false).await;
     let (plan, fee) = chain.replace(&original, 0, Replace::SpeedUp).await.unwrap();
     assert_eq!(fee.expected().to_string(), "0.00000423");
+    assert_eq!(fee.pace().rate.unwrap().amount.to_string(), "3");
+    let before = fee.replaced().unwrap();
+    assert_eq!(before.fee.to_string(), "0.00000282");
+    assert_eq!(before.pace.rate.unwrap().amount.to_string(), "2");
+    assert_eq!(before.pace.wait, Some(Wait::About(1_200)));
     let planned = chain.planned(&plan);
     assert_eq!(planned.to, address(FRIEND));
     assert_eq!(planned.amount.to_string(), "0.00025");

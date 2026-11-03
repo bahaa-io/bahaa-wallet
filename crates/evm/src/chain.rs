@@ -1,9 +1,9 @@
 use alloy_consensus::TxEip1559;
 use alloy_primitives::TxKind;
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decimals, Decoded, Failure, FeeItem, FeeLine, FeeQuote, MAX_MEMO,
-    Replace, Signed, Transfer, TxId, TxStatus, abi_text, amount, enough, on_network,
-    parse_transfer, transfer_data,
+    Balance, Chain, ChainError, Decimals, Decoded, Failure, FeeItem, FeeLine, FeeQuote, FeeRate,
+    MAX_MEMO, Pace, RateUnit, Replace, Signed, Transfer, TxId, TxStatus, Wait, abi_text, amount,
+    enough, on_network, parse_transfer, transfer_data,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed, secp256k1_address};
@@ -24,6 +24,7 @@ const DECIMALS: &str = "313ce567";
 const SYMBOL: &str = "95d89b41";
 const NAME: &str = "06fdde03";
 const PLAIN_GAS: u64 = 21_000;
+const GWEI_DECIMALS: u8 = 9;
 
 #[derive(Debug)]
 pub struct EvmChain {
@@ -314,7 +315,14 @@ impl EvmChain {
                 })
             })
             .collect::<Result<Vec<_>, ChainError>>()?;
-        FeeQuote::new(self.native(fees.max)?, self.native(fees.expected)?, lines)
+        Ok(
+            FeeQuote::new(self.native(fees.max)?, self.native(fees.expected)?, lines)?.paced(
+                Pace {
+                    rate: gwei(fees.max_fee),
+                    wait: Some(Wait::blocks(1, self.network.block_ms)),
+                },
+            ),
+        )
     }
 
     fn funds(
@@ -346,6 +354,13 @@ struct Route {
     data: Vec<u8>,
     token: Option<[u8; 20]>,
     decimals: u8,
+}
+
+pub(crate) fn gwei(wei: U256) -> Option<FeeRate> {
+    Some(FeeRate {
+        amount: Amount::new(wei, GWEI_DECIMALS).ok()?,
+        unit: RateUnit::Gwei,
+    })
 }
 
 struct Fees {

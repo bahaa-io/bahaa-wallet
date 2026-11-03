@@ -7,8 +7,7 @@ use std::time::Duration;
 use adnl::AdnlPeer;
 use adnl::crypto::{KeyPair, SecretKey};
 use bahaa_config::{
-    BlockCheckpoint, ChainKind, Checkpoint, Coin, Endpoint, Explorer, Feature, Network, Protocol,
-    Registry,
+    BlockCheckpoint, ChainKind, Checkpoint, Endpoint, Feature, Network, Protocol, Registry,
 };
 use bahaa_engine::{EngineConfig, Event, SentTx};
 use bahaa_market::MarketConfig;
@@ -132,39 +131,25 @@ pub fn solana_network(url: Url) -> Network {
 }
 
 pub fn bitcoin_network(url: Url) -> Network {
-    Network {
-        id: "bitcoin".parse().unwrap(),
-        name: "Bitcoin".to_owned(),
-        color: "#f7931a".parse().unwrap(),
-        kind: ChainKind::Bitcoin {
-            genesis: bahaa_types::hex::decode_array(BITCOIN_GENESIS).unwrap(),
-            checkpoint: BlockCheckpoint {
-                height: bahaa_testkit::electrum::CHECKPOINT,
-                hash: bahaa_testkit::electrum::checkpoint(),
-            },
-            pow_limit: bahaa_testkit::electrum::POW_LIMIT,
+    let mut network = Registry::builtin()
+        .unwrap()
+        .get(&"bitcoin".parse().unwrap())
+        .unwrap()
+        .clone();
+    network.endpoints.truncate(1);
+    network.endpoints[0].url = url;
+    let ChainKind::Bitcoin { genesis, .. } = network.kind else {
+        unreachable!()
+    };
+    network.kind = ChainKind::Bitcoin {
+        genesis,
+        checkpoint: BlockCheckpoint {
+            height: bahaa_testkit::electrum::CHECKPOINT,
+            hash: bahaa_testkit::electrum::checkpoint(),
         },
-        testnet: false,
-        native: Coin {
-            symbol: "BTC".to_owned(),
-            name: "Bitcoin".to_owned(),
-            decimals: 8,
-            price: None,
-            color: None,
-        },
-        tokens: Vec::new(),
-        endpoints: vec![Endpoint {
-            protocol: Protocol::Electrum,
-            url,
-            features: vec![Feature::History],
-            min_gap_ms: 0,
-            history_gap_ms: 0,
-        }],
-        explorer: Explorer {
-            tx: "https://mempool.space/tx/{tx}".to_owned(),
-            address: "https://mempool.space/address/{address}".to_owned(),
-        },
-    }
+        pow_limit: bahaa_testkit::electrum::POW_LIMIT,
+    };
+    network
 }
 
 pub async fn settled(events: &mut broadcast::Receiver<Event>, id: &str) -> SentTx {

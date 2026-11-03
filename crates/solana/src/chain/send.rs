@@ -2,8 +2,8 @@ use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 
 use bahaa_chain::{
-    ChainError, Failure, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus, amount,
-    enough,
+    ChainError, Failure, FeeItem, FeeLine, FeeQuote, Pace, Signed, Transfer, TxId, TxStatus,
+    amount, enough,
 };
 use bahaa_types::to_plain_text;
 use base64::Engine;
@@ -24,6 +24,7 @@ const MICRO: u128 = 1_000_000;
 const TOKEN_ACCOUNT: u64 = 165;
 const RENT_FOR: Duration = Duration::from_secs(600);
 const MAX_REASON: usize = 200;
+const CONFIRM_SLOTS: u64 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SolanaPlan {
@@ -185,7 +186,8 @@ impl SolanaChain {
             .into_iter()
             .try_fold(0u64, u64::checked_add)
             .ok_or_else(ChainError::overflow)?;
-        FeeQuote::new(native(total)?, native(total)?, lines)
+        Ok(FeeQuote::new(native(total)?, native(total)?, lines)?
+            .paced(Pace::blocks(CONFIRM_SLOTS, self.network.block_ms)))
     }
 
     fn sendable(&self, transfer: &Transfer) -> Result<(), ChainError> {

@@ -54,7 +54,8 @@
     "explorer": {
       "tx": "https://bscscan.com/tx/{tx}",
       "address": "https://bscscan.com/address/{address}"
-    }
+    },
+    "block_ms": 450
   },
   {
     "id": "ethereum",
@@ -111,7 +112,8 @@
     "explorer": {
       "tx": "https://etherscan.io/tx/{tx}",
       "address": "https://etherscan.io/address/{address}"
-    }
+    },
+    "block_ms": 12000
   },
   {
     "id": "polygon",
@@ -168,7 +170,8 @@
     "explorer": {
       "tx": "https://polygonscan.com/tx/{tx}",
       "address": "https://polygonscan.com/address/{address}"
-    }
+    },
+    "block_ms": 1500
   },
   {
     "id": "arbitrum",
@@ -225,7 +228,8 @@
     "explorer": {
       "tx": "https://arbiscan.io/tx/{tx}",
       "address": "https://arbiscan.io/address/{address}"
-    }
+    },
+    "block_ms": 250
   },
   {
     "id": "avalanche",
@@ -287,7 +291,8 @@
     "explorer": {
       "tx": "https://snowtrace.io/tx/{tx}",
       "address": "https://snowtrace.io/address/{address}"
-    }
+    },
+    "block_ms": 900
   },
   {
     "id": "base",
@@ -341,7 +346,8 @@
     "explorer": {
       "tx": "https://basescan.org/tx/{tx}",
       "address": "https://basescan.org/address/{address}"
-    }
+    },
+    "block_ms": 2000
   },
   {
     "id": "optimism",
@@ -400,7 +406,8 @@
     "explorer": {
       "tx": "https://optimistic.etherscan.io/tx/{tx}",
       "address": "https://optimistic.etherscan.io/address/{address}"
-    }
+    },
+    "block_ms": 2000
   },
   {
     "id": "tron",
@@ -445,7 +452,8 @@
     "explorer": {
       "tx": "https://tronscan.org/#/transaction/{tx}",
       "address": "https://tronscan.org/#/address/{address}"
-    }
+    },
+    "block_ms": 3000
   },
   {
     "id": "ton",
@@ -503,7 +511,8 @@
     "explorer": {
       "tx": "https://tonviewer.com/transaction/{tx}",
       "address": "https://tonviewer.com/{address}"
-    }
+    },
+    "block_ms": 450
   },
   {
     "id": "solana",
@@ -554,7 +563,65 @@
     "explorer": {
       "tx": "https://solscan.io/tx/{tx}",
       "address": "https://solscan.io/account/{address}"
-    }
+    },
+    "block_ms": 250
+  },
+  {
+    "id": "bitcoin",
+    "name": "Bitcoin",
+    "color": "#f7931a",
+    "family": "bitcoin",
+    "genesis": "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+    "checkpoint": {
+      "height": 971712,
+      "hash": "00000000000000000000c185f0906690a08d62d6fe842682a888d5560217e467"
+    },
+    "pow_limit": "1d00ffff",
+    "testnet": false,
+    "native": {
+      "symbol": "BTC",
+      "name": "Bitcoin",
+      "decimals": 8,
+      "price": "crypto/BTC",
+      "color": "#f7931a"
+    },
+    "endpoints": [
+      {
+        "protocol": "electrum",
+        "url": "ssl://electrum.blockstream.info:50002",
+        "features": [
+          "history"
+        ]
+      },
+      {
+        "protocol": "electrum",
+        "url": "ssl://e2.keff.org:50002",
+        "features": [
+          "history"
+        ]
+      },
+      {
+        "protocol": "esplora",
+        "url": "https://mempool.emzy.de/api/",
+        "features": [
+          "history"
+        ],
+        "min_gap_ms": 250
+      },
+      {
+        "protocol": "esplora",
+        "url": "https://blockstream.info/api/",
+        "features": [
+          "history"
+        ],
+        "min_gap_ms": 5200
+      }
+    ],
+    "explorer": {
+      "tx": "https://mempool.space/tx/{tx}",
+      "address": "https://mempool.space/address/{address}"
+    },
+    "block_ms": 600000
   },
   {
     "id": "bsc-testnet",
@@ -581,7 +648,8 @@
     "explorer": {
       "tx": "https://testnet.bscscan.com/tx/{tx}",
       "address": "https://testnet.bscscan.com/address/{address}"
-    }
+    },
+    "block_ms": 450
   },
   {
     "id": "tron-nile",
@@ -608,7 +676,8 @@
     "explorer": {
       "tx": "https://nile.tronscan.org/#/transaction/{tx}",
       "address": "https://nile.tronscan.org/#/address/{address}"
-    }
+    },
+    "block_ms": 3000
   },
   {
     "id": "ton-testnet",
@@ -648,7 +717,8 @@
     "explorer": {
       "tx": "https://testnet.tonviewer.com/transaction/{tx}",
       "address": "https://testnet.tonviewer.com/{address}"
-    }
+    },
+    "block_ms": 450
   },
   {
     "id": "solana-devnet",
@@ -677,6 +747,7 @@
     "explorer": {
       "tx": "https://solscan.io/tx/{tx}?cluster=devnet",
       "address": "https://solscan.io/account/{address}?cluster=devnet"
-    }
+    },
+    "block_ms": 400
   }
 ]

@@ -274,7 +274,11 @@ async fn a_waiting_transfer_is_sped_up_or_cancelled_in_the_mempool() {
                 .unwrap(),
             TxStatus::Pending
         );
-        let (plan, _) = chain.replace(&original, 0, how).await.unwrap();
+        let (plan, fee) = chain.replace(&original, 0, how).await.unwrap();
+        let before = fee.replaced().unwrap();
+        assert!(fee.pace().rate.unwrap().amount > before.pace.rate.unwrap().amount);
+        assert_eq!(fee.pace().rate.unwrap().unit, bahaa_chain::RateUnit::Gwei);
+        assert!(before.fee.units() > ruint::aliases::U256::ZERO);
         let replacement = chain.sign(&plan, &seed()).unwrap();
         check_signed(chain.planned(&plan), &chain.decode(&replacement).unwrap()).unwrap();
         chain.broadcast(&replacement).await.unwrap();

@@ -2,17 +2,19 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use bahaa_chain::{
-    ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId, TxStatus,
+    ChainError, Decoded, FeeItem, FeeLine, FeeQuote, FeeRate, Pace, RateUnit, Signed, Transfer,
+    TxId, TxStatus,
 };
 use bahaa_crypto::{
     Seed, compressed, secp256k1_sign, secp256k1_verify, taproot_output, taproot_sign,
     taproot_verify,
 };
-use bahaa_types::{Address, AssetId, BitcoinScript, BitcoinType};
+use bahaa_types::{Address, Amount, AssetId, BitcoinScript, BitcoinType};
 use futures_util::future::try_join;
 use ruint::aliases::U256;
 
 use crate::script::{dust, hash160, key_address, locking};
+use crate::source::Estimates;
 use crate::tx::{
     Input, MAX_SIGNATURE, Outpoint, Output, SEQUENCE, Tx, VERSION, id_of, id_text, parse,
     read_signature, signature,
@@ -21,8 +23,6 @@ use crate::tx::{
 use super::BitcoinChain;
 use super::account::{CHANGE, Coin, Funds, script};
 
-const FLOOR_RATE: u64 = 1_000;
-const MAX_RATE: u64 = 5_000_000;
 const KEY_BYTES: usize = 33;
 const SCHNORR_BYTES: usize = 64;
 
@@ -55,7 +55,9 @@ impl BitcoinChain {
         }
         let to = self.recipient(&transfer.to)?;
         let units = u64::try_from(transfer.amount.units()).map_err(|_| ChainError::overflow())?;
-        let (funds, rate) = try_join(self.funds(&transfer.from), self.rate()).await?;
+        let (funds, estimates) =
+            try_join(self.funds(&transfer.from), self.sources.estimates()).await?;
+        let rate = estimates.rate();
         if self.takes_change(&transfer.from, &transfer.to) {
             return Err(ChainError::Invalid(
                 "send to another address, this one takes this wallet's change",
@@ -104,7 +106,10 @@ impl BitcoinChain {
             tx,
             spent,
         };
-        Ok((plan, FeeQuote::new(fee, fee, lines)?))
+        Ok((
+            plan,
+            FeeQuote::new(fee, fee, lines)?.paced(self.pace(&estimates, rate)),
+        ))
     }
 
     pub(super) fn signed(&self, plan: &BitcoinPlan, seed: &Seed) -> Result<Signed, ChainError> {
@@ -291,14 +296,14 @@ impl BitcoinChain {
         self.sats(spent.checked_sub(paid).ok_or_else(ChainError::malformed)?)
     }
 
-    pub(super) async fn rate(&self) -> Result<u64, ChainError> {
-        Ok(self
-            .sources
-            .rates()
-            .await?
-            .into_iter()
-            .fold(FLOOR_RATE, u64::max)
-            .min(MAX_RATE))
+    pub(super) fn pace(&self, estimates: &Estimates, rate: u64) -> Pace {
+        Pace {
+            rate: Amount::new(U256::from(rate), 3).ok().map(|amount| FeeRate {
+                amount,
+                unit: RateUnit::SatPerVbyte,
+            }),
+            wait: estimates.wait(rate, self.network.block_ms),
+        }
     }
 
     fn recipient(&self, to: &Address) -> Result<Vec<u8>, ChainError> {

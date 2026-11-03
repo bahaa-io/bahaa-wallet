@@ -142,11 +142,68 @@ pub struct FeeLine {
     pub amount: Amount,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    About(u64),
+    Over(u64),
+    Slow,
+    Stuck,
+}
+
+impl Wait {
+    pub fn blocks(count: u64, block_ms: u32) -> Self {
+        Self::About(seconds(count, block_ms))
+    }
+
+    pub fn over_blocks(count: u64, block_ms: u32) -> Self {
+        Self::Over(seconds(count, block_ms))
+    }
+}
+
+fn seconds(blocks: u64, block_ms: u32) -> u64 {
+    blocks.saturating_mul(u64::from(block_ms)).div_ceil(1_000)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RateUnit {
+    SatPerVbyte,
+    Gwei,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeeRate {
+    pub amount: Amount,
+    pub unit: RateUnit,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pace {
+    pub rate: Option<FeeRate>,
+    pub wait: Option<Wait>,
+}
+
+impl Pace {
+    pub fn blocks(count: u64, block_ms: u32) -> Self {
+        Self {
+            rate: None,
+            wait: Some(Wait::blocks(count, block_ms)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Replaced {
+    pub fee: Amount,
+    pub pace: Pace,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FeeQuote {
     max: Amount,
     expected: Amount,
     lines: Vec<FeeLine>,
+    pace: Pace,
+    replaced: Option<Replaced>,
 }
 
 impl FeeQuote {
@@ -173,7 +230,29 @@ impl FeeQuote {
             max,
             expected,
             lines,
+            pace: Pace::default(),
+            replaced: None,
         })
+    }
+
+    #[must_use]
+    pub fn paced(mut self, pace: Pace) -> Self {
+        self.pace = pace;
+        self
+    }
+
+    #[must_use]
+    pub fn replacing(mut self, replaced: Replaced) -> Self {
+        self.replaced = Some(replaced);
+        self
+    }
+
+    pub fn pace(&self) -> Pace {
+        self.pace
+    }
+
+    pub fn replaced(&self) -> Option<Replaced> {
+        self.replaced
     }
 
     pub fn max(&self) -> Amount {

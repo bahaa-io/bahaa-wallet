@@ -190,6 +190,7 @@ pub struct Network {
     pub tokens: Vec<Token>,
     pub endpoints: Vec<Endpoint>,
     pub explorer: Explorer,
+    pub block_ms: u32,
 }
 
 impl Network {
@@ -292,6 +293,7 @@ struct Spec {
     tokens: Vec<TokenSpec>,
     endpoints: Vec<Endpoint>,
     explorer: Explorer,
+    block_ms: u32,
 }
 
 #[derive(Deserialize)]
@@ -436,6 +438,9 @@ impl Spec {
         if self.endpoints.is_empty() {
             return Err(problem("needs at least one endpoint"));
         }
+        if !(MIN_BLOCK_MS..=MAX_BLOCK_MS).contains(&self.block_ms) {
+            return Err(problem("block_ms must be between 100 ms and one hour"));
+        }
         let mut urls = BTreeSet::new();
         for endpoint in &self.endpoints {
             if endpoint.protocol.family() != self.family {
@@ -500,6 +505,7 @@ impl Spec {
             tokens,
             endpoints: self.endpoints,
             explorer: self.explorer,
+            block_ms: self.block_ms,
         })
     }
 }
@@ -526,6 +532,8 @@ impl Coin {
 }
 
 pub const RETARGET_BLOCKS: u64 = 2_016;
+const MIN_BLOCK_MS: u32 = 100;
+const MAX_BLOCK_MS: u32 = 3_600_000;
 
 fn block_id(text: Option<&str>) -> Option<[u8; 32]> {
     bahaa_types::hex::decode_array(text?)
@@ -581,6 +589,7 @@ mod tests {
                 "arbitrum",
                 "avalanche",
                 "base",
+                "bitcoin",
                 "bsc",
                 "bsc-testnet",
                 "ethereum",
@@ -726,6 +735,48 @@ mod tests {
         assert!(broken(&|n| {
             n["tokens"][0]["contract"] = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".into();
         }));
+    }
+
+    #[test]
+    fn bitcoin_pins_a_difficulty_period_and_speaks_electrum_then_esplora() {
+        let bitcoin = network("bitcoin");
+        assert_eq!(bitcoin.family(), ChainFamily::Bitcoin);
+        let ChainKind::Bitcoin {
+            checkpoint,
+            pow_limit,
+            ..
+        } = bitcoin.kind
+        else {
+            panic!("not a Bitcoin network");
+        };
+        assert!(checkpoint.height.is_multiple_of(RETARGET_BLOCKS));
+        assert_eq!(pow_limit, 0x1d00_ffff);
+        let protocols: Vec<Protocol> = bitcoin
+            .endpoints
+            .iter()
+            .map(|endpoint| endpoint.protocol)
+            .collect();
+        assert_eq!(
+            protocols,
+            [
+                Protocol::Electrum,
+                Protocol::Electrum,
+                Protocol::Esplora,
+                Protocol::Esplora
+            ]
+        );
+        let broken = |edit: &dyn Fn(&mut Value)| edited("bitcoin", edit).is_err();
+        assert!(broken(&|n| n["checkpoint"]["height"] = 967_681.into()));
+        assert!(broken(&|n| n["checkpoint"] = Value::Null));
+        assert!(broken(&|n| n["pow_limit"] = "xyz".into()));
+        assert!(broken(&|n| {
+            n["endpoints"][0]["url"] = "https://electrum.blockstream.info:50002".into();
+        }));
+        assert!(broken(&|n| {
+            n["endpoints"][0]["url"] = "ssl://electrum.blockstream.info".into();
+        }));
+        assert!(broken(&|n| n["global_id"] = (-239).into()));
+        assert!(edited("tron", |n: &mut Value| n["pow_limit"] = "1d00ffff".into()).is_err());
     }
 
     #[test]

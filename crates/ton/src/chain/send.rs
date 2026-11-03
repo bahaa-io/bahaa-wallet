@@ -1,5 +1,5 @@
 use bahaa_chain::{
-    ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Signed, Transfer, TxId, enough,
+    ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Pace, Signed, Transfer, TxId, enough,
 };
 use bahaa_crypto::Seed;
 use bahaa_types::{Address, Amount, AssetId, TonContract};
@@ -12,6 +12,8 @@ use super::{TonChain, amount, hex, key};
 use crate::cells::{Account, Status};
 use crate::fees::{Config, Settings, Storage, size_without_root};
 use crate::wallet::{self, Order};
+
+const CONFIRM_BLOCKS: u64 = 40;
 
 pub(super) const LIFETIME: u64 = 300;
 
@@ -136,7 +138,8 @@ impl TonChain {
                 order,
                 deploy,
             },
-            FeeQuote::new(gram(max)?, gram(expected)?, lines)?,
+            FeeQuote::new(gram(max)?, gram(expected)?, lines)?
+                .paced(Pace::blocks(CONFIRM_BLOCKS, self.network.block_ms)),
         ))
     }
 

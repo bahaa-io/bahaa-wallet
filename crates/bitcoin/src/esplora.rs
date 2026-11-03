@@ -11,13 +11,12 @@ use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 
 use crate::header::block_hash;
-use crate::source::{Branch, Seen, Unspent, already, branch, rate};
+use crate::source::{Branch, Estimates, Seen, TARGETS, Unspent, already, branch, rate};
 use crate::tx::{Hash, MAX_MONEY, Outpoint};
 
 const PAGE: usize = 25;
 const MAX_PAGES: usize = 10;
 const PARALLEL: usize = 4;
-const FEE_TARGET: &str = "2";
 const MAX_REFUSAL: usize = 200;
 
 #[derive(Debug)]
@@ -73,7 +72,7 @@ impl Esplora {
         self.each(items, Self::proof).await
     }
 
-    pub(crate) async fn rates(&self) -> Result<Vec<u64>, ChainError> {
+    pub(crate) async fn estimates(&self) -> Result<Estimates, ChainError> {
         Ok(self
             .pool
             .call(None, |endpoint| async move {
@@ -84,11 +83,16 @@ impl Esplora {
                     .ok_or_else(malformed)?;
                 let estimates: HashMap<String, Box<RawValue>> =
                     serde_json::from_slice(&body).map_err(|_| malformed())?;
-                Ok(estimates
-                    .get(FEE_TARGET)
-                    .and_then(|text| rate(text.get(), 1_000))
-                    .into_iter()
-                    .collect())
+                Ok(Estimates {
+                    relay: None,
+                    targets: TARGETS
+                        .iter()
+                        .filter_map(|blocks| {
+                            let text = estimates.get(&blocks.to_string())?;
+                            Some((*blocks, rate(text.get(), 1_000)?))
+                        })
+                        .collect(),
+                })
             })
             .await?)
     }

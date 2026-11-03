@@ -19,7 +19,7 @@ use tokio_rustls::TlsConnector;
 
 use crate::header::HEADER_BYTES;
 use crate::proof::Header;
-use crate::source::{Branch, Seen, Unspent, already, branch, rate};
+use crate::source::{Branch, Estimates, Seen, TARGETS, Unspent, already, branch, rate};
 use crate::tx::{Hash, MAX_MONEY, Outpoint};
 
 const MAX_REPLY: u64 = 4 * 1024 * 1024;
@@ -29,7 +29,6 @@ const CONNECT: Duration = Duration::from_secs(5);
 const ANSWER: Duration = Duration::from_secs(20);
 const CLIENT: &str = concat!("bahaa-wallet/", env!("CARGO_PKG_VERSION"));
 const PROTOCOL: &str = "1.4";
-const FEE_TARGET: u32 = 2;
 const SATS_PER_COIN: u64 = 100_000_000;
 
 type Call = (&'static str, Value);
@@ -191,19 +190,29 @@ impl Electrum {
             .collect()
     }
 
-    pub(crate) async fn rates(&self) -> Result<Vec<u64>, ChainError> {
-        let calls = [
-            ("blockchain.estimatefee", json!([FEE_TARGET])),
-            ("blockchain.relayfee", json!([])),
-        ];
+    pub(crate) async fn estimates(&self) -> Result<Estimates, ChainError> {
+        let mut calls: Vec<Call> = TARGETS
+            .iter()
+            .map(|blocks| ("blockchain.estimatefee", json!([blocks])))
+            .collect();
+        calls.push(("blockchain.relayfee", json!([])));
         self.batch(&calls, |answers| {
-            answers
+            let mut rates = answers
                 .into_iter()
-                .filter_map(|answer| match answer {
-                    Ok(raw) => rate(raw.get(), SATS_PER_COIN).map(Ok),
-                    Err(refusal) => Some(Err(refusal.failure())),
+                .map(|answer| match answer {
+                    Ok(raw) => Ok(rate(raw.get(), SATS_PER_COIN)),
+                    Err(refusal) => Err(refusal.failure()),
                 })
-                .collect()
+                .collect::<Result<Vec<_>, _>>()?;
+            let relay = rates.pop().flatten();
+            Ok(Estimates {
+                relay,
+                targets: TARGETS
+                    .iter()
+                    .zip(rates)
+                    .filter_map(|(blocks, rate)| Some((*blocks, rate?)))
+                    .collect(),
+            })
         })
         .await
     }

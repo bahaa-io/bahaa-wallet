@@ -186,7 +186,11 @@ impl Ledger {
                 json!({"count": end.saturating_sub(start), "hex": hex::encode(&headers), "max": 2016})
             }
             "blockchain.transaction.get_merkle" => self.proof(&key, params[1].as_u64().unwrap()),
-            "blockchain.estimatefee" => serde_json::from_str("2e-05").unwrap(),
+            "blockchain.estimatefee" => match params[0].as_u64().unwrap() {
+                0..=2 => serde_json::from_str("2e-05").unwrap(),
+                3..=6 => serde_json::from_str("1.2e-05").unwrap(),
+                _ => serde_json::from_str("5e-06").unwrap(),
+            },
             "blockchain.relayfee" => serde_json::from_str("1e-06").unwrap(),
             "blockchain.transaction.broadcast" => json!(self.accept(&key)?),
             "blockchain.transaction.get" => match self.transactions.get(&key) {

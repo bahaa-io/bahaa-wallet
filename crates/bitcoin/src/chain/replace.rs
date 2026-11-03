@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use bahaa_chain::{ChainError, FeeItem, FeeLine, FeeQuote, Replace, Signed, Transfer};
+use bahaa_chain::{ChainError, FeeItem, FeeLine, FeeQuote, Replace, Replaced, Signed, Transfer};
 use bahaa_types::{Address, AssetId};
 
 use super::account::{Coin, script};
@@ -40,9 +40,9 @@ impl BitcoinChain {
             .checked_sub(sum(old.outputs.iter().map(|output| output.value))?)
             .ok_or_else(ChainError::malformed)?;
         let old_rate = old_fee.saturating_mul(1_000) / old.vsize().max(1);
-        let rate = self
+        let estimates = self.sources.estimates().await?;
+        let rate = estimates
             .rate()
-            .await?
             .max(old_rate.saturating_mul(BUMP.0) / BUMP.1)
             .max(old_rate.saturating_add(STEP_PER_KVB));
         let bump = Bump {
@@ -87,6 +87,10 @@ impl BitcoinChain {
             });
         }
         let quoted = self.sats(paid)?;
+        let before = Replaced {
+            fee: self.sats(old_fee)?,
+            pace: self.pace(&estimates, old_rate),
+        };
         let (inputs, tx) = unsigned(&bump.coins, outputs);
         Ok((
             BitcoinPlan {
@@ -94,7 +98,9 @@ impl BitcoinChain {
                 tx,
                 spent: inputs,
             },
-            FeeQuote::new(quoted, quoted, lines)?,
+            FeeQuote::new(quoted, quoted, lines)?
+                .paced(self.pace(&estimates, rate))
+                .replacing(before),
         ))
     }
 

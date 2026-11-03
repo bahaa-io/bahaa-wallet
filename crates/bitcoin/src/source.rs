@@ -1,4 +1,4 @@
-use bahaa_chain::{ChainError, TxId};
+use bahaa_chain::{ChainError, TxId, Wait};
 use bahaa_config::{Network, Protocol};
 use bahaa_types::{Amount, Price};
 use ruint::aliases::U256;
@@ -25,6 +25,42 @@ pub(crate) struct Unspent {
 pub(crate) struct Branch {
     pub pos: u64,
     pub hashes: Vec<Hash>,
+}
+
+pub(crate) const TARGETS: [u32; 8] = [2, 3, 6, 12, 24, 72, 144, 504];
+
+const FLOOR_RATE: u64 = 1_000;
+const MAX_RATE: u64 = 5_000_000;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Estimates {
+    pub relay: Option<u64>,
+    pub targets: Vec<(u32, u64)>,
+}
+
+impl Estimates {
+    pub(crate) fn rate(&self) -> u64 {
+        self.targets
+            .first()
+            .map(|(_, rate)| *rate)
+            .into_iter()
+            .chain(self.relay)
+            .fold(FLOOR_RATE, u64::max)
+            .min(MAX_RATE)
+    }
+
+    pub(crate) fn wait(&self, rate: u64, block_ms: u32) -> Option<Wait> {
+        if self.relay.is_some_and(|relay| rate < relay) {
+            return Some(Wait::Stuck);
+        }
+        let slowest = self.targets.last()?.0;
+        Some(
+            match self.targets.iter().find(|(_, needed)| rate >= *needed) {
+                Some((blocks, _)) => Wait::blocks(u64::from(*blocks), block_ms),
+                None => Wait::over_blocks(u64::from(slowest), block_ms),
+            },
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -112,8 +148,8 @@ impl Sources {
         .await
     }
 
-    pub(crate) async fn rates(&self) -> Result<Vec<u64>, ChainError> {
-        self.either(Electrum::rates, Esplora::rates).await
+    pub(crate) async fn estimates(&self) -> Result<Estimates, ChainError> {
+        self.either(Electrum::estimates, Esplora::estimates).await
     }
 
     pub(crate) async fn broadcast(&self, raw: &[u8], id: &TxId) -> Result<TxId, ChainError> {
@@ -177,6 +213,28 @@ pub(crate) fn already(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn estimates_give_the_send_rate_and_the_blocks_any_rate_waits() {
+        let estimates = Estimates {
+            relay: Some(100),
+            targets: vec![(2, 3_000), (6, 2_000), (24, 1_200), (504, 500)],
+        };
+        let wait = |rate| estimates.wait(rate, 600_000);
+        assert_eq!(estimates.rate(), 3_000);
+        assert_eq!(wait(3_500), Some(Wait::About(1_200)));
+        assert_eq!(wait(2_000), Some(Wait::About(3_600)));
+        assert_eq!(wait(1_000), Some(Wait::About(302_400)));
+        assert_eq!(wait(300), Some(Wait::Over(302_400)));
+        assert_eq!(wait(50), Some(Wait::Stuck));
+        assert_eq!(Estimates::default().rate(), FLOOR_RATE);
+        assert_eq!(Estimates::default().wait(2_000, 600_000), None);
+        let quiet = Estimates {
+            relay: Some(100),
+            targets: vec![(2, 120)],
+        };
+        assert_eq!(quiet.rate(), FLOOR_RATE);
+    }
 
     #[test]
     fn fee_rates_are_read_exactly_from_their_text() {
