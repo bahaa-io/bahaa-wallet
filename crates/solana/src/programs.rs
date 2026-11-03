@@ -9,6 +9,7 @@ pub(crate) const TOKEN: Key = id("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 pub(crate) const TOKEN_2022: Key = id("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 pub(crate) const ASSOCIATED: Key = id("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 pub(crate) const MEMO: Key = id("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+pub(crate) const MEMO_V1: Key = id("Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo");
 pub(crate) const BUDGET: Key = id("ComputeBudget111111111111111111111111111111");
 pub(crate) const METADATA: Key = id("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 

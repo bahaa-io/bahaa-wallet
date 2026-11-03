@@ -101,6 +101,8 @@ pub struct Ledger {
     pub sent: Option<Value>,
     pub status: Value,
     pub found: Value,
+    pub history: Vec<Value>,
+    pub transactions: HashMap<String, Value>,
 }
 
 impl Ledger {
@@ -142,7 +144,28 @@ impl Ledger {
             "getSignatureStatuses" => {
                 json!({"context": {"slot": 1}, "value": [self.status]})
             }
-            "getTransaction" => self.found.clone(),
+            "getTransaction" => self
+                .transactions
+                .get(params[0].as_str().unwrap())
+                .cloned()
+                .unwrap_or_else(|| self.found.clone()),
+            "getSignaturesForAddress" => {
+                let before = params[1]["before"].as_str();
+                let start = before.map_or(0, |before| {
+                    1 + self
+                        .history
+                        .iter()
+                        .position(|entry| entry["signature"] == before)
+                        .unwrap()
+                });
+                let limit = usize::try_from(params[1]["limit"].as_u64().unwrap()).unwrap();
+                self.history
+                    .iter()
+                    .skip(start)
+                    .take(limit)
+                    .cloned()
+                    .collect()
+            }
             other => panic!("unexpected {other}"),
         }
     }

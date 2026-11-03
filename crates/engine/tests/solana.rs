@@ -81,6 +81,7 @@ fn answer(ledger: &Mutex<Ledger>, call: &Value) -> Value {
             json!({"context": {"slot": 1}, "value": {"blockhash": "Aiyo4Fg2XByNaEhKv3LtX5h9Q8Y2kzhhCZhsnV5fBsrw", "lastValidBlockHeight": 9}})
         }
         "getRecentPrioritizationFees" => json!([{"slot": 1, "prioritizationFee": 1_000}]),
+        "getSignaturesForAddress" => json!([]),
         "simulateTransaction" => {
             json!({"context": {"slot": 1}, "value": {"err": null, "logs": [], "unitsConsumed": 450}})
         }

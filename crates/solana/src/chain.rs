@@ -13,6 +13,7 @@ use ed25519_dalek::SigningKey;
 use futures_util::future::try_join_all;
 use ruint::aliases::U256;
 
+mod incoming;
 mod send;
 
 pub use send::SolanaPlan;
@@ -362,6 +363,7 @@ pub(crate) fn fuzz(value: &serde_json::Value) {
             let _ = metadata(account.as_ref(), &[0; 32]);
         }
     }
+    incoming::fuzz(value);
     send::fuzz(value);
 }
 

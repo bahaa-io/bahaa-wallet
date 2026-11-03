@@ -119,31 +119,91 @@ pub(crate) fn transaction(message: &[u8], signature: &[u8; SIGNATURE]) -> Vec<u8
     out
 }
 
-pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, ChainError> {
-    let invalid = || ChainError::Invalid("not a transaction this wallet makes");
+pub(crate) struct Wire<'a> {
+    pub signatures: Vec<[u8; SIGNATURE]>,
+    pub message: &'a [u8],
+    pub versioned: bool,
+    pub header: [u8; 3],
+    pub keys: Vec<Key>,
+    pub blockhash: Key,
+    pub instructions: Vec<Compiled>,
+}
+
+pub(crate) struct Compiled {
+    pub program: u8,
+    pub accounts: Vec<u8>,
+    pub data: Vec<u8>,
+}
+
+pub(crate) fn read(bytes: &[u8]) -> Option<Wire<'_>> {
     let mut reader = Reader(bytes);
-    if read_len(&mut reader)? != 1 {
-        return Err(invalid());
+    let count = read_len(&mut reader)?;
+    if count == 0 || count > MAX_TX / SIGNATURE {
+        return None;
     }
-    let signature: [u8; SIGNATURE] = reader.array()?;
+    let mut signatures = Vec::with_capacity(count);
+    for _ in 0..count {
+        signatures.push(reader.array()?);
+    }
     let message = reader.0;
     let mut reader = Reader(message);
-    let [signers, readonly_signed, readonly] = reader.array()?;
-    if signers & VERSIONED != 0 {
+    let versioned = *message.first()? & VERSIONED != 0;
+    if versioned && reader.byte()? != VERSIONED {
+        return None;
+    }
+    let header = reader.array()?;
+    let mut keys = Vec::new();
+    for _ in 0..read_len(&mut reader)? {
+        keys.push(reader.array()?);
+    }
+    let blockhash = reader.array()?;
+    let mut instructions = Vec::new();
+    for _ in 0..read_len(&mut reader)? {
+        let program = reader.byte()?;
+        let len = read_len(&mut reader)?;
+        let accounts = reader.take(len)?.to_vec();
+        let len = read_len(&mut reader)?;
+        let data = reader.take(len)?.to_vec();
+        instructions.push(Compiled {
+            program,
+            accounts,
+            data,
+        });
+    }
+    if versioned {
+        for _ in 0..read_len(&mut reader)? {
+            reader.array::<32>()?;
+            for _ in 0..2 {
+                let len = read_len(&mut reader)?;
+                reader.take(len)?;
+            }
+        }
+    }
+    reader.0.is_empty().then_some(Wire {
+        signatures,
+        message,
+        versioned,
+        header,
+        keys,
+        blockhash,
+        instructions,
+    })
+}
+
+pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, ChainError> {
+    let invalid = || ChainError::Invalid("not a transaction this wallet makes");
+    let wire = read(bytes).ok_or_else(invalid)?;
+    if wire.versioned {
         return Err(ChainError::Unsupported("versioned transactions"));
     }
-    if signers != 1 || readonly_signed != 0 {
+    let ([signature], [1, 0, readonly]) = (wire.signatures.as_slice(), wire.header) else {
         return Err(invalid());
-    }
-    let count = read_len(&mut reader)?;
-    let keys = (0..count)
-        .map(|_| reader.array::<32>())
-        .collect::<Result<Vec<Key>, _>>()?;
+    };
+    let keys = &wire.keys;
     let readonly = usize::from(readonly);
     if keys.is_empty() || readonly >= keys.len() {
         return Err(invalid());
     }
-    let blockhash: Key = reader.array()?;
     let meta = |index: u8| -> Result<Meta, ChainError> {
         let at = usize::from(index);
         Ok(Meta {
@@ -152,34 +212,32 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, ChainError> {
             writable: at < keys.len() - readonly,
         })
     };
-    let mut instructions = Vec::new();
-    for _ in 0..read_len(&mut reader)? {
-        let program = meta(reader.byte()?)?.key;
-        let len = read_len(&mut reader)?;
-        let indexes = reader.take(len)?;
-        let accounts = indexes
-            .iter()
-            .map(|index| meta(*index))
-            .collect::<Result<Vec<Meta>, _>>()?;
-        let len = read_len(&mut reader)?;
-        let data = reader.take(len)?.to_vec();
-        instructions.push(Instruction {
-            program,
-            accounts,
-            data,
-        });
-    }
-    if !reader.0.is_empty() || compile(keys[0], blockhash, &instructions)? != message {
+    let instructions = wire
+        .instructions
+        .iter()
+        .map(|compiled| {
+            Ok(Instruction {
+                program: meta(compiled.program)?.key,
+                accounts: compiled
+                    .accounts
+                    .iter()
+                    .map(|index| meta(*index))
+                    .collect::<Result<Vec<Meta>, ChainError>>()?,
+                data: compiled.data.clone(),
+            })
+        })
+        .collect::<Result<Vec<Instruction>, ChainError>>()?;
+    if compile(keys[0], wire.blockhash, &instructions)? != wire.message {
         return Err(invalid());
     }
     VerifyingKey::from_bytes(&keys[0])
-        .and_then(|key| key.verify_strict(message, &Signature::from_bytes(&signature)))
+        .and_then(|key| key.verify_strict(wire.message, &Signature::from_bytes(signature)))
         .map_err(|_| ChainError::Mismatch("the signature"))?;
     Ok(Parsed {
-        signature,
+        signature: *signature,
         payer: keys[0],
-        blockhash,
-        message: message.to_vec(),
+        blockhash: wire.blockhash,
+        message: wire.message.to_vec(),
         instructions,
     })
 }
@@ -200,53 +258,40 @@ fn write_len(out: &mut Vec<u8>, len: usize) -> Result<(), ChainError> {
     }
 }
 
-fn read_len(reader: &mut Reader<'_>) -> Result<usize, ChainError> {
-    let invalid = || ChainError::Invalid("not a transaction this wallet makes");
+fn read_len(reader: &mut Reader<'_>) -> Option<usize> {
     let mut value = 0;
     for shift in [0, 7, 14] {
         let byte = reader.byte()?;
         value |= usize::from(byte & 0x7f) << shift;
         if byte & 0x80 == 0 {
-            if shift > 0 && byte == 0 {
-                return Err(invalid());
-            }
-            return if value <= MAX_LEN {
-                Ok(value)
-            } else {
-                Err(invalid())
-            };
+            return (value <= MAX_LEN && (shift == 0 || byte != 0)).then_some(value);
         }
     }
-    Err(invalid())
+    None
 }
 
 struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, len: usize) -> Result<&'a [u8], ChainError> {
-        let (head, rest) = self
-            .0
-            .split_at_checked(len)
-            .ok_or(ChainError::Invalid("not a transaction this wallet makes"))?;
+    fn take(&mut self, len: usize) -> Option<&'a [u8]> {
+        let (head, rest) = self.0.split_at_checked(len)?;
         self.0 = rest;
-        Ok(head)
+        Some(head)
     }
 
-    fn byte(&mut self) -> Result<u8, ChainError> {
-        Ok(self.take(1)?[0])
+    fn byte(&mut self) -> Option<u8> {
+        Some(self.take(1)?[0])
     }
 
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], ChainError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| ChainError::Invalid("not a transaction this wallet makes"))
+    fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
+        self.take(N)?.try_into().ok()
     }
 }
 
 #[cfg(fuzzing)]
 pub(crate) fn fuzz(data: &[u8]) {
     let _ = parse(data);
-    let _ = read_len(&mut Reader(data));
+    let _ = read(data);
 }
 
 #[cfg(test)]
@@ -270,7 +315,7 @@ mod tests {
             (0xffff, vec![0xff, 0xff, 0x03]),
         ] {
             assert_eq!(lengths(len), bytes, "{len}");
-            assert_eq!(read_len(&mut Reader(&bytes)).unwrap(), len);
+            assert_eq!(read_len(&mut Reader(&bytes)), Some(len));
         }
         assert!(write_len(&mut Vec::new(), 0x1_0000).is_err());
         for bad in [
@@ -280,7 +325,7 @@ mod tests {
             vec![0x80, 0x80, 0x80, 0x01],
             vec![0x80],
         ] {
-            assert!(read_len(&mut Reader(&bad)).is_err(), "{bad:?}");
+            assert_eq!(read_len(&mut Reader(&bad)), None, "{bad:?}");
         }
     }
 
@@ -373,9 +418,15 @@ mod tests {
         let mut longer = bytes.clone();
         longer.push(0);
         assert!(parse(&longer).is_err());
-        let mut versioned = bytes.clone();
-        versioned[65] |= VERSIONED;
+        let mut versioned = bytes[..65].to_vec();
+        versioned.push(VERSIONED);
+        versioned.extend_from_slice(&bytes[65..]);
+        versioned.push(0);
+        assert!(read(&versioned).is_some_and(|wire| wire.versioned));
         assert!(matches!(parse(&versioned), Err(ChainError::Unsupported(_))));
+        let mut unknown = bytes.clone();
+        unknown[65] |= VERSIONED;
+        assert!(read(&unknown).is_none());
         let mut two = bytes;
         two[0] = 2;
         assert!(parse(&two).is_err());

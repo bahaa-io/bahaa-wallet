@@ -54,3 +54,18 @@ async fn live_balances_and_a_quote_from_a_funded_address() {
     assert_eq!(fee.lines()[0].item, FeeItem::Signature);
     assert!(matches!(fee.lines()[1].item, FeeItem::Priority { units } if units > 0));
 }
+
+#[tokio::test]
+#[ignore = "talks to the real Solana mainnet"]
+async fn live_history_reads_from_the_server_that_keeps_it() {
+    let chain = mainnet();
+    let scanned = chain
+        .scan(&address(FRIEND), &[native(), usdc()], None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(scanned.cursor.next > 1_790_000_000);
+    for moved in scanned.found.iter().chain(&scanned.sent) {
+        assert!(moved.from == address(FRIEND) || moved.to == address(FRIEND));
+    }
+}
