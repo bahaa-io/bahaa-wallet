@@ -1,4 +1,4 @@
-use bahaa_engine::{Address, Amount, FeeRate, Fiat, Network, Price, TonForm, Wait};
+use bahaa_engine::{Address, Amount, FeeRate, Fiat, Network, Price, TonForm, Utc, Wait};
 
 use crate::text;
 
@@ -122,32 +122,11 @@ pub(crate) fn rate(rate: FeeRate) -> String {
 }
 
 pub(crate) fn when(time: u64) -> String {
-    let days = time / DAY;
-    let seconds = time % DAY;
-    let (year, month, day) = civil(days);
+    let at = Utc::at(time);
     format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}",
-        seconds / HOUR,
-        seconds % HOUR / MINUTE
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        at.year, at.month, at.day, at.hour, at.minute
     )
-}
-
-fn civil(days: u64) -> (u64, u64, u64) {
-    let shifted = days + 719_468;
-    let era = shifted / 146_097;
-    let day_of_era = shifted % 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 {
-        shifted_month + 3
-    } else {
-        shifted_month - 9
-    };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
-    (year, month, day)
 }
 
 fn split(text: &str) -> (&str, &str) {

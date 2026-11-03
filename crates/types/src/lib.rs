@@ -5,6 +5,7 @@ pub mod hex;
 mod ids;
 mod price;
 mod text;
+mod time;
 
 pub use address::{
     Address, AddressError, BitcoinScript, BitcoinType, SolanaPath, TonContract, TonForm,
@@ -14,3 +15,4 @@ pub use asset::{AssetError, AssetId};
 pub use ids::{ChainFamily, IdError, NetworkId, PriceId};
 pub use price::{MAX_SCALE, Price, PriceError};
 pub use text::{is_plain_text, to_plain_text};
+pub use time::Utc;
