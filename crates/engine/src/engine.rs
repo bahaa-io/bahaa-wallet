@@ -4,6 +4,7 @@ mod contacts;
 mod incoming;
 mod prices;
 mod send;
+mod swap;
 mod tokens;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,8 +19,9 @@ use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{
     Contact, CustomToken, Outgoing, Received, Scan, SentTx, Store, StoreError, StoreKey,
-    TrustedBlock,
+    SwapRecord, TrustedBlock,
 };
+use bahaa_swap::{Providers, SwapError};
 use bahaa_types::{Address, AssetId, BitcoinType, ChainFamily, NetworkId, SolanaPath, TonContract};
 use bahaa_vault::KdfParams;
 use futures_util::future::{join, join_all};
@@ -38,6 +40,8 @@ pub use activity::{Activity, ActivityKind};
 pub use incoming::IncomingHistory;
 use send::{Delivered, Prepared, Quoted};
 pub use send::{Draft, DraftId, SendRequest, Spend};
+use swap::{PreparedSwap, SwapOrdered, SwapQuoted, Swappers};
+pub use swap::{SwapDraft, SwapId, SwapRequest, SwapReview, Unavailable};
 use tokens::TokenRead;
 
 const VAULT_FILE: &str = "vault.bin";
@@ -54,6 +58,7 @@ pub struct EngineConfig {
     pub refresh_every: Duration,
     pub draft_ttl: Duration,
     pub track_every: Duration,
+    pub swaps: Option<Providers>,
 }
 
 impl EngineConfig {
@@ -67,6 +72,7 @@ impl EngineConfig {
             refresh_every: Duration::from_secs(60),
             draft_ttl: Duration::from_secs(120),
             track_every: Duration::from_secs(4),
+            swaps: Providers::builtin().ok(),
         }
     }
 }
@@ -83,6 +89,8 @@ pub enum EngineError {
     Market(#[from] MarketError),
     #[error(transparent)]
     Chain(#[from] ChainError),
+    #[error(transparent)]
+    Swap(#[from] SwapError),
     #[error("there is no such send waiting for confirmation, prepare it again")]
     UnknownDraft,
     #[error("this fee quote has expired, prepare the send again")]
@@ -111,6 +119,7 @@ pub enum Event {
     AccountsChanged(Vec<Account>),
     SettingsChanged(Settings),
     TxUpdated(Box<SentTx>),
+    SwapUpdated(Box<SwapRecord>),
     Received(Vec<Arrival>),
     ContactsChanged(Vec<Contact>),
     SentElsewhere(Vec<Outgoing>),
@@ -151,6 +160,9 @@ enum Command {
     PrepareSend(SendRequest, Reply<Draft>),
     Replace(NetworkId, String, Replace, Reply<Draft>),
     ConfirmSend(DraftId, SecretString, Reply<SentTx>),
+    PrepareSwap(SwapRequest, Reply<SwapDraft>),
+    ChooseSwap(SwapId, usize, Reply<SwapReview>),
+    Swaps(Reply<Vec<SwapRecord>>),
     History(Reply<Vec<SentTx>>),
     Incoming(Reply<IncomingHistory>),
     Outgoing(Reply<Vec<Outgoing>>),
@@ -172,6 +184,9 @@ enum Notice {
     Quoted(Box<Quoted>),
     Delivered(Box<Delivered>),
     Tracked(Vec<SentTx>),
+    SwapQuoted(Box<SwapQuoted>),
+    SwapOrdered(Box<SwapOrdered>),
+    Polled(Vec<SwapRecord>),
     TokenRead(Box<TokenRead>),
     Detected(u64, Vec<(WalletId, Choice)>),
 }
@@ -206,6 +221,7 @@ impl Command {
                 | Self::Accounts(_)
                 | Self::Settings(_)
                 | Self::History(_)
+                | Self::Swaps(_)
                 | Self::Incoming(_)
                 | Self::Outgoing(_)
                 | Self::Activity(_)
@@ -239,6 +255,7 @@ impl Engine {
             refresh_every,
             draft_ttl,
             track_every,
+            swaps,
         } = config;
         crate::keyring::private_dir(&data_dir)?;
         let store = Store::open(&data_dir.join(STORE_FILE))?;
@@ -313,6 +330,12 @@ impl Engine {
             next_track: None,
             draft_ttl,
             track_every,
+            swappers: swaps.as_ref().map(Swappers::new).transpose()?.map(Arc::new),
+            swap_drafts: BTreeMap::new(),
+            next_swap: 0,
+            swaps: Vec::new(),
+            polling: None,
+            next_poll: None,
         };
         tokio::spawn(worker.run());
         Ok(Self {
@@ -523,6 +546,19 @@ impl Engine {
             .await
     }
 
+    pub async fn prepare_swap(&self, request: SwapRequest) -> Result<SwapDraft, EngineError> {
+        self.ask(|reply| Command::PrepareSwap(request, reply)).await
+    }
+
+    pub async fn choose_swap(&self, id: SwapId, route: usize) -> Result<SwapReview, EngineError> {
+        self.ask(|reply| Command::ChooseSwap(id, route, reply))
+            .await
+    }
+
+    pub async fn swaps(&self) -> Result<Vec<SwapRecord>, EngineError> {
+        self.ask(Command::Swaps).await
+    }
+
     pub async fn confirm_send(
         &self,
         draft: DraftId,
@@ -645,6 +681,12 @@ struct Worker {
     next_track: Option<Instant>,
     draft_ttl: Duration,
     track_every: Duration,
+    swappers: Option<Arc<Swappers>>,
+    swap_drafts: BTreeMap<SwapId, PreparedSwap>,
+    next_swap: u64,
+    swaps: Vec<SwapRecord>,
+    polling: Option<JoinHandle<()>>,
+    next_poll: Option<Instant>,
 }
 
 struct TonCheck {
@@ -693,6 +735,7 @@ impl Worker {
             let deadline = self.deadline;
             let next_refresh = self.next_refresh;
             let next_track = self.next_track;
+            let next_poll = self.next_poll;
             let has_market = self.market.is_some();
             tokio::select! {
                 command = self.inbox.recv() => match command {
@@ -708,6 +751,7 @@ impl Worker {
                 () = at(deadline) => self.lock(),
                 () = at(next_refresh) => self.start_refresh(),
                 () = at(next_track) => self.start_tracking(),
+                () = at(next_poll) => self.start_polling(),
                 Some(notice) = self.notices.recv() => self.notice(notice).await,
                 Ok(()) = self.prices.changed(), if has_market => {
                     self.remember_prices();
@@ -754,6 +798,9 @@ impl Worker {
             Command::ConfirmSend(id, password, reply) => {
                 self.confirm_send(id, password, reply).await;
             }
+            Command::PrepareSwap(request, reply) => self.prepare_swap(&request, reply),
+            Command::ChooseSwap(id, route, reply) => self.choose_swap(id, route, reply),
+            Command::Swaps(reply) => answer(reply, self.swaps()),
             Command::History(reply) => answer(reply, self.history()),
             Command::Incoming(reply) => answer(reply, self.incoming()),
             Command::Outgoing(reply) => answer(reply, self.outgoing()),
@@ -929,6 +976,9 @@ impl Worker {
             Notice::Quoted(quoted) => self.quoted(*quoted),
             Notice::Delivered(delivered) => self.delivered(*delivered),
             Notice::Tracked(updates) => self.tracked(updates),
+            Notice::SwapQuoted(quoted) => self.swap_quoted(*quoted),
+            Notice::SwapOrdered(ordered) => self.swap_ordered(*ordered),
+            Notice::Polled(updates) => self.polled(updates),
             Notice::TokenRead(read) => self.token_read(*read),
             Notice::Detected(session, found) if session == self.session && !found.is_empty() => {
                 let _ = self
@@ -1125,12 +1175,15 @@ impl Worker {
         incoming::sort(&mut received);
         let mut outgoing = self.store.outgoing()?;
         incoming::sort(&mut outgoing);
+        let mut swaps = self.store.swaps()?;
+        swaps.sort_by_key(|swap| std::cmp::Reverse(swap.created_at));
         chains::know(&self.chains, &custom);
         self.custom = Arc::new(custom);
         self.history = history;
         self.scans = scans;
         self.received = received;
         self.outgoing = outgoing;
+        self.swaps = swaps;
         self.saved = prices::saved(&self.store, self.settings.fiat.price_base());
         self.saved_at = None;
         self.unsaved = false;
@@ -1145,6 +1198,7 @@ impl Worker {
         self.scans.clear();
         self.received.clear();
         self.outgoing.clear();
+        self.swaps.clear();
         self.saved = prices::empty(self.settings.fiat.price_base());
         self.saved_at = None;
         self.unsaved = false;
@@ -1155,6 +1209,7 @@ impl Worker {
         self.activity();
         self.derive_accounts().await;
         self.start_tracking();
+        self.start_polling();
         self.detect_paths().await;
     }
 
@@ -1496,6 +1551,7 @@ impl Worker {
         self.deadline = None;
         self.stop_refresh();
         self.stop_tracking();
+        self.stop_polling();
         self.drafts.clear();
         self.session = self.session.wrapping_add(1);
         self.accounts.clear();

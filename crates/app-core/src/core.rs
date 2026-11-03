@@ -635,7 +635,7 @@ impl Core {
                 }
                 vec![Effect::Load(Load::Activity)]
             }
-            Event::SentElsewhere(_) => vec![Effect::Load(Load::Activity)],
+            Event::SentElsewhere(_) | Event::SwapUpdated(_) => vec![Effect::Load(Load::Activity)],
         }
     }
 

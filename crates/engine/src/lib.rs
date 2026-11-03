@@ -28,8 +28,17 @@ pub use bahaa_vault::KdfParams;
 pub use caution::{Arrival, Caution};
 pub use engine::{
     Activity, ActivityKind, Draft, DraftId, Engine, EngineConfig, EngineError, Event,
-    IncomingHistory, SendRequest, Spend, State,
+    IncomingHistory, SendRequest, Spend, State, SwapDraft, SwapId, SwapRequest, SwapReview,
+    Unavailable,
 };
+
+pub mod swap {
+    pub use bahaa_store::{SwapRecord, SwapStatus};
+    pub use bahaa_swap::{
+        Caution, Charged, Comment, Cost, CostKind, Custody, Method, Order, Progress, Provider,
+        Providers, REFUSE_BPS, Ranked, Refusal, Route, SwapError, Value, WARN_BPS,
+    };
+}
 pub use keyring::{
     Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, WalletKind, check_key,
     check_phrase,

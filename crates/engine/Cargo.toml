@@ -16,6 +16,7 @@ bahaa-evm.workspace = true
 bahaa-market.workspace = true
 bahaa-solana.workspace = true
 bahaa-store.workspace = true
+bahaa-swap.workspace = true
 bahaa-ton.workspace = true
 bahaa-tron.workspace = true
 bahaa-types.workspace = true

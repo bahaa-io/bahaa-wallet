@@ -106,10 +106,19 @@ pub(crate) fn value(
     asset: &AssetId,
     amount: Amount,
 ) -> Option<Amount> {
-    quote(coin(registry, custom, asset)?, snapshot, fiat)?
-        .price
+    price(registry, custom, snapshot, fiat, asset)?
         .value_of(amount, fiat.places())
         .ok()
+}
+
+pub(crate) fn price(
+    registry: &Registry,
+    custom: &[CustomToken],
+    snapshot: &Snapshot,
+    fiat: Fiat,
+    asset: &AssetId,
+) -> Option<Price> {
+    Some(quote(coin(registry, custom, asset)?, snapshot, fiat)?.price)
 }
 
 fn quote(coin: &Coin, snapshot: &Snapshot, fiat: Fiat) -> Option<Quote> {

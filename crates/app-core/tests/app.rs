@@ -85,6 +85,7 @@ fn start_with(
             },
             market: None,
             registry: Some(registry),
+            swaps: None,
             ..EngineConfig::new(scratch.0.join("data"))
         },
         updates,

@@ -812,6 +812,7 @@ dependencies = [
  "bahaa-market",
  "bahaa-solana",
  "bahaa-store",
+ "bahaa-swap",
  "bahaa-testkit",
  "bahaa-ton",
  "bahaa-tron",

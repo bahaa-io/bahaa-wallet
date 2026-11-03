@@ -10,6 +10,7 @@ use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text, to_plain_t
 use futures_util::future::join_all;
 use tokio::time::Instant;
 
+use super::swap::SwapLink;
 use super::{EngineError, Event, Notice, Reply, Worker};
 use crate::caution::Caution;
 use crate::chains::{AnyChain, AnyPlan};
@@ -56,6 +57,18 @@ pub(super) struct Prepared {
     plan: AnyPlan,
     expires: Instant,
     replaces: Option<String>,
+    swap: Option<SwapLink>,
+}
+
+pub(super) struct NewDraft {
+    pub wallet: WalletId,
+    pub chain: usize,
+    pub plan: AnyPlan,
+    pub transfer: Transfer,
+    pub fee: FeeQuote,
+    pub replaces: Option<String>,
+    pub swap: Option<SwapLink>,
+    pub until: Option<Instant>,
 }
 
 pub(super) struct Quoted {
@@ -71,6 +84,7 @@ pub(super) struct Delivered {
     record: SentTx,
     delivery: Delivery,
     reply: Reply<SentTx>,
+    swap: Option<SwapLink>,
 }
 
 enum Delivery {
@@ -172,35 +186,46 @@ impl Worker {
         Ok((chain, account.wallet, account.index, original))
     }
 
-    fn send_target(&self, request: &SendRequest) -> Result<(usize, Transfer), EngineError> {
+    pub(super) fn spending(
+        &self,
+        wallet: WalletId,
+        index: u32,
+        network: &NetworkId,
+    ) -> Result<(usize, Address), EngineError> {
         self.ensure_unlocked()?;
         if let Some(keyring) = &self.keyring
-            && keyring.watched(request.wallet)?.is_some()
+            && keyring.watched(wallet)?.is_some()
         {
             return Err(KeyringError::WatchOnly.into());
         }
         let chain = self
-            .chain_index(request.asset.network())
+            .chain_index(network)
             .ok_or(ChainError::Unsupported("sending in this version"))?;
         let family = self.chains[chain].family();
         let mut mine = self
             .accounts
             .iter()
-            .filter(|account| account.wallet == request.wallet)
+            .filter(|account| account.wallet == wallet)
             .peekable();
         if mine.peek().is_none() {
             return Err(KeyringError::UnknownWallet.into());
         }
         let mut mine = mine
-            .filter(|account| account.serves(request.asset.network(), family))
+            .filter(|account| account.serves(network, family))
             .peekable();
         if mine.peek().is_none() {
             return Err(ChainError::Key(DeriveError::OtherCurve).into());
         }
         let from = mine
-            .find(|account| account.index == request.account)
+            .find(|account| account.index == index)
             .ok_or(ChainError::Invalid("this wallet has no such account"))?
             .address;
+        Ok((chain, from))
+    }
+
+    fn send_target(&self, request: &SendRequest) -> Result<(usize, Transfer), EngineError> {
+        let (chain, from) =
+            self.spending(request.wallet, request.account, request.asset.network())?;
         if request
             .memo
             .as_ref()
@@ -253,35 +278,56 @@ impl Worker {
                 return;
             }
         };
+        let cautions = self.recipient_cautions(&transfer.to);
+        let draft = self.add_draft(NewDraft {
+            wallet,
+            chain,
+            plan,
+            transfer,
+            fee,
+            replaces,
+            swap: None,
+            until: None,
+        });
+        let _ = reply.send(Ok(Draft { cautions, ..draft }));
+    }
+
+    pub(super) fn add_draft(&mut self, new: NewDraft) -> Draft {
         let now = Instant::now();
-        let life = self.chains[chain]
+        let mut life = self.chains[new.chain]
             .quote_life()
             .map_or(self.draft_ttl, |life| life.min(self.draft_ttl));
+        if let Some(until) = new.until {
+            life = life.min(until.saturating_duration_since(now));
+        }
         self.drafts.retain(|_, draft| draft.expires > now);
         while self.drafts.len() >= MAX_DRAFTS {
             self.drafts.pop_first();
         }
         self.next_draft = self.next_draft.wrapping_add(1);
         let id = DraftId(self.next_draft);
-        let prepared = Prepared {
-            wallet,
-            chain,
-            transfer: transfer.clone(),
-            fee: fee.clone(),
-            plan,
-            expires: now + life,
-            replaces: replaces.clone(),
-        };
-        self.drafts.insert(id, prepared);
-        let cautions = self.recipient_cautions(&transfer.to);
-        let _ = reply.send(Ok(Draft {
+        let draft = Draft {
             id,
-            transfer,
-            fee,
+            transfer: new.transfer.clone(),
+            fee: new.fee.clone(),
             valid_for: life,
-            cautions,
-            replaces,
-        }));
+            cautions: Vec::new(),
+            replaces: new.replaces.clone(),
+        };
+        self.drafts.insert(
+            id,
+            Prepared {
+                wallet: new.wallet,
+                chain: new.chain,
+                transfer: new.transfer,
+                fee: new.fee,
+                plan: new.plan,
+                expires: now + life,
+                replaces: new.replaces,
+                swap: new.swap,
+            },
+        );
+        draft
     }
 
     pub(super) async fn confirm_send(
@@ -291,7 +337,7 @@ impl Worker {
         reply: Reply<SentTx>,
     ) {
         match self.sign_draft(id, password).await {
-            Ok((chain, record, signed)) => self.deliver(chain, record, signed, reply),
+            Ok((chain, record, signed, swap)) => self.deliver(chain, record, signed, reply, swap),
             Err(err) => {
                 let _ = reply.send(Err(err));
             }
@@ -302,7 +348,7 @@ impl Worker {
         &mut self,
         id: DraftId,
         password: SecretString,
-    ) -> Result<(usize, SentTx, Signed), EngineError> {
+    ) -> Result<(usize, SentTx, Signed, Option<SwapLink>), EngineError> {
         let draft = self.drafts.remove(&id).ok_or(EngineError::UnknownDraft)?;
         if Instant::now() >= draft.expires {
             return Err(EngineError::DraftExpired);
@@ -369,10 +415,17 @@ impl Worker {
             replaces: draft.replaces.clone(),
         };
         self.save(record.clone())?;
-        Ok((chain, record, signed))
+        Ok((chain, record, signed, draft.swap))
     }
 
-    fn deliver(&mut self, chain: usize, record: SentTx, signed: Signed, reply: Reply<SentTx>) {
+    fn deliver(
+        &mut self,
+        chain: usize,
+        record: SentTx,
+        signed: Signed,
+        reply: Reply<SentTx>,
+        swap: Option<SwapLink>,
+    ) {
         self.broadcasting.insert(record.id.clone());
         let chains = Arc::clone(&self.chains);
         let notices = self.notices_tx.clone();
@@ -382,6 +435,7 @@ impl Worker {
                 record,
                 delivery,
                 reply,
+                swap,
             };
             let _ = notices.send(Notice::Delivered(Box::new(delivered))).await;
         });
@@ -392,6 +446,7 @@ impl Worker {
             mut record,
             delivery,
             reply,
+            swap,
         } = delivered;
         self.broadcasting.remove(&record.id);
         let refused = match delivery {
@@ -407,6 +462,12 @@ impl Worker {
             Delivery::Unknown => None,
         };
         let saved = self.save(record.clone());
+        if let Some(link) = swap
+            && refused.is_none()
+            && saved.is_ok()
+        {
+            self.record_swap(&record, link);
+        }
         let _ = reply.send(match (refused, saved) {
             (Some(reason), _) => Err(ChainError::Rejected(reason).into()),
             (None, Err(err)) => Err(err),

@@ -1,10 +1,9 @@
 use bahaa_types::{Address, Amount, AssetId, TonForm};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const QUOTE_LIFE: u64 = 30;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Provider {
     OneClick,
     Relay,
@@ -16,6 +15,19 @@ impl Provider {
             Self::OneClick => "NEAR Intents",
             Self::Relay => "Relay",
         }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::OneClick => "oneclick",
+            Self::Relay => "relay",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::OneClick, Self::Relay]
+            .into_iter()
+            .find(|provider| provider.key() == key)
     }
 }
 
