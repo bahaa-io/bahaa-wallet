@@ -26,6 +26,7 @@ const STAND_IN: [u8; 32] = [
     0x72, 0x8b, 0xc5, 0xc0, 0x15, 0xcd, 0x52, 0xd2, 0xea, 0xa5, 0xe5, 0x26, 0xd2, 0xb1, 0x09, 0x35,
 ];
 const DEPOSIT_WINDOW: u64 = 30 * 60;
+const HEADROOM_BITS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SwapId(u64);
@@ -358,10 +359,15 @@ fn contract_swap(account: u32, request: &Request, order: &Order) -> Option<Contr
 }
 
 fn lowered(amount: Amount, needed: Amount, available: Amount) -> Result<Amount, ChainError> {
+    let headroom = needed
+        .checked_sub(amount)
+        .ok()
+        .and_then(|fee| Amount::new(fee.units() >> HEADROOM_BITS, fee.decimals()).ok());
     needed
         .checked_sub(available)
-        .and_then(|short| amount.checked_sub(short))
         .ok()
+        .zip(headroom)
+        .and_then(|(short, headroom)| amount.checked_sub(short).ok()?.checked_sub(headroom).ok())
         .filter(|smaller| !smaller.is_zero())
         .ok_or(ChainError::Invalid(
             "there is not enough left to swap after the network fee",
@@ -1173,7 +1179,7 @@ mod tests {
     use bahaa_swap::{Comment, Order, Provider};
     use bahaa_types::{Address, Amount, ChainFamily, hex};
 
-    use super::{memo, stand_in};
+    use super::{lowered, memo, stand_in};
 
     const RELAY_BODY: &str = "b5ee9c7241010101004800008c0000000030786463383838323163313265313165346231346431383835633565346131366563633435656264393733616238666239363030346434366534336432336266623544d48afe";
 
@@ -1195,6 +1201,16 @@ mod tests {
             contract: None,
             typed: None,
         }
+    }
+
+    #[test]
+    fn a_lowered_amount_keeps_an_eighth_of_the_fee_for_a_fee_that_rises_meanwhile() {
+        let amount = |text: &str| Amount::parse(text, 18).unwrap();
+        assert_eq!(
+            lowered(amount("10"), amount("10.3"), amount("10.2")).unwrap(),
+            amount("9.8625")
+        );
+        assert!(lowered(amount("0.1"), amount("0.5"), amount("0.1")).is_err());
     }
 
     #[test]
