@@ -5,7 +5,7 @@ use std::time::Duration;
 use bahaa_chain::{Chain, ContractSwap, PlannedCall, Step, TxId, TxStatus, check_call, now};
 use bahaa_crypto::{Mnemonic, Seed, WordCount};
 use bahaa_evm::{EvmCall, EvmChain};
-use bahaa_swap::{KyberSwap, Method, Order, Pools, Providers, Request};
+use bahaa_swap::{Across, KyberSwap, Method, Order, Pools, Providers, Request};
 use bahaa_testkit::anvil::Anvil;
 use bahaa_types::{Address, Amount, AssetId};
 use serde_json::json;
@@ -15,8 +15,12 @@ const ROUTER: &str = "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4";
 const ACCOUNT: u32 = 0;
 
 async fn forked() -> (Anvil, EvmChain, Address, Seed) {
+    forked_on("bsc", "https://bsc-dataseed.bnbchain.org").await
+}
+
+async fn forked_on(network: &str, upstream: &str) -> (Anvil, EvmChain, Address, Seed) {
     let seed = Mnemonic::generate(WordCount::Twelve).unwrap().to_seed("");
-    let anvil = Anvil::start("bsc", &["--fork-url", "https://bsc-dataseed.bnbchain.org"]);
+    let anvil = Anvil::start(network, &["--fork-url", upstream]);
     anvil.ready().await;
     let chain = EvmChain::new(anvil.network()).unwrap();
     let me = chain.derive(&seed, ACCOUNT).unwrap();
@@ -105,12 +109,9 @@ async fn run(chain: &EvmChain, seed: &Seed, plans: &[EvmCall]) {
         let signed = chain.sign_call(plan, seed).unwrap();
         check_call(plan.planned(), &chain.decode_call(&signed).unwrap()).unwrap();
         let id = chain.broadcast_private(&signed).await.unwrap();
-        DEBUG_IDS.lock().unwrap().push(id.as_str().to_owned());
         confirmed(chain, &id).await;
     }
 }
-
-static DEBUG_IDS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 async fn confirmed(chain: &EvmChain, id: &TxId) {
     for _ in 0..100 {
@@ -120,7 +121,7 @@ async fn confirmed(chain: &EvmChain, id: &TxId) {
             .unwrap()
         {
             TxStatus::Confirmed { .. } => return,
-            TxStatus::Failed(reason) => panic!("failed: {reason} {:?}", DEBUG_IDS.lock().unwrap()),
+            TxStatus::Failed(reason) => panic!("failed: {reason}"),
             _ => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
@@ -242,5 +243,45 @@ async fn kyberswap_routes_pass_the_check_and_settle_on_a_forked_chain() {
     assert_eq!(
         held(&chain, &me, &usdt).await,
         bought.checked_sub(half).unwrap()
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a local anvil and internet: BAHAA_ANVIL=/path/to/anvil"]
+async fn an_across_deposit_takes_exactly_the_amount_on_a_forked_chain() {
+    let (anvil, chain, me, seed) = forked_on("base", "https://mainnet.base.org").await;
+    let usdc = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+    let Address::Evm(owner) = me else { panic!() };
+    anvil
+        .fund_token(usdc, &owner, &format!("{:x}", 500_000_000u64))
+        .await;
+    let across = Across::new(
+        &Providers::builtin().unwrap().across,
+        bahaa_chain::http::client().unwrap(),
+    )
+    .unwrap();
+    let deposit = Request {
+        sell: format!("base/{usdc}").parse().unwrap(),
+        amount: Amount::parse("100", 6).unwrap(),
+        buy: "arbitrum/0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+            .parse()
+            .unwrap(),
+        buy_decimals: 6,
+        from: me,
+        to: me,
+        deadline: now() + 1_800,
+    };
+    let (route, order) = across.quote(&chain, &deposit, now()).await.unwrap();
+    assert_eq!(route.method, Method::Escrow);
+    let mut swap = swap_of(&deposit, order);
+    swap.buy = None;
+    warm(&anvil, &swap).await;
+    let (plans, _) = chain.prepare_swap(&swap).await.unwrap();
+    assert_eq!(plans.len(), 2);
+    assert!(plans.iter().all(EvmCall::checked));
+    run(&chain, &seed, &plans).await;
+    assert_eq!(
+        held(&chain, &me, &format!("base/{usdc}")).await,
+        Amount::parse("400", 6).unwrap()
     );
 }

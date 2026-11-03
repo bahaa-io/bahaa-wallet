@@ -1,0 +1,59 @@
+{
+ "estimatedFillTimeSec": 2,
+ "capitalFeePct": "100000000000000",
+ "capitalFeeTotal": "10000",
+ "relayGasFeePct": "39490000000000",
+ "relayGasFeeTotal": "3949",
+ "relayFeePct": "139490000000000",
+ "relayFeeTotal": "13949",
+ "lpFeePct": "0",
+ "timestamp": "1793729183",
+ "isAmountTooLow": false,
+ "quoteBlock": "26335960",
+ "exclusiveRelayer": "0x0000000000000000000000000000000000000000",
+ "exclusivityDeadline": 0,
+ "spokePoolAddress": "0xe35e9842fceaCA96570B734083f4a58e8F7C5f2A",
+ "destinationSpokePoolAddress": "0x09aea4b2242abC8bb4BB78D537A67a245A7bEC64",
+ "totalRelayFee": {
+  "pct": "139490000000000",
+  "total": "13949"
+ },
+ "relayerCapitalFee": {
+  "pct": "100000000000000",
+  "total": "10000"
+ },
+ "relayerGasFee": {
+  "pct": "39490000000000",
+  "total": "3949"
+ },
+ "lpFee": {
+  "pct": "0",
+  "total": "0"
+ },
+ "internalizedSwapFee": {
+  "pct": "0",
+  "total": "0"
+ },
+ "limits": {
+  "minDeposit": "500231",
+  "maxDeposit": "571163302939",
+  "maxDepositInstant": "205665327784",
+  "maxDepositShortDelay": "571163302939",
+  "recommendedDepositInstant": "205665327784"
+ },
+ "fillDeadline": "1793736383",
+ "outputAmount": "99986051",
+ "inputToken": {
+  "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+  "symbol": "USDC",
+  "decimals": 6,
+  "chainId": 42161
+ },
+ "outputToken": {
+  "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "symbol": "USDC",
+  "decimals": 6,
+  "chainId": 8453
+ },
+ "id": "sv72w-1793729366367-dd086f076f4e"
+}

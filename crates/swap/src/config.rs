@@ -15,6 +15,23 @@ pub struct Providers {
     pub relay: RelayConfig,
     pub pools: BTreeMap<NetworkId, PoolConfig>,
     pub kyberswap: KyberConfig,
+    pub across: AcrossConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcrossConfig {
+    pub url: Url,
+    pub spokes: BTreeMap<NetworkId, SpokeConfig>,
+    pub assets: BTreeMap<AssetId, String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpokeConfig {
+    pub chain: u64,
+    pub address: String,
+    pub wrapped: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

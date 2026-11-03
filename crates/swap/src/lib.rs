@@ -1,4 +1,5 @@
 mod abi;
+mod across;
 mod config;
 mod kyber;
 mod oneclick;
@@ -9,8 +10,10 @@ mod relay;
 mod reply;
 mod route;
 
+pub use across::Across;
 pub use config::{
-    KyberConfig, OneClickConfig, PoolConfig, Providers, RelayChain, RelayConfig, RelayDeposit,
+    AcrossConfig, KyberConfig, OneClickConfig, PoolConfig, Providers, RelayChain, RelayConfig,
+    RelayDeposit, SpokeConfig,
 };
 pub use kyber::KyberSwap;
 pub use oneclick::OneClick;

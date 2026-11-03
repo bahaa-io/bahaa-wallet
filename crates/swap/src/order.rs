@@ -17,6 +17,8 @@ pub enum Provider {
     PancakeSwap,
     #[serde(rename = "kyberswap")]
     KyberSwap,
+    #[serde(rename = "across")]
+    Across,
 }
 
 impl Provider {
@@ -27,6 +29,7 @@ impl Provider {
             Self::Uniswap => "Uniswap",
             Self::PancakeSwap => "PancakeSwap",
             Self::KyberSwap => "KyberSwap",
+            Self::Across => "Across",
         }
     }
 
@@ -37,6 +40,7 @@ impl Provider {
             Self::Uniswap => "uniswap",
             Self::PancakeSwap => "pancakeswap",
             Self::KyberSwap => "kyberswap",
+            Self::Across => "across",
         }
     }
 
@@ -47,6 +51,7 @@ impl Provider {
             Self::Uniswap,
             Self::PancakeSwap,
             Self::KyberSwap,
+            Self::Across,
         ]
         .into_iter()
         .find(|provider| provider.key() == key)
@@ -54,6 +59,10 @@ impl Provider {
 
     pub fn on_chain(self) -> bool {
         matches!(self, Self::Uniswap | Self::PancakeSwap | Self::KyberSwap)
+    }
+
+    pub fn by_transaction(self) -> bool {
+        self.on_chain() || self == Self::Across
     }
 }
 

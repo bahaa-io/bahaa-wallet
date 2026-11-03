@@ -4,10 +4,10 @@ use std::time::Duration;
 use bahaa_chain::{ChainError, ContractSwap, FeeQuote, MAX_MEMO, Step, Transfer};
 use bahaa_store::{SentStatus, SentTx, SwapRecord, SwapStatus};
 use bahaa_swap::{
-    Charged, Comment, Cost, CostKind, KyberSwap, OneClick, Order, Pools, Progress, Provider,
-    Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, SwapError, rank,
+    Across, Charged, Comment, Cost, CostKind, KyberSwap, OneClick, Order, Pools, Progress,
+    Provider, Providers, QUOTE_LIFE, Ranked, Relay, Request, Route, SwapError, rank,
 };
-use bahaa_types::{Address, Amount, AssetId, BitcoinScript, is_plain_text};
+use bahaa_types::{Address, Amount, AssetId, BitcoinScript, NetworkId, is_plain_text};
 use futures_util::future::{join, join_all};
 use tokio::time::Instant;
 
@@ -66,6 +66,7 @@ pub(crate) struct Swappers {
     relay: Relay,
     pools: Pools,
     kyber: KyberSwap,
+    across: Across,
 }
 
 impl Swappers {
@@ -75,7 +76,8 @@ impl Swappers {
             oneclick: OneClick::new(&providers.oneclick, client.clone())?,
             relay: Relay::new(&providers.relay, client.clone()),
             pools: Pools::new(&providers.pools)?,
-            kyber: KyberSwap::new(&providers.kyberswap, client)?,
+            kyber: KyberSwap::new(&providers.kyberswap, client.clone())?,
+            across: Across::new(&providers.across, client)?,
         })
     }
 
@@ -116,8 +118,17 @@ impl Swappers {
                     .map(|(route, order)| (route, Some(order))),
             )
         };
-        let ((oneclick, relay), (pools, kyber)) =
-            join(join(oneclick, relay), join(pools, kyber)).await;
+        let across = async {
+            let evm = chain.evm().filter(|_| self.across.covers(request))?;
+            Some(
+                self.across
+                    .quote(evm, request, now)
+                    .await
+                    .map(|(route, order)| (route, Some(order))),
+            )
+        };
+        let ((oneclick, relay), (pools, (kyber, across))) =
+            join(join(oneclick, relay), join(pools, join(kyber, across))).await;
         let mut answers = vec![(Provider::OneClick, oneclick), (Provider::Relay, relay)];
         if let Some(answer) = pools {
             let venue = self
@@ -128,6 +139,9 @@ impl Swappers {
         }
         if let Some(answer) = kyber {
             answers.push((Provider::KyberSwap, answer));
+        }
+        if let Some(answer) = across {
+            answers.push((Provider::Across, answer));
         }
         let mut quotes = Vec::new();
         let mut unavailable = Vec::new();
@@ -179,13 +193,23 @@ impl Swappers {
                 let evm = chain.evm().ok_or(SwapError::Unsupported)?;
                 self.kyber.quote(evm, request, now).await
             }
+            Provider::Across => {
+                let evm = chain.evm().ok_or(SwapError::Unsupported)?;
+                self.across.quote(evm, request, now).await
+            }
         }
     }
 
-    async fn status(&self, provider: Provider, reference: &str) -> Result<Progress, SwapError> {
+    async fn status(
+        &self,
+        provider: Provider,
+        network: &NetworkId,
+        reference: &str,
+    ) -> Result<Progress, SwapError> {
         match provider {
             Provider::OneClick => self.oneclick.status(reference).await,
             Provider::Relay => self.relay.status(reference).await,
+            Provider::Across => self.across.status(network, reference).await,
             Provider::Uniswap | Provider::PancakeSwap | Provider::KyberSwap => {
                 Err(SwapError::Unsupported)
             }
@@ -823,7 +847,7 @@ impl Worker {
             id: sent.id.clone(),
             network: sent.network.clone(),
             provider: order.provider.key().to_owned(),
-            reference: if order.provider.on_chain() {
+            reference: if order.provider.by_transaction() {
                 sent.id.clone()
             } else {
                 order.reference.clone()
@@ -855,19 +879,17 @@ impl Worker {
     }
 
     pub(super) fn settle_swap(&mut self, sent: &SentTx) {
-        let status = match &sent.status {
-            SentStatus::Confirmed => SwapStatus::Done,
-            SentStatus::Failed(reason) => SwapStatus::Failed(reason.clone()),
-            SentStatus::Dropped => SwapStatus::Failed("the network dropped the swap".to_owned()),
-            SentStatus::Sending | SentStatus::Pending => return,
-        };
         let Some(record) = self.swaps.iter().find(|swap| {
-            swap.network == sent.network
-                && swap.id == sent.id
-                && swap.status.is_open()
-                && Provider::from_key(&swap.provider).is_some_and(Provider::on_chain)
+            swap.network == sent.network && swap.id == sent.id && swap.status.is_open()
         }) else {
             return;
+        };
+        let on_chain = Provider::from_key(&record.provider).is_some_and(Provider::on_chain);
+        let status = match &sent.status {
+            SentStatus::Confirmed if on_chain => SwapStatus::Done,
+            SentStatus::Failed(reason) => SwapStatus::Failed(reason.clone()),
+            SentStatus::Dropped => SwapStatus::Failed("the network dropped the swap".to_owned()),
+            SentStatus::Confirmed | SentStatus::Sending | SentStatus::Pending => return,
         };
         let record = SwapRecord {
             status,
@@ -903,7 +925,12 @@ impl Worker {
                 async move {
                     let provider =
                         Provider::from_key(&swap.provider).filter(|key| !key.on_chain())?;
-                    let status = stored(swappers.status(provider, &swap.reference).await.ok()?);
+                    let status = stored(
+                        swappers
+                            .status(provider, &swap.network, &swap.reference)
+                            .await
+                            .ok()?,
+                    );
                     (status != swap.status).then(|| SwapRecord {
                         status,
                         updated_at: bahaa_chain::now(),

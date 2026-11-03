@@ -200,5 +200,50 @@
       "optimism": "optimism",
       "base": "base"
     }
+  },
+  "across": {
+    "url": "https://app.across.to/api/",
+    "spokes": {
+      "ethereum": {
+        "chain": 1,
+        "address": "0x5c7BCd6E7De5423a257D81B442095A1a6ced35C5",
+        "wrapped": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+      },
+      "arbitrum": {
+        "chain": 42161,
+        "address": "0xe35e9842fceaCA96570B734083f4a58e8F7C5f2A",
+        "wrapped": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
+      },
+      "optimism": {
+        "chain": 10,
+        "address": "0x6f26Bf09B1C792e3228e5467807a900A503c0281",
+        "wrapped": "0x4200000000000000000000000000000000000006"
+      },
+      "base": {
+        "chain": 8453,
+        "address": "0x09aea4b2242abC8bb4BB78D537A67a245A7bEC64",
+        "wrapped": "0x4200000000000000000000000000000000000006"
+      },
+      "polygon": {
+        "chain": 137,
+        "address": "0x9295ee1d8C5b022Be115A2AD3c30C72E34e7F096",
+        "wrapped": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270"
+      }
+    },
+    "assets": {
+      "ethereum": "eth",
+      "arbitrum": "eth",
+      "optimism": "eth",
+      "base": "eth",
+      "ethereum/0xdAC17F958D2ee523a2206206994597C13D831ec7": "usdt",
+      "ethereum/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48": "usdc",
+      "arbitrum/0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9": "usdt",
+      "arbitrum/0xaf88d065e77c8cC2239327C5EDb3A432268e5831": "usdc",
+      "optimism/0x94b008aA00579c1307B0EF2c499aD98a8ce58e58": "usdt",
+      "optimism/0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85": "usdc",
+      "base/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913": "usdc",
+      "polygon/0xc2132D05D31c914a87C6611C10748AEb04B58e8F": "usdt",
+      "polygon/0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359": "usdc"
+    }
   }
 }

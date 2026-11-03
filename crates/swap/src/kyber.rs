@@ -175,7 +175,8 @@ impl KyberSwap {
             .append_pair("tokenIn", &hex(sold))
             .append_pair("tokenOut", &hex(bought))
             .append_pair("amountIn", &units.to_string())
-            .append_pair("gasInclude", "true");
+            .append_pair("gasInclude", "true")
+            .append_pair("excludeRFQSources", "true");
         let found = fetch(self.client.get(list_url)).await?;
         let summary = found["data"]["routeSummary"].clone();
         let same = |field: &str, wanted: &str| {

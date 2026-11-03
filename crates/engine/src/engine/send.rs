@@ -629,9 +629,7 @@ impl Worker {
                 } else {
                     Vec::new()
                 };
-                if update.kind == SentKind::Swap {
-                    self.settle_swap(&update);
-                }
+                self.settle_swap(&update);
                 let _ = self.save(update);
                 for rival in rivals {
                     let _ = self.save(rival);

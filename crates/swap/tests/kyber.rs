@@ -40,6 +40,7 @@ async fn provider(routes: String, build: String) -> KyberSwap {
         let body = if request.path().contains("/route/build") {
             &build
         } else {
+            assert!(request.path().contains("excludeRFQSources=true"));
             &routes
         };
         Reply::json(200, &serde_json::from_str::<Value>(body).unwrap())
