@@ -1,3 +1,4 @@
+use k256::ecdsa::signature::hazmat::PrehashVerifier;
 use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
 use k256::{PublicKey, SecretKey};
 use thiserror::Error;
@@ -33,6 +34,20 @@ pub fn secp256k1_recover(
     let key = VerifyingKey::recover_from_prehash(prehash, &signature, RecoveryId::new(odd, false))
         .ok()?;
     Some(secp256k1_address(&PublicKey::from(&key)))
+}
+
+pub fn secp256k1_verify(
+    public: &[u8; 33],
+    prehash: &[u8; 32],
+    signature: &[u8; SIGNATURE_BYTES],
+) -> bool {
+    let (Ok(key), Ok(signature)) = (
+        VerifyingKey::from_sec1_bytes(public),
+        Signature::from_slice(signature),
+    ) else {
+        return false;
+    };
+    signature.normalize_s() == signature && key.verify_prehash(prehash, &signature).is_ok()
 }
 
 #[cfg(test)]

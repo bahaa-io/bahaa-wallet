@@ -3,6 +3,7 @@ mod key;
 mod mnemonic;
 mod path;
 mod sign;
+mod taproot;
 mod ton;
 
 pub use derive::{
@@ -17,5 +18,6 @@ pub use key::{
 pub use mnemonic::{Mnemonic, MnemonicError, Seed, SeedKind, WordCount, english_words};
 pub use path::{DerivationPath, HARDENED, PathError};
 pub use secrecy::{ExposeSecret, SecretString};
-pub use sign::{SIGNATURE_BYTES, SignError, secp256k1_recover, secp256k1_sign};
+pub use sign::{SIGNATURE_BYTES, SignError, secp256k1_recover, secp256k1_sign, secp256k1_verify};
+pub use taproot::{tagged_hash, taproot_output, taproot_sign, taproot_verify};
 pub use ton::{TON_WORDS, TonMnemonic, TonPhraseError};
