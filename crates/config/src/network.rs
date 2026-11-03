@@ -41,6 +41,7 @@ pub enum Protocol {
     TonLiteservers,
     TonCenter,
     TonApi,
+    SolanaRpc,
 }
 
 impl Protocol {
@@ -49,13 +50,17 @@ impl Protocol {
             Self::JsonRpc => ChainFamily::Evm,
             Self::TronHttp => ChainFamily::Tron,
             Self::TonLiteservers | Self::TonCenter | Self::TonApi => ChainFamily::Ton,
+            Self::SolanaRpc => ChainFamily::Solana,
         }
     }
 
     fn allows(self, feature: Feature) -> bool {
         match feature {
             Feature::Logs => self == Self::JsonRpc,
-            Feature::History => matches!(self, Self::TronHttp | Self::TonCenter | Self::TonApi),
+            Feature::History => matches!(
+                self,
+                Self::TronHttp | Self::TonCenter | Self::TonApi | Self::SolanaRpc
+            ),
         }
     }
 }
@@ -118,6 +123,9 @@ pub enum ChainKind {
         zero_state: [u8; 32],
         checkpoint: Checkpoint,
     },
+    Solana {
+        genesis: [u8; 32],
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +172,7 @@ impl Network {
             ChainKind::Evm { .. } => ChainFamily::Evm,
             ChainKind::Tron { .. } => ChainFamily::Tron,
             ChainKind::Ton { .. } => ChainFamily::Ton,
+            ChainKind::Solana { .. } => ChainFamily::Solana,
         }
     }
 
@@ -303,6 +312,10 @@ impl Spec {
                     .and_then(CheckpointSpec::read)
                     .ok_or("TON networks need a checkpoint key block with its two hashes")?,
             },
+            (ChainFamily::Solana, None, None) => ChainKind::Solana {
+                genesis: block_id(self.genesis.as_deref())
+                    .ok_or("Solana networks need a 64 hex digit genesis")?,
+            },
             _ => return Err("only EVM networks have chain_id and fee"),
         };
         let foreign = match self.family {
@@ -312,7 +325,7 @@ impl Spec {
                     || self.zero_state.is_some()
                     || self.checkpoint.is_some()
             }
-            ChainFamily::Tron => {
+            ChainFamily::Tron | ChainFamily::Solana => {
                 self.global_id.is_some() || self.zero_state.is_some() || self.checkpoint.is_some()
             }
             ChainFamily::Ton => self.genesis.is_some(),
@@ -585,6 +598,54 @@ mod tests {
             network("ton").explorer.address_url("EQx"),
             "https://tonviewer.com/EQx"
         );
+    }
+
+    const SOLANA: &str = r##"[{
+        "id": "solana",
+        "name": "Solana",
+        "color": "#9945ff",
+        "family": "solana",
+        "genesis": "45296998a6f8e2a784db5d9f95e18fc23f70441a1039446801089879b08c7ef0",
+        "testnet": false,
+        "native": {"symbol": "SOL", "name": "Solana", "decimals": 9},
+        "tokens": [{"contract": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "name": "USD Coin", "decimals": 6}],
+        "endpoints": [
+            {"protocol": "solana-rpc", "url": "https://api.mainnet-beta.solana.com", "features": ["history"]},
+            {"protocol": "solana-rpc", "url": "https://solana-rpc.publicnode.com"}
+        ],
+        "explorer": {"tx": "https://solscan.io/tx/{tx}", "address": "https://solscan.io/account/{address}"}
+    }]"##;
+
+    #[test]
+    fn solana_networks_name_their_genesis_and_tokens_by_mint() {
+        let registry = Registry::from_json(SOLANA).unwrap();
+        let solana = registry.get(&"solana".parse().unwrap()).unwrap();
+        assert_eq!(solana.family(), ChainFamily::Solana);
+        let ChainKind::Solana { genesis } = solana.kind else {
+            panic!("not a Solana network");
+        };
+        assert_eq!(genesis[..2], [0x45, 0x29]);
+        assert_eq!(
+            solana.tokens[0].contract.to_string(),
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        );
+        assert!(solana.endpoints[0].has(Feature::History));
+        let broken = |edit: &dyn Fn(&mut Value)| {
+            let mut list: Value = serde_json::from_str(SOLANA).unwrap();
+            edit(&mut list[0]);
+            Registry::from_json(&list.to_string()).is_err()
+        };
+        assert!(broken(&|n| n["genesis"] = Value::Null));
+        assert!(broken(
+            &|n| n["genesis"] = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d".into()
+        ));
+        assert!(broken(&|n| n["global_id"] = (-239).into()));
+        assert!(broken(
+            &|n| n["endpoints"][0]["protocol"] = "json-rpc".into()
+        ));
+        assert!(broken(
+            &|n| n["tokens"][0]["contract"] = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".into()
+        ));
     }
 
     #[test]

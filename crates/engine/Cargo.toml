@@ -13,6 +13,7 @@ bahaa-config.workspace = true
 bahaa-crypto.workspace = true
 bahaa-evm.workspace = true
 bahaa-market.workspace = true
+bahaa-solana.workspace = true
 bahaa-store.workspace = true
 bahaa-ton.workspace = true
 bahaa-tron.workspace = true
@@ -26,6 +27,7 @@ zeroize.workspace = true
 [dev-dependencies]
 adnl.workspace = true
 base64.workspace = true
+bs58.workspace = true
 bytes.workspace = true
 getrandom.workspace = true
 serde_json.workspace = true

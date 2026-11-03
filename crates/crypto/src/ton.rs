@@ -87,7 +87,7 @@ impl TonMnemonic {
     pub fn to_seed(&self) -> Result<Seed, TonPhraseError> {
         let mut derived = Zeroizing::new([0u8; 64]);
         pbkdf2_hmac::<Sha512>(&*self.entropy()?, KEY_SALT, KEY_ROUNDS, &mut *derived);
-        Ok(seed_of(SeedKind::Ton, &derived[..KEY_LEN]))
+        Ok(seed_of(SeedKind::Ed25519, &derived[..KEY_LEN]))
     }
 
     fn entropy(&self) -> Result<Zeroizing<[u8; 64]>, TonPhraseError> {
@@ -107,7 +107,7 @@ impl fmt::Debug for TonMnemonic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Mnemonic, ton_key};
+    use crate::{DerivationPath, DeriveError, Mnemonic, ed25519};
     use std::fmt::Write;
 
     const PHRASE: &str = "dose ice enrich trigger test dove century still betray gas diet dune use other base gym mad law immense village world example praise game";
@@ -123,8 +123,8 @@ mod tests {
     fn the_reference_phrase_gives_the_reference_key() {
         let mnemonic = TonMnemonic::parse(PHRASE).unwrap();
         let seed = mnemonic.to_seed().unwrap();
-        assert_eq!(seed.kind(), SeedKind::Ton);
-        let key = ton_key(&seed).unwrap();
+        assert_eq!(seed.kind(), SeedKind::Ed25519);
+        let key = ed25519(&seed, &"m/44'/607'/0'".parse().unwrap()).unwrap();
         assert_eq!(
             hex(&key.to_bytes()),
             "119dcf2840a3d56521d260b2f125eedc0d4f3795b9e627269a4b5a6dca8257bd"
@@ -176,21 +176,24 @@ mod tests {
     #[test]
     fn each_kind_of_seed_only_opens_its_own_keys() {
         let ton = TonMnemonic::parse(PHRASE).unwrap().to_seed().unwrap();
-        let path: crate::DerivationPath = "m/44'/607'/0'".parse().unwrap();
+        let path: DerivationPath = "m/44'/607'/0'".parse().unwrap();
+        let other: DerivationPath = "m/44'/607'/3'".parse().unwrap();
         assert_eq!(
-            crate::ed25519(&ton, &path).unwrap_err(),
-            crate::DeriveError::TonOnly
+            ed25519(&ton, &path).unwrap().to_bytes(),
+            ed25519(&ton, &other).unwrap().to_bytes()
         );
-        let evm_path: crate::DerivationPath = "m/44'/60'/0'/0/0".parse().unwrap();
+        let evm_path: DerivationPath = "m/44'/60'/0'/0/0".parse().unwrap();
         assert_eq!(
             crate::secp256k1(&ton, &evm_path).unwrap_err(),
-            crate::DeriveError::TonOnly
+            DeriveError::OtherCurve
         );
         let bip39 = Mnemonic::parse("test test test test test test test test test test test junk")
             .unwrap()
             .to_seed("");
         assert_eq!(bip39.kind(), SeedKind::Bip39);
-        assert_eq!(ton_key(&bip39).unwrap_err(), crate::DeriveError::NotTon);
-        assert!(crate::ed25519(&bip39, &path).is_ok());
+        assert_ne!(
+            ed25519(&bip39, &path).unwrap().to_bytes(),
+            ed25519(&bip39, &other).unwrap().to_bytes()
+        );
     }
 }

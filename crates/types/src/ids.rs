@@ -24,16 +24,18 @@ pub enum ChainFamily {
     Evm,
     Tron,
     Ton,
+    Solana,
 }
 
 impl ChainFamily {
-    pub const ALL: [Self; 3] = [Self::Evm, Self::Tron, Self::Ton];
+    pub const ALL: [Self; 4] = [Self::Evm, Self::Tron, Self::Ton, Self::Solana];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Evm => "evm",
             Self::Tron => "tron",
             Self::Ton => "ton",
+            Self::Solana => "solana",
         }
     }
 }
@@ -182,7 +184,7 @@ mod tests {
             assert_eq!(serde_json::from_str::<ChainFamily>(&json).unwrap(), family);
         }
         assert_eq!("EVM".parse::<ChainFamily>(), Err(IdError::ChainFamily));
-        assert!(serde_json::from_str::<ChainFamily>("\"solana\"").is_err());
+        assert!(serde_json::from_str::<ChainFamily>("\"near\"").is_err());
     }
 
     #[test]

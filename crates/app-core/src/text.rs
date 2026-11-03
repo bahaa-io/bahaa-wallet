@@ -26,7 +26,6 @@ pub(crate) const WATCH_TEXT: &str =
     "Follow the balances and activity of any address. A watch-only wallet can't send.";
 pub(crate) const WATCH_ONLY: &str = "Watch only";
 pub(crate) const WATCH_ADDED: &str = "Watching the address";
-pub(crate) const NOT_AN_ADDRESS: &str = "This is not an address on EVM networks, Tron or TON";
 pub(crate) const COUNT_IN_TOTAL: &str = "Count in my total";
 pub(crate) const IMPORT_KEY: &str = "Import a private key";
 pub(crate) const IMPORT_KEY_TEXT: &str = "Paste a private key exported from another wallet. One key is one account, on EVM networks, Tron or TON.";
@@ -35,6 +34,7 @@ pub(crate) const USE_FOR: &str = "Use it for";
 pub(crate) const EVM_NETWORKS: &str = "EVM networks";
 pub(crate) const TRON: &str = "Tron";
 pub(crate) const TON: &str = "TON";
+pub(crate) const SOLANA: &str = "Solana";
 pub(crate) const KEY_OK: &str = "A valid private key";
 pub(crate) const SET_PASSWORD: &str = "Set a password";
 pub(crate) const SET_PASSWORD_TEXT: &str =
@@ -459,7 +459,18 @@ fn family(family: ChainFamily) -> &'static str {
         ChainFamily::Evm => EVM_NETWORKS,
         ChainFamily::Tron => TRON,
         ChainFamily::Ton => TON,
+        ChainFamily::Solana => SOLANA,
     }
+}
+
+pub(crate) fn not_an_address(families: &[ChainFamily]) -> String {
+    let names: Vec<&str> = families.iter().map(|of| family(*of)).collect();
+    let listed = match names.split_last() {
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    format!("This is not an address on {listed}")
 }
 
 pub(crate) fn key_wallet(of: ChainFamily) -> String {
@@ -521,6 +532,8 @@ pub(crate) fn fee_item(item: &FeeItem) -> String {
         FeeItem::Forwarding => "Forwarding".to_owned(),
         FeeItem::Contracts => "Token contracts".to_owned(),
         FeeItem::Memo => "Memo".to_owned(),
+        FeeItem::Signature => "Signature fee".to_owned(),
+        FeeItem::Priority { units } => format!("Priority fee ({units} compute units)"),
     }
 }
 

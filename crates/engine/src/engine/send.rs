@@ -195,7 +195,7 @@ impl Worker {
             .filter(|account| account.serves(request.asset.network(), family))
             .peekable();
         if mine.peek().is_none() {
-            return Err(ChainError::Key(DeriveError::TonOnly).into());
+            return Err(ChainError::Key(DeriveError::OtherCurve).into());
         }
         let from = mine
             .find(|account| account.index == request.account)
@@ -254,6 +254,9 @@ impl Worker {
             }
         };
         let now = Instant::now();
+        let life = self.chains[chain]
+            .quote_life()
+            .map_or(self.draft_ttl, |life| life.min(self.draft_ttl));
         self.drafts.retain(|_, draft| draft.expires > now);
         while self.drafts.len() >= MAX_DRAFTS {
             self.drafts.pop_first();
@@ -266,7 +269,7 @@ impl Worker {
             transfer: transfer.clone(),
             fee: fee.clone(),
             plan,
-            expires: now + self.draft_ttl,
+            expires: now + life,
             replaces: replaces.clone(),
         };
         self.drafts.insert(id, prepared);
@@ -275,7 +278,7 @@ impl Worker {
             id,
             transfer,
             fee,
-            valid_for: self.draft_ttl,
+            valid_for: life,
             cautions,
             replaces,
         }));

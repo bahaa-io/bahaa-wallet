@@ -282,7 +282,7 @@ fn a_ton_phrase_becomes_a_ton_only_wallet_that_survives_a_restart() {
         keyring.import(&TON.to_uppercase(), "").unwrap_err(),
         KeyringError::Duplicate
     );
-    assert_eq!(keyring.seed(id).unwrap().kind(), SeedKind::Ton);
+    assert_eq!(keyring.seed(id).unwrap().kind(), SeedKind::Ed25519);
     let keyring = reopened(&scratch);
     let wallets = keyring.wallets().unwrap();
     assert_eq!(
@@ -349,7 +349,7 @@ fn words_that_fit_both_standards_wait_for_the_users_choice() {
     let kinds: Vec<WalletKind> = keyring.wallets().unwrap().iter().map(|w| w.kind).collect();
     assert_eq!(kinds, [WalletKind::Bip39, WalletKind::Ton]);
     assert_eq!(keyring.seed(multi).unwrap().kind(), SeedKind::Bip39);
-    assert_eq!(keyring.seed(ton).unwrap().kind(), SeedKind::Ton);
+    assert_eq!(keyring.seed(ton).unwrap().kind(), SeedKind::Ed25519);
     let with_passphrase = keyring.import(BOTH, "extra").unwrap();
     assert_eq!(
         keyring.seed(with_passphrase).unwrap().kind(),
@@ -431,14 +431,46 @@ fn a_private_key_is_one_account_on_the_family_it_was_imported_for() {
             )
         ]
     );
-    assert_eq!(keyring.seed(tron).unwrap().kind(), SeedKind::Key);
-    assert_eq!(keyring.seed(gram).unwrap().kind(), SeedKind::Ton);
+    assert_eq!(keyring.seed(tron).unwrap().kind(), SeedKind::Secp256k1);
+    assert_eq!(keyring.seed(gram).unwrap().kind(), SeedKind::Ed25519);
     for wallet in [evm, gram] {
         assert_eq!(
             keyring.reveal(wallet, PASSWORD).unwrap().expose_secret(),
             &key[2..]
         );
     }
+}
+
+#[test]
+fn a_solana_key_comes_back_the_way_solana_wallets_export_it() {
+    let scratch = Scratch::new();
+    let mut keyring = scratch.keyring();
+    keyring.create(PASSWORD).unwrap();
+    let secret = [0x9d; 32];
+    let exported = bahaa_crypto::solana_keypair(&secret);
+    let solana = keyring.import_key(&exported, ChainFamily::Solana).unwrap();
+    assert_eq!(
+        keyring
+            .import_key(&exported, ChainFamily::Solana)
+            .unwrap_err(),
+        KeyringError::Duplicate
+    );
+    assert_eq!(
+        keyring
+            .import_key(&bahaa_types::hex::encode(&secret), ChainFamily::Solana)
+            .unwrap_err(),
+        KeyringError::Key(bahaa_crypto::KeyError::SolanaFormat)
+    );
+    let keyring = reopened(&scratch);
+    assert_eq!(
+        keyring.wallets().unwrap()[0].kind,
+        WalletKind::Key(ChainFamily::Solana)
+    );
+    assert_eq!(keyring.seed(solana).unwrap().kind(), SeedKind::Ed25519);
+    assert_eq!(
+        keyring.reveal(solana, PASSWORD).unwrap().expose_secret(),
+        exported.as_str()
+    );
 }
 
 #[test]

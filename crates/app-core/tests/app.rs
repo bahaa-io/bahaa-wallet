@@ -675,7 +675,7 @@ async fn watching(scratch: &Scratch) -> (App, mpsc::Receiver<Request>, watch::Re
         hint(current, Field::Address)
             == Some((
                 Level::Error,
-                "This is not an address on EVM networks, Tron or TON".to_owned(),
+                "This is not an address on EVM networks".to_owned(),
             ))
     })
     .await;

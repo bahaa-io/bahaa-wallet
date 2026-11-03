@@ -14,15 +14,18 @@ const TON_BOUNCEABLE: u8 = 0x11;
 const TON_NON_BOUNCEABLE: u8 = 0x51;
 const TON_TESTNET: u8 = 0x80;
 pub(crate) const TON_FRIENDLY_LEN: usize = 48;
+pub(crate) const TRON_LEN: usize = 34;
 const ALIKE_START: usize = 4;
 const ALIKE_END: usize = 4;
 const TON_FLAG_CHARS: usize = 2;
+const SOLANA_MAX_CHARS: usize = 44;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Address {
     Evm([u8; 20]),
     Tron([u8; 20]),
     Ton { workchain: i8, hash: [u8; 32] },
+    Solana([u8; 32]),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,6 +57,7 @@ impl Address {
             ChainFamily::Evm => parse_evm(text),
             ChainFamily::Tron => parse_tron(text),
             ChainFamily::Ton => Self::parse_ton(text).map(|(address, _)| address),
+            ChainFamily::Solana => parse_solana(text),
         }
     }
 
@@ -74,6 +78,7 @@ impl Address {
             Self::Evm(_) => ChainFamily::Evm,
             Self::Tron(_) => ChainFamily::Tron,
             Self::Ton { .. } => ChainFamily::Ton,
+            Self::Solana(_) => ChainFamily::Solana,
         }
     }
 
@@ -105,6 +110,7 @@ impl Address {
                 }
                 forms
             }
+            Self::Solana(_) => vec![self.to_string()],
         }
     }
 
@@ -135,6 +141,7 @@ impl fmt::Display for Address {
             Self::Evm(bytes) => f.write_str(&checksummed(bytes)),
             Self::Tron(bytes) => f.write_str(&tron_base58(bytes)),
             Self::Ton { workchain, hash } => write!(f, "{workchain}:{}", hex::encode(hash)),
+            Self::Solana(bytes) => f.write_str(&bs58::encode(bytes).into_string()),
         }
     }
 }
@@ -188,6 +195,15 @@ fn parse_tron(text: &str) -> Result<Address, AddressError> {
         .and_then(|rest| rest.try_into().ok())
         .ok_or(invalid)?;
     Ok(Address::Tron(bytes))
+}
+
+fn parse_solana(text: &str) -> Result<Address, AddressError> {
+    let invalid = AddressError::Format(ChainFamily::Solana);
+    if text.len() > SOLANA_MAX_CHARS {
+        return Err(invalid);
+    }
+    let bytes = bs58::decode(text).into_vec().map_err(|_| invalid)?;
+    Ok(Address::Solana(bytes.try_into().map_err(|_| invalid)?))
 }
 
 fn parse_ton_friendly(text: &str) -> Result<(Address, TonForm), AddressError> {
@@ -461,6 +477,7 @@ mod tests {
             Address::parse_ton("EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N")
                 .unwrap()
                 .0,
+            Address::parse(ChainFamily::Solana, SOL_MINT).unwrap(),
         ];
         for address in samples {
             let json = serde_json::to_string(&address).unwrap();
@@ -476,11 +493,60 @@ mod tests {
         }
     }
 
+    const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
+    #[test]
+    fn solana_addresses_are_32_bytes_in_base58() {
+        let solana = |text: &str| Address::parse(ChainFamily::Solana, text);
+        let mint = solana(SOL_MINT).unwrap();
+        assert_eq!(
+            mint,
+            Address::Solana(
+                hex::decode_array(
+                    "069b8857feab8184fb687f634618c035dac439dc1aeb3b5598a0f00000000001"
+                )
+                .unwrap()
+            )
+        );
+        assert_eq!(mint.to_string(), SOL_MINT);
+        assert_eq!(
+            solana("11111111111111111111111111111111").unwrap(),
+            Address::Solana([0; 32])
+        );
+        for bad in [
+            "",
+            "1111111111111111111111111111111",
+            "So1111111111111111111111111111111111111111",
+            "So111111111111111111111111111111111111111112",
+            "So11111111111111111111111111111111111111110",
+            "So1111111111111111111111111111111111111111O",
+            "So1111111111111111111111111111111111111111l",
+            " So11111111111111111111111111111111111111112",
+            &"z".repeat(1000),
+        ] {
+            assert_eq!(
+                solana(bad),
+                Err(AddressError::Format(ChainFamily::Solana)),
+                "{bad:?}"
+            );
+        }
+    }
+
     #[test]
     fn families_never_mix() {
         let evm_text = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
         assert!(Address::parse(ChainFamily::Tron, evm_text).is_err());
         assert!(Address::parse(ChainFamily::Ton, evm_text).is_err());
+        assert!(Address::parse(ChainFamily::Solana, evm_text).is_err());
+        assert!(Address::parse(ChainFamily::Solana, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t").is_err());
+        assert!(
+            Address::parse(
+                ChainFamily::Solana,
+                "EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N"
+            )
+            .is_err()
+        );
+        assert!(Address::parse(ChainFamily::Ton, SOL_MINT).is_err());
         assert!(Address::parse(ChainFamily::Evm, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t").is_err());
         assert_ne!(Address::Evm([7; 20]), Address::Tron([7; 20]));
         assert_eq!(Address::Tron([7; 20]).family(), ChainFamily::Tron);
@@ -497,6 +563,11 @@ mod tests {
         assert!(!real.looks_like(&Address::Tron(
             *b"\x55\xd3\x98\x32\x6f\x99\x05\x9f\xf7\x75\x48\x52\x46\x99\x90\x27\xb3\x19\x79\x55"
         )));
+        let solana = |text: &str| Address::parse(ChainFamily::Solana, text).unwrap();
+        let mint = solana(SOL_MINT);
+        assert_eq!(mint.shown(), [SOL_MINT]);
+        assert!(mint.looks_like(&solana("So11Hx2B9WCmUf1N7J5fWKMnDJ7sYfFHqAThVEz1112")));
+        assert!(!mint.looks_like(&solana("So12Hx2B9WCmUf1N7J5fWKMnDJ7sYfFHqAThVEz1112")));
     }
 
     #[test]

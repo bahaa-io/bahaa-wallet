@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::time::Duration;
 
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Movement, Replace, ScanCursor, Scanned, Signed,
@@ -8,6 +9,7 @@ use bahaa_chain::{
 use bahaa_config::{Coin, Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmChain, EvmPlan};
+use bahaa_solana::{SolanaChain, SolanaPlan};
 use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock};
 use bahaa_ton::{TonChain, TonPlan};
 use bahaa_tron::{TronChain, TronPlan};
@@ -22,6 +24,7 @@ pub(crate) enum AnyChain {
     Evm(EvmChain),
     Tron(TronChain),
     Ton(Box<TonChain>),
+    Solana(SolanaChain),
 }
 
 #[derive(Clone)]
@@ -29,6 +32,7 @@ pub(crate) enum AnyPlan {
     Evm(EvmPlan),
     Tron(TronPlan),
     Ton(TonPlan),
+    Solana(SolanaPlan),
 }
 
 impl AnyChain {
@@ -37,6 +41,7 @@ impl AnyChain {
             Self::Evm(chain) => chain.network(),
             Self::Tron(chain) => chain.network(),
             Self::Ton(chain) => chain.network(),
+            Self::Solana(chain) => chain.network(),
         }
     }
 
@@ -62,6 +67,14 @@ impl AnyChain {
             Self::Evm(_) => bahaa_evm::derive(seed, account),
             Self::Tron(_) => bahaa_tron::derive(seed, account),
             Self::Ton(chain) => chain.derive_as(seed, account, contract),
+            Self::Solana(_) => bahaa_solana::derive(seed, account),
+        }
+    }
+
+    pub(crate) fn quote_life(&self) -> Option<Duration> {
+        match self {
+            Self::Solana(_) => Some(bahaa_solana::QUOTE_LIFE),
+            Self::Evm(_) | Self::Tron(_) | Self::Ton(_) => None,
         }
     }
 
@@ -75,6 +88,7 @@ impl AnyChain {
                 Self::Evm(chain) => chain.balances(address, assets).await,
                 Self::Tron(chain) => chain.balances(address, assets).await,
                 Self::Ton(chain) => chain.balances(address, assets).await,
+                Self::Solana(chain) => chain.balances(address, assets).await,
             }
         })
         .await
@@ -86,6 +100,7 @@ impl AnyChain {
                 Self::Evm(chain) => chain.token(contract).await,
                 Self::Tron(chain) => chain.token(contract).await,
                 Self::Ton(chain) => chain.token(contract).await,
+                Self::Solana(chain) => chain.token(contract).await,
             }
         })
         .await
@@ -96,6 +111,7 @@ impl AnyChain {
             Self::Evm(chain) => chain.know(contract, decimals),
             Self::Tron(chain) => chain.know(contract, decimals),
             Self::Ton(chain) => chain.know(contract, decimals),
+            Self::Solana(chain) => chain.know(contract, decimals),
         }
     }
 
@@ -110,7 +126,7 @@ impl AnyChain {
                 Self::Evm(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
                 Self::Tron(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
                 Self::Ton(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
-                Self::Evm(_) | Self::Tron(_) | Self::Ton(_) => Ok(None),
+                Self::Evm(_) | Self::Tron(_) | Self::Ton(_) | Self::Solana(_) => Ok(None),
             }
         })
         .await
@@ -134,6 +150,11 @@ impl AnyChain {
                     &**chain,
                     chain.prepare(transfer).await?,
                     AnyPlan::Ton,
+                )),
+                Self::Solana(chain) => Ok(planned(
+                    chain,
+                    chain.prepare(transfer).await?,
+                    AnyPlan::Solana,
                 )),
             }
         })
@@ -163,6 +184,11 @@ impl AnyChain {
                     chain.replace(original, account, how).await?,
                     AnyPlan::Ton,
                 )),
+                Self::Solana(chain) => Ok(planned(
+                    chain,
+                    chain.replace(original, account, how).await?,
+                    AnyPlan::Solana,
+                )),
             }
         })
         .await
@@ -173,6 +199,7 @@ impl AnyChain {
             (Self::Evm(chain), AnyPlan::Evm(plan)) => chain.sign(plan, seed),
             (Self::Tron(chain), AnyPlan::Tron(plan)) => chain.sign(plan, seed),
             (Self::Ton(chain), AnyPlan::Ton(plan)) => chain.sign(plan, seed),
+            (Self::Solana(chain), AnyPlan::Solana(plan)) => chain.sign(plan, seed),
             _ => Err(ChainError::Mismatch("the network")),
         }
     }
@@ -182,6 +209,7 @@ impl AnyChain {
             Self::Evm(chain) => chain.decode(signed),
             Self::Tron(chain) => chain.decode(signed),
             Self::Ton(chain) => chain.decode(signed),
+            Self::Solana(chain) => chain.decode(signed),
         }))
         .unwrap_or_else(|_| Err(unreadable()))
     }
@@ -192,6 +220,7 @@ impl AnyChain {
                 Self::Evm(chain) => chain.broadcast(signed).await,
                 Self::Tron(chain) => chain.broadcast(signed).await,
                 Self::Ton(chain) => chain.broadcast(signed).await,
+                Self::Solana(chain) => chain.broadcast(signed).await,
             }
         })
         .await
@@ -208,6 +237,7 @@ impl AnyChain {
                 Self::Evm(chain) => chain.status(id, from, expires_at).await,
                 Self::Tron(chain) => chain.status(id, from, expires_at).await,
                 Self::Ton(chain) => chain.status(id, from, expires_at).await,
+                Self::Solana(chain) => chain.status(id, from, expires_at).await,
             }
         })
         .await
@@ -243,6 +273,7 @@ pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
             ChainFamily::Ton => TonChain::new(network.clone())
                 .ok()
                 .map(|chain| AnyChain::Ton(Box::new(chain))),
+            ChainFamily::Solana => SolanaChain::new(network.clone()).ok().map(AnyChain::Solana),
         })
         .collect()
 }
@@ -284,7 +315,7 @@ pub(crate) fn trusted(chains: &[AnyChain]) -> Vec<TrustedBlock> {
                 network: ton.network().id.clone(),
                 checkpoint: ton.checkpoint(),
             }),
-            AnyChain::Evm(_) | AnyChain::Tron(_) => None,
+            AnyChain::Evm(_) | AnyChain::Tron(_) | AnyChain::Solana(_) => None,
         })
         .collect()
 }

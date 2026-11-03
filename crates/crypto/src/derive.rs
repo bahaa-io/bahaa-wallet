@@ -20,12 +20,8 @@ pub enum DeriveError {
     NotHardened,
     #[error("this path leads to an invalid key, use the next index")]
     InvalidKey,
-    #[error("this recovery phrase only holds a TON wallet")]
-    TonOnly,
-    #[error("this wallet's keys come from derivation paths")]
-    NotTon,
-    #[error("this wallet is a single private key")]
-    KeyOnly,
+    #[error("this wallet's key belongs to another kind of network")]
+    OtherCurve,
 }
 
 struct Node {
@@ -34,11 +30,16 @@ struct Node {
 }
 
 pub fn secp256k1(seed: &Seed, path: &DerivationPath) -> Result<SecretKey, DeriveError> {
-    if seed.kind() == SeedKind::Key {
-        return SecretKey::from_slice(seed.expose()).map_err(|_| DeriveError::InvalidKey);
+    match seed.kind() {
+        SeedKind::Secp256k1 => {
+            SecretKey::from_slice(seed.expose()).map_err(|_| DeriveError::InvalidKey)
+        }
+        SeedKind::Bip39 => {
+            let node = secp256k1_node(seed.expose(), path)?;
+            SecretKey::from_bytes(&FieldBytes::from(*node.key)).map_err(|_| DeriveError::InvalidKey)
+        }
+        SeedKind::Ed25519 => Err(DeriveError::OtherCurve),
     }
-    let node = secp256k1_node(hd(seed)?, path)?;
-    SecretKey::from_bytes(&FieldBytes::from(*node.key)).map_err(|_| DeriveError::InvalidKey)
 }
 
 pub fn secp256k1_address(key: &PublicKey) -> [u8; 20] {
@@ -49,27 +50,19 @@ pub fn secp256k1_address(key: &PublicKey) -> [u8; 20] {
 }
 
 pub fn ed25519(seed: &Seed, path: &DerivationPath) -> Result<SigningKey, DeriveError> {
-    let node = ed25519_node(hd(seed)?, path)?;
-    Ok(SigningKey::from_bytes(&node.key))
-}
-
-pub fn ton_key(seed: &Seed) -> Result<SigningKey, DeriveError> {
-    if seed.kind() != SeedKind::Ton {
-        return Err(DeriveError::NotTon);
-    }
-    let key: Zeroizing<[u8; 32]> = Zeroizing::new(
-        seed.expose()
-            .try_into()
-            .map_err(|_| DeriveError::InvalidKey)?,
-    );
-    Ok(SigningKey::from_bytes(&key))
-}
-
-fn hd(seed: &Seed) -> Result<&[u8], DeriveError> {
     match seed.kind() {
-        SeedKind::Bip39 => Ok(seed.expose()),
-        SeedKind::Ton => Err(DeriveError::TonOnly),
-        SeedKind::Key => Err(DeriveError::KeyOnly),
+        SeedKind::Ed25519 => {
+            let key: Zeroizing<[u8; 32]> = Zeroizing::new(
+                seed.expose()
+                    .try_into()
+                    .map_err(|_| DeriveError::InvalidKey)?,
+            );
+            Ok(SigningKey::from_bytes(&key))
+        }
+        SeedKind::Bip39 => Ok(SigningKey::from_bytes(
+            &ed25519_node(seed.expose(), path)?.key,
+        )),
+        SeedKind::Secp256k1 => Err(DeriveError::OtherCurve),
     }
 }
 

@@ -73,7 +73,7 @@ pub(crate) fn request(
             }
             link
         }
-        ChainKind::Tron { .. } => shown,
+        ChainKind::Tron { .. } | ChainKind::Solana { .. } => shown,
     }
 }
 

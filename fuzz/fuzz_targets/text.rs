@@ -11,7 +11,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(rest) else {
         return;
     };
-    for family in [ChainFamily::Evm, ChainFamily::Tron, ChainFamily::Ton] {
+    for family in ChainFamily::ALL {
         if let Ok(address) = Address::parse(family, text) {
             assert_eq!(Address::parse(family, &address.to_string()), Ok(address));
             for (bounceable, testnet) in [(true, false), (false, false), (true, true), (false, true)] {
@@ -34,4 +34,5 @@ fuzz_target!(|data: &[u8]| {
     let _ = is_plain_text(text, max);
     let _ = Mnemonic::parse(text);
     let _ = TonMnemonic::parse(text);
+    let _ = bahaa_crypto::solana_private_key(text);
 });

@@ -343,6 +343,10 @@ impl Keyring {
         Ok(match &session.contents.entries[index].phrase {
             Phrase::Bip39 { mnemonic, .. } => mnemonic.phrase(),
             Phrase::Ton { mnemonic, .. } => mnemonic.phrase(),
+            Phrase::Key {
+                key,
+                family: ChainFamily::Solana,
+            } => SecretString::from(bahaa_crypto::solana_keypair(key).to_string()),
             Phrase::Key { key, .. } | Phrase::TonKey { key, .. } => {
                 SecretString::from(hex::encode(&**key))
             }
@@ -481,6 +485,10 @@ fn key_phrase(text: &str, family: ChainFamily) -> Result<Phrase, KeyringError> {
             key: bahaa_crypto::ton_private_key(text)?,
             contract: TonContract::W5,
         },
+        ChainFamily::Solana => Phrase::Key {
+            key: bahaa_crypto::solana_private_key(text)?,
+            family,
+        },
     })
 }
 
@@ -555,10 +563,14 @@ fn seed(phrase: &Phrase) -> Result<Option<Seed>, KeyringError> {
             ..
         } => mnemonic.to_seed(passphrase.expose_secret()),
         Phrase::Ton { mnemonic, .. } => mnemonic.to_seed().map_err(|_| KeyringError::Damaged)?,
-        Phrase::Key { key, .. } => {
-            bahaa_crypto::key_seed(key).map_err(|_| KeyringError::Damaged)?
+        Phrase::Key {
+            key,
+            family: ChainFamily::Solana,
         }
-        Phrase::TonKey { key, .. } => bahaa_crypto::ton_key_seed(key),
+        | Phrase::TonKey { key, .. } => bahaa_crypto::ed25519_seed(key),
+        Phrase::Key { key, .. } => {
+            bahaa_crypto::secp256k1_seed(key).map_err(|_| KeyringError::Damaged)?
+        }
         Phrase::Watch { .. } => return Ok(None),
     }))
 }

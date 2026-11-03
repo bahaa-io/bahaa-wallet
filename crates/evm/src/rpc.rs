@@ -27,8 +27,11 @@ impl Dialect for Evm {
         }
     }
 
-    fn classify(&self, code: i64, message: &str) -> Failure<ChainError> {
-        classify(code, message)
+    fn classify(&self, error: &Value) -> Failure<ChainError> {
+        classify(
+            error["code"].as_i64().unwrap_or(0),
+            error["message"].as_str().unwrap_or("unknown error"),
+        )
     }
 }
 

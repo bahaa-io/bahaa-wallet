@@ -359,7 +359,7 @@ async fn a_ton_phrase_opens_only_its_ton_accounts() {
     assert_eq!(
         engine.prepare_send(bnb).await,
         Err(EngineError::Chain(ChainError::Key(
-            bahaa_crypto::DeriveError::TonOnly
+            bahaa_crypto::DeriveError::OtherCurve
         )))
     );
 }

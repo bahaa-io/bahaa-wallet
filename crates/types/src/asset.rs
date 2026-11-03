@@ -4,7 +4,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::address::TON_FRIENDLY_LEN;
+use crate::address::{TON_FRIENDLY_LEN, TRON_LEN};
 use crate::{Address, AddressError, ChainFamily, IdError, NetworkId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -48,8 +48,10 @@ impl FromStr for AssetId {
             ChainFamily::Evm
         } else if contract.contains(':') || contract.len() == TON_FRIENDLY_LEN {
             ChainFamily::Ton
-        } else {
+        } else if contract.len() == TRON_LEN && contract.starts_with('T') {
             ChainFamily::Tron
+        } else {
+            ChainFamily::Solana
         };
         Ok(Self::Token(
             network.parse()?,
@@ -92,6 +94,8 @@ mod tests {
             "bsc/0x55d398326f99059fF775485246999027B3197955",
             "tron/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
             "ton/0:62f9d7e6635da5377c4b1386f5f82de306f3ac20819012ba3790a9db6e6eaa58",
+            "solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "solana/TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
         ] {
             let id: AssetId = text.parse().unwrap();
             assert_eq!(id.to_string(), text);
@@ -126,6 +130,13 @@ mod tests {
         assert_eq!(id.contract().map(Address::family), Some(ChainFamily::Tron));
         let native: AssetId = "ton".parse().unwrap();
         assert_eq!(native.contract(), None);
+        let mint: AssetId = "solana/TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            mint.contract().map(Address::family),
+            Some(ChainFamily::Solana)
+        );
     }
 
     #[test]
@@ -137,6 +148,7 @@ mod tests {
             "bsc/xyz",
             "bsc/0x123",
             "tron/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6u",
+            "solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt0",
         ] {
             assert!(text.parse::<AssetId>().is_err(), "{text:?}");
         }

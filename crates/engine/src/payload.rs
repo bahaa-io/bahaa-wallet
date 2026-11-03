@@ -4,7 +4,7 @@ use zeroize::Zeroizing;
 
 use crate::KeyringError;
 
-const VERSION: u8 = 6;
+const VERSION: u8 = 7;
 const FIRST_VERSION: u8 = 1;
 const CONTRACT_VERSION: u8 = 3;
 const MAX_WALLETS: usize = 64;
@@ -16,6 +16,7 @@ const WATCH: u8 = 3;
 const FAMILY_EVM: u8 = 0;
 const FAMILY_TRON: u8 = 1;
 const FAMILY_TON: u8 = 2;
+const FAMILY_SOLANA: u8 = 3;
 const W5: u8 = 0;
 const V4R2: u8 = 1;
 
@@ -125,6 +126,7 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
                 out.push(match family {
                     ChainFamily::Evm => FAMILY_EVM,
                     ChainFamily::Tron => FAMILY_TRON,
+                    ChainFamily::Solana => FAMILY_SOLANA,
                     ChainFamily::Ton => return Err(KeyringError::Damaged),
                 });
                 out.extend_from_slice(&**key);
@@ -149,6 +151,10 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
                         out.push(FAMILY_TON);
                         out.extend_from_slice(&workchain.to_be_bytes());
                         out.extend_from_slice(hash);
+                    }
+                    Address::Solana(bytes) => {
+                        out.push(FAMILY_SOLANA);
+                        out.extend_from_slice(bytes);
                     }
                 }
                 out.push(u8::from(*counted));
@@ -272,6 +278,10 @@ fn read_key(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
             key,
             contract: read_contract(reader)?,
         },
+        FAMILY_SOLANA => Phrase::Key {
+            key,
+            family: ChainFamily::Solana,
+        },
         _ => return Err(KeyringError::Damaged),
     })
 }
@@ -284,6 +294,7 @@ fn read_watch(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
             workchain: i8::from_be_bytes(reader.array()?),
             hash: reader.array()?,
         },
+        FAMILY_SOLANA => Address::Solana(reader.array()?),
         _ => return Err(KeyringError::Damaged),
     };
     let counted = match reader.take(1)?[0] {
@@ -391,7 +402,7 @@ mod tests {
 
     #[test]
     fn private_keys_round_trip_with_their_family() {
-        for family in [ChainFamily::Evm, ChainFamily::Tron] {
+        for family in [ChainFamily::Evm, ChainFamily::Tron, ChainFamily::Solana] {
             let contents = Contents {
                 next_id: 4,
                 entries: vec![Entry {
@@ -431,7 +442,7 @@ mod tests {
                 Phrase::TonKey { key, contract: read } if **key == [5; KEY_BYTES] && *read == contract
             ));
             let mut unknown = encoded.to_vec();
-            unknown[1 + 4 + 2 + 4 + 1] = 3;
+            unknown[1 + 4 + 2 + 4 + 1] = 4;
             assert!(matches!(decode(&unknown), Err(KeyringError::Damaged)));
         }
     }
@@ -445,8 +456,9 @@ mod tests {
                 workchain: -1,
                 hash: [3; 32],
             },
+            Address::Solana([4; 32]),
         ];
-        for (address, counted) in addresses.into_iter().zip([true, false, true]) {
+        for (address, counted) in addresses.into_iter().zip([true, false, true, false]) {
             let contents = Contents {
                 next_id: 2,
                 entries: vec![Entry {
@@ -466,7 +478,7 @@ mod tests {
             switch[last] = 2;
             assert!(matches!(decode(&switch), Err(KeyringError::Damaged)));
             let mut family = encoded.to_vec();
-            family[1 + 4 + 2 + 4 + 1] = 3;
+            family[1 + 4 + 2 + 4 + 1] = 4;
             assert!(matches!(decode(&family), Err(KeyringError::Damaged)));
         }
     }

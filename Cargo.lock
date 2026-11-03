@@ -785,12 +785,14 @@ dependencies = [
  "bahaa-crypto",
  "bahaa-evm",
  "bahaa-market",
+ "bahaa-solana",
  "bahaa-store",
  "bahaa-ton",
  "bahaa-tron",
  "bahaa-types",
  "bahaa-vault",
  "base64 0.23.1",
+ "bs58",
  "bytes",
  "futures-util",
  "getrandom 0.4.3",
@@ -838,6 +840,25 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",
+ "url",
+]
+
+[[package]]
+name = "bahaa-solana"
+version = "0.6.0"
+dependencies = [
+ "bahaa-chain",
+ "bahaa-config",
+ "bahaa-crypto",
+ "bahaa-types",
+ "base64 0.23.1",
+ "bs58",
+ "ed25519-dalek",
+ "futures-util",
+ "ruint",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
  "url",
 ]
 

@@ -554,11 +554,11 @@ impl WatchAddress {
         }
     }
 
-    fn check(&self) -> Option<Note> {
+    fn check(&self, ctx: &Ctx<'_>) -> Option<Note> {
         if self.address.trim().is_empty() {
             return None;
         }
-        Some(match parse::any_address(&self.address) {
+        Some(match parse::any_address(&self.address, &ctx.families()) {
             Ok(address) => note(Level::Success, text::watch_hint(address.family())),
             Err(problem) => note(Level::Error, problem),
         })
@@ -566,14 +566,14 @@ impl WatchAddress {
 }
 
 impl Screen for WatchAddress {
-    fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
+    fn act(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
         match action {
             Action::Type(Field::Address, value) => {
                 self.address.clone_from(value);
                 self.error = None;
             }
             Action::Toggle(Toggle::Counted) => self.counted = !self.counted,
-            Action::Submit => match parse::any_address(&self.address) {
+            Action::Submit => match parse::any_address(&self.address, &ctx.families()) {
                 Err(problem) => self.error = Some(problem),
                 Ok(address) if self.adding => {
                     return Reply::call(Call::Watch(address, self.counted));
@@ -601,14 +601,14 @@ impl Screen for WatchAddress {
         }
     }
 
-    fn page(&self, _ctx: &Ctx<'_>) -> Page {
+    fn page(&self, ctx: &Ctx<'_>) -> Page {
         Page {
             id: PageId::Watch,
             title: text::WATCH_TITLE.to_owned(),
             text: Some(text::WATCH_TEXT.to_owned()),
             form: vec![
                 Input {
-                    hint: self.check(),
+                    hint: self.check(ctx),
                     ..input(Field::Address, text::ADDRESS, &self.address)
                 }
                 .into(),

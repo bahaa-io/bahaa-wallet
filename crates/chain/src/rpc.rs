@@ -19,7 +19,7 @@ pub trait Dialect: Send + Sync {
 
     fn check(&self, reply: &Value) -> Result<(), ChainError>;
 
-    fn classify(&self, code: i64, message: &str) -> Failure<ChainError>;
+    fn classify(&self, error: &Value) -> Failure<ChainError>;
 }
 
 #[derive(Debug)]
@@ -187,11 +187,7 @@ impl<D: Dialect> JsonRpc<D> {
         let error = reply
             .as_ref()
             .and_then(|reply| reply.get("error"))
-            .map(|error| {
-                let code = error["code"].as_i64().unwrap_or(0);
-                self.dialect
-                    .classify(code, error["message"].as_str().unwrap_or("unknown error"))
-            });
+            .map(|error| self.dialect.classify(error));
         if !status.is_success() {
             return Err(match error {
                 Some(failure @ (Failure::Unsupported(_) | Failure::RateLimited(..))) => failure,

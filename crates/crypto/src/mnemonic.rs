@@ -82,8 +82,8 @@ pub struct Mnemonic {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeedKind {
     Bip39,
-    Ton,
-    Key,
+    Ed25519,
+    Secp256k1,
 }
 
 pub struct Seed {

@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 bahaa-types.workspace = true
+bs58.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 hmac.workspace = true
@@ -22,7 +23,6 @@ unicode-normalization.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-bs58.workspace = true
 serde_json.workspace = true
 
 [lints]

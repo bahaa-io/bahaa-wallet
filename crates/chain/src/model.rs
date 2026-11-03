@@ -120,6 +120,8 @@ pub enum FeeItem {
     Forwarding,
     Contracts,
     Memo,
+    Signature,
+    Priority { units: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

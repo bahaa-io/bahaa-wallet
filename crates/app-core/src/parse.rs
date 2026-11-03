@@ -24,15 +24,18 @@ pub(crate) fn address(text: &str, family: ChainFamily) -> Result<Address, String
     Address::parse(family, text.trim()).map_err(|err| text::sentence(&err.to_string()))
 }
 
-pub(crate) fn any_address(text: &str) -> Result<Address, String> {
-    let tries = ChainFamily::ALL.map(|family| Address::parse(family, text.trim()));
+pub(crate) fn any_address(text: &str, families: &[ChainFamily]) -> Result<Address, String> {
+    let tries: Vec<Result<Address, AddressError>> = families
+        .iter()
+        .map(|family| Address::parse(*family, text.trim()))
+        .collect();
     if let Some(address) = tries.iter().find_map(|tried| tried.ok()) {
         return Ok(address);
     }
     if tries.contains(&Err(AddressError::Checksum)) {
         return Err(text::sentence(&AddressError::Checksum.to_string()));
     }
-    Err(text::NOT_AN_ADDRESS.to_owned())
+    Err(text::not_an_address(families))
 }
 
 #[cfg(test)]
@@ -64,22 +67,33 @@ mod tests {
 
     #[test]
     fn any_address_finds_its_own_network() {
+        let served = [ChainFamily::Evm, ChainFamily::Tron, ChainFamily::Ton];
         let families: Vec<ChainFamily> = [
             "0xA749C5a714991dc2EF2cF36a238514adA4cbBf69",
             " TRovmURrSa5937phqN8yUCpqqiGt7vuTyR ",
             "UQCi1ivY6QriyKIQZrSTwhvf4qXI19qIPe4XAOYo-qMMUEiR",
         ]
         .iter()
-        .map(|text| any_address(text).unwrap().family())
+        .map(|text| any_address(text, &served).unwrap().family())
         .collect();
+        assert_eq!(families, served);
         assert_eq!(
-            families,
-            [ChainFamily::Evm, ChainFamily::Tron, ChainFamily::Ton]
-        );
-        assert_eq!(
-            any_address("0xa749C5a714991dc2EF2cF36a238514adA4cbBf69").unwrap_err(),
+            any_address("0xa749C5a714991dc2EF2cF36a238514adA4cbBf69", &served).unwrap_err(),
             "The address checksum does not match, check it for a typo"
         );
-        assert_eq!(any_address("hello").unwrap_err(), text::NOT_AN_ADDRESS);
+        assert_eq!(
+            any_address("hello", &served).unwrap_err(),
+            "This is not an address on EVM networks, Tron or TON"
+        );
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        assert!(any_address(mint, &served).is_err());
+        assert_eq!(
+            any_address(mint, &ChainFamily::ALL).unwrap().family(),
+            ChainFamily::Solana
+        );
+        assert_eq!(
+            any_address("hello", &[ChainFamily::Tron, ChainFamily::Solana]).unwrap_err(),
+            "This is not an address on Tron or Solana"
+        );
     }
 }

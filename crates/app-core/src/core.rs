@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_engine::{
-    Account, Activity, ActivityKind, Address, Amount, AssetId, Coin, Contact, CustomToken, Event,
-    Fiat, Network, NetworkId, Portfolio, Price, Registry, SentStatus, SentTx, Settings, State,
-    Status, WalletId, WalletInfo, WalletKind,
+    Account, Activity, ActivityKind, Address, Amount, AssetId, ChainFamily, Coin, Contact,
+    CustomToken, Event, Fiat, Network, NetworkId, Portfolio, Price, Registry, SentStatus, SentTx,
+    Settings, State, Status, WalletId, WalletInfo, WalletKind,
 };
 
 use crate::action::{Action, Go, Tab};
@@ -143,6 +143,14 @@ impl Ctx<'_> {
         self.coin(asset)
             .and_then(|coin| coin.color)
             .map_or(Tone::Plain, Tone::Brand)
+    }
+
+    pub(crate) fn families(&self) -> Vec<ChainFamily> {
+        let mut families: Vec<ChainFamily> =
+            self.registry.networks().map(Network::family).collect();
+        families.sort();
+        families.dedup();
+        families
     }
 
     pub(crate) fn networks(&self) -> Vec<&Network> {

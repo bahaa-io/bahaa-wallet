@@ -11,6 +11,7 @@ cargo-fuzz = true
 bahaa-crypto = { path = "../crates/crypto" }
 bahaa-evm = { path = "../crates/evm" }
 bahaa-market = { path = "../crates/market" }
+bahaa-solana = { path = "../crates/solana" }
 bahaa-ton = { path = "../crates/ton" }
 bahaa-tron = { path = "../crates/tron" }
 bahaa-types = { path = "../crates/types" }
@@ -63,6 +64,20 @@ bench = false
 [[bin]]
 name = "evm_json"
 path = "fuzz_targets/evm_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "solana_raw"
+path = "fuzz_targets/solana_raw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "solana_json"
+path = "fuzz_targets/solana_json.rs"
 test = false
 doc = false
 bench = false

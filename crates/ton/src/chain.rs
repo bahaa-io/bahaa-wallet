@@ -6,7 +6,7 @@ use bahaa_chain::{
     amount,
 };
 use bahaa_config::{ChainKind, Checkpoint, Coin, Network};
-use bahaa_crypto::{DerivationPath, Seed, SeedKind};
+use bahaa_crypto::{DerivationPath, Seed};
 use bahaa_types::{Address, AssetId, TonContract, hex};
 use ed25519_dalek::SigningKey;
 use ruint::aliases::U256;
@@ -339,12 +339,6 @@ impl Chain for TonChain {
 }
 
 fn key(seed: &Seed, account: u32) -> Result<SigningKey, ChainError> {
-    if seed.kind() == SeedKind::Ton {
-        if account != 0 {
-            return Err(ChainError::Invalid("a TON recovery phrase has one account"));
-        }
-        return Ok(bahaa_crypto::ton_key(seed)?);
-    }
     let path: DerivationPath = format!("m/44'/607'/{account}'")
         .parse()
         .map_err(|_| ChainError::Invalid("account index out of range"))?;
@@ -406,10 +400,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(main.to_string(), reference.address.to_hex());
-        assert!(matches!(
-            chain("ton").derive(&seed, 1),
-            Err(ChainError::Invalid(_))
-        ));
+        assert_eq!(chain("ton").derive(&seed, 1).unwrap(), main);
         assert_ne!(chain("ton-testnet").derive(&seed, 0).unwrap(), main);
     }
 
