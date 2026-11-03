@@ -9,9 +9,8 @@ use bahaa_app_core::{
     Go, KdfParams, Kind, Level, Page, PageId, Pick, Registry, Request, Tab, Toggle, Tone, Value,
     View, Words,
 };
+use bahaa_testkit::Reply;
 use serde_json::{Value as Json, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 
 const PASSWORD: &str = "correct horse battery";
@@ -55,59 +54,17 @@ fn offline(keep: impl Fn(ChainFamily) -> bool) -> Registry {
 }
 
 async fn bsc_node() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/", listener.local_addr().unwrap());
-    tokio::spawn(async move {
-        loop {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            tokio::spawn(async move {
-                let Some(call) = read_call(&mut socket).await else {
-                    return;
-                };
-                let result = match call["method"].as_str() {
-                    Some("eth_chainId") => json!("0x38"),
-                    Some("eth_getBalance") => json!("0x14d1120d7b160000"),
-                    Some("eth_call") => json!(format!("0x{:064x}", 0)),
-                    _ => Json::Null,
-                };
-                let text = json!({"jsonrpc": "2.0", "id": 1, "result": result}).to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-                    text.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
-            });
-        }
-    });
-    url
-}
-
-async fn read_call(socket: &mut tokio::net::TcpStream) -> Option<Json> {
-    let mut request = Vec::new();
-    let mut buffer = [0u8; 8192];
-    loop {
-        let read = socket.read(&mut buffer).await.ok()?;
-        if read == 0 {
-            return None;
-        }
-        request.extend_from_slice(&buffer[..read]);
-        let text = String::from_utf8_lossy(&request).to_string();
-        let Some(end) = text.find("\r\n\r\n") else {
-            continue;
+    let url = bahaa_testkit::serve(|request| {
+        let result = match request.json()["method"].as_str() {
+            Some("eth_chainId") => json!("0x38"),
+            Some("eth_getBalance") => json!("0x14d1120d7b160000"),
+            Some("eth_call") => json!(format!("0x{:064x}", 0)),
+            _ => Json::Null,
         };
-        let length = text
-            .lines()
-            .find_map(|line| {
-                line.to_ascii_lowercase()
-                    .strip_prefix("content-length: ")
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-            })
-            .unwrap_or(0);
-        if request.len() >= end + 4 + length {
-            return serde_json::from_slice(&request[end + 4..end + 4 + length]).ok();
-        }
-    }
+        Reply::json(200, &json!({"jsonrpc": "2.0", "id": 1, "result": result}))
+    })
+    .await;
+    url.to_string()
 }
 
 fn start(scratch: &Scratch) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {

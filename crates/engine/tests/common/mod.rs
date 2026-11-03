@@ -9,13 +9,13 @@ use adnl::crypto::{KeyPair, SecretKey};
 use bahaa_config::{ChainKind, Checkpoint, Endpoint, Feature, Network, Protocol, Registry};
 use bahaa_engine::{EngineConfig, Event, SentTx};
 use bahaa_market::MarketConfig;
+use bahaa_testkit::Reply;
 use bahaa_vault::KdfParams;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, watch};
 use url::Url;
@@ -62,92 +62,22 @@ pub async fn node<F>(answer: F) -> Url
 where
     F: Fn(&Value) -> (Value, Duration) + Send + Sync + 'static,
 {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-    let answer = Arc::new(answer);
-    tokio::spawn(async move {
-        loop {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let answer = Arc::clone(&answer);
-            tokio::spawn(async move {
-                let Some((_, body)) = read_request(&mut socket).await else {
-                    return;
-                };
-                let call: Value = serde_json::from_slice(&body).unwrap();
-                let (reply, delay) = answer(&call);
-                tokio::time::sleep(delay).await;
-                let text = reply.to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-                    text.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
-            });
+    bahaa_testkit::serve(move |request| {
+        let (reply, delay) = answer(&request.json());
+        Reply {
+            delay,
+            ..Reply::json(200, &reply)
         }
-    });
-    url
+    })
+    .await
 }
 
 pub async fn rest_node<F>(answer: F) -> Url
 where
     F: Fn(&str, &Value) -> Value + Send + Sync + 'static,
 {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-    let answer = Arc::new(answer);
-    tokio::spawn(async move {
-        loop {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let answer = Arc::clone(&answer);
-            tokio::spawn(async move {
-                let Some((path, body)) = read_request(&mut socket).await else {
-                    return;
-                };
-                let body = if body.is_empty() {
-                    Value::Null
-                } else {
-                    serde_json::from_slice(&body).unwrap()
-                };
-                let text = answer(&path, &body).to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-                    text.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
-            });
-        }
-    });
-    url
-}
-
-async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<(String, Vec<u8>)> {
-    let mut request = Vec::new();
-    let mut buffer = [0u8; 8192];
-    loop {
-        let read = socket.read(&mut buffer).await.unwrap_or(0);
-        if read == 0 {
-            return None;
-        }
-        request.extend_from_slice(&buffer[..read]);
-        let text = String::from_utf8_lossy(&request).to_string();
-        let Some(end) = text.find("\r\n\r\n") else {
-            continue;
-        };
-        let length = text
-            .lines()
-            .find_map(|line| {
-                line.to_ascii_lowercase()
-                    .strip_prefix("content-length: ")
-                    .map(str::to_owned)
-            })
-            .map_or(0, |value| value.trim().parse::<usize>().unwrap());
-        if request.len() >= end + 4 + length {
-            let path = text.split(' ').nth(1)?.to_owned();
-            return Some((path, request[end + 4..end + 4 + length].to_vec()));
-        }
-    }
+    bahaa_testkit::serve(move |request| Reply::json(200, &answer(request.path(), &request.json())))
+        .await
 }
 
 pub fn network(id: &str, url: Url) -> Network {

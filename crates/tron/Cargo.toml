@@ -22,7 +22,8 @@ tokio = { workspace = true, features = ["time"] }
 url.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "time"] }
+bahaa-testkit.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true

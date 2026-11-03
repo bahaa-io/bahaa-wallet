@@ -31,6 +31,7 @@ tycho-vm.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+bahaa-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "time"] }
 
 [lints]

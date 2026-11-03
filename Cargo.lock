@@ -721,6 +721,7 @@ name = "bahaa-app-core"
 version = "0.6.0"
 dependencies = [
  "bahaa-engine",
+ "bahaa-testkit",
  "getrandom 0.4.3",
  "ruint",
  "serde_json",
@@ -787,6 +788,7 @@ dependencies = [
  "bahaa-market",
  "bahaa-solana",
  "bahaa-store",
+ "bahaa-testkit",
  "bahaa-ton",
  "bahaa-tron",
  "bahaa-types",
@@ -816,6 +818,7 @@ dependencies = [
  "bahaa-chain",
  "bahaa-config",
  "bahaa-crypto",
+ "bahaa-testkit",
  "bahaa-types",
  "futures-util",
  "reqwest",
@@ -830,6 +833,7 @@ dependencies = [
 name = "bahaa-market"
 version = "0.6.0"
 dependencies = [
+ "bahaa-testkit",
  "bahaa-types",
  "futures-util",
  "reqwest",
@@ -850,6 +854,7 @@ dependencies = [
  "bahaa-chain",
  "bahaa-config",
  "bahaa-crypto",
+ "bahaa-testkit",
  "bahaa-types",
  "base64 0.23.1",
  "bs58",
@@ -880,6 +885,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bahaa-testkit"
+version = "0.6.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "bahaa-ton"
 version = "0.6.0"
 dependencies = [
@@ -887,6 +901,7 @@ dependencies = [
  "bahaa-chain",
  "bahaa-config",
  "bahaa-crypto",
+ "bahaa-testkit",
  "bahaa-types",
  "base64 0.23.1",
  "bytes",
@@ -913,6 +928,7 @@ dependencies = [
  "bahaa-chain",
  "bahaa-config",
  "bahaa-crypto",
+ "bahaa-testkit",
  "bahaa-types",
  "futures-util",
  "prost",

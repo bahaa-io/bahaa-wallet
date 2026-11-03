@@ -21,6 +21,7 @@ tokio-tungstenite.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+bahaa-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "rt-multi-thread"] }
 
 [lints]
