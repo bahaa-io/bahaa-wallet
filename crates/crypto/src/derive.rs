@@ -2,7 +2,7 @@ use ed25519_dalek::SigningKey;
 use hmac::{Hmac, Mac};
 use k256::elliptic_curve::PrimeField;
 use k256::elliptic_curve::sec1::ToSec1Point;
-use k256::{FieldBytes, PublicKey, Scalar, SecretKey};
+use k256::{FieldBytes, ProjectivePoint, PublicKey, Scalar, SecretKey};
 use sha2::Sha512;
 use sha3::{Digest, Keccak256};
 use thiserror::Error;
@@ -22,6 +22,61 @@ pub enum DeriveError {
     InvalidKey,
     #[error("this wallet's key belongs to another kind of network")]
     OtherCurve,
+    #[error("this wallet is a single key without an account key")]
+    SingleKey,
+    #[error("public keys can only derive unhardened children")]
+    Hardened,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtendedPublic {
+    key: [u8; 33],
+    chain: [u8; 32],
+}
+
+impl ExtendedPublic {
+    pub fn key(&self) -> [u8; 33] {
+        self.key
+    }
+
+    pub fn child(&self, index: u32) -> Result<Self, DeriveError> {
+        if index & HARDENED != 0 {
+            return Err(DeriveError::Hardened);
+        }
+        let output = hmac512(&self.chain, &[&self.key, &index.to_be_bytes()])?;
+        let tweak = scalar(
+            output[..32]
+                .try_into()
+                .map_err(|_| DeriveError::InvalidKey)?,
+        )?;
+        let parent = PublicKey::from_sec1_bytes(&self.key).map_err(|_| DeriveError::InvalidKey)?;
+        let point = ProjectivePoint::GENERATOR * *tweak + parent.to_projective();
+        let child =
+            PublicKey::from_affine(point.to_affine()).map_err(|_| DeriveError::InvalidKey)?;
+        let mut chain = [0u8; 32];
+        chain.copy_from_slice(&output[32..]);
+        Ok(Self {
+            key: compressed(&child)?,
+            chain,
+        })
+    }
+}
+
+pub fn secp256k1_extended(
+    seed: &Seed,
+    path: &DerivationPath,
+) -> Result<ExtendedPublic, DeriveError> {
+    if seed.kind() != SeedKind::Bip39 {
+        return Err(DeriveError::SingleKey);
+    }
+    secp256k1_node(seed.expose(), path.indices())?.public()
+}
+
+pub fn compressed(key: &PublicKey) -> Result<[u8; 33], DeriveError> {
+    key.to_sec1_point(true)
+        .as_bytes()
+        .try_into()
+        .map_err(|_| DeriveError::InvalidKey)
 }
 
 struct Node {
@@ -29,15 +84,25 @@ struct Node {
     chain: Zeroizing<[u8; 32]>,
 }
 
+impl Node {
+    fn secret(&self) -> Result<SecretKey, DeriveError> {
+        SecretKey::from_bytes(&FieldBytes::from(*self.key)).map_err(|_| DeriveError::InvalidKey)
+    }
+
+    fn public(&self) -> Result<ExtendedPublic, DeriveError> {
+        Ok(ExtendedPublic {
+            key: compressed(&self.secret()?.public_key())?,
+            chain: *self.chain,
+        })
+    }
+}
+
 pub fn secp256k1(seed: &Seed, path: &DerivationPath) -> Result<SecretKey, DeriveError> {
     match seed.kind() {
         SeedKind::Secp256k1 => {
             SecretKey::from_slice(seed.expose()).map_err(|_| DeriveError::InvalidKey)
         }
-        SeedKind::Bip39 => {
-            let node = secp256k1_node(seed.expose(), path)?;
-            SecretKey::from_bytes(&FieldBytes::from(*node.key)).map_err(|_| DeriveError::InvalidKey)
-        }
+        SeedKind::Bip39 => secp256k1_node(seed.expose(), path.indices())?.secret(),
         SeedKind::Ed25519 => Err(DeriveError::OtherCurve),
     }
 }
@@ -66,17 +131,13 @@ pub fn ed25519(seed: &Seed, path: &DerivationPath) -> Result<SigningKey, DeriveE
     }
 }
 
-fn secp256k1_node(seed: &[u8], path: &DerivationPath) -> Result<Node, DeriveError> {
+fn secp256k1_node(seed: &[u8], indices: &[u32]) -> Result<Node, DeriveError> {
     let mut node = split(&*hmac512(BIP32_KEY, &[seed])?);
     scalar(&node.key)?;
-    for index in path.indices() {
+    for &index in indices {
         let parent = scalar(&node.key)?;
         let prefix: Zeroizing<Vec<u8>> = if index & HARDENED == 0 {
-            let public = SecretKey::from_bytes(&FieldBytes::from(*node.key))
-                .map_err(|_| DeriveError::InvalidKey)?
-                .public_key()
-                .to_sec1_point(true);
-            Zeroizing::new(public.as_bytes().to_vec())
+            Zeroizing::new(compressed(&node.secret()?.public_key())?.to_vec())
         } else {
             let mut prefix = Zeroizing::new(Vec::with_capacity(33));
             prefix.push(0);
@@ -146,23 +207,13 @@ fn hmac512(key: &[u8], parts: &[&[u8]]) -> Result<Zeroizing<[u8; 64]>, DeriveErr
 #[cfg(test)]
 mod tests {
 
+    use bahaa_types::hex::encode as hex;
     use serde_json::Value;
 
     use super::*;
-    use std::fmt::Write;
 
-    fn bytes(hex: &str) -> Vec<u8> {
-        (0..hex.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
-            .collect()
-    }
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().fold(String::new(), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
+    fn bytes(text: &str) -> Vec<u8> {
+        bahaa_types::hex::decode(text).unwrap()
     }
 
     fn vectors(json: &str) -> Vec<Value> {
@@ -188,7 +239,7 @@ mod tests {
             let seed = bytes(vector["seed"].as_str().unwrap());
             for chain in vector["chains"].as_array().unwrap() {
                 let path: DerivationPath = chain["path"].as_str().unwrap().parse().unwrap();
-                let node = secp256k1_node(&seed, &path).unwrap();
+                let node = secp256k1_node(&seed, path.indices()).unwrap();
                 let (depth, child, chain_code, key) = xprv_parts(chain["xprv"].as_str().unwrap());
                 assert_eq!(usize::from(depth), path.indices().len(), "{path}");
                 assert_eq!(child, path.indices().last().copied().unwrap_or(0), "{path}");
@@ -201,11 +252,37 @@ mod tests {
     }
 
     #[test]
+    fn public_children_match_the_private_ones_on_every_bip32_vector() {
+        let mut checked = 0;
+        for vector in vectors(include_str!("../tests/bip32_vectors.json")) {
+            let seed = bytes(vector["seed"].as_str().unwrap());
+            for chain in vector["chains"].as_array().unwrap() {
+                let path: DerivationPath = chain["path"].as_str().unwrap().parse().unwrap();
+                let Some((&last, parent)) = path.indices().split_last() else {
+                    continue;
+                };
+                let parent = secp256k1_node(&seed, parent).unwrap().public().unwrap();
+                let child = parent.child(last);
+                if last & HARDENED == 0 {
+                    let expected = secp256k1_node(&seed, path.indices())
+                        .unwrap()
+                        .public()
+                        .unwrap();
+                    assert_eq!(child, Ok(expected), "{path}");
+                    checked += 1;
+                } else {
+                    assert_eq!(child, Err(DeriveError::Hardened), "{path}");
+                }
+            }
+        }
+        assert_eq!(checked, 6);
+    }
+
+    #[test]
     fn trezor_master_keys() {
-        let root: DerivationPath = "m".parse().unwrap();
         for vector in vectors(include_str!("../tests/bip39_vectors.json")) {
             let seed = bytes(vector["seed"].as_str().unwrap());
-            let node = secp256k1_node(&seed, &root).unwrap();
+            let node = secp256k1_node(&seed, &[]).unwrap();
             let (_, _, chain_code, key) = xprv_parts(vector["xprv"].as_str().unwrap());
             assert_eq!(hex(&node.chain[..]), chain_code);
             assert_eq!(hex(&node.key[..]), key);

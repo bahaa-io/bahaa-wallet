@@ -9,6 +9,12 @@ use crate::{Seed, SeedKind};
 
 pub const KEY_BYTES: usize = 32;
 const SOLANA_MAX_CHARS: usize = 88;
+const WIF_MAX_CHARS: usize = 52;
+const WIF_MAINNET: u8 = 0x80;
+const WIF_TESTNET: u8 = 0xef;
+const WIF_COMPRESSED: u8 = 0x01;
+const WIF_BYTES: usize = KEY_BYTES + 2;
+const WIF_UNCOMPRESSED_BYTES: usize = KEY_BYTES + 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum KeyError {
@@ -20,6 +26,10 @@ pub enum KeyError {
         "a Solana private key is the base58 text wallets export, or a key file's list of 64 numbers"
     )]
     SolanaFormat,
+    #[error("a Bitcoin private key is the WIF text wallets export, starting with K, L or c")]
+    BitcoinFormat,
+    #[error("this Bitcoin key is in the old uncompressed form, which this wallet does not use")]
+    Uncompressed,
     #[error("a private key only has the characters 0-9 and a-f")]
     NotHex,
     #[error("this is not a valid private key")]
@@ -93,6 +103,38 @@ pub fn solana_private_key(text: &str) -> Result<Zeroizing<[u8; KEY_BYTES]>, KeyE
         return Err(KeyError::Invalid);
     }
     Ok(key)
+}
+
+pub fn bitcoin_private_key(text: &str) -> Result<Zeroizing<[u8; KEY_BYTES]>, KeyError> {
+    let text = text.trim();
+    if text.len() > WIF_MAX_CHARS {
+        return Err(KeyError::BitcoinFormat);
+    }
+    let mut raw = Zeroizing::new([0u8; WIF_BYTES + 4]);
+    let read = bs58::decode(text)
+        .with_check(None)
+        .onto(&mut raw[..])
+        .map_err(|_| KeyError::BitcoinFormat)?;
+    if !matches!(raw[0], WIF_MAINNET | WIF_TESTNET) {
+        return Err(KeyError::BitcoinFormat);
+    }
+    match read {
+        WIF_BYTES if raw[KEY_BYTES + 1] == WIF_COMPRESSED => {}
+        WIF_UNCOMPRESSED_BYTES => return Err(KeyError::Uncompressed),
+        _ => return Err(KeyError::BitcoinFormat),
+    }
+    let mut key = Zeroizing::new([0u8; KEY_BYTES]);
+    key.copy_from_slice(&raw[1..=KEY_BYTES]);
+    SecretKey::from_slice(&*key).map_err(|_| KeyError::Invalid)?;
+    Ok(key)
+}
+
+pub fn bitcoin_wif(key: &[u8; KEY_BYTES]) -> Zeroizing<String> {
+    let mut raw = Zeroizing::new([0u8; WIF_BYTES]);
+    raw[0] = WIF_MAINNET;
+    raw[1..=KEY_BYTES].copy_from_slice(key);
+    raw[KEY_BYTES + 1] = WIF_COMPRESSED;
+    Zeroizing::new(bs58::encode(&raw[..]).with_check().into_string())
 }
 
 pub fn solana_keypair(key: &[u8; KEY_BYTES]) -> Zeroizing<String> {
@@ -228,5 +270,44 @@ mod tests {
             solana_private_key(&bs58::encode(&pair).into_string()).unwrap_err(),
             KeyError::Invalid
         );
+    }
+
+    const KEY: &str = "0c28fca386c7a227600b2fe50b7cae11ec86d3bf1fbe471be89827e19d72aa1d";
+
+    #[test]
+    fn wif_keys_round_trip_the_bitcoin_wiki_example() {
+        let key: [u8; KEY_BYTES] = hex::decode_array(KEY).unwrap();
+        let wif = bitcoin_wif(&key);
+        assert_eq!(
+            wif.as_str(),
+            "KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98617"
+        );
+        assert_eq!(*bitcoin_private_key(&wif).unwrap(), key);
+        assert_eq!(
+            *bitcoin_private_key(" cMzLdeGd5vEqxB8B6VFQoRopQ3sLAAvEzDAoQgvX54xwofSWj1fx\n")
+                .unwrap(),
+            key
+        );
+    }
+
+    #[test]
+    fn other_wif_forms_are_refused_with_a_reason() {
+        assert_eq!(
+            bitcoin_private_key("5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ"),
+            Err(KeyError::Uncompressed)
+        );
+        for text in [
+            "",
+            "KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98618",
+            "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+            KEY,
+            &"K".repeat(60),
+        ] {
+            assert_eq!(
+                bitcoin_private_key(text),
+                Err(KeyError::BitcoinFormat),
+                "{text}"
+            );
+        }
     }
 }
