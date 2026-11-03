@@ -90,6 +90,16 @@ impl Thorchain {
             .append_pair("destination", &destination);
         let quote = fetch(self.client.get(url)).await?;
         let text = |field: &str| quote[field].as_str().ok_or_else(unreadable);
+        let least: U256 = text("recommended_min_amount_in")?
+            .parse()
+            .map_err(|_| unreadable())?;
+        if amount < least {
+            return Err(SwapError::Refused(format!(
+                "THORChain needs at least {} {} for this swap, so a refund can be paid",
+                least_amount(least, sold.decimals).ok_or_else(unreadable)?,
+                ticker(&sold.pool)
+            )));
+        }
         let vault = match Address::parse(
             ChainFamily::Evm,
             &text("inbound_address")?.to_ascii_lowercase(),
@@ -245,9 +255,22 @@ fn thor_units(units: U256, decimals: u8) -> Option<U256> {
     .filter(|units| !units.is_zero())
 }
 
+fn least_amount(units: U256, decimals: u8) -> Option<Amount> {
+    let scaled = match decimals.checked_sub(UNITS) {
+        Some(extra) => units.checked_mul(U256::from(10u8).checked_pow(U256::from(extra))?)?,
+        None => units.div_ceil(U256::from(10u8).checked_pow(U256::from(UNITS - decimals))?),
+    };
+    Amount::new(scaled, decimals).ok()
+}
+
+fn ticker(pool: &str) -> &str {
+    let asset = pool.split_once('.').map_or(pool, |(_, asset)| asset);
+    asset.split_once('-').map_or(asset, |(symbol, _)| symbol)
+}
+
 fn memo(quoted: &str, bought: &ThorAsset, destination: &str, minimum: U256) -> Option<String> {
     let parts: Vec<&str> = quoted.split(':').collect();
-    let [action, asset, address, streaming] = parts.as_slice() else {
+    let ([action, asset, address] | [action, asset, address, _]) = parts.as_slice() else {
         return None;
     };
     let names = [Some(bought.pool.as_str()), bought.short.as_deref()];
@@ -257,6 +280,9 @@ fn memo(quoted: &str, bought: &ThorAsset, destination: &str, minimum: U256) -> O
     {
         return None;
     }
+    let Some(streaming) = parts.get(3) else {
+        return Some(format!("=:{asset}:{destination}:{minimum}"));
+    };
     let numbers: Vec<u64> = streaming
         .split('/')
         .map(|number| number.parse().ok())
@@ -409,11 +435,41 @@ mod tests {
             ),
             None
         );
+        assert_eq!(
+            memo(
+                "=:b:bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+                &btc,
+                "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+                U256::from(108_000u32)
+            ),
+            Some("=:b:bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu:108000".to_owned())
+        );
         assert_eq!(memo("=:e:bc1q:0/0/9", &btc, "bc1q", U256::from(1u8)), None);
         assert_eq!(
             memo("=:b:bc1q:0/0/9:affiliate", &btc, "bc1q", U256::from(1u8)),
             None
         );
+    }
+
+    #[test]
+    fn the_recommended_minimum_reads_back_in_the_sold_asset() {
+        assert_eq!(
+            least_amount(U256::from(209_526u32), 18)
+                .unwrap()
+                .to_string(),
+            "0.00209526"
+        );
+        assert_eq!(
+            least_amount(U256::from(1_000_000_001u64), 6)
+                .unwrap()
+                .to_string(),
+            "10.000001"
+        );
+        assert_eq!(
+            ticker("ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48"),
+            "USDC"
+        );
+        assert_eq!(ticker("BASE.ETH"), "ETH");
     }
 
     #[test]
