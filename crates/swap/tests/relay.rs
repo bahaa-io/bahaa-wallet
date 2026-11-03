@@ -247,6 +247,14 @@ async fn only_origins_with_keyless_plain_deposits_are_covered() {
     let relay = relay(recorded).await;
     assert!(relay.covers(&ether()));
     assert!(relay.covers(&request("polygon", "10", 18, "base", 18, evm())));
+    assert!(!relay.covers(&request(
+        "polygon",
+        "10",
+        18,
+        "polygon/0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+        6,
+        evm()
+    )));
     assert!(!relay.covers(&request("avalanche", "10", 18, "base", 18, evm())));
     assert!(!relay.covers(&request("solana", "1", 9, "base", 18, evm())));
     let ton = Address::parse(

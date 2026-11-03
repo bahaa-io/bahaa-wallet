@@ -15,7 +15,7 @@ use crate::order::{
     Comment, Contract, Order, Progress, Provider, QUOTE_LIFE, Request, SwapError, parse_like,
     text_of,
 };
-use crate::reply::{fetch, unreadable};
+use crate::reply::{fetch, seconds, unreadable};
 use crate::route::{Charged, Cost, CostKind, Method, Route};
 
 const EVM_NATIVE: &str = "0x0000000000000000000000000000000000000000";
@@ -61,7 +61,7 @@ struct Item {
 struct Details {
     currency_in: Counted,
     currency_out: Counted,
-    time_estimate: Option<u64>,
+    time_estimate: Option<serde_json::Number>,
 }
 
 #[derive(Deserialize)]
@@ -120,7 +120,10 @@ impl Relay {
             && match origin.deposit {
                 RelayDeposit::Address => true,
                 RelayDeposit::Comment => request.sell.contract().is_none(),
-                RelayDeposit::Call => matches!(request.from, Address::Evm(_)),
+                RelayDeposit::Call => {
+                    matches!(request.from, Address::Evm(_))
+                        && request.sell.network() != request.buy.network()
+                }
                 RelayDeposit::Unsupported => false,
             }
     }
@@ -198,7 +201,12 @@ impl Relay {
             expected,
             minimum,
             costs,
-            wait: answer.details.time_estimate.map(Wait::About),
+            wait: answer
+                .details
+                .time_estimate
+                .as_ref()
+                .and_then(seconds)
+                .map(Wait::About),
         };
         let order = Order {
             provider: Provider::Relay,

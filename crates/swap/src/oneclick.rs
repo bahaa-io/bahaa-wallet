@@ -14,7 +14,7 @@ use crate::config::OneClickConfig;
 use crate::order::{
     Comment, Order, Progress, Provider, QUOTE_LIFE, Request, SwapError, parse_like, text_of,
 };
-use crate::reply::{fetch, unreadable};
+use crate::reply::{fetch, seconds, unreadable};
 use crate::route::{Charged, Cost, CostKind, Method, Route};
 
 const SLIPPAGE_BPS: u32 = 100;
@@ -101,7 +101,7 @@ struct Quote {
     amount_in: String,
     amount_out: String,
     min_amount_out: String,
-    time_estimate: Option<u64>,
+    time_estimate: Option<serde_json::Number>,
     withdraw_fee: Option<String>,
     deposit_address: Option<String>,
     deposit_memo: Option<String>,
@@ -189,7 +189,11 @@ impl OneClick {
             expected,
             minimum,
             costs,
-            wait: quote.time_estimate.map(Wait::About),
+            wait: quote
+                .time_estimate
+                .as_ref()
+                .and_then(seconds)
+                .map(Wait::About),
         };
         if !live {
             return Ok((route, None));
