@@ -119,10 +119,9 @@ impl Receive {
         };
         let asset = self.asset(target);
         let memo_allowed = super::memo_allowed(&asset, network.family());
-        let units = ctx
+        let amount = ctx
             .coin(&asset)
-            .and_then(|coin| parse::amount(&self.amount, coin.decimals).ok())
-            .map(|amount| amount.units());
+            .and_then(|coin| parse::amount(&self.amount, coin.decimals).ok());
         let memo =
             (memo_allowed && is_plain_text(self.memo.trim(), MAX_MEMO)).then(|| self.memo.trim());
         let mut lines = vec![network_line(ctx, &network.id)];
@@ -156,7 +155,7 @@ impl Receive {
                 network,
                 &target.address,
                 &asset,
-                units,
+                amount,
                 memo,
             )),
             buttons: vec![button(text::COPY_ADDRESS, Action::Copy)],

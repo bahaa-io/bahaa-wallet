@@ -1,7 +1,7 @@
 use bahaa_engine::{
     Account, Activity, Address, AssetId, Caution, ChainFamily, Contact, CustomToken, Draft,
     DraftId, Engine, EngineError, NetworkId, NewPhrase, PhraseKind, Replace, SecretString,
-    SendRequest, SentTx, Settings, TonContract, WalletId, WalletInfo,
+    SendRequest, SentTx, Settings, SolanaPath, TonContract, WalletId, WalletInfo,
 };
 
 pub(crate) enum Call {
@@ -20,6 +20,7 @@ pub(crate) enum Call {
     AddAccount(WalletId),
     RemoveAccount(WalletId, u32),
     SetTonContract(WalletId, TonContract),
+    SetSolanaPath(WalletId, SolanaPath),
     Reveal(WalletId, SecretString),
     ChangePassword(SecretString, SecretString),
     SetSettings(Settings),
@@ -102,6 +103,7 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
         Call::SetTonContract(wallet, contract) => {
             done(engine.set_ton_contract(wallet, contract).await)
         }
+        Call::SetSolanaPath(wallet, path) => done(engine.set_solana_path(wallet, path).await),
         Call::Reveal(wallet, password) => Outcome::Revealed(engine.reveal(wallet, password).await),
         Call::ChangePassword(old, new) => done(engine.change_password(old, new).await),
         Call::SetSettings(settings) => done(engine.set_settings(settings).await),

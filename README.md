@@ -58,8 +58,9 @@ Your wallets and settings are kept.
 | Optimism | ETH | USDT, USDC |
 | Tron | TRX | USDT |
 | TON | GRAM | USDT |
+| Solana | SOL | USDT, USDC |
 
-You can add any other token by its contract address. Test networks (BSC testnet, Tron Nile and TON testnet) are available too, hidden until you turn them on.
+You can add any other token by its contract address. Test networks (BSC testnet, Tron Nile, TON testnet and Solana Devnet) are available too, hidden until you turn them on.
 
 ## Features
 
@@ -85,7 +86,8 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Coins received on EVM networks** show in the balance but not in activity. Finding them needs paid indexing, and the wallet uses no API keys.
 - **Short past history** for imported wallets on EVM networks and Tron, because free servers keep only recent records.
 - **Some memos aren't shown:** on received Tron token transfers, and TON's encrypted comments.
-- **Speed up and cancel are EVM only.** Tron and TON can't replace a sent transaction.
+- **Speed up and cancel are EVM only.** Tron, TON and Solana can't replace a sent transaction.
+- **Solana Token-2022 tokens** can't be added yet, only classic Solana tokens.
 - **EVM memos only go with coins** sent to a plain address. With tokens and contracts, they would break the call.
 - **Only listed networks** for now, and values only for assets Bahaa prices.
 - **Public servers:** if a network's servers are down, that network pauses until they're back.

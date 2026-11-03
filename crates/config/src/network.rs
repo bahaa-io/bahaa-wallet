@@ -501,6 +501,8 @@ mod tests {
                 "ethereum",
                 "optimism",
                 "polygon",
+                "solana",
+                "solana-devnet",
                 "ton",
                 "ton-testnet",
                 "tron",

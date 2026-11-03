@@ -506,6 +506,56 @@
     }
   },
   {
+    "id": "solana",
+    "name": "Solana",
+    "color": "#14f195",
+    "family": "solana",
+    "genesis": "45296998a6f8e2a784db5d9f95e18fc23f70441a1039446801089879b08c7ef0",
+    "testnet": false,
+    "native": {
+      "symbol": "SOL",
+      "name": "Solana",
+      "decimals": 9,
+      "price": "crypto/SOL",
+      "color": "#14f195"
+    },
+    "tokens": [
+      {
+        "contract": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "decimals": 6,
+        "price": "crypto/USDT",
+        "color": "#26a17b"
+      },
+      {
+        "contract": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 6,
+        "price": "crypto/USDC",
+        "color": "#3a86e0"
+      }
+    ],
+    "endpoints": [
+      {
+        "protocol": "solana-rpc",
+        "url": "https://api.mainnet-beta.solana.com",
+        "features": [
+          "history"
+        ]
+      },
+      {
+        "protocol": "solana-rpc",
+        "url": "https://solana-rpc.publicnode.com"
+      }
+    ],
+    "explorer": {
+      "tx": "https://solscan.io/tx/{tx}",
+      "address": "https://solscan.io/account/{address}"
+    }
+  },
+  {
     "id": "bsc-testnet",
     "name": "BNB Smart Chain Testnet",
     "color": "#f0b90b",
@@ -597,6 +647,34 @@
     "explorer": {
       "tx": "https://testnet.tonviewer.com/transaction/{tx}",
       "address": "https://testnet.tonviewer.com/{address}"
+    }
+  },
+  {
+    "id": "solana-devnet",
+    "name": "Solana Devnet",
+    "color": "#14f195",
+    "family": "solana",
+    "genesis": "ce59db5080fc2c6d3bcf7ca90712d3c2e5e6c28f27f0dfbb9953bdb0894c03ab",
+    "testnet": true,
+    "native": {
+      "symbol": "tSOL",
+      "name": "Devnet SOL",
+      "decimals": 9,
+      "color": "#14f195"
+    },
+    "tokens": [],
+    "endpoints": [
+      {
+        "protocol": "solana-rpc",
+        "url": "https://api.devnet.solana.com",
+        "features": [
+          "history"
+        ]
+      }
+    ],
+    "explorer": {
+      "tx": "https://solscan.io/tx/{tx}?cluster=devnet",
+      "address": "https://solscan.io/account/{address}?cluster=devnet"
     }
   }
 ]

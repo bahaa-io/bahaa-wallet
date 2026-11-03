@@ -1,12 +1,13 @@
 use std::fmt::Write as _;
 
-use bahaa_engine::{Address, AssetId, ChainFamily, ChainKind, Network, Registry, TonForm};
+use bahaa_engine::{Address, Amount, AssetId, ChainFamily, ChainKind, Network, Registry, TonForm};
 use ruint::aliases::U256;
 
 use crate::{format, text};
 
 const EVM: &str = "ethereum:";
 const TON: &str = "ton://transfer/";
+const SOLANA: &str = "solana:";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Payment {
@@ -17,10 +18,17 @@ pub(crate) struct Payment {
     pub memo: Option<String>,
 }
 
-pub(crate) fn read(text: &str, registry: &Registry) -> Option<Result<Payment, String>> {
+pub(crate) fn read(
+    text: &str,
+    registry: &Registry,
+    decimals: impl Fn(&AssetId) -> Option<u8>,
+) -> Option<Result<Payment, String>> {
     let text = text.trim();
     if let Some(rest) = text.strip_prefix(EVM) {
         return Some(evm(rest, registry));
+    }
+    if let Some(rest) = text.strip_prefix(SOLANA) {
+        return Some(solana(rest, registry, decimals));
     }
     text.strip_prefix(TON).map(|rest| ton(rest, registry))
 }
@@ -29,16 +37,17 @@ pub(crate) fn request(
     network: &Network,
     to: &Address,
     asset: &AssetId,
-    units: Option<U256>,
+    amount: Option<Amount>,
     memo: Option<&str>,
 ) -> String {
     let shown = format::address(to, network);
-    if units.is_none() && memo.is_none() {
+    if amount.is_none() && memo.is_none() {
         return shown;
     }
+    let memo = memo.map(encode);
     match network.kind {
         ChainKind::Evm { chain_id, .. } => {
-            let units = units.unwrap_or_default();
+            let units = amount.map(|amount| amount.units()).unwrap_or_default();
             match asset.contract() {
                 None => format!("{EVM}{to}@{chain_id}?value={units}"),
                 Some(token) => {
@@ -47,34 +56,45 @@ pub(crate) fn request(
             }
         }
         ChainKind::Ton { .. } => {
-            let mut link = format!("{TON}{shown}");
-            let mut separator = '?';
-            let mut add = |key: &str, value: &str| {
-                let _ = write!(link, "{separator}{key}={value}");
-                separator = '&';
+            let form = TonForm {
+                bounceable: true,
+                testnet: network.testnet,
             };
-            if let Some(units) = units {
-                add("amount", &units.to_string());
-            }
-            if let Some(memo) = memo {
-                add("text", &encode(memo));
-            }
-            if let Some(token) = asset.contract() {
-                let form = TonForm {
-                    bounceable: true,
-                    testnet: network.testnet,
-                };
-                add(
-                    "jetton",
-                    &token
-                        .ton_friendly(form)
-                        .unwrap_or_else(|| token.to_string()),
-                );
-            }
-            link
+            let jetton = asset.contract().map(|token| {
+                token
+                    .ton_friendly(form)
+                    .unwrap_or_else(|| token.to_string())
+            });
+            query(
+                format!("{TON}{shown}"),
+                [
+                    ("amount", amount.map(|amount| amount.units().to_string())),
+                    ("text", memo),
+                    ("jetton", jetton),
+                ],
+            )
         }
-        ChainKind::Tron { .. } | ChainKind::Solana { .. } => shown,
+        ChainKind::Solana { .. } => query(
+            format!("{SOLANA}{shown}"),
+            [
+                ("amount", amount.map(|amount| amount.to_string())),
+                ("spl-token", asset.contract().map(ToString::to_string)),
+                ("memo", memo),
+            ],
+        ),
+        ChainKind::Tron { .. } => shown,
     }
+}
+
+fn query<const N: usize>(mut link: String, pairs: [(&str, Option<String>); N]) -> String {
+    let mut separator = '?';
+    for (key, value) in pairs {
+        if let Some(value) = value {
+            let _ = write!(link, "{separator}{key}={value}");
+            separator = '&';
+        }
+    }
+    link
 }
 
 fn evm(rest: &str, registry: &Registry) -> Result<Payment, String> {
@@ -161,6 +181,58 @@ fn ton(rest: &str, registry: &Registry) -> Result<Payment, String> {
     Ok(payment)
 }
 
+fn solana(
+    rest: &str,
+    registry: &Registry,
+    decimals: impl Fn(&AssetId) -> Option<u8>,
+) -> Result<Payment, String> {
+    let (target, query) = rest.split_once('?').unwrap_or((rest, ""));
+    if decode(target)?.starts_with("https:") {
+        return Err(text::LINK_UNSUPPORTED.to_owned());
+    }
+    let to = Address::parse(ChainFamily::Solana, target).map_err(|err| err.to_string())?;
+    let network = registry
+        .networks()
+        .find(|network| network.family() == ChainFamily::Solana && !network.testnet)
+        .cloned()
+        .ok_or_else(|| text::LINK_UNKNOWN_NETWORK.to_owned())?;
+    let mut payment = Payment {
+        network: None,
+        to,
+        token: None,
+        units: None,
+        memo: None,
+    };
+    let mut amount = None;
+    for (key, value) in pairs(query)? {
+        match key.as_str() {
+            "amount" => amount = Some(value),
+            "spl-token" => {
+                let token =
+                    Address::parse(ChainFamily::Solana, &value).map_err(|err| err.to_string())?;
+                payment.token = Some(token);
+            }
+            "memo" => payment.memo = Some(value),
+            "reference" => return Err(text::LINK_UNSUPPORTED.to_owned()),
+            _ => {}
+        }
+    }
+    let asset = match payment.token {
+        Some(token) => AssetId::Token(network.id.clone(), token),
+        None => AssetId::Native(network.id.clone()),
+    };
+    if let Some(amount) = amount {
+        if amount.starts_with('.') || amount.ends_with('.') {
+            return Err(text::LINK_INVALID.to_owned());
+        }
+        let places = decimals(&asset).ok_or_else(|| text::LINK_UNKNOWN_TOKEN.to_owned())?;
+        let amount = Amount::parse(&amount, places).map_err(|_| text::LINK_INVALID.to_owned())?;
+        payment.units = Some(amount.units());
+    }
+    payment.network = Some(network);
+    Ok(payment)
+}
+
 fn pairs(query: &str) -> Result<Vec<(String, String)>, String> {
     query
         .split('&')
@@ -233,6 +305,10 @@ mod tests {
         Registry::builtin().unwrap()
     }
 
+    fn decimals(registry: &Registry) -> impl Fn(&AssetId) -> Option<u8> + '_ {
+        |asset| bahaa_engine::coin(registry, &[], asset).map(|coin| coin.decimals)
+    }
+
     fn evm_address(text: &str) -> Address {
         Address::parse(ChainFamily::Evm, text).unwrap()
     }
@@ -240,22 +316,27 @@ mod tests {
     #[test]
     fn eip681_links_name_the_network_the_recipient_and_the_amount() {
         let registry = registry();
-        let native = read(&format!("ethereum:{OWNER}@56?value=2.014e18"), &registry)
-            .unwrap()
-            .unwrap();
+        let native = read(
+            &format!("ethereum:{OWNER}@56?value=2.014e18"),
+            &registry,
+            decimals(&registry),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(native.network.unwrap().id.as_str(), "bsc");
         assert_eq!(native.to, evm_address(OWNER));
         assert_eq!(native.units, Some(U256::from(2_014_000_000_000_000_000u64)));
         let token = read(
             &format!("ethereum:pay-{BSC_USDT}@56/transfer?address={OWNER}&uint256=1000000"),
             &registry,
+            decimals(&registry),
         )
         .unwrap()
         .unwrap();
         assert_eq!(token.token, Some(evm_address(BSC_USDT)));
         assert_eq!(token.to, evm_address(OWNER));
         assert_eq!(token.units, Some(U256::from(1_000_000u32)));
-        let plain = read(&format!("ethereum:{OWNER}"), &registry)
+        let plain = read(&format!("ethereum:{OWNER}"), &registry, decimals(&registry))
             .unwrap()
             .unwrap();
         assert_eq!((plain.network, plain.units), (None, None));
@@ -264,7 +345,11 @@ mod tests {
     #[test]
     fn broken_or_foreign_links_are_explained() {
         let registry = registry();
-        let error = |link: &str| read(link, &registry).unwrap().unwrap_err();
+        let error = |link: &str| {
+            read(link, &registry, decimals(&registry))
+                .unwrap()
+                .unwrap_err()
+        };
         assert_eq!(
             error(&format!("ethereum:{OWNER}@999999")),
             text::LINK_UNKNOWN_NETWORK
@@ -285,14 +370,16 @@ mod tests {
             error(&format!("{TON}{TON_OWNER}?text=%E2%28")),
             text::LINK_INVALID
         );
-        assert!(read(OWNER, &registry).is_none());
+        assert!(read(OWNER, &registry, decimals(&registry)).is_none());
     }
 
     #[test]
     fn ton_links_carry_amount_comment_and_token() {
         let registry = registry();
         let link = format!("{TON}{TON_OWNER}?amount=50000000&text=Bahaa%20memo%20%F0%9F%99%82");
-        let payment = read(&link, &registry).unwrap().unwrap();
+        let payment = read(&link, &registry, decimals(&registry))
+            .unwrap()
+            .unwrap();
         assert_eq!(payment.network.unwrap().id.as_str(), "ton");
         assert_eq!(payment.units, Some(U256::from(50_000_000u32)));
         assert_eq!(payment.memo.as_deref(), Some("Bahaa memo 🙂"));
@@ -305,8 +392,11 @@ mod tests {
         let usdt = AssetId::Token(bsc.id.clone(), evm_address(BSC_USDT));
         let to = evm_address(OWNER);
         assert_eq!(request(bsc, &to, &usdt, None, None), OWNER);
-        let link = request(bsc, &to, &usdt, Some(U256::from(5u8)), None);
-        let back = read(&link, &registry).unwrap().unwrap();
+        let five = Amount::new(U256::from(5u8), 18).unwrap();
+        let link = request(bsc, &to, &usdt, Some(five), None);
+        let back = read(&link, &registry, decimals(&registry))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             (back.to, back.token, back.units),
             (to, Some(evm_address(BSC_USDT)), Some(U256::from(5u8)))
@@ -318,11 +408,84 @@ mod tests {
             ton,
             &owner,
             &native,
-            Some(U256::from(7u8)),
+            Some(Amount::new(U256::from(7u8), 9).unwrap()),
             Some("for coffee & cake"),
         );
-        let back = read(&link, &registry).unwrap().unwrap();
+        let back = read(&link, &registry, decimals(&registry))
+            .unwrap()
+            .unwrap();
         assert_eq!(back.memo.as_deref(), Some("for coffee & cake"));
         assert_eq!((back.to, back.units), (owner, Some(U256::from(7u8))));
+    }
+
+    const SOLANA_OWNER: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
+    const SOLANA_USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+    #[test]
+    fn solana_pay_links_name_the_amount_in_coins_and_the_memo() {
+        let registry = registry();
+        let solana = registry.get(&"solana".parse().unwrap()).unwrap();
+        let owner = Address::parse(ChainFamily::Solana, SOLANA_OWNER).unwrap();
+        let usdc = Address::parse(ChainFamily::Solana, SOLANA_USDC).unwrap();
+        let token = AssetId::Token(solana.id.clone(), usdc);
+        let amount = Amount::parse("12.5", 6).unwrap();
+        let link = request(solana, &owner, &token, Some(amount), Some("order 7"));
+        assert_eq!(
+            link,
+            format!("solana:{SOLANA_OWNER}?amount=12.5&spl-token={SOLANA_USDC}&memo=order%207")
+        );
+        let back = read(&link, &registry, decimals(&registry))
+            .unwrap()
+            .unwrap();
+        assert_eq!(back.network.unwrap().id.as_str(), "solana");
+        assert_eq!(
+            (back.to, back.token, back.units, back.memo.as_deref()),
+            (
+                owner,
+                Some(usdc),
+                Some(U256::from(12_500_000u32)),
+                Some("order 7")
+            )
+        );
+        let coins = read(
+            &format!("solana:{SOLANA_OWNER}?amount=0.01&label=Shop&message=Thanks"),
+            &registry,
+            decimals(&registry),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(coins.units, Some(U256::from(10_000_000u32)));
+        assert_eq!(coins.token, None);
+    }
+
+    #[test]
+    fn solana_pay_links_beyond_a_plain_transfer_are_refused() {
+        let registry = registry();
+        let error = |link: String| {
+            read(&link, &registry, decimals(&registry))
+                .unwrap()
+                .unwrap_err()
+        };
+        assert_eq!(
+            error(format!("solana:{SOLANA_OWNER}?reference={SOLANA_USDC}")),
+            text::LINK_UNSUPPORTED
+        );
+        assert_eq!(
+            error("solana:https%3A%2F%2Fpay.example%2Fapi".to_owned()),
+            text::LINK_UNSUPPORTED
+        );
+        for amount in [".5", "1.", "1e3", "0.0000000001", "-1"] {
+            assert_eq!(
+                error(format!("solana:{SOLANA_OWNER}?amount={amount}")),
+                text::LINK_INVALID,
+                "{amount}"
+            );
+        }
+        assert_eq!(
+            error(format!(
+                "solana:{SOLANA_OWNER}?amount=1&spl-token=So11111111111111111111111111111111111111112"
+            )),
+            text::LINK_UNKNOWN_TOKEN
+        );
     }
 }

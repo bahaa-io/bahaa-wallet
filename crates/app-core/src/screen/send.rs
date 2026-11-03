@@ -153,7 +153,9 @@ impl Send {
         if self.to_text.trim().is_empty() {
             return Reply::default();
         }
-        if let Some(read) = links::read(&self.to_text, ctx.registry) {
+        if let Some(read) = links::read(&self.to_text, ctx.registry, |asset| {
+            ctx.coin(asset).map(|coin| coin.decimals)
+        }) {
             return match read {
                 Ok(payment) => self.pay(payment, ctx),
                 Err(problem) => {

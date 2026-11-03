@@ -1,12 +1,12 @@
-use bahaa_engine::{TonContract, WalletId, WalletKind};
+use bahaa_engine::{SolanaPath, TonContract, WalletId, WalletInfo, WalletKind};
 
 use super::{
     Screen, button, cell, choice, counted_toggle, group, hidden, input, line, wallet_kind,
 };
-use crate::action::{Action, Contract, Field, Go, Pick, Tab, Toggle};
+use crate::action::{Action, Contract, Field, Go, Path, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Level, Page, PageId, Row, Secret, Table, Tone};
+use crate::view::{Item, Level, Page, PageId, Row, Secret, Table, Tone};
 use crate::{format, text};
 
 pub(crate) struct Wallet {
@@ -45,6 +45,13 @@ impl Screen for Wallet {
                     Contract::V4R2 => TonContract::V4R2,
                 };
                 return Reply::call(Call::SetTonContract(self.id, contract));
+            }
+            Action::Pick(Pick::Path(path)) => {
+                let path = match path {
+                    Path::Bip44Change => SolanaPath::Bip44Change,
+                    Path::Bip44 => SolanaPath::Bip44,
+                };
+                return Reply::call(Call::SetSolanaPath(self.id, path));
             }
             Action::Go(Go::Reveal) => {
                 return Reply::nav(Nav::Push(Box::new(Reveal::new(self.id))));
@@ -114,26 +121,7 @@ impl Screen for Wallet {
             .collect();
         let mut buttons = vec![button(text::SAVE_NAME, Action::Submit)];
         let mut form = vec![input(Field::Name, text::NAME, &self.name).into()];
-        if let Some(contract) = wallet.ton {
-            form.push(
-                group(
-                    text::TON_CONTRACT,
-                    vec![
-                        choice(
-                            text::W5,
-                            Action::Pick(Pick::Contract(Contract::W5)),
-                            contract == TonContract::W5,
-                        ),
-                        choice(
-                            text::V4R2,
-                            Action::Pick(Pick::Contract(Contract::V4R2)),
-                            contract == TonContract::V4R2,
-                        ),
-                    ],
-                )
-                .into(),
-            );
-        }
+        form.extend(choices(wallet));
         if wallet.kind == WalletKind::Bip39 {
             buttons.push(button(text::ADD_ACCOUNT, Action::Pick(Pick::AddAccount)));
             if indexes.len() > 1 {
@@ -313,6 +301,52 @@ impl Screen for Remove {
             ..Page::default()
         }
     }
+}
+
+fn choices(wallet: &WalletInfo) -> Vec<Item> {
+    let pair = |label: &str, options: [(&str, Pick, bool); 2]| -> Item {
+        let choices = options
+            .into_iter()
+            .map(|(text, pick, on)| choice(text, Action::Pick(pick), on))
+            .collect();
+        group(label, choices).into()
+    };
+    let mut items = Vec::new();
+    if let Some(contract) = wallet.ton {
+        items.push(pair(
+            text::TON_CONTRACT,
+            [
+                (
+                    text::W5,
+                    Pick::Contract(Contract::W5),
+                    contract == TonContract::W5,
+                ),
+                (
+                    text::V4R2,
+                    Pick::Contract(Contract::V4R2),
+                    contract == TonContract::V4R2,
+                ),
+            ],
+        ));
+    }
+    if let Some(path) = wallet.solana {
+        items.push(pair(
+            text::SOLANA_PATH,
+            [
+                (
+                    text::PATH_BIP44_CHANGE,
+                    Pick::Path(Path::Bip44Change),
+                    path == SolanaPath::Bip44Change,
+                ),
+                (
+                    text::PATH_BIP44,
+                    Pick::Path(Path::Bip44),
+                    path == SolanaPath::Bip44,
+                ),
+            ],
+        ));
+    }
+    items
 }
 
 fn reveal_label(kind: WalletKind) -> Option<&'static str> {

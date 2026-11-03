@@ -91,6 +91,7 @@ pub enum Pick {
     CheckUpdates,
     AutoLock(u16),
     Contract(Contract),
+    Path(Path),
     AddAccount,
     RemoveAccount(u32),
     RemoveToken(usize),
@@ -130,6 +131,7 @@ pub enum Family {
     Evm,
     Tron,
     Ton,
+    Solana,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,4 +158,10 @@ pub enum Channel {
 pub enum Contract {
     W5,
     V4R2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Path {
+    Bip44Change,
+    Bip44,
 }

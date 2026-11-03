@@ -307,7 +307,10 @@ pub(crate) fn revealed(phrase: &SecretString) -> Secret {
 }
 
 pub(crate) fn memo_allowed(asset: &AssetId, family: ChainFamily) -> bool {
-    asset.contract().is_none() || family == ChainFamily::Ton
+    match family {
+        ChainFamily::Ton | ChainFamily::Solana => true,
+        ChainFamily::Evm | ChainFamily::Tron => asset.contract().is_none(),
+    }
 }
 
 pub(crate) fn network_group(ctx: &Ctx<'_>, selected: Option<&NetworkId>) -> Group {

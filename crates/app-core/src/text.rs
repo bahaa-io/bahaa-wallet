@@ -28,7 +28,7 @@ pub(crate) const WATCH_ONLY: &str = "Watch only";
 pub(crate) const WATCH_ADDED: &str = "Watching the address";
 pub(crate) const COUNT_IN_TOTAL: &str = "Count in my total";
 pub(crate) const IMPORT_KEY: &str = "Import a private key";
-pub(crate) const IMPORT_KEY_TEXT: &str = "Paste a private key exported from another wallet. One key is one account, on EVM networks, Tron or TON.";
+pub(crate) const IMPORT_KEY_TEXT: &str = "Paste a private key exported from another wallet. One key is one account, on EVM networks, Tron, TON or Solana.";
 pub(crate) const PRIVATE_KEY: &str = "Private key";
 pub(crate) const USE_FOR: &str = "Use it for";
 pub(crate) const EVM_NETWORKS: &str = "EVM networks";
@@ -199,6 +199,9 @@ pub(crate) const ADD_ACCOUNT: &str = "Add account";
 pub(crate) const TON_CONTRACT: &str = "TON contract";
 pub(crate) const W5: &str = "W5 (current)";
 pub(crate) const V4R2: &str = "V4R2 (older)";
+pub(crate) const SOLANA_PATH: &str = "Solana path";
+pub(crate) const PATH_BIP44_CHANGE: &str = "Phantom, Solflare";
+pub(crate) const PATH_BIP44: &str = "Trust Wallet";
 pub(crate) const SHOW_PHRASE: &str = "Show recovery phrase";
 pub(crate) const SHOW_KEY: &str = "Show private key";
 pub(crate) const PRIVACY: &str = "Privacy";
@@ -231,6 +234,7 @@ pub(crate) const TOKEN_REMOVED: &str = "Token removed";
 
 pub(crate) const LINK_INVALID: &str = "This payment link is broken";
 pub(crate) const LINK_UNSUPPORTED: &str = "This kind of payment link is not supported";
+pub(crate) const LINK_UNKNOWN_TOKEN: &str = "This payment link asks for a token you have not added";
 pub(crate) const LINK_UNKNOWN_NETWORK: &str =
     "This payment link is for a network the wallet does not have";
 
