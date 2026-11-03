@@ -132,6 +132,8 @@ pub enum FeeItem {
     Memo,
     Signature,
     Priority { units: u64 },
+    Size { vbytes: u64 },
+    Leftover,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

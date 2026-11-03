@@ -19,13 +19,36 @@ const ALIKE_START: usize = 4;
 const ALIKE_END: usize = 4;
 const TON_FLAG_CHARS: usize = 2;
 const SOLANA_MAX_CHARS: usize = 44;
+const BITCOIN_MAX_CHARS: usize = 90;
+const BASE58_MAX_CHARS: usize = 35;
+const BITCOIN_PREFIX_CHARS: usize = 4;
+const PUBKEY_HASH: u8 = 0x00;
+const SCRIPT_HASH: u8 = 0x05;
+const TEST_PUBKEY_HASH: u8 = 0x6f;
+const TEST_SCRIPT_HASH: u8 = 0xc4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Address {
     Evm([u8; 20]),
     Tron([u8; 20]),
-    Ton { workchain: i8, hash: [u8; 32] },
+    Ton {
+        workchain: i8,
+        hash: [u8; 32],
+    },
     Solana([u8; 32]),
+    Bitcoin {
+        script: BitcoinScript,
+        testnet: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BitcoinScript {
+    PubkeyHash([u8; 20]),
+    ScriptHash([u8; 20]),
+    WitnessKeyHash([u8; 20]),
+    WitnessScriptHash([u8; 32]),
+    Taproot([u8; 32]),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -69,6 +92,7 @@ impl Address {
             ChainFamily::Tron => parse_tron(text),
             ChainFamily::Ton => Self::parse_ton(text).map(|(address, _)| address),
             ChainFamily::Solana => parse_solana(text),
+            ChainFamily::Bitcoin => parse_bitcoin(text),
         }
     }
 
@@ -90,6 +114,7 @@ impl Address {
             Self::Tron(_) => ChainFamily::Tron,
             Self::Ton { .. } => ChainFamily::Ton,
             Self::Solana(_) => ChainFamily::Solana,
+            Self::Bitcoin { .. } => ChainFamily::Bitcoin,
         }
     }
 
@@ -122,6 +147,14 @@ impl Address {
                 forms
             }
             Self::Solana(_) => vec![self.to_string()],
+            Self::Bitcoin { script, .. } => {
+                let skip = if script.is_witness() {
+                    BITCOIN_PREFIX_CHARS
+                } else {
+                    1
+                };
+                vec![self.to_string().chars().skip(skip).collect()]
+            }
         }
     }
 
@@ -153,6 +186,7 @@ impl fmt::Display for Address {
             Self::Tron(bytes) => f.write_str(&tron_base58(bytes)),
             Self::Ton { workchain, hash } => write!(f, "{workchain}:{}", hex::encode(hash)),
             Self::Solana(bytes) => f.write_str(&bs58::encode(bytes).into_string()),
+            Self::Bitcoin { script, testnet } => f.write_str(&bitcoin_text(*script, *testnet)),
         }
     }
 }
@@ -215,6 +249,96 @@ fn parse_solana(text: &str) -> Result<Address, AddressError> {
     }
     let bytes = bs58::decode(text).into_vec().map_err(|_| invalid)?;
     Ok(Address::Solana(bytes.try_into().map_err(|_| invalid)?))
+}
+
+impl BitcoinScript {
+    pub fn is_witness(self) -> bool {
+        !matches!(self, Self::PubkeyHash(_) | Self::ScriptHash(_))
+    }
+}
+
+fn parse_bitcoin(text: &str) -> Result<Address, AddressError> {
+    let invalid = AddressError::Format(ChainFamily::Bitcoin);
+    if text.len() > BITCOIN_MAX_CHARS {
+        return Err(invalid);
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("bc1") || lower.starts_with("tb1") {
+        let (hrp, version, program) = bech32::segwit::decode(text).map_err(|err| match err.0 {
+            bech32::primitives::decode::SegwitHrpstringError::Checksum(_) => AddressError::Checksum,
+            _ => invalid,
+        })?;
+        let testnet = if hrp == bech32::hrp::BC {
+            false
+        } else if hrp == bech32::hrp::TB {
+            true
+        } else {
+            return Err(invalid);
+        };
+        let script = match (version.to_u8(), program.len()) {
+            (0, 20) => BitcoinScript::WitnessKeyHash(program.try_into().map_err(|_| invalid)?),
+            (0, 32) => BitcoinScript::WitnessScriptHash(program.try_into().map_err(|_| invalid)?),
+            (1, 32) => BitcoinScript::Taproot(program.try_into().map_err(|_| invalid)?),
+            _ => return Err(invalid),
+        };
+        return Ok(Address::Bitcoin { script, testnet });
+    }
+    if text.len() > BASE58_MAX_CHARS {
+        return Err(invalid);
+    }
+    let data = bs58::decode(text)
+        .with_check(None)
+        .into_vec()
+        .map_err(|err| match err {
+            bs58::decode::Error::InvalidChecksum { .. } => AddressError::Checksum,
+            _ => invalid,
+        })?;
+    let (version, hash) = data.split_first().ok_or(invalid)?;
+    let hash: [u8; 20] = hash.try_into().map_err(|_| invalid)?;
+    let (script, testnet) = match *version {
+        PUBKEY_HASH => (BitcoinScript::PubkeyHash(hash), false),
+        SCRIPT_HASH => (BitcoinScript::ScriptHash(hash), false),
+        TEST_PUBKEY_HASH => (BitcoinScript::PubkeyHash(hash), true),
+        TEST_SCRIPT_HASH => (BitcoinScript::ScriptHash(hash), true),
+        _ => return Err(invalid),
+    };
+    Ok(Address::Bitcoin { script, testnet })
+}
+
+fn bitcoin_text(script: BitcoinScript, testnet: bool) -> String {
+    let hrp = if testnet {
+        bech32::hrp::TB
+    } else {
+        bech32::hrp::BC
+    };
+    let legacy = |version: u8, hash: &[u8; 20]| {
+        let mut data = vec![version];
+        data.extend_from_slice(hash);
+        bs58::encode(data).with_check().into_string()
+    };
+    let witness =
+        |version, program: &[u8]| bech32::segwit::encode(hrp, version, program).unwrap_or_default();
+    match script {
+        BitcoinScript::PubkeyHash(hash) => legacy(
+            if testnet {
+                TEST_PUBKEY_HASH
+            } else {
+                PUBKEY_HASH
+            },
+            &hash,
+        ),
+        BitcoinScript::ScriptHash(hash) => legacy(
+            if testnet {
+                TEST_SCRIPT_HASH
+            } else {
+                SCRIPT_HASH
+            },
+            &hash,
+        ),
+        BitcoinScript::WitnessKeyHash(hash) => witness(bech32::segwit::VERSION_0, &hash),
+        BitcoinScript::WitnessScriptHash(hash) => witness(bech32::segwit::VERSION_0, &hash),
+        BitcoinScript::Taproot(key) => witness(bech32::segwit::VERSION_1, &key),
+    }
 }
 
 fn parse_ton_friendly(text: &str) -> Result<(Address, TonForm), AddressError> {
@@ -489,6 +613,11 @@ mod tests {
                 .unwrap()
                 .0,
             Address::parse(ChainFamily::Solana, SOL_MINT).unwrap(),
+            Address::parse(
+                ChainFamily::Bitcoin,
+                "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            )
+            .unwrap(),
         ];
         for address in samples {
             let json = serde_json::to_string(&address).unwrap();
@@ -541,6 +670,115 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    fn bitcoin(text: &str) -> Result<Address, AddressError> {
+        Address::parse(ChainFamily::Bitcoin, text)
+    }
+
+    #[test]
+    fn bitcoin_addresses_of_every_kind_match_the_bip_examples() {
+        let cases: [(&str, BitcoinScript, bool); 7] = [
+            (
+                "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+                BitcoinScript::PubkeyHash(
+                    hex::decode_array("62e907b15cbf27d5425399ebf6f0fb50ebb88f18").unwrap(),
+                ),
+                false,
+            ),
+            (
+                "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+                BitcoinScript::ScriptHash(
+                    hex::decode_array("b472a266d0bd89c13706a4132ccfb16f7c3b9fcb").unwrap(),
+                ),
+                false,
+            ),
+            (
+                "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+                BitcoinScript::WitnessKeyHash(
+                    hex::decode_array("751e76e8199196d454941c45d1b3a323f1433bd6").unwrap(),
+                ),
+                false,
+            ),
+            (
+                "bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3",
+                BitcoinScript::WitnessScriptHash(
+                    hex::decode_array(
+                        "1863143c14c5166804bd19203356da136c985678cd4d27a1b8c6329604903262",
+                    )
+                    .unwrap(),
+                ),
+                false,
+            ),
+            (
+                "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr",
+                BitcoinScript::Taproot(
+                    hex::decode_array(
+                        "a60869f0dbcf1dc659c9cecbaf8050135ea9e8cdc487053f1dc6880949dc684c",
+                    )
+                    .unwrap(),
+                ),
+                false,
+            ),
+            (
+                "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+                BitcoinScript::WitnessKeyHash(
+                    hex::decode_array("751e76e8199196d454941c45d1b3a323f1433bd6").unwrap(),
+                ),
+                true,
+            ),
+            (
+                "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn",
+                BitcoinScript::PubkeyHash(
+                    hex::decode_array("243f1394f44554f4ce3fd68649c19adc483ce924").unwrap(),
+                ),
+                true,
+            ),
+        ];
+        for (text, script, testnet) in cases {
+            let address = bitcoin(text).unwrap();
+            assert_eq!(address, Address::Bitcoin { script, testnet }, "{text}");
+            assert_eq!(address.to_string(), text);
+        }
+        assert_eq!(
+            bitcoin("BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4")
+                .unwrap()
+                .to_string(),
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        );
+    }
+
+    #[test]
+    fn bitcoin_typos_and_unknown_forms_are_refused() {
+        for text in [
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5",
+            "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb",
+        ] {
+            assert_eq!(bitcoin(text), Err(AddressError::Checksum), "{text}");
+        }
+        for text in [
+            "",
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3T4",
+            "bc1zw508d6qejxtdg4y5r3zarvaryvaxxpcs",
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+            "BC130XLXVLHEMJA6C4DQV22UAPCTQUPFHLXM9H8Z3K2E72Q4K9HCZ7VQ7ZWS8R",
+            "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            &"1".repeat(200),
+        ] {
+            assert_eq!(
+                bitcoin(text),
+                Err(AddressError::Format(ChainFamily::Bitcoin)),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn bitcoin_look_alikes_are_compared_after_the_common_prefix() {
+        let first = bitcoin("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4").unwrap();
+        assert_eq!(first.shown(), ["w508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"]);
+        let legacy = bitcoin("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa").unwrap();
+        assert_eq!(legacy.shown(), ["A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"]);
     }
 
     #[test]

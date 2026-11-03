@@ -310,6 +310,7 @@ pub(crate) fn memo_allowed(asset: &AssetId, family: ChainFamily) -> bool {
     match family {
         ChainFamily::Ton | ChainFamily::Solana => true,
         ChainFamily::Evm | ChainFamily::Tron => asset.contract().is_none(),
+        ChainFamily::Bitcoin => false,
     }
 }
 

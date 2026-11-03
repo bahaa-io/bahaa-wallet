@@ -25,10 +25,17 @@ pub enum ChainFamily {
     Tron,
     Ton,
     Solana,
+    Bitcoin,
 }
 
 impl ChainFamily {
-    pub const ALL: [Self; 4] = [Self::Evm, Self::Tron, Self::Ton, Self::Solana];
+    pub const ALL: [Self; 5] = [
+        Self::Evm,
+        Self::Tron,
+        Self::Ton,
+        Self::Solana,
+        Self::Bitcoin,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -36,6 +43,7 @@ impl ChainFamily {
             Self::Tron => "tron",
             Self::Ton => "ton",
             Self::Solana => "solana",
+            Self::Bitcoin => "bitcoin",
         }
     }
 }

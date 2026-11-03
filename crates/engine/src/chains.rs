@@ -2,6 +2,7 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 
+use bahaa_bitcoin::{BitcoinChain, BitcoinPlan};
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Movement, Replace, ScanCursor, Scanned, Signed,
     Transfer, TxId, TxStatus,
@@ -27,6 +28,7 @@ pub(crate) enum AnyChain {
     Tron(TronChain),
     Ton(Box<TonChain>),
     Solana(SolanaChain),
+    Bitcoin(BitcoinChain),
 }
 
 #[derive(Clone)]
@@ -35,6 +37,7 @@ pub(crate) enum AnyPlan {
     Tron(TronPlan),
     Ton(TonPlan),
     Solana(SolanaPlan),
+    Bitcoin(BitcoinPlan),
 }
 
 impl AnyChain {
@@ -44,6 +47,7 @@ impl AnyChain {
             Self::Tron(chain) => chain.network(),
             Self::Ton(chain) => chain.network(),
             Self::Solana(chain) => chain.network(),
+            Self::Bitcoin(chain) => chain.network(),
         }
     }
 
@@ -74,13 +78,20 @@ impl AnyChain {
             Self::Solana(_) => {
                 bahaa_solana::derive(seed, account, wallet.solana.unwrap_or_default())
             }
+            Self::Bitcoin(chain) => chain.derive(seed, account),
+        }
+    }
+
+    pub(crate) fn forget(&self) {
+        if let Self::Bitcoin(chain) = self {
+            chain.forget();
         }
     }
 
     pub(crate) fn quote_life(&self) -> Option<Duration> {
         match self {
             Self::Solana(_) => Some(bahaa_solana::QUOTE_LIFE),
-            Self::Evm(_) | Self::Tron(_) | Self::Ton(_) => None,
+            Self::Evm(_) | Self::Tron(_) | Self::Ton(_) | Self::Bitcoin(_) => None,
         }
     }
 
@@ -95,6 +106,7 @@ impl AnyChain {
                 Self::Tron(chain) => chain.balances(address, assets).await,
                 Self::Ton(chain) => chain.balances(address, assets).await,
                 Self::Solana(chain) => chain.balances(address, assets).await,
+                Self::Bitcoin(chain) => chain.balances(address, assets).await,
             }
         })
         .await
@@ -107,6 +119,7 @@ impl AnyChain {
                 Self::Tron(chain) => chain.token(contract).await,
                 Self::Ton(chain) => chain.token(contract).await,
                 Self::Solana(chain) => chain.token(contract).await,
+                Self::Bitcoin(chain) => chain.token(contract).await,
             }
         })
         .await
@@ -118,6 +131,7 @@ impl AnyChain {
             Self::Tron(chain) => chain.know(contract, decimals),
             Self::Ton(chain) => chain.know(contract, decimals),
             Self::Solana(chain) => chain.know(contract, decimals),
+            Self::Bitcoin(chain) => chain.know(contract, decimals),
         }
     }
 
@@ -135,7 +149,11 @@ impl AnyChain {
                 Self::Solana(chain) if chain.can_scan() => {
                     chain.scan(address, assets, cursor).await
                 }
-                Self::Evm(_) | Self::Tron(_) | Self::Ton(_) | Self::Solana(_) => Ok(None),
+                Self::Evm(_)
+                | Self::Tron(_)
+                | Self::Ton(_)
+                | Self::Solana(_)
+                | Self::Bitcoin(_) => Ok(None),
             }
         })
         .await
@@ -164,6 +182,11 @@ impl AnyChain {
                     chain,
                     chain.prepare(transfer).await?,
                     AnyPlan::Solana,
+                )),
+                Self::Bitcoin(chain) => Ok(planned(
+                    chain,
+                    chain.prepare(transfer).await?,
+                    AnyPlan::Bitcoin,
                 )),
             }
         })
@@ -198,6 +221,11 @@ impl AnyChain {
                     chain.replace(original, account, how).await?,
                     AnyPlan::Solana,
                 )),
+                Self::Bitcoin(chain) => Ok(planned(
+                    chain,
+                    chain.replace(original, account, how).await?,
+                    AnyPlan::Bitcoin,
+                )),
             }
         })
         .await
@@ -209,6 +237,7 @@ impl AnyChain {
             (Self::Tron(chain), AnyPlan::Tron(plan)) => chain.sign(plan, seed),
             (Self::Ton(chain), AnyPlan::Ton(plan)) => chain.sign(plan, seed),
             (Self::Solana(chain), AnyPlan::Solana(plan)) => chain.sign(plan, seed),
+            (Self::Bitcoin(chain), AnyPlan::Bitcoin(plan)) => chain.sign(plan, seed),
             _ => Err(ChainError::Mismatch("the network")),
         }
     }
@@ -219,6 +248,7 @@ impl AnyChain {
             Self::Tron(chain) => chain.decode(signed),
             Self::Ton(chain) => chain.decode(signed),
             Self::Solana(chain) => chain.decode(signed),
+            Self::Bitcoin(chain) => chain.decode(signed),
         }))
         .unwrap_or_else(|_| Err(unreadable()))
     }
@@ -230,6 +260,7 @@ impl AnyChain {
                 Self::Tron(chain) => chain.broadcast(signed).await,
                 Self::Ton(chain) => chain.broadcast(signed).await,
                 Self::Solana(chain) => chain.broadcast(signed).await,
+                Self::Bitcoin(chain) => chain.broadcast(signed).await,
             }
         })
         .await
@@ -247,6 +278,7 @@ impl AnyChain {
                 Self::Tron(chain) => chain.status(id, from, expires_at).await,
                 Self::Ton(chain) => chain.status(id, from, expires_at).await,
                 Self::Solana(chain) => chain.status(id, from, expires_at).await,
+                Self::Bitcoin(chain) => chain.status(id, from, expires_at).await,
             }
         })
         .await
@@ -283,6 +315,9 @@ pub(crate) fn build(registry: &Registry) -> Vec<AnyChain> {
                 .ok()
                 .map(|chain| AnyChain::Ton(Box::new(chain))),
             ChainFamily::Solana => SolanaChain::new(network.clone()).ok().map(AnyChain::Solana),
+            ChainFamily::Bitcoin => BitcoinChain::new(network.clone())
+                .ok()
+                .map(AnyChain::Bitcoin),
         })
         .collect()
 }
@@ -331,7 +366,9 @@ pub(crate) fn trusted(chains: &[AnyChain]) -> Vec<TrustedBlock> {
                 network: ton.network().id.clone(),
                 checkpoint: ton.checkpoint(),
             }),
-            AnyChain::Evm(_) | AnyChain::Tron(_) | AnyChain::Solana(_) => None,
+            AnyChain::Evm(_) | AnyChain::Tron(_) | AnyChain::Solana(_) | AnyChain::Bitcoin(_) => {
+                None
+            }
         })
         .collect()
 }

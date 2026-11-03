@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 base64.workspace = true
+bech32.workspace = true
 bs58.workspace = true
 ruint.workspace = true
 serde.workspace = true

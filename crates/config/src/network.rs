@@ -42,6 +42,7 @@ pub enum Protocol {
     TonCenter,
     TonApi,
     SolanaRpc,
+    Electrum,
 }
 
 impl Protocol {
@@ -51,6 +52,14 @@ impl Protocol {
             Self::TronHttp => ChainFamily::Tron,
             Self::TonLiteservers | Self::TonCenter | Self::TonApi => ChainFamily::Ton,
             Self::SolanaRpc => ChainFamily::Solana,
+            Self::Electrum => ChainFamily::Bitcoin,
+        }
+    }
+
+    fn scheme(self) -> &'static str {
+        match self {
+            Self::Electrum => "ssl",
+            _ => "https",
         }
     }
 
@@ -59,7 +68,7 @@ impl Protocol {
             Feature::Logs => self == Self::JsonRpc,
             Feature::History => matches!(
                 self,
-                Self::TronHttp | Self::TonCenter | Self::TonApi | Self::SolanaRpc
+                Self::TronHttp | Self::TonCenter | Self::TonApi | Self::SolanaRpc | Self::Electrum
             ),
         }
     }
@@ -126,6 +135,9 @@ pub enum ChainKind {
     Solana {
         genesis: [u8; 32],
     },
+    Bitcoin {
+        genesis: [u8; 32],
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +185,7 @@ impl Network {
             ChainKind::Tron { .. } => ChainFamily::Tron,
             ChainKind::Ton { .. } => ChainFamily::Ton,
             ChainKind::Solana { .. } => ChainFamily::Solana,
+            ChainKind::Bitcoin { .. } => ChainFamily::Bitcoin,
         }
     }
 
@@ -323,6 +336,10 @@ impl Spec {
                 genesis: block_id(self.genesis.as_deref())
                     .ok_or("Solana networks need a 64 hex digit genesis")?,
             },
+            (ChainFamily::Bitcoin, None, None) => ChainKind::Bitcoin {
+                genesis: block_id(self.genesis.as_deref())
+                    .ok_or("Bitcoin networks need a 64 hex digit genesis")?,
+            },
             _ => return Err("only EVM networks have chain_id and fee"),
         };
         let foreign = match self.family {
@@ -332,7 +349,7 @@ impl Spec {
                     || self.zero_state.is_some()
                     || self.checkpoint.is_some()
             }
-            ChainFamily::Tron | ChainFamily::Solana => {
+            ChainFamily::Tron | ChainFamily::Solana | ChainFamily::Bitcoin => {
                 self.global_id.is_some() || self.zero_state.is_some() || self.checkpoint.is_some()
             }
             ChainFamily::Ton => self.genesis.is_some(),
@@ -363,8 +380,13 @@ impl Spec {
             if endpoint.protocol.family() != self.family {
                 return Err(problem("an endpoint speaks another chain's protocol"));
             }
-            if endpoint.url.scheme() != "https" || endpoint.url.host_str().is_none() {
-                return Err(problem("endpoints must use https"));
+            if endpoint.url.scheme() != endpoint.protocol.scheme()
+                || endpoint.url.host_str().is_none()
+                || (endpoint.protocol == Protocol::Electrum && endpoint.url.port().is_none())
+            {
+                return Err(problem(
+                    "endpoints must use https, or ssl://host:port for Electrum servers",
+                ));
             }
             if endpoint
                 .features

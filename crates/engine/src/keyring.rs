@@ -366,6 +366,10 @@ impl Keyring {
                 key,
                 family: ChainFamily::Solana,
             } => SecretString::from(bahaa_crypto::solana_keypair(key).to_string()),
+            Phrase::Key {
+                key,
+                family: ChainFamily::Bitcoin,
+            } => SecretString::from(bahaa_crypto::bitcoin_wif(key).to_string()),
             Phrase::Key { key, .. } | Phrase::TonKey { key, .. } => {
                 SecretString::from(hex::encode(&**key))
             }
@@ -506,6 +510,10 @@ fn key_phrase(text: &str, family: ChainFamily) -> Result<Phrase, KeyringError> {
         },
         ChainFamily::Solana => Phrase::Key {
             key: bahaa_crypto::solana_private_key(text)?,
+            family,
+        },
+        ChainFamily::Bitcoin => Phrase::Key {
+            key: bahaa_crypto::bitcoin_private_key(text)?,
             family,
         },
     })

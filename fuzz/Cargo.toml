@@ -8,6 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+bahaa-bitcoin = { path = "../crates/bitcoin" }
 bahaa-crypto = { path = "../crates/crypto" }
 bahaa-evm = { path = "../crates/evm" }
 bahaa-market = { path = "../crates/market" }
@@ -92,6 +93,20 @@ bench = false
 [[bin]]
 name = "text"
 path = "fuzz_targets/text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bitcoin_raw"
+path = "fuzz_targets/bitcoin_raw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bitcoin_json"
+path = "fuzz_targets/bitcoin_json.rs"
 test = false
 doc = false
 bench = false

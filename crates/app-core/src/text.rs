@@ -35,6 +35,7 @@ pub(crate) const EVM_NETWORKS: &str = "EVM networks";
 pub(crate) const TRON: &str = "Tron";
 pub(crate) const TON: &str = "TON";
 pub(crate) const SOLANA: &str = "Solana";
+pub(crate) const BITCOIN: &str = "Bitcoin";
 pub(crate) const KEY_OK: &str = "A valid private key";
 pub(crate) const SET_PASSWORD: &str = "Set a password";
 pub(crate) const SET_PASSWORD_TEXT: &str =
@@ -464,6 +465,7 @@ fn family(family: ChainFamily) -> &'static str {
         ChainFamily::Tron => TRON,
         ChainFamily::Ton => TON,
         ChainFamily::Solana => SOLANA,
+        ChainFamily::Bitcoin => BITCOIN,
     }
 }
 
@@ -538,6 +540,8 @@ pub(crate) fn fee_item(item: &FeeItem) -> String {
         FeeItem::Memo => "Memo".to_owned(),
         FeeItem::Signature => "Signature fee".to_owned(),
         FeeItem::Priority { units } => format!("Priority fee ({units} compute units)"),
+        FeeItem::Size { vbytes } => format!("Size ({vbytes} vbytes)"),
+        FeeItem::Leftover => "Change too small to keep".to_owned(),
     }
 }
 

@@ -1290,6 +1290,9 @@ impl Worker {
         if let Some(keyring) = self.keyring.as_mut() {
             keyring.lock();
         }
+        for chain in self.chains.iter() {
+            chain.forget();
+        }
         self.deadline = None;
         self.stop_refresh();
         self.stop_tracking();

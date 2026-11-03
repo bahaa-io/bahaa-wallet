@@ -1,12 +1,14 @@
 #![allow(clippy::unwrap_used)]
 
+pub mod electrum;
+
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_chain::{ChainError, Failure};
-use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use url::Url;
 
@@ -80,6 +82,48 @@ pub async fn serve(answer: impl Fn(Request) -> Reply + Send + Sync + 'static) ->
         }
     });
     url
+}
+
+pub async fn serve_lines(
+    answer: impl Fn(&str, &Value) -> Result<Value, String> + Send + Sync + 'static,
+) -> Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = Url::parse(&format!("tcp://{}", listener.local_addr().unwrap())).unwrap();
+    let answer = Arc::new(answer);
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            let answer = Arc::clone(&answer);
+            tokio::spawn(async move {
+                let (reader, mut writer) = socket.into_split();
+                let mut lines = BufReader::new(reader).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    let reply = match &request {
+                        Value::Array(batch) => Value::Array(
+                            batch.iter().rev().map(|one| reply(&*answer, one)).collect(),
+                        ),
+                        one => reply(&*answer, one),
+                    };
+                    let mut text = reply.to_string();
+                    text.push('\n');
+                    if writer.write_all(text.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    url
+}
+
+fn reply(answer: &dyn Fn(&str, &Value) -> Result<Value, String>, request: &Value) -> Value {
+    let id = &request["id"];
+    match answer(request["method"].as_str().unwrap(), &request["params"]) {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err(message) => {
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": 1, "message": message}})
+        }
+    }
 }
 
 async fn read(socket: &mut TcpStream) -> Option<Request> {

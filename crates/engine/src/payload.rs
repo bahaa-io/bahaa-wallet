@@ -1,10 +1,10 @@
 use bahaa_crypto::{ExposeSecret, KEY_BYTES, Mnemonic, SecretString, TON_WORDS, TonMnemonic};
-use bahaa_types::{Address, ChainFamily, SolanaPath, TonContract};
+use bahaa_types::{Address, BitcoinScript, ChainFamily, SolanaPath, TonContract};
 use zeroize::Zeroizing;
 
 use crate::KeyringError;
 
-const VERSION: u8 = 8;
+const VERSION: u8 = 9;
 const FIRST_VERSION: u8 = 1;
 const CONTRACT_VERSION: u8 = 3;
 const SOLANA_PATH_VERSION: u8 = 8;
@@ -18,6 +18,12 @@ const FAMILY_EVM: u8 = 0;
 const FAMILY_TRON: u8 = 1;
 const FAMILY_TON: u8 = 2;
 const FAMILY_SOLANA: u8 = 3;
+const FAMILY_BITCOIN: u8 = 4;
+const PUBKEY_HASH: u8 = 0;
+const SCRIPT_HASH: u8 = 1;
+const WITNESS_KEY_HASH: u8 = 2;
+const WITNESS_SCRIPT_HASH: u8 = 3;
+const TAPROOT: u8 = 4;
 const W5: u8 = 0;
 const V4R2: u8 = 1;
 const UNKNOWN_PATH: u8 = 0;
@@ -150,6 +156,7 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
                     ChainFamily::Evm => FAMILY_EVM,
                     ChainFamily::Tron => FAMILY_TRON,
                     ChainFamily::Solana => FAMILY_SOLANA,
+                    ChainFamily::Bitcoin => FAMILY_BITCOIN,
                     ChainFamily::Ton => return Err(KeyringError::Damaged),
                 });
                 out.extend_from_slice(&**key);
@@ -178,6 +185,19 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
                     Address::Solana(bytes) => {
                         out.push(FAMILY_SOLANA);
                         out.extend_from_slice(bytes);
+                    }
+                    Address::Bitcoin { script, testnet } => {
+                        out.push(FAMILY_BITCOIN);
+                        let (kind, bytes): (u8, &[u8]) = match script {
+                            BitcoinScript::PubkeyHash(hash) => (PUBKEY_HASH, hash),
+                            BitcoinScript::ScriptHash(hash) => (SCRIPT_HASH, hash),
+                            BitcoinScript::WitnessKeyHash(hash) => (WITNESS_KEY_HASH, hash),
+                            BitcoinScript::WitnessScriptHash(hash) => (WITNESS_SCRIPT_HASH, hash),
+                            BitcoinScript::Taproot(key) => (TAPROOT, key),
+                        };
+                        out.push(kind);
+                        out.extend_from_slice(bytes);
+                        out.push(u8::from(*testnet));
                     }
                 }
                 out.push(u8::from(*counted));
@@ -323,6 +343,10 @@ fn read_key(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
             key,
             family: ChainFamily::Solana,
         },
+        FAMILY_BITCOIN => Phrase::Key {
+            key,
+            family: ChainFamily::Bitcoin,
+        },
         _ => return Err(KeyringError::Damaged),
     })
 }
@@ -336,14 +360,34 @@ fn read_watch(reader: &mut Reader<'_>) -> Result<Phrase, KeyringError> {
             hash: reader.array()?,
         },
         FAMILY_SOLANA => Address::Solana(reader.array()?),
+        FAMILY_BITCOIN => {
+            let script = match reader.take(1)?[0] {
+                PUBKEY_HASH => BitcoinScript::PubkeyHash(reader.array()?),
+                SCRIPT_HASH => BitcoinScript::ScriptHash(reader.array()?),
+                WITNESS_KEY_HASH => BitcoinScript::WitnessKeyHash(reader.array()?),
+                WITNESS_SCRIPT_HASH => BitcoinScript::WitnessScriptHash(reader.array()?),
+                TAPROOT => BitcoinScript::Taproot(reader.array()?),
+                _ => return Err(KeyringError::Damaged),
+            };
+            Address::Bitcoin {
+                script,
+                testnet: flag(reader)?,
+            }
+        }
         _ => return Err(KeyringError::Damaged),
     };
-    let counted = match reader.take(1)?[0] {
-        0 => false,
-        1 => true,
-        _ => return Err(KeyringError::Damaged),
-    };
-    Ok(Phrase::Watch { address, counted })
+    Ok(Phrase::Watch {
+        address,
+        counted: flag(reader)?,
+    })
+}
+
+fn flag(reader: &mut Reader<'_>) -> Result<bool, KeyringError> {
+    match reader.take(1)?[0] {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(KeyringError::Damaged),
+    }
 }
 
 fn read_contract(reader: &mut Reader<'_>) -> Result<TonContract, KeyringError> {
@@ -446,7 +490,12 @@ mod tests {
 
     #[test]
     fn private_keys_round_trip_with_their_family() {
-        for family in [ChainFamily::Evm, ChainFamily::Tron, ChainFamily::Solana] {
+        for family in [
+            ChainFamily::Evm,
+            ChainFamily::Tron,
+            ChainFamily::Solana,
+            ChainFamily::Bitcoin,
+        ] {
             let contents = Contents {
                 next_id: 4,
                 entries: vec![Entry {
@@ -486,7 +535,7 @@ mod tests {
                 Phrase::TonKey { key, contract: read } if **key == [5; KEY_BYTES] && *read == contract
             ));
             let mut unknown = encoded.to_vec();
-            unknown[1 + 4 + 2 + 4 + 1] = 4;
+            unknown[1 + 4 + 2 + 4 + 1] = 5;
             assert!(matches!(decode(&unknown), Err(KeyringError::Damaged)));
         }
     }
@@ -501,8 +550,20 @@ mod tests {
                 hash: [3; 32],
             },
             Address::Solana([4; 32]),
+            Address::Bitcoin {
+                script: BitcoinScript::WitnessKeyHash([5; 20]),
+                testnet: false,
+            },
+            Address::Bitcoin {
+                script: BitcoinScript::Taproot([6; 32]),
+                testnet: true,
+            },
+            Address::Bitcoin {
+                script: BitcoinScript::PubkeyHash([7; 20]),
+                testnet: false,
+            },
         ];
-        for (address, counted) in addresses.into_iter().zip([true, false, true, false]) {
+        for (address, counted) in addresses.into_iter().zip([true, false].into_iter().cycle()) {
             let contents = Contents {
                 next_id: 2,
                 entries: vec![Entry {
@@ -522,7 +583,7 @@ mod tests {
             switch[last] = 2;
             assert!(matches!(decode(&switch), Err(KeyringError::Damaged)));
             let mut family = encoded.to_vec();
-            family[1 + 4 + 2 + 4 + 1] = 4;
+            family[1 + 4 + 2 + 4 + 1] = 5;
             assert!(matches!(decode(&family), Err(KeyringError::Damaged)));
         }
     }

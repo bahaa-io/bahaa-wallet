@@ -9,7 +9,9 @@ publish.workspace = true
 
 [dependencies]
 bahaa-chain.workspace = true
+bahaa-types.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt", "time"] }
 url.workspace = true
 

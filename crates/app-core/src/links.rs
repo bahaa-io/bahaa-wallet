@@ -82,7 +82,7 @@ pub(crate) fn request(
                 ("memo", memo),
             ],
         ),
-        ChainKind::Tron { .. } => shown,
+        ChainKind::Tron { .. } | ChainKind::Bitcoin { .. } => shown,
     }
 }
 
