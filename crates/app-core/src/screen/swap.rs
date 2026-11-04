@@ -263,18 +263,14 @@ impl Swap {
             ));
         }
         lines.push(line(text::SWAP_TO, self.side(ctx, buy)));
-        if let Some((draft, _)) = self.routes.as_ref().filter(|_| self.max) {
-            lines.push(line(
-                text::YOU_SWAP,
-                text::everything(
-                    &format::exact(draft.amount, &ctx.symbol(&source.asset)),
-                    source.asset.contract().is_none(),
-                ),
-            ));
-        }
-        let hint = held
-            .filter(|_| !self.max)
-            .and_then(|holding| super::amount_hint(ctx, holding, &self.amount_text));
+        let hint = if self.max {
+            Some(note(
+                Level::Info,
+                text::everything(source.asset.contract().is_none(), self.routes.is_some()),
+            ))
+        } else {
+            held.and_then(|holding| super::amount_hint(ctx, holding, &self.amount_text))
+        };
         let form = vec![
             Input {
                 hint,
@@ -701,6 +697,14 @@ impl Screen for Swap {
             }
             (Step::Compose, Action::Toggle(Toggle::Max)) => {
                 self.max = !self.max;
+                if let Some(holding) = self
+                    .source
+                    .as_ref()
+                    .and_then(|source| super::holding(ctx, source))
+                    .filter(|_| self.max)
+                {
+                    self.amount_text = holding.amount.to_string();
+                }
                 self.routes = None;
                 self.error = None;
                 Reply::default()
@@ -719,6 +723,9 @@ impl Screen for Swap {
         match outcome {
             Outcome::Routes(Ok(draft)) => {
                 self.error = draft.routes.is_empty().then(|| text::NO_ROUTES.to_owned());
+                if self.max {
+                    self.amount_text = draft.amount.to_string();
+                }
                 self.routes = Some((draft, ctx.now));
             }
             Outcome::Reviewed(Ok(review)) => {

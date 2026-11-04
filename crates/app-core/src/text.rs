@@ -194,7 +194,6 @@ pub(crate) const SWAP_BEST: &str = "best";
 pub(crate) const REFUSED_ROUTE: &str = "refused";
 pub(crate) const SWAP_NOW: &str = "Swap now";
 pub(crate) const SWAP_ALL: &str = "Swap everything";
-pub(crate) const YOU_SWAP: &str = "You swap";
 pub(crate) const SLOW_SHORT: &str = "slow";
 pub(crate) const STUCK_SHORT: &str = "stuck";
 pub(crate) const AMOUNT: &str = "Amount";
@@ -537,11 +536,11 @@ pub(crate) fn on_network(owner: &str, network: &str) -> String {
     format!("{owner} on {network}")
 }
 
-pub(crate) fn everything(amount: &str, coin: bool) -> String {
-    if coin {
-        format!("{amount} · everything after the network fee")
-    } else {
-        format!("{amount} · your whole balance")
+pub(crate) fn everything(coin: bool, exact: bool) -> &'static str {
+    match (coin, exact) {
+        (false, _) => "Your whole balance",
+        (true, true) => "Everything after the network fee",
+        (true, false) => "Your whole balance, less the network fee",
     }
 }
 

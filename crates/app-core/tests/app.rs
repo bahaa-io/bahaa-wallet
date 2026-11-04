@@ -128,6 +128,14 @@ fn word_slots(page: &Page) -> Vec<usize> {
         .collect()
 }
 
+fn typed(view: &View, field: Field) -> String {
+    view.page
+        .inputs()
+        .find(|input| input.field == field)
+        .map(|input| input.value.text().to_owned())
+        .unwrap_or_default()
+}
+
 fn set_password(app: &App) {
     app.act(Action::Type(Field::NewPassword, PASSWORD.to_owned()));
     app.act(Action::Type(Field::Confirm, PASSWORD.to_owned()));
@@ -497,6 +505,21 @@ async fn sending_starts_from_a_list_and_checks_while_typing() {
     app.act(Action::Type(Field::Amount, "1".to_owned()));
     until(&mut view, |current| {
         current.page.id == PageId::Compose && hint(current, Field::Amount).is_none()
+    })
+    .await;
+    app.act(Action::Toggle(Toggle::Max));
+    until(&mut view, |current| {
+        typed(current, Field::Amount) == "1.5"
+            && hint(current, Field::Amount)
+                == Some((
+                    Level::Info,
+                    "Your whole balance, less the network fee".to_owned(),
+                ))
+    })
+    .await;
+    app.act(Action::Type(Field::Amount, "1.2".to_owned()));
+    until(&mut view, |current| {
+        typed(current, Field::Amount) == "1.2" && hint(current, Field::Amount).is_none()
     })
     .await;
     app.act(Action::Back);
@@ -1015,10 +1038,21 @@ async fn swapping_everything_shows_the_exact_amount_left_after_the_fee() {
     let (app, _requests, mut view) = swap_app(&scratch).await;
     swap_compose(&app, &mut view).await;
     app.act(Action::Toggle(Toggle::Max));
+    let filled = until(&mut view, |current| typed(current, Field::Amount) == "1.5").await;
+    assert_eq!(
+        hint(&filled, Field::Amount),
+        Some((
+            Level::Info,
+            "Your whole balance, less the network fee".to_owned()
+        ))
+    );
     app.act(Action::Submit);
     let routes = routes_shown(&mut view).await;
-    assert!(routes.page.lines.iter().any(|line| line.label == "You swap"
-        && line.value == "1.499937 BNB · everything after the network fee"));
+    assert_eq!(typed(&routes, Field::Amount), "1.499937");
+    assert_eq!(
+        hint(&routes, Field::Amount),
+        Some((Level::Info, "Everything after the network fee".to_owned()))
+    );
     app.act(Action::Submit);
     let review = at(&mut view, PageId::SwapReview).await;
     assert!(

@@ -275,7 +275,8 @@ impl Send {
 
     fn amount_hint(&self, ctx: &Ctx<'_>) -> Option<Note> {
         if self.max {
-            return None;
+            let coin = self.source.as_ref()?.asset.contract().is_none();
+            return Some(note(Level::Info, text::everything(coin, false)));
         }
         super::amount_hint(ctx, self.held(ctx)?, &self.amount_text)
     }
@@ -296,7 +297,12 @@ impl Send {
                 self.amount_text.clone_from(value);
                 self.max = false;
             }
-            Action::Toggle(Toggle::Max) => self.max = !self.max,
+            Action::Toggle(Toggle::Max) => {
+                self.max = !self.max;
+                if let Some(holding) = self.held(ctx).filter(|_| self.max) {
+                    self.amount_text = holding.amount.to_string();
+                }
+            }
             Action::Type(Field::Memo, value) => self.memo.clone_from(value),
             _ => {}
         }
