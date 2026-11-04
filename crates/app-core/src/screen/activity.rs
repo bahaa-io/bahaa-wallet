@@ -1,13 +1,15 @@
-use bahaa_engine::{Activity, ActivityKind, ChainFamily, Movement, NetworkId, Replace, WalletId};
+use bahaa_engine::{
+    Activity, ActivityKind, ChainFamily, Movement, NetworkId, Replace, SentKind, SentTx, WalletId,
+};
 
 use super::send::Send;
 use super::{
     Screen, button, cell, choice, group, line, network_cell, network_line, note, picked_wallet,
-    status_tone, toned_line, wallet_group,
+    status_tone, swap_details, swap_tone, toned_line, wallet_group,
 };
 use crate::action::{Action, Direction, Go, Pick, Toggle};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Item, Level, Line, Note, Page, PageId, Request, Row, Table, Tone};
+use crate::view::{Button, Item, Level, Line, Note, Page, PageId, Request, Row, Table, Tone};
 use crate::{format, text};
 
 #[derive(Default)]
@@ -21,7 +23,9 @@ impl List {
     fn matches(&self, activity: &Activity) -> bool {
         let direction = match activity.kind {
             ActivityKind::Received(_) => Direction::Received,
-            ActivityKind::Sent(_) | ActivityKind::SentElsewhere(_) => Direction::Sent,
+            ActivityKind::Sent(_) | ActivityKind::SentElsewhere(_) | ActivityKind::Order(_) => {
+                Direction::Sent
+            }
         };
         self.filter.is_none_or(|wallet| activity.wallet == wallet)
             && (self.direction == Direction::All || self.direction == direction)
@@ -136,24 +140,53 @@ impl List {
 
 fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
     let (sign, moved, party, status, warn) = match &activity.kind {
-        ActivityKind::Sent(tx) => (
-            '−',
+        ActivityKind::Sent(tx) if tx.kind == SentKind::Approval => (
+            "",
             (tx.amount, &tx.asset),
-            ctx.party(&tx.to, &tx.network),
+            text::approved_for(&ctx.party(&tx.to, &tx.network)),
             cell(text::status(&tx.status), status_tone(&tx.status)),
             false,
         ),
+        ActivityKind::Sent(tx) => match ctx.swap(&tx.network, &tx.id) {
+            Some(swap) => (
+                "−",
+                (tx.amount, &tx.asset),
+                text::swapped_to(
+                    &ctx.symbol(&swap.buy),
+                    &ctx.network_name(swap.buy.network()),
+                ),
+                cell(text::swap_status(&swap.status), swap_tone(&swap.status)),
+                false,
+            ),
+            None => (
+                "−",
+                (tx.amount, &tx.asset),
+                ctx.party(&tx.to, &tx.network),
+                cell(text::status(&tx.status), status_tone(&tx.status)),
+                false,
+            ),
+        },
         ActivityKind::SentElsewhere(moved) => (
-            '−',
+            "−",
             (moved.amount, &moved.asset),
             ctx.party(&moved.to, &moved.network),
             cell(text::ELSEWHERE, Tone::Muted),
             false,
         ),
+        ActivityKind::Order(swap) => (
+            "−",
+            (swap.amount, &swap.sell),
+            text::swapped_to(
+                &ctx.symbol(&swap.buy),
+                &ctx.network_name(swap.buy.network()),
+            ),
+            cell(text::swap_status(&swap.status), swap_tone(&swap.status)),
+            false,
+        ),
         ActivityKind::Received(arrival) => {
             let warn = !arrival.cautions.is_empty();
             (
-                '+',
+                "+",
                 (arrival.received.amount, &arrival.received.asset),
                 ctx.party(&arrival.received.from, &arrival.received.network),
                 cell(
@@ -165,7 +198,11 @@ fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
         }
     };
     let (amount, asset) = moved;
-    let amount_tone = if sign == '+' { Tone::Good } else { Tone::Plain };
+    let amount_tone = match sign {
+        "+" => Tone::Good,
+        "" => Tone::Muted,
+        _ => Tone::Plain,
+    };
     Row {
         cells: vec![
             cell(format::ago(activity.time, ctx.now), Tone::Muted),
@@ -186,6 +223,7 @@ fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
 enum Key {
     Sent(NetworkId, String),
     Moved(NetworkId, String, u64, bool),
+    Order(NetworkId, String),
 }
 
 fn key(activity: &Activity) -> Key {
@@ -198,6 +236,7 @@ fn key(activity: &Activity) -> Key {
             let moved = &arrival.received;
             Key::Moved(moved.network.clone(), moved.id.clone(), moved.index, true)
         }
+        ActivityKind::Order(swap) => Key::Order(swap.network.clone(), swap.id.clone()),
     }
 }
 
@@ -212,6 +251,12 @@ impl Transfer {
         }
     }
 
+    pub(crate) fn order(network: NetworkId, id: String) -> Self {
+        Self {
+            key: Key::Order(network, id),
+        }
+    }
+
     fn find<'a>(&self, ctx: &'a Ctx<'_>) -> Option<&'a Activity> {
         ctx.data
             .activity
@@ -221,7 +266,9 @@ impl Transfer {
 
     fn id(&self) -> (&NetworkId, &str) {
         match &self.key {
-            Key::Sent(network, id) | Key::Moved(network, id, ..) => (network, id),
+            Key::Sent(network, id) | Key::Moved(network, id, ..) | Key::Order(network, id) => {
+                (network, id)
+            }
         }
     }
 }
@@ -255,57 +302,28 @@ impl Screen for Transfer {
             button(text::OPEN_EXPLORER, Action::Explore),
         ];
         let (title, headline, mut lines, notes) = match &activity.kind {
-            ActivityKind::Sent(tx) => {
-                let replaceable = tx.status.is_open()
-                    && ctx.network(&tx.network).is_some_and(|network| {
-                        matches!(network.family(), ChainFamily::Evm | ChainFamily::Bitcoin)
-                    });
-                if replaceable {
-                    buttons.push(button(text::SPEED_UP, Action::Pick(Pick::SpeedUp)));
-                    buttons.push(button(text::CANCEL_SEND, Action::Pick(Pick::Cancel)));
-                }
-                let symbol = ctx.native_symbol(&tx.network);
-                let fee = tx.fee_paid.map_or_else(
-                    || text::at_most(&format::exact(tx.fee_max, &symbol)),
-                    |paid| format::exact(paid, &symbol),
-                );
-                let mut lines = vec![toned_line(
-                    text::STATUS,
-                    text::status(&tx.status),
-                    status_tone(&tx.status),
-                )];
-                if tx.status.is_open() {
-                    lines.push(line(
-                        text::WAITING,
-                        format::span(ctx.now.saturating_sub(tx.created_at)),
-                    ));
-                }
-                lines.extend([
-                    line(text::FROM, ctx.party(&tx.from, &tx.network)),
-                    line(text::TO, ctx.shown(&tx.to, &tx.network)),
-                    line(text::FEE, fee),
-                ]);
-                if let Some(memo) = &tx.memo {
-                    lines.push(line(text::MEMO, memo.clone()));
-                }
-                let notes = if replaceable {
-                    vec![note(Level::Info, text::PENDING_NOTE)]
-                } else {
-                    Vec::new()
-                };
-                (
-                    text::SENT_TITLE,
-                    ctx.exact(tx.amount, &ctx.symbol(&tx.asset)),
-                    lines,
-                    notes,
-                )
-            }
+            ActivityKind::Sent(tx) => sent_page(ctx, tx, &mut buttons),
             ActivityKind::SentElsewhere(moved) => (
                 text::ELSEWHERE_TITLE,
                 ctx.exact(moved.amount, &ctx.symbol(&moved.asset)),
                 movement_lines(ctx, moved),
                 Vec::new(),
             ),
+            ActivityKind::Order(swap) => {
+                buttons.retain(|button| button.action == Action::Copy);
+                let mut lines = vec![toned_line(
+                    text::STATUS,
+                    text::swap_status(&swap.status),
+                    swap_tone(&swap.status),
+                )];
+                lines.extend(swap_details(ctx, swap));
+                (
+                    text::ORDER_TITLE,
+                    ctx.exact(swap.amount, &ctx.symbol(&swap.sell)),
+                    lines,
+                    vec![note(Level::Info, text::ORDER_NOTE)],
+                )
+            }
             ActivityKind::Received(arrival) => (
                 text::RECEIVED_TITLE,
                 ctx.exact(
@@ -333,6 +351,79 @@ impl Screen for Transfer {
             ..Page::default()
         }
     }
+}
+
+fn sent_page(
+    ctx: &Ctx<'_>,
+    tx: &SentTx,
+    buttons: &mut Vec<Button>,
+) -> (&'static str, String, Vec<Line>, Vec<Note>) {
+    let approval = tx.kind == SentKind::Approval;
+    let replaceable = tx.status.is_open()
+        && tx.kind == SentKind::Transfer
+        && ctx.network(&tx.network).is_some_and(|network| {
+            matches!(network.family(), ChainFamily::Evm | ChainFamily::Bitcoin)
+        });
+    if replaceable {
+        buttons.push(button(text::SPEED_UP, Action::Pick(Pick::SpeedUp)));
+        buttons.push(button(text::CANCEL_SEND, Action::Pick(Pick::Cancel)));
+    }
+    let symbol = ctx.native_symbol(&tx.network);
+    let fee = tx.fee_paid.map_or_else(
+        || text::at_most(&format::exact(tx.fee_max, &symbol)),
+        |paid| format::exact(paid, &symbol),
+    );
+    let mut lines = vec![toned_line(
+        text::STATUS,
+        text::status(&tx.status),
+        status_tone(&tx.status),
+    )];
+    if tx.status.is_open() {
+        lines.push(line(
+            text::WAITING,
+            format::span(ctx.now.saturating_sub(tx.created_at)),
+        ));
+    }
+    lines.extend([
+        line(text::FROM, ctx.party(&tx.from, &tx.network)),
+        line(
+            if approval { text::ALLOWED } else { text::TO },
+            ctx.shown(&tx.to, &tx.network),
+        ),
+    ]);
+    if approval {
+        lines.push(line(
+            text::APPROVED,
+            text::exactly(&ctx.exact(tx.amount, &ctx.symbol(&tx.asset))),
+        ));
+    }
+    lines.push(line(text::FEE, fee));
+    if let Some(memo) = &tx.memo {
+        lines.push(line(text::MEMO, memo.clone()));
+    }
+    if let Some(swap) = ctx.swap(&tx.network, &tx.id) {
+        lines.push(toned_line(
+            text::SWAP,
+            text::swap_status(&swap.status),
+            swap_tone(&swap.status),
+        ));
+        lines.extend(swap_details(ctx, swap));
+    }
+    let notes = if replaceable {
+        vec![note(Level::Info, text::PENDING_NOTE)]
+    } else {
+        Vec::new()
+    };
+    (
+        if approval {
+            text::APPROVAL_TITLE
+        } else {
+            text::SENT_TITLE
+        },
+        ctx.exact(tx.amount, &ctx.symbol(&tx.asset)),
+        lines,
+        notes,
+    )
 }
 
 fn replace(network: &NetworkId, id: &str, how: Replace) -> Reply {

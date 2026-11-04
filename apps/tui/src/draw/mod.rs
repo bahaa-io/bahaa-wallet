@@ -18,6 +18,7 @@ use crate::wrap::{self, cells};
 
 const MIN_WIDTH: u16 = 80;
 const MIN_HEIGHT: u16 = 24;
+const STATUS_ROOM: u16 = 14;
 const CARD_WIDTH: u16 = 76;
 const TOAST_WIDTH: u16 = 48;
 const TOASTS: usize = 3;
@@ -80,13 +81,25 @@ fn paint(frame: &mut Frame<'_>, view: &View, ui: &mut Ui) {
 
 fn header(buffer: &mut Buffer, area: Rect, view: &View, ui: &mut Ui) {
     buffer.set_style(area, theme::panel());
-    let tabs: Vec<String> = view
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(index, tab)| format!(" {} {} ", index + 1, tab.label))
-        .collect();
-    let tabs_width: u16 = tabs.iter().map(|tab| wrap::width(tab)).sum();
+    let pills = |tight: bool| -> Vec<String> {
+        view.tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                if tight {
+                    format!("{} {}", index + 1, tab.label)
+                } else {
+                    format!(" {} {} ", index + 1, tab.label)
+                }
+            })
+            .collect()
+    };
+    let width_of =
+        |tabs: &[String], gap: u16| -> u16 { tabs.iter().map(|tab| wrap::width(tab) + gap).sum() };
+    let wide = pills(false);
+    let tight = area.width < width_of(&wide, 0) + STATUS_ROOM;
+    let (tabs, gap) = if tight { (pills(true), 1) } else { (wide, 0) };
+    let tabs_width = width_of(&tabs, gap);
     let mut x = area.x + 1;
     if let Some(line) = brand(area.width.saturating_sub(tabs_width + 7)) {
         let width = cells(line.width());
@@ -97,7 +110,7 @@ fn header(buffer: &mut Buffer, area: Rect, view: &View, ui: &mut Ui) {
         let width = wrap::width(label);
         let hit = Hit::Action(tab.action.clone());
         let hovered = ui.hovered(&hit);
-        let (number, name) = label.split_at(2);
+        let (number, name) = label.split_at(if tight { 1 } else { 2 });
         let line = if tab.selected {
             Line::styled(label.as_str(), theme::pill(theme::Pill::Focused))
         } else {
@@ -114,7 +127,7 @@ fn header(buffer: &mut Buffer, area: Rect, view: &View, ui: &mut Ui) {
         };
         buffer.set_line(x, area.y, &line, width);
         ui.hits.push((Rect::new(x, area.y, width, 1), hit));
-        x += width;
+        x += width + gap;
     }
     if let Some(banner) = &view.banner {
         status(buffer, area, x + 2, banner, ui);

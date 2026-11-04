@@ -482,11 +482,22 @@ impl Live {
                         }
                     ),
                 ),
+                ActivityKind::Order(swap) => (
+                    &swap.network,
+                    format!(
+                        "order {} {} for {} {:?}",
+                        swap.amount,
+                        self.symbol(&swap.sell).await?,
+                        self.symbol(&swap.buy).await?,
+                        swap.status
+                    ),
+                ),
             };
             let memo = match &activity.kind {
                 ActivityKind::Sent(tx) => tx.memo.as_ref(),
                 ActivityKind::SentElsewhere(tx) => tx.memo.as_ref(),
                 ActivityKind::Received(arrival) => arrival.received.memo.as_ref(),
+                ActivityKind::Order(_) => None,
             }
             .map(|memo| format!(" memo {memo:?}"))
             .unwrap_or_default();

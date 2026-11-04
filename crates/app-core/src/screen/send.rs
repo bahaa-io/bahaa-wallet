@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 use bahaa_engine::{
     Address, Amount, AssetId, Caution, ChainFamily, Contact, Draft, EngineError, FeeQuote, Holding,
     MAX_MEMO, NetworkId, Replace, SendRequest, Spend, WalletId, is_plain_text,
@@ -7,14 +5,13 @@ use bahaa_engine::{
 
 use super::activity::Transfer;
 use super::{
-    Screen, asset_cell, button, cell, choice, group, hidden, input, line, network_cell,
-    network_line, note, status_tone, toned_line,
+    Screen, button, choice, group, hidden, input, line, network_line, note, status_tone, toned_line,
 };
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::links::{self, Payment};
-use crate::view::{Input, Level, Line, Note, Page, PageId, Row, Secret, Table, Tone};
+use crate::view::{Input, Level, Line, Note, Page, PageId, Secret, Tone};
 use crate::{format, parse, text};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,30 +87,8 @@ impl Send {
         (screen, call)
     }
 
-    fn sources<'a>(ctx: &'a Ctx<'_>) -> Vec<&'a Holding> {
-        let mut held: Vec<&Holding> = ctx
-            .data
-            .portfolio
-            .holdings
-            .iter()
-            .filter(|holding| !holding.amount.is_zero() && !ctx.watch_only(holding.wallet))
-            .collect();
-        held.sort_by(|a, b| {
-            b.value
-                .partial_cmp(&a.value)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.symbol.cmp(&b.symbol))
-        });
-        held
-    }
-
     fn held<'a>(&self, ctx: &'a Ctx<'_>) -> Option<&'a Holding> {
-        let source = self.source.as_ref()?;
-        ctx.data.portfolio.holdings.iter().find(|holding| {
-            holding.wallet == source.wallet
-                && holding.address == source.address
-                && holding.asset == source.asset
-        })
+        super::holding(ctx, self.source.as_ref()?)
     }
 
     fn family(&self, ctx: &Ctx<'_>) -> Option<ChainFamily> {
@@ -191,7 +166,7 @@ impl Send {
             None => AssetId::Native(network),
         };
         if self.source.as_ref().map(|source| &source.asset) != Some(&asset) {
-            let Some(holding) = Self::sources(ctx)
+            let Some(holding) = super::spendable(ctx)
                 .into_iter()
                 .find(|holding| holding.asset == asset)
             else {
@@ -276,7 +251,7 @@ impl Send {
     }
 
     fn choose(&mut self, position: usize, ctx: &Ctx<'_>) -> Reply {
-        let Some(holding) = Self::sources(ctx).into_iter().nth(position) else {
+        let Some(holding) = super::spendable(ctx).into_iter().nth(position) else {
             return Reply::default();
         };
         self.source = Some(source_of(holding));
@@ -299,26 +274,10 @@ impl Send {
     }
 
     fn amount_hint(&self, ctx: &Ctx<'_>) -> Option<Note> {
-        if self.max || self.amount_text.trim().is_empty() {
+        if self.max {
             return None;
         }
-        let holding = self.held(ctx)?;
-        let decimals = ctx.coin(&holding.asset)?.decimals;
-        let amount = match parse::amount(&self.amount_text, decimals) {
-            Ok(amount) => amount,
-            Err(problem) => return Some(note(Level::Error, problem)),
-        };
-        if amount.partial_cmp(&holding.amount) == Some(Ordering::Greater) {
-            let balance = ctx.amount(holding.amount, &holding.symbol);
-            return Some(note(Level::Error, text::too_much(&balance)));
-        }
-        let value = holding
-            .price
-            .and_then(|price| price.value_of(amount, ctx.fiat().places()).ok())?;
-        Some(note(
-            Level::Info,
-            text::approx(&format::fiat(Some(value), ctx.fiat())),
-        ))
+        super::amount_hint(ctx, self.held(ctx)?, &self.amount_text)
     }
 
     fn compose(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
@@ -345,57 +304,13 @@ impl Send {
     }
 
     fn choose_page(ctx: &Ctx<'_>) -> Page {
-        let held = Self::sources(ctx);
-        if held.is_empty() {
-            return Page {
-                id: PageId::SendFrom,
-                title: text::SEND.to_owned(),
-                text: Some(text::NOTHING_TO_SEND.to_owned()),
-                buttons: vec![button(text::RECEIVE, Action::Go(Go::Tab(Tab::Receive)))],
-                ..Page::default()
-            };
-        }
-        let owners: Vec<String> = held
-            .iter()
-            .map(|holding| ctx.owner_label(holding.wallet, &holding.address))
-            .collect();
-        let several = super::several(&owners);
-        let mut columns: Vec<String> = text::SEND_COLUMNS.map(str::to_owned).to_vec();
-        if several {
-            columns.push(text::WALLET.to_owned());
-        }
-        let rows = held
-            .iter()
-            .zip(owners)
-            .enumerate()
-            .map(|(position, (holding, owner))| {
-                let mut cells = vec![
-                    asset_cell(ctx, &holding.asset),
-                    network_cell(ctx, holding.asset.network()),
-                    ctx.amount(holding.amount, &holding.symbol).into(),
-                    ctx.value(holding.value).into(),
-                ];
-                if several {
-                    cells.push(cell(owner, Tone::Muted));
-                }
-                Row {
-                    cells,
-                    open: Some(Action::Pick(Pick::Source(position))),
-                    warn: false,
-                }
-            })
-            .collect();
-        Page {
-            id: PageId::SendFrom,
-            title: text::SEND.to_owned(),
-            text: Some(text::PICK_SOURCE.to_owned()),
-            table: Some(Table {
-                columns,
-                rows,
-                empty: text::NOTHING_TO_SEND.to_owned(),
-            }),
-            ..Page::default()
-        }
+        super::holdings_page(
+            ctx,
+            PageId::SendFrom,
+            text::SEND,
+            text::PICK_SOURCE,
+            text::NOTHING_TO_SEND,
+        )
     }
 
     fn compose_page(&self, ctx: &Ctx<'_>) -> Page {
@@ -608,7 +523,7 @@ impl Send {
     }
 }
 
-fn source_of(holding: &Holding) -> Source {
+pub(crate) fn source_of(holding: &Holding) -> Source {
     Source {
         wallet: holding.wallet,
         address: holding.address,

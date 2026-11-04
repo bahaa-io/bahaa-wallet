@@ -71,26 +71,33 @@ fn start(scratch: &Scratch) -> (App, mpsc::Receiver<Request>, watch::Receiver<Ar
     start_with(scratch, offline(|_| true), false)
 }
 
+fn engine_config(scratch: &Scratch, registry: Registry) -> EngineConfig {
+    EngineConfig {
+        kdf: KdfParams {
+            memory_kib: 64,
+            iterations: 1,
+            lanes: 1,
+        },
+        market: None,
+        registry: Some(registry),
+        swaps: None,
+        ..EngineConfig::new(scratch.0.join("data"))
+    }
+}
+
 fn start_with(
     scratch: &Scratch,
     registry: Registry,
     updates: bool,
 ) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
-    let config = AppConfig {
-        engine: EngineConfig {
-            kdf: KdfParams {
-                memory_kib: 64,
-                iterations: 1,
-                lanes: 1,
-            },
-            market: None,
-            registry: Some(registry),
-            swaps: None,
-            ..EngineConfig::new(scratch.0.join("data"))
-        },
-        updates,
-    };
-    let (app, requests) = App::start(config).unwrap();
+    start_config(engine_config(scratch, registry), updates)
+}
+
+fn start_config(
+    engine: EngineConfig,
+    updates: bool,
+) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
+    let (app, requests) = App::start(AppConfig { engine, updates }).unwrap();
     let view = app.view();
     (app, requests, view)
 }
@@ -175,7 +182,8 @@ async fn a_new_wallet_is_created_backed_up_and_locked_again() {
     }
     app.act(Action::Submit);
     let home = at(&mut view, PageId::Portfolio).await;
-    assert_eq!(home.tabs.len(), 6);
+    assert_eq!(home.tabs.len(), 7);
+    assert_eq!(home.tabs[3].label, "Swap");
     assert!(home.tabs[0].selected);
     app.act(Action::Lock);
     at(&mut view, PageId::Unlock).await;
@@ -209,7 +217,14 @@ async fn imported_on(
     registry: Registry,
     updates: bool,
 ) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
-    let (app, requests, mut view) = start_with(scratch, registry, updates);
+    imported_with(engine_config(scratch, registry), updates).await
+}
+
+async fn imported_with(
+    engine: EngineConfig,
+    updates: bool,
+) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
+    let (app, requests, mut view) = start_config(engine, updates);
     at(&mut view, PageId::Welcome).await;
     app.act(Action::Pick(Pick::Import));
     at(&mut view, PageId::Import).await;
@@ -851,5 +866,249 @@ async fn words_valid_both_ways_ask_which_wallet_made_them() {
         })
     })
     .await;
+    app.shutdown().await.unwrap();
+}
+
+const DEPOSIT: &str = "0x88346a0010f9c3914b9e6d507a7200bdcdede3a5";
+const REQUEST_ID: &str = "0x1793720631f6df061cade369e4f053582da6700bb930246d73dc27ffad60ddb9";
+
+fn keccak(raw: &str) -> String {
+    use sha3::{Digest, Keccak256};
+    use std::fmt::Write as _;
+    let bytes: Vec<u8> = (2..raw.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&raw[at..at + 2], 16).unwrap())
+        .collect();
+    Keccak256::digest(bytes)
+        .iter()
+        .fold("0x".to_owned(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
+async fn spending_node() -> String {
+    let sent = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let url = bahaa_testkit::serve(move |request| {
+        let call = request.json();
+        let first = call["params"][0].as_str().unwrap_or_default().to_owned();
+        let mut sent = sent.lock().unwrap();
+        let result = match call["method"].as_str() {
+            Some("eth_chainId") => json!("0x38"),
+            Some("eth_getBalance") => json!("0x14d1120d7b160000"),
+            Some("eth_getTransactionCount") => json!("0x0"),
+            Some("eth_feeHistory") => {
+                json!({"oldestBlock": "0x1", "baseFeePerGas": ["0x3b9aca00", "0x3b9aca00"]})
+            }
+            Some("eth_maxPriorityFeePerGas") => json!("0x3b9aca00"),
+            Some("eth_estimateGas") => json!("0x5208"),
+            Some("eth_getCode") => json!("0x"),
+            Some("eth_call") => json!(format!("0x{:064x}", 0)),
+            Some("eth_sendRawTransaction") => {
+                sent.push(keccak(&first));
+                json!(keccak(&first))
+            }
+            Some("eth_getTransactionReceipt") if sent.contains(&first) => json!({
+                "status": "0x1",
+                "blockNumber": "0x10",
+                "gasUsed": "0x5208",
+                "effectiveGasPrice": "0x77359400"
+            }),
+            _ => Json::Null,
+        };
+        Reply::json(200, &json!({"jsonrpc": "2.0", "id": 1, "result": result}))
+    })
+    .await;
+    url.to_string()
+}
+
+async fn relay() -> String {
+    let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    bahaa_testkit::serve(move |request| {
+        if request.path().starts_with("/intents/status/v3") {
+            let done = polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 2;
+            let status = if done { "success" } else { "pending" };
+            return Reply::json(200, &json!({ "status": status }));
+        }
+        let amount = request.json()["amount"].as_str().unwrap().to_owned();
+        let data = json!({"from": HARDHAT_0, "to": DEPOSIT, "data": "0x", "value": amount, "chainId": 56});
+        Reply::json(
+            200,
+            &json!({
+                "steps": [{
+                    "id": "deposit",
+                    "kind": "transaction",
+                    "requestId": REQUEST_ID,
+                    "depositAddress": DEPOSIT,
+                    "items": [{"data": data}]
+                }],
+                "details": {
+                    "currencyIn": {"amount": amount},
+                    "currencyOut": {"amount": "29800000000000000", "minimumAmount": "29500000000000000"},
+                    "timeEstimate": 2
+                }
+            }),
+        )
+    })
+    .await
+    .to_string()
+}
+
+fn cells(row: &bahaa_app_core::Row) -> Vec<&str> {
+    row.cells.iter().map(|cell| cell.text.as_str()).collect()
+}
+
+fn opener(view: &View, wanted: &[&str]) -> Action {
+    let table = view.page.table.as_ref().unwrap();
+    let row = table.rows.iter().find(|row| cells(row) == wanted).unwrap();
+    row.open.clone().unwrap()
+}
+
+async fn swap_app(scratch: &Scratch) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
+    let node = spending_node().await;
+    let mut engine = engine_config(scratch, bsc_registry(&node));
+    let mut providers = bahaa_engine::swap::Providers::builtin().unwrap();
+    providers.relay.url = relay().await.parse().unwrap();
+    providers.oneclick.url = "http://127.0.0.1:9/".parse().unwrap();
+    providers.kyberswap.url = "http://127.0.0.1:9/".parse().unwrap();
+    providers.velora.url = "http://127.0.0.1:9/".parse().unwrap();
+    engine.swaps = Some(providers);
+    engine.track_every = Duration::from_millis(50);
+    imported_with(engine, false).await
+}
+
+async fn routes_shown(view: &mut watch::Receiver<Arc<View>>) -> Arc<View> {
+    until(view, |current| {
+        current.page.id == PageId::Swap && current.page.table.is_some()
+    })
+    .await
+}
+
+async fn swap_compose(app: &App, view: &mut watch::Receiver<Arc<View>>) {
+    app.act(Action::Go(Go::Tab(Tab::Swap)));
+    let sources = until(view, |current| {
+        current.page.id == PageId::SwapFrom
+            && current
+                .page
+                .table
+                .as_ref()
+                .is_some_and(|table| !table.rows.is_empty())
+    })
+    .await;
+    app.act(opener(
+        &sources,
+        &["BNB", "BNB Smart Chain", "1.5 BNB", "—"],
+    ));
+    let targets = at(view, PageId::SwapTo).await;
+    let rows = &targets.page.table.as_ref().unwrap().rows;
+    assert!(
+        rows.iter()
+            .all(|row| cells(row) != ["BNB", "BNB Smart Chain"])
+    );
+    app.act(opener(&targets, &["ETH", "Base"]));
+    at(view, PageId::Swap).await;
+}
+
+#[tokio::test]
+async fn swapping_everything_shows_the_exact_amount_left_after_the_fee() {
+    let scratch = Scratch::new();
+    let (app, _requests, mut view) = swap_app(&scratch).await;
+    swap_compose(&app, &mut view).await;
+    app.act(Action::Toggle(Toggle::Max));
+    app.act(Action::Submit);
+    let routes = routes_shown(&mut view).await;
+    assert!(routes.page.lines.iter().any(|line| line.label == "You swap"
+        && line.value == "1.499937 BNB · everything after the network fee"));
+    app.act(Action::Submit);
+    let review = at(&mut view, PageId::SwapReview).await;
+    assert!(
+        review
+            .page
+            .lines
+            .iter()
+            .any(|line| line.label == "You send" && line.value == "1.499937 BNB ≈ — from Wallet 1")
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_swap_lists_every_route_reviews_the_exact_deposit_and_follows_the_provider() {
+    let scratch = Scratch::new();
+    let (app, _requests, mut view) = swap_app(&scratch).await;
+    swap_compose(&app, &mut view).await;
+    app.act(Action::Type(Field::Amount, "0.1".to_owned()));
+    app.act(Action::Submit);
+    let routes = routes_shown(&mut view).await;
+    let table = routes.page.table.as_ref().unwrap();
+    assert_eq!(
+        cells(&table.rows[0]),
+        [
+            "Relay · best",
+            "0.0298 ETH",
+            "—",
+            "—",
+            "~2 s",
+            "the provider"
+        ]
+    );
+    assert!(
+        routes
+            .page
+            .notes
+            .iter()
+            .any(|note| note.text.starts_with("NEAR Intents: "))
+    );
+    assert_eq!(routes.page.buttons[0].label, "Review the best route");
+    app.act(Action::Submit);
+    let review = at(&mut view, PageId::SwapReview).await;
+    assert_eq!(review.page.title, "Swap 0.1 BNB to ETH on Base");
+    let shown: Vec<(&str, &str)> = review
+        .page
+        .lines
+        .iter()
+        .map(|line| (line.label.as_str(), line.value.as_str()))
+        .collect();
+    for expected in [
+        (
+            "Provider",
+            "Relay · it holds your money until it pays out, and refunds you if it fails",
+        ),
+        ("You send", "0.1 BNB ≈ — from Wallet 1"),
+        (
+            "You receive",
+            "0.0298 ETH ≈ — · at least 0.0295 ETH, to Wallet 1 on Base",
+        ),
+        ("Rate", "1 BNB = 0.298 ETH"),
+        ("Network fee", "0.000042 BNB ≈ —, paid from your balance"),
+        (
+            "Deposit to",
+            "0x8834 6A00 10F9 c391 4b9e 6d50 7A72 00bD cdED E3a5",
+        ),
+    ] {
+        assert!(shown.contains(&expected), "{expected:?} in {shown:?}");
+    }
+    app.act(Action::Back);
+    at(&mut view, PageId::Swap).await;
+    app.act(Action::Pick(Pick::Route(0)));
+    at(&mut view, PageId::SwapReview).await;
+    app.act(Action::Submit);
+    at(&mut view, PageId::Confirm).await;
+    app.act(Action::Type(Field::Password, PASSWORD.to_owned()));
+    app.act(Action::Submit);
+    let done = until(&mut view, |current| {
+        current.page.id == PageId::Swapping
+            && current
+                .page
+                .lines
+                .first()
+                .is_some_and(|line| line.value == "Done")
+    })
+    .await;
+    assert_eq!(done.page.headline.as_deref(), Some("0.1 BNB → ETH"));
+    assert!(
+        done.toasts
+            .iter()
+            .any(|toast| toast.text == "Swap done: 0.1 BNB to ETH")
+    );
     app.shutdown().await.unwrap();
 }

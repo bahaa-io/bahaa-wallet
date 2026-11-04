@@ -36,16 +36,18 @@ pub enum Tab {
     Portfolio,
     Activity,
     Send,
+    Swap,
     Receive,
     Contacts,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Portfolio,
         Self::Activity,
         Self::Send,
+        Self::Swap,
         Self::Receive,
         Self::Contacts,
         Self::Settings,
@@ -83,6 +85,9 @@ pub enum Pick {
     Wallet(Option<usize>),
     Direction(Direction),
     Source(usize),
+    Buy(usize),
+    Route(usize),
+    Requote,
     Contact(usize),
     Network(usize),
     Target(usize),

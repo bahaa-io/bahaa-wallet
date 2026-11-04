@@ -1,7 +1,8 @@
 use bahaa_engine::{
     Account, Activity, Address, AssetId, BitcoinType, Caution, ChainFamily, Contact, CustomToken,
     Draft, DraftId, Engine, EngineError, NetworkId, NewPhrase, PhraseKind, Replace, SecretString,
-    SendRequest, SentTx, Settings, SolanaPath, TonContract, WalletId, WalletInfo,
+    SendRequest, SentTx, Settings, SolanaPath, SwapDraft, SwapId, SwapRequest, SwapReview,
+    TonContract, WalletId, WalletInfo, swap::SwapRecord,
 };
 
 pub(crate) enum Call {
@@ -29,6 +30,9 @@ pub(crate) enum Call {
     Prepare(SendRequest),
     Replace(NetworkId, String, Replace),
     Confirm(DraftId, SecretString),
+    ConfirmOrder(DraftId, SecretString),
+    PrepareSwap(SwapRequest),
+    ChooseSwap(SwapId, usize),
     Cautions(Address),
     SaveContact(Contact),
     RemoveContact(NetworkId, Address),
@@ -43,9 +47,12 @@ pub(crate) enum Outcome {
     Revealed(Result<SecretString, EngineError>),
     Drafted(Result<Draft, EngineError>),
     Sent(Result<SentTx, EngineError>),
+    Ordered(Result<SwapRecord, EngineError>),
     Cautions(Result<Vec<Caution>, EngineError>),
     Token(Result<CustomToken, EngineError>),
     Receiving(Result<Address, EngineError>),
+    Routes(Result<SwapDraft, EngineError>),
+    Reviewed(Result<Box<SwapReview>, EngineError>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,16 +63,18 @@ pub(crate) enum Load {
     Contacts,
     Tokens,
     Settings,
+    Swaps,
 }
 
 impl Load {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Wallets,
         Self::Accounts,
         Self::Activity,
         Self::Contacts,
         Self::Tokens,
         Self::Settings,
+        Self::Swaps,
     ];
 }
 
@@ -76,6 +85,7 @@ pub(crate) enum Loaded {
     Contacts(Vec<Contact>),
     Tokens(Vec<CustomToken>),
     Settings(Settings),
+    Swaps(Vec<SwapRecord>),
 }
 
 pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
@@ -117,6 +127,13 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
         Call::Prepare(request) => Outcome::Drafted(engine.prepare_send(request).await),
         Call::Replace(network, id, how) => Outcome::Drafted(engine.replace(network, id, how).await),
         Call::Confirm(draft, password) => Outcome::Sent(engine.confirm_send(draft, password).await),
+        Call::ConfirmOrder(draft, password) => {
+            Outcome::Ordered(engine.confirm_order(draft, password).await)
+        }
+        Call::PrepareSwap(request) => Outcome::Routes(engine.prepare_swap(request).await),
+        Call::ChooseSwap(id, route) => {
+            Outcome::Reviewed(engine.choose_swap(id, route).await.map(Box::new))
+        }
         Call::Cautions(address) => Outcome::Cautions(engine.cautions(address).await),
         Call::SaveContact(contact) => done(engine.save_contact(contact).await),
         Call::RemoveContact(network, address) => {
@@ -139,5 +156,6 @@ pub(crate) async fn load(engine: &Engine, load: Load) -> Option<Loaded> {
         Load::Contacts => engine.contacts().await.ok().map(Loaded::Contacts),
         Load::Tokens => engine.tokens().await.ok().map(Loaded::Tokens),
         Load::Settings => engine.settings().await.ok().map(Loaded::Settings),
+        Load::Swaps => engine.swaps().await.ok().map(Loaded::Swaps),
     }
 }

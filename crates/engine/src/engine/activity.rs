@@ -1,4 +1,4 @@
-use bahaa_store::{Outgoing, SentTx};
+use bahaa_store::{Outgoing, SentTx, SwapRecord};
 use bahaa_types::Address;
 
 use super::{EngineError, Worker};
@@ -17,6 +17,7 @@ pub enum ActivityKind {
     Sent(SentTx),
     SentElsewhere(Outgoing),
     Received(Arrival),
+    Order(SwapRecord),
 }
 
 impl Worker {
@@ -45,7 +46,27 @@ impl Worker {
                 kind: ActivityKind::Received(arrival),
             })
         });
-        let mut all: Vec<Activity> = sent.chain(elsewhere).chain(received).collect();
+        let orders = self
+            .swaps
+            .iter()
+            .filter(|swap| {
+                !self
+                    .history
+                    .iter()
+                    .any(|tx| tx.network == swap.network && tx.id == swap.id)
+            })
+            .filter_map(|swap| {
+                Some(Activity {
+                    wallet: owner(&swap.from)?,
+                    time: swap.created_at,
+                    kind: ActivityKind::Order(swap.clone()),
+                })
+            });
+        let mut all: Vec<Activity> = sent
+            .chain(elsewhere)
+            .chain(received)
+            .chain(orders)
+            .collect();
         all.sort_by_key(|activity| std::cmp::Reverse(activity.time));
         Ok(all)
     }

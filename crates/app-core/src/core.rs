@@ -5,6 +5,7 @@ use bahaa_engine::{
     Account, Activity, ActivityKind, Address, Amount, AssetId, ChainFamily, Coin, Contact,
     CustomToken, Event, Fiat, Network, NetworkId, Portfolio, Price, Registry, SentStatus, SentTx,
     Settings, State, Status, WalletId, WalletInfo, WalletKind,
+    swap::{SwapRecord, SwapStatus},
 };
 
 use crate::action::{Action, Go, Tab};
@@ -50,6 +51,7 @@ pub(crate) struct Data {
     pub activity: Vec<Activity>,
     pub contacts: Vec<Contact>,
     pub tokens: Vec<CustomToken>,
+    pub swaps: Vec<SwapRecord>,
     pub settings: Settings,
 }
 
@@ -241,6 +243,13 @@ impl Ctx<'_> {
             .iter()
             .find(|account| account.wallet == wallet && account.address == *address)
             .map(|account| account.index)
+    }
+
+    pub(crate) fn swap(&self, network: &NetworkId, id: &str) -> Option<&SwapRecord> {
+        self.data
+            .swaps
+            .iter()
+            .find(|swap| swap.network == *network && swap.id == id)
     }
 
     pub(crate) fn sent(&self, network: &NetworkId, id: &str) -> Option<&SentTx> {
@@ -574,6 +583,7 @@ impl Core {
             Loaded::Activity(activity) => self.data.activity = activity,
             Loaded::Contacts(contacts) => self.data.contacts = contacts,
             Loaded::Tokens(tokens) => self.data.tokens = tokens,
+            Loaded::Swaps(swaps) => self.data.swaps = swaps,
             Loaded::Settings(settings) => {
                 self.data.settings = settings;
                 return self.check_updates_once();
@@ -635,7 +645,11 @@ impl Core {
                 }
                 vec![Effect::Load(Load::Activity)]
             }
-            Event::SentElsewhere(_) | Event::SwapUpdated(_) => vec![Effect::Load(Load::Activity)],
+            Event::SentElsewhere(_) => vec![Effect::Load(Load::Activity)],
+            Event::SwapUpdated(swap) => {
+                self.swapped(*swap);
+                vec![Effect::Load(Load::Activity)]
+            }
         }
     }
 
@@ -652,6 +666,30 @@ impl Core {
             _ => (Level::Warning, text::dropped(&amount)),
         };
         self.toast(level, message);
+    }
+
+    fn swapped(&mut self, swap: SwapRecord) {
+        let before = self
+            .data
+            .swaps
+            .iter()
+            .position(|known| known.network == swap.network && known.id == swap.id);
+        let changed = before.is_none_or(|at| self.data.swaps[at].status != swap.status);
+        if changed && !swap.status.is_open() {
+            let ctx = self.ctx();
+            let sold = ctx.amount(swap.amount, &ctx.symbol(&swap.sell));
+            let bought = ctx.symbol(&swap.buy);
+            let (level, message) = match &swap.status {
+                SwapStatus::Done => (Level::Success, text::swap_done(&sold, &bought)),
+                SwapStatus::Refunded => (Level::Warning, text::swap_refunded(&sold)),
+                _ => (Level::Error, text::swap_failed(&sold)),
+            };
+            self.toast(level, message);
+        }
+        match before {
+            Some(at) => self.data.swaps[at] = swap,
+            None => self.data.swaps.insert(0, swap),
+        }
     }
 
     fn toast(&mut self, level: Level, text: String) {

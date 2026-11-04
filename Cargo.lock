@@ -725,6 +725,7 @@ dependencies = [
  "getrandom 0.4.3",
  "ruint",
  "serde_json",
+ "sha3",
  "tokio",
  "zeroize",
 ]

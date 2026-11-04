@@ -117,6 +117,34 @@ pub(crate) fn wait(wait: Wait) -> String {
     }
 }
 
+pub(crate) fn percent(bps: u32) -> String {
+    match bps {
+        0 => "0%".to_owned(),
+        1..=4 => "< 0.1%".to_owned(),
+        5..1_000 => {
+            let tenths = (bps + 5) / 10;
+            format!("{}.{}%", tenths / 10, tenths % 10)
+        }
+        _ => format!("{}%", (bps + 50) / 100),
+    }
+}
+
+pub(crate) fn short_wait(wait: Option<Wait>) -> String {
+    let span = |seconds: u64| match seconds {
+        0..MINUTE => format!("{seconds} s"),
+        MINUTE..HOUR => format!("{} min", seconds / MINUTE),
+        HOUR..DAY => format!("{} h", seconds / HOUR),
+        _ => format!("{} d", seconds / DAY),
+    };
+    match wait {
+        Some(Wait::About(seconds)) => format!("~{}", span(seconds)),
+        Some(Wait::Over(seconds)) => format!("> {}", span(seconds)),
+        Some(Wait::Slow) => text::SLOW_SHORT.to_owned(),
+        Some(Wait::Stuck) => text::STUCK_SHORT.to_owned(),
+        None => text::NO_VALUE.to_owned(),
+    }
+}
+
 pub(crate) fn rate(rate: FeeRate) -> String {
     amount(rate.amount, text::rate_unit(rate.unit))
 }
@@ -171,6 +199,19 @@ mod tests {
 
     fn amount_of(text: &str, decimals: u8) -> Amount {
         Amount::parse(text, decimals).unwrap()
+    }
+
+    #[test]
+    fn percents_and_short_waits_stay_short() {
+        assert_eq!(percent(0), "0%");
+        assert_eq!(percent(3), "< 0.1%");
+        assert_eq!(percent(37), "0.4%");
+        assert_eq!(percent(322), "3.2%");
+        assert_eq!(percent(1_574), "16%");
+        assert_eq!(short_wait(Some(Wait::About(2))), "~2 s");
+        assert_eq!(short_wait(Some(Wait::About(812))), "~13 min");
+        assert_eq!(short_wait(Some(Wait::Over(302_400))), "> 3 d");
+        assert_eq!(short_wait(None), text::NO_VALUE);
     }
 
     #[test]

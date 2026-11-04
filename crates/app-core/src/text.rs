@@ -1,3 +1,4 @@
+use bahaa_engine::swap::{self, Charged, CostKind, Custody, Method, Refusal, SwapStatus};
 use bahaa_engine::{
     Caution, ChainFamily, EngineError, FeeItem, RateUnit, Replace, SentStatus, Status, TonContract,
 };
@@ -141,6 +142,61 @@ pub(crate) const HOUR: &str = "hour";
 pub(crate) const DAY: &str = "day";
 
 pub(crate) const SEND: &str = "Send";
+pub(crate) const SWAP: &str = "Swap";
+pub(crate) const PICK_SWAP_SOURCE: &str = "Pick what to swap.";
+pub(crate) const NOTHING_TO_SWAP: &str = "There is nothing to swap yet. Receive some coins first.";
+pub(crate) const PICK_SWAP_TARGET: &str =
+    "Pick what you want to receive. It arrives in this wallet.";
+pub(crate) const NO_TARGETS: &str = "This wallet has nothing else to swap to.";
+pub(crate) const TARGET_COLUMNS: [&str; 2] = ["Asset", "Network"];
+pub(crate) const ROUTE_COLUMNS: [&str; 6] = [
+    "Provider",
+    "You receive",
+    "Value",
+    "All costs",
+    "Wait",
+    "Held by",
+];
+pub(crate) const FIND_ROUTES: &str = "Find routes";
+pub(crate) const REVIEW_BEST: &str = "Review the best route";
+pub(crate) const NEW_ROUTES: &str = "Find new routes";
+pub(crate) const OTHER_ROUTES: &str = "Other routes";
+pub(crate) const NO_ROUTES: &str = "No provider can swap these assets right now.";
+pub(crate) const ROUTES_OLD: &str =
+    "These prices are older than 30 seconds. Find new routes before you continue.";
+pub(crate) const ROUTES_PICK: &str =
+    "Routes are ranked by what you receive after every cost. Pick any of them.";
+pub(crate) const PROVIDER: &str = "Provider";
+pub(crate) const YOU_SEND: &str = "You send";
+pub(crate) const YOU_RECEIVE: &str = "You receive";
+pub(crate) const RATE: &str = "Rate";
+pub(crate) const DEPOSIT_TO: &str = "Deposit to";
+pub(crate) const SWAP_CONTRACT: &str = "Swap contract";
+pub(crate) const APPROVAL: &str = "Approval";
+pub(crate) const TRANSACTIONS: &str = "Transactions";
+pub(crate) const APPROVAL_TITLE: &str = "Approval";
+pub(crate) const ORDER_TITLE: &str = "Swap order";
+pub(crate) const VIEW_ORDER: &str = "View order";
+pub(crate) const ORDER_NOTE: &str = "A signed order is not a transaction: nothing leaves your wallet until a solver fills it, and an order that expires takes nothing.";
+pub(crate) const ORDER: &str = "Order";
+pub(crate) const SIGNED_ORDER: &str = "you sign an order that solvers fill at your minimum or better within 30 minutes, no network fee for the swap itself";
+pub(crate) const ALLOWED: &str = "Allowed";
+pub(crate) const APPROVED: &str = "Approved";
+pub(crate) const SWAP_TO: &str = "To";
+pub(crate) const SENDING_DEPOSIT: &str = "Sending your deposit…";
+pub(crate) const VIEW_DEPOSIT: &str = "View the deposit";
+pub(crate) const NO_PRICE: &str = "There is no market price to compare this route with.";
+pub(crate) const HELD_NOBODY: &str = "nobody";
+pub(crate) const HELD_CONTRACT: &str = "a contract";
+pub(crate) const HELD_PROVIDER: &str = "the provider";
+pub(crate) const HELD_ISSUER: &str = "the issuer";
+pub(crate) const SWAP_BEST: &str = "best";
+pub(crate) const REFUSED_ROUTE: &str = "refused";
+pub(crate) const SWAP_NOW: &str = "Swap now";
+pub(crate) const SWAP_ALL: &str = "Swap everything";
+pub(crate) const YOU_SWAP: &str = "You swap";
+pub(crate) const SLOW_SHORT: &str = "slow";
+pub(crate) const STUCK_SHORT: &str = "stuck";
 pub(crate) const AMOUNT: &str = "Amount";
 pub(crate) const SEND_ALL: &str = "Send everything";
 pub(crate) const REVIEW: &str = "Review";
@@ -288,6 +344,7 @@ pub(crate) fn tab(tab: Tab) -> &'static str {
         Tab::Portfolio => PORTFOLIO,
         Tab::Activity => ACTIVITY,
         Tab::Send => SEND,
+        Tab::Swap => SWAP,
         Tab::Receive => RECEIVE,
         Tab::Contacts => CONTACTS,
         Tab::Settings => SETTINGS,
@@ -470,6 +527,219 @@ pub(crate) fn replace_title(how: Replace) -> &'static str {
         Replace::SpeedUp => "Speed up the send",
         Replace::Cancel => "Cancel the send",
     }
+}
+
+pub(crate) fn side(asset: &str, network: &str, owner: &str) -> String {
+    format!("{asset} · {network} · {owner}")
+}
+
+pub(crate) fn on_network(owner: &str, network: &str) -> String {
+    format!("{owner} on {network}")
+}
+
+pub(crate) fn everything(amount: &str, coin: bool) -> String {
+    if coin {
+        format!("{amount} · everything after the network fee")
+    } else {
+        format!("{amount} · your whole balance")
+    }
+}
+
+pub(crate) fn at_least(expected: &str, minimum: &str) -> String {
+    format!("{expected} · at least {minimum}")
+}
+
+pub(crate) fn best(provider: &str) -> String {
+    format!("{provider} · {SWAP_BEST}")
+}
+
+pub(crate) fn unavailable(provider: &str, reason: &str) -> String {
+    format!("{provider}: {}", sentence(reason))
+}
+
+pub(crate) fn held_by(method: Method) -> &'static str {
+    match (method, method.custody()) {
+        (Method::Issuer, _) => HELD_ISSUER,
+        (_, Custody::Nobody) => HELD_NOBODY,
+        (_, Custody::Escrow) => HELD_CONTRACT,
+        (_, Custody::Provider) => HELD_PROVIDER,
+    }
+}
+
+pub(crate) fn custody(method: Method, provider: &str) -> String {
+    if method == Method::Issuer {
+        return format!("{provider} · the coin's issuer burns it here and mints it there");
+    }
+    match method.custody() {
+        Custody::Nobody => {
+            format!("{provider} · the swap happens in one transaction, nobody holds your money")
+        }
+        Custody::Escrow => {
+            format!("{provider} · its contract holds your money for a few seconds")
+        }
+        Custody::Provider => format!(
+            "{provider} · it holds your money until it pays out, and refunds you if it fails"
+        ),
+    }
+}
+
+pub(crate) fn sending(amount: &str, value: &str, from: &str) -> String {
+    format!("{amount} ≈ {value} from {from}")
+}
+
+pub(crate) fn receiving(expected: &str, value: &str, minimum: &str, to: &str) -> String {
+    format!("{expected} ≈ {value} · at least {minimum}, to {to}")
+}
+
+pub(crate) fn rate(sold: &str, bought: &str, market: Option<&str>) -> String {
+    match market {
+        Some(market) => format!("1 {sold} = {bought} · {market}"),
+        None => format!("1 {sold} = {bought}"),
+    }
+}
+
+pub(crate) fn market(below: bool, percent: &str) -> String {
+    if below {
+        format!("{percent} below market value")
+    } else {
+        format!("{percent} above market value")
+    }
+}
+
+pub(crate) fn cost_kind(kind: CostKind) -> &'static str {
+    match kind {
+        CostKind::NetworkFee => "Network fee",
+        CostKind::ProviderFee => "Provider fee",
+        CostKind::PoolFee => "Pool fee",
+    }
+}
+
+pub(crate) fn charged(amount: &str, charged: Charged) -> String {
+    match charged {
+        Charged::Extra => format!("{amount}, paid from your balance"),
+        Charged::InQuote => format!("{amount}, included in the rate"),
+    }
+}
+
+pub(crate) fn after_deposit(wait: &str) -> String {
+    format!("{wait}, after your deposit confirms")
+}
+
+pub(crate) fn costs(value: &str, percent: &str) -> String {
+    format!("{value} · {percent}")
+}
+
+pub(crate) fn swap_title(amount: &str, bought: &str, network: &str) -> String {
+    format!("Swap {amount} to {bought} on {network}")
+}
+
+pub(crate) fn swap_headline(sold: &str, bought: &str) -> String {
+    format!("{sold} → {bought}")
+}
+
+pub(crate) fn route_caution(caution: swap::Caution, percent: impl Fn(u32) -> String) -> String {
+    match caution {
+        swap::Caution::BelowMarket(bps) => format!(
+            "You get {} less than the market value of what you send.",
+            percent(bps)
+        ),
+        swap::Caution::CostlyFees(bps) => {
+            format!("Network fees are {} of what you send.", percent(bps))
+        }
+        swap::Caution::Unpriced => NO_PRICE.to_owned(),
+    }
+}
+
+pub(crate) fn refusal(refusal: Refusal, percent: impl Fn(u32) -> String) -> String {
+    match refusal {
+        Refusal::BelowMarket(bps) => format!("{REFUSED_ROUTE}: {} below market", percent(bps)),
+        Refusal::Inconsistent => format!("{REFUSED_ROUTE}: the quote doesn't add up"),
+    }
+}
+
+pub(crate) fn approval_line(amount: &str) -> String {
+    format!("lets the swap contract take exactly {amount}, all of it used by this swap")
+}
+
+pub(crate) fn order_approval(amount: &str) -> String {
+    format!("lets CoW Swap take exactly {amount} when a solver fills your order")
+}
+
+pub(crate) fn order_transactions(approvals: usize) -> String {
+    match approvals {
+        0 => "none, you only sign the order".to_owned(),
+        1 => "1: an approval, then you sign the order".to_owned(),
+        count => format!("{count}: clears an older approval, approves, then you sign the order"),
+    }
+}
+
+pub(crate) fn transactions(count: usize) -> String {
+    match count {
+        1 => "1: the swap".to_owned(),
+        2 => "2: an approval, then the swap".to_owned(),
+        _ => format!("{count}: clears an older approval, approves, then swaps"),
+    }
+}
+
+pub(crate) fn checked_note(sold: &str, minimum: &str) -> String {
+    format!(
+        "Checked before signing: exactly {sold} leaves this wallet, at least {minimum} arrives, and nothing else moves."
+    )
+}
+
+pub(crate) fn checked_deposit(sold: &str) -> String {
+    format!("Checked before signing: exactly {sold} leaves this wallet and nothing else moves.")
+}
+
+pub(crate) fn pool_note(symbol: &str) -> String {
+    format!(
+        "If the price drops below the minimum before the swap confirms, it fails and your {symbol} stays in your wallet."
+    )
+}
+
+pub(crate) fn approved_for(party: &str) -> String {
+    format!("Approval for {party}")
+}
+
+pub(crate) fn exactly(amount: &str) -> String {
+    format!("exactly {amount}")
+}
+
+pub(crate) fn issuer_note(provider: &str, symbol: &str, network: &str) -> String {
+    format!(
+        "{provider} burns your {symbol} here and mints it to your account on {network}. A burn can't be undone, so nothing is refunded."
+    )
+}
+
+pub(crate) fn refund_note(provider: &str, symbol: &str) -> String {
+    format!("If {provider} can't finish the swap, it sends your {symbol} back to this wallet.")
+}
+
+pub(crate) fn swap_status(status: &SwapStatus) -> String {
+    match status {
+        SwapStatus::Waiting => "Waiting for your deposit".to_owned(),
+        SwapStatus::Received => "Deposit received".to_owned(),
+        SwapStatus::Swapping => "Swapping".to_owned(),
+        SwapStatus::Done => "Done".to_owned(),
+        SwapStatus::Refunded => "Refunded".to_owned(),
+        SwapStatus::Failed(reason) => format!("Failed: {reason}"),
+    }
+}
+
+pub(crate) fn swap_done(sold: &str, bought: &str) -> String {
+    format!("Swap done: {sold} to {bought}")
+}
+
+pub(crate) fn swap_refunded(sold: &str) -> String {
+    format!("Swap refunded: {sold} is on its way back")
+}
+
+pub(crate) fn swap_failed(sold: &str) -> String {
+    format!("The swap of {sold} failed")
+}
+
+pub(crate) fn swapped_to(bought: &str, network: &str) -> String {
+    format!("Swap to {bought} on {network}")
 }
 
 pub(crate) fn replace_note(how: Replace) -> &'static str {

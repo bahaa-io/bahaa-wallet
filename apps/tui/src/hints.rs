@@ -91,7 +91,7 @@ pub(crate) const OK: Hint = ("Enter", "close");
 pub(crate) const EXPLORE: Hint = ("o", "explorer");
 pub(crate) const MENU: Hint = ("Ctrl-K", "menu");
 pub(crate) const KEYS: Hint = ("?", "keys");
-pub(crate) const TABS: Hint = ("1-6", "tabs");
+pub(crate) const TABS: Hint = ("1-7", "tabs");
 pub(crate) const LOCK: Hint = ("Ctrl-L", "lock");
 pub(crate) const QUIT: Hint = ("q", "quit");
 pub(crate) const FORCE_QUIT: Hint = ("Ctrl-C", "quit");
@@ -105,8 +105,8 @@ pub(crate) const KEY_GROUPS: [(&str, &[Hint]); 4] = [
             ("↑↓ ←→", "move inside"),
             ("Enter", "select or open"),
             ("Esc", "back"),
-            ("1-6", "switch tabs"),
-            ("Alt-1-6", "tabs while typing"),
+            ("1-7", "switch tabs"),
+            ("Alt-1-7", "tabs while typing"),
             ("PgUp PgDn", "scroll"),
         ],
     ),

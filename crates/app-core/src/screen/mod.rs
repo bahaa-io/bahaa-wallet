@@ -6,25 +6,30 @@ mod portfolio;
 mod receive;
 mod send;
 mod settings;
+mod swap;
 mod tokens;
 mod unlock;
 mod wallets;
 
 pub use onboarding::completions;
 
+use std::cmp::Ordering;
+
+use bahaa_engine::swap::{Provider, SwapRecord, SwapStatus};
 use bahaa_engine::{
-    AssetId, ChainFamily, NetworkId, SecretString, SentStatus, Settings, TonContract, Updates,
-    WalletId, WalletInfo, WalletKind, WordCount,
+    AssetId, ChainFamily, Holding, NetworkId, SecretString, SentStatus, Settings, TonContract,
+    Updates, WalletId, WalletInfo, WalletKind, WordCount,
 };
 
-use crate::action::{Action, Field, Pick, Tab, Toggle};
+use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::Outcome;
 use crate::core::{Ctx, Reply};
-use crate::text;
 use crate::view::{
-    Button, Cell, Choice, Group, Input, Item, Level, Line, Note, Page, PageId, Request, Secret,
-    Tone, Value,
+    Button, Cell, Choice, Group, Input, Item, Level, Line, Note, Page, PageId, Request, Row,
+    Secret, Table, Tone, Value,
 };
+use crate::{format, parse, text};
+use send::Source;
 
 const MIN_PASSWORD: usize = 8;
 const GOOD_PASSWORD: usize = 12;
@@ -64,6 +69,7 @@ pub(crate) fn tab(tab: Tab) -> Box<dyn Screen> {
         Tab::Portfolio => Box::new(portfolio::Portfolio::default()),
         Tab::Activity => Box::new(activity::List::default()),
         Tab::Send => Box::new(send::Send::new(None)),
+        Tab::Swap => Box::new(swap::Swap::default()),
         Tab::Receive => Box::new(receive::Receive::default()),
         Tab::Contacts => Box::new(contacts::List),
         Tab::Settings => Box::new(settings::Settings),
@@ -162,6 +168,30 @@ pub(crate) fn network_line(ctx: &Ctx<'_>, network: &NetworkId) -> Line {
     )
 }
 
+pub(crate) fn swap_details(ctx: &Ctx<'_>, swap: &SwapRecord) -> Vec<Line> {
+    let bought = ctx.symbol(&swap.buy);
+    Provider::from_key(&swap.provider)
+        .map(|provider| line(text::PROVIDER, provider.name()))
+        .into_iter()
+        .chain([line(
+            text::YOU_RECEIVE,
+            text::at_least(
+                &format::exact(swap.expected, &bought),
+                &format::exact(swap.minimum, &bought),
+            ),
+        )])
+        .collect()
+}
+
+pub(crate) fn swap_tone(status: &SwapStatus) -> Tone {
+    match status {
+        SwapStatus::Waiting | SwapStatus::Received | SwapStatus::Swapping => Tone::Waiting,
+        SwapStatus::Done => Tone::Good,
+        SwapStatus::Refunded => Tone::Warning,
+        SwapStatus::Failed(_) => Tone::Bad,
+    }
+}
+
 pub(crate) fn status_tone(status: &SentStatus) -> Tone {
     match status {
         SentStatus::Sending | SentStatus::Pending => Tone::Waiting,
@@ -220,6 +250,113 @@ pub(crate) fn update_check(settings: &Settings, asked: bool) -> Option<Request> 
         Updates::Stable => Some(Request::CheckUpdates { beta: false, asked }),
         Updates::Beta => Some(Request::CheckUpdates { beta: true, asked }),
     }
+}
+
+pub(crate) fn spendable<'a>(ctx: &'a Ctx<'_>) -> Vec<&'a Holding> {
+    let mut held: Vec<&Holding> = ctx
+        .data
+        .portfolio
+        .holdings
+        .iter()
+        .filter(|holding| !holding.amount.is_zero() && !ctx.watch_only(holding.wallet))
+        .collect();
+    held.sort_by(|a, b| {
+        b.value
+            .partial_cmp(&a.value)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.symbol.cmp(&b.symbol))
+    });
+    held
+}
+
+pub(crate) fn holding<'a>(ctx: &'a Ctx<'_>, source: &Source) -> Option<&'a Holding> {
+    ctx.data.portfolio.holdings.iter().find(|holding| {
+        holding.wallet == source.wallet
+            && holding.address == source.address
+            && holding.asset == source.asset
+    })
+}
+
+pub(crate) fn holdings_page(
+    ctx: &Ctx<'_>,
+    id: PageId,
+    title: &str,
+    intro: &str,
+    empty: &str,
+) -> Page {
+    let held = spendable(ctx);
+    if held.is_empty() {
+        return Page {
+            id,
+            title: title.to_owned(),
+            text: Some(empty.to_owned()),
+            buttons: vec![button(text::RECEIVE, Action::Go(Go::Tab(Tab::Receive)))],
+            ..Page::default()
+        };
+    }
+    let owners: Vec<String> = held
+        .iter()
+        .map(|holding| ctx.owner_label(holding.wallet, &holding.address))
+        .collect();
+    let several = several(&owners);
+    let mut columns: Vec<String> = text::SEND_COLUMNS.map(str::to_owned).to_vec();
+    if several {
+        columns.push(text::WALLET.to_owned());
+    }
+    let rows = held
+        .iter()
+        .zip(owners)
+        .enumerate()
+        .map(|(position, (holding, owner))| {
+            let mut cells = vec![
+                asset_cell(ctx, &holding.asset),
+                network_cell(ctx, holding.asset.network()),
+                ctx.amount(holding.amount, &holding.symbol).into(),
+                ctx.value(holding.value).into(),
+            ];
+            if several {
+                cells.push(cell(owner, Tone::Muted));
+            }
+            Row {
+                cells,
+                open: Some(Action::Pick(Pick::Source(position))),
+                warn: false,
+            }
+        })
+        .collect();
+    Page {
+        id,
+        title: title.to_owned(),
+        text: Some(intro.to_owned()),
+        table: Some(Table {
+            columns,
+            rows,
+            empty: empty.to_owned(),
+        }),
+        ..Page::default()
+    }
+}
+
+pub(crate) fn amount_hint(ctx: &Ctx<'_>, holding: &Holding, typed: &str) -> Option<Note> {
+    if typed.trim().is_empty() {
+        return None;
+    }
+    let decimals = ctx.coin(&holding.asset)?.decimals;
+    let amount = match parse::amount(typed, decimals) {
+        Ok(amount) => amount,
+        Err(problem) => return Some(note(Level::Error, problem)),
+    };
+    if amount.partial_cmp(&holding.amount) == Some(Ordering::Greater) {
+        let balance = ctx.amount(holding.amount, &holding.symbol);
+        return Some(note(Level::Error, text::too_much(&balance)));
+    }
+    let value = holding
+        .price
+        .and_then(|price| price.value_of(amount, ctx.fiat().places()).ok())?;
+    Some(note(
+        Level::Info,
+        text::approx(&format::fiat(Some(value), ctx.fiat())),
+    ))
 }
 
 pub(crate) fn several(owners: &[String]) -> bool {
