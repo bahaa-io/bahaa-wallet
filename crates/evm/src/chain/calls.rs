@@ -28,7 +28,6 @@ const MAX_LOGS: usize = 2_048;
 const MAX_TOPICS: usize = 4;
 const MAX_REASON: usize = 160;
 const GAS_TRIES: usize = 3;
-const OUT_OF_GAS: u64 = 16;
 
 #[derive(Clone, Copy, Debug)]
 struct Pricing {
@@ -543,39 +542,36 @@ impl EvmChain {
                     .iter()
                     .map(|call| call.peak.saturating_add(call.peak / 4))
                     .collect();
-                for _ in 0..GAS_TRIES {
+                let mut tries = 1;
+                let bounded = loop {
                     let bounded = self
                         .simulate_swap(&calls, Some((&limits, pricing)))
                         .await?
                         .ok_or_else(ChainError::malformed)?;
-                    let short: Vec<usize> = bounded[..steps.len()]
+                    let failed: Vec<usize> = bounded[..steps.len()]
                         .iter()
-                        .zip(&limits)
                         .enumerate()
-                        .filter(|(_, (call, limit))| {
-                            !call.ok && call.used >= *limit - *limit / OUT_OF_GAS
-                        })
+                        .filter(|(_, call)| !call.ok)
                         .map(|(index, _)| index)
                         .collect();
-                    if short.is_empty() {
-                        judge(from, swap, steps.len() - 1, &bounded, check)?;
-                        let gas = bounded[..steps.len()]
-                            .iter()
-                            .zip(&limits)
-                            .map(|(call, limit)| Gas {
-                                used: call.used,
-                                limit: *limit,
-                            })
-                            .collect();
-                        return Ok((gas, true));
+                    if failed.is_empty() || tries == GAS_TRIES {
+                        break bounded;
                     }
-                    for index in short {
+                    tries += 1;
+                    for index in failed {
                         limits[index] = limits[index].saturating_add(limits[index] / 2);
                     }
-                }
-                Err(ChainError::Rejected(
-                    "the swap runs out of gas at every limit the wallet tried".to_owned(),
-                ))
+                };
+                judge(from, swap, steps.len() - 1, &bounded, check)?;
+                let gas = bounded[..steps.len()]
+                    .iter()
+                    .zip(&limits)
+                    .map(|(call, limit)| Gas {
+                        used: call.used,
+                        limit: *limit,
+                    })
+                    .collect();
+                Ok((gas, true))
             }
             None if swap.ours && steps.len() == 1 => {
                 let route = Route {
