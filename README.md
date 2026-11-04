@@ -70,6 +70,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Bitcoin:** Native SegWit and Taproot, found from your phrase's history, with a fresh address for every payment.
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
 - **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks and Bitcoin.
+- **Swaps:** swap coins and tokens on one network or across networks, through decentralized exchanges and keyless cross-network services. Every route is ranked by what you really receive, with the exact cost shown, and you can pick any of them. No app fee.
 - **Activity:** one timeline of what you sent and received, with spam flagged and hidden.
 - **Privacy:** hide every balance with one switch.
 
@@ -95,7 +96,10 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **EVM memos only go with coins** sent to a plain address. With tokens and contracts, they would break the call.
 - **Only listed networks** for now, and values only for assets Bahaa prices.
 - **Public servers:** if a network's servers are down, that network pauses until they're back.
-- **Not supported yet:** NFTs, swaps, staking actions, app connections and hardware wallets.
+- **Swaps across networks go through a provider:** it holds your coins for seconds to minutes and refunds you if it fails.
+- **Avalanche swaps aren't simulated before signing:** its public servers can't.
+- **Only tracked tokens can be swapped.**
+- **Not supported yet:** NFTs, staking actions, app connections and hardware wallets.
 
 ## License
 
