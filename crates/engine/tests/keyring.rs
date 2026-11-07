@@ -512,7 +512,8 @@ fn a_solana_key_comes_back_the_way_solana_wallets_export_it() {
         keyring
             .import_key(&bahaa_types::hex::encode(&secret), ChainFamily::Solana)
             .unwrap_err(),
-        KeyringError::Key(bahaa_crypto::KeyError::SolanaFormat)
+        KeyringError::Duplicate,
+        "the hex form is the same key"
     );
     let keyring = reopened(&scratch);
     assert_eq!(

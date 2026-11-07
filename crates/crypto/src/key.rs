@@ -23,10 +23,10 @@ pub enum KeyError {
     #[error("a TON private key is 64 or 128 hex characters")]
     TonLength,
     #[error(
-        "a Solana private key is the base58 text wallets export, or a key file's list of 64 numbers"
+        "a Solana private key is the base58 text wallets export, a key file's list of 64 numbers, or hex"
     )]
     SolanaFormat,
-    #[error("a Bitcoin private key is WIF text, starting with K, L or c")]
+    #[error("a Bitcoin private key is WIF text starting with K, L or c, or 64 hex characters")]
     BitcoinFormat,
     #[error("old uncompressed Bitcoin keys are not supported")]
     Uncompressed,
@@ -53,13 +53,24 @@ pub fn secp256k1_seed(key: &[u8; KEY_BYTES]) -> Result<Seed, KeyError> {
 
 pub fn ton_private_key(text: &str) -> Result<Zeroizing<[u8; KEY_BYTES]>, KeyError> {
     let digits = digits(text);
+    if !ed25519_length(digits) {
+        return Err(KeyError::TonLength);
+    }
+    ed25519_hex(digits)
+}
+
+fn ed25519_length(digits: &str) -> bool {
+    digits.len() == 2 * KEY_BYTES || digits.len() == 4 * KEY_BYTES
+}
+
+fn ed25519_hex(digits: &str) -> Result<Zeroizing<[u8; KEY_BYTES]>, KeyError> {
     if digits.len() == 2 * KEY_BYTES {
         return decode::<KEY_BYTES>(digits);
     }
-    if digits.len() != 4 * KEY_BYTES {
-        return Err(KeyError::TonLength);
-    }
-    let pair = decode::<{ 2 * KEY_BYTES }>(digits)?;
+    pair_key(&*decode::<{ 2 * KEY_BYTES }>(digits)?)
+}
+
+fn pair_key(pair: &[u8; 2 * KEY_BYTES]) -> Result<Zeroizing<[u8; KEY_BYTES]>, KeyError> {
     let mut key = Zeroizing::new([0u8; KEY_BYTES]);
     key.copy_from_slice(&pair[..KEY_BYTES]);
     if SigningKey::from_bytes(&key).verifying_key().as_bytes()[..] != pair[KEY_BYTES..] {
@@ -73,6 +84,10 @@ pub fn ed25519_seed(key: &[u8; KEY_BYTES]) -> Seed {
 }
 
 pub fn solana_private_key(text: &str) -> Result<Zeroizing<[u8; KEY_BYTES]>, KeyError> {
+    let raw = digits(text);
+    if ed25519_length(raw) && raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return ed25519_hex(raw);
+    }
     let text = text.trim();
     let mut pair = Zeroizing::new([0u8; 2 * KEY_BYTES]);
     let read = match text
@@ -97,15 +112,14 @@ pub fn solana_private_key(text: &str) -> Result<Zeroizing<[u8; KEY_BYTES]>, KeyE
     if !read {
         return Err(KeyError::SolanaFormat);
     }
-    let mut key = Zeroizing::new([0u8; KEY_BYTES]);
-    key.copy_from_slice(&pair[..KEY_BYTES]);
-    if SigningKey::from_bytes(&key).verifying_key().as_bytes()[..] != pair[KEY_BYTES..] {
-        return Err(KeyError::Invalid);
-    }
-    Ok(key)
+    pair_key(&pair)
 }
 
 pub fn bitcoin_private_key(text: &str) -> Result<Zeroizing<[u8; KEY_BYTES]>, KeyError> {
+    let raw = digits(text);
+    if raw.len() == 2 * KEY_BYTES && raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return private_key(raw);
+    }
     let text = text.trim();
     if text.len() > WIF_MAX_CHARS {
         return Err(KeyError::BitcoinFormat);
@@ -232,6 +246,12 @@ mod tests {
         let numbers: Vec<String> = pair.iter().map(ToString::to_string).collect();
         let file = format!("[{}]", numbers.join(", "));
         assert_eq!(*solana_private_key(&file).unwrap(), secret);
+        assert_eq!(*solana_private_key(RFC8032_KEY).unwrap(), secret);
+        let both = format!("0x{RFC8032_KEY}{RFC8032_PUBLIC}");
+        assert_eq!(*solana_private_key(&both).unwrap(), secret);
+        let mut forged = format!("{RFC8032_KEY}{RFC8032_PUBLIC}");
+        forged.replace_range(127.., "0");
+        assert_eq!(solana_private_key(&forged).unwrap_err(), KeyError::Invalid);
         let seed = ed25519_seed(&secret);
         let public = ed25519(&seed, &"m/44'/501'/0'/0'".parse().unwrap())
             .unwrap()
@@ -256,7 +276,7 @@ mod tests {
             long.as_str(),
             wide.as_str(),
             half.as_str(),
-            RFC8032_KEY,
+            &RFC8032_KEY[..63],
             &"z".repeat(500),
         ] {
             assert_eq!(
@@ -291,6 +311,21 @@ mod tests {
     }
 
     #[test]
+    fn a_hex_key_is_the_same_key_as_its_wif() {
+        let key: [u8; KEY_BYTES] = hex::decode_array(KEY).unwrap();
+        assert_eq!(*bitcoin_private_key(KEY).unwrap(), key);
+        assert_eq!(
+            *bitcoin_private_key(&format!(" 0x{} ", KEY.to_uppercase())).unwrap(),
+            key
+        );
+        assert_eq!(
+            *bitcoin_private_key(&bitcoin_wif(&key)).unwrap(),
+            *bitcoin_private_key(KEY).unwrap()
+        );
+        assert_eq!(bitcoin_private_key(&"0".repeat(64)), Err(KeyError::Invalid));
+    }
+
+    #[test]
     fn other_wif_forms_are_refused_with_a_reason() {
         assert_eq!(
             bitcoin_private_key("5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ"),
@@ -300,7 +335,7 @@ mod tests {
             "",
             "KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98618",
             "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
-            KEY,
+            &KEY[..63],
             &"K".repeat(60),
         ] {
             assert_eq!(
