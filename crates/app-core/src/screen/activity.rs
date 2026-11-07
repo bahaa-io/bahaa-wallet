@@ -5,10 +5,11 @@ use bahaa_engine::{
 use super::send::Send;
 use super::{
     Screen, button, cell, choice, group, line, network_cell, network_line, note, picked_wallet,
-    status_tone, swap_details, swap_tone, toned_line, wallet_group,
+    search_box, search_empty, status_tone, swap_details, swap_tone, toned_line, wallet_group,
 };
-use crate::action::{Action, Direction, Go, Pick, Toggle};
+use crate::action::{Action, Direction, Field, Go, Pick, Toggle};
 use crate::core::{Ctx, Nav, Reply};
+use crate::search::{Facts, Query};
 use crate::view::{Button, Item, Level, Line, Note, Page, PageId, Request, Row, Table, Tone};
 use crate::{format, text};
 
@@ -17,6 +18,7 @@ pub(crate) struct List {
     filter: Option<WalletId>,
     direction: Direction,
     show_spam: bool,
+    search: String,
 }
 
 impl List {
@@ -52,6 +54,10 @@ impl Screen for List {
                 self.show_spam = !self.show_spam;
                 Reply::default()
             }
+            Action::Type(Field::Search, value) => {
+                self.search.clone_from(value);
+                Reply::default()
+            }
             Action::Go(Go::Transfer(row)) => ctx
                 .data
                 .activity
@@ -64,14 +70,21 @@ impl Screen for List {
     }
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
-        let rows: Vec<Row> = ctx
+        let query = Query::new(ctx, &self.search);
+        let listed: Vec<(usize, &Activity)> = ctx
             .data
             .activity
             .iter()
             .enumerate()
             .filter(|(_, activity)| self.matches(activity) && !self.hidden(activity))
+            .collect();
+        let total = listed.len();
+        let rows: Vec<Row> = listed
+            .into_iter()
+            .filter(|(_, activity)| query.is_empty() || query.matches(&facts(ctx, activity)))
             .map(|(position, activity)| row(ctx, position, activity))
             .collect();
+        let shown = rows.len();
         let hidden = ctx
             .data
             .activity
@@ -79,18 +92,25 @@ impl Screen for List {
             .filter(|activity| self.matches(activity) && self.hidden(activity))
             .count();
         let empty = if ctx.data.activity.is_empty() {
-            text::NO_ACTIVITY
+            text::NO_ACTIVITY.to_owned()
         } else {
-            text::NO_MATCHES
+            search_empty(&self.search, text::NO_MATCHES)
         };
+        let mut form = vec![search_box(
+            &self.search,
+            text::SEARCH_ACTIVITY,
+            shown,
+            total,
+        )];
+        form.extend(self.form(ctx));
         Page {
             id: PageId::Activity,
             title: text::ACTIVITY.to_owned(),
-            form: self.form(ctx),
+            form,
             table: Some(Table {
                 columns: text::ACTIVITY_COLUMNS.map(str::to_owned).to_vec(),
                 rows,
-                empty: empty.to_owned(),
+                empty,
             }),
             notes: Self::notes(ctx, hidden),
             ..Page::default()
@@ -136,6 +156,53 @@ impl List {
             ])
             .collect()
     }
+}
+
+fn facts(ctx: &Ctx<'_>, activity: &Activity) -> Facts {
+    let mut facts = Facts::default();
+    match &activity.kind {
+        ActivityKind::Sent(tx) => {
+            facts
+                .amount(tx.amount)
+                .asset(ctx, &tx.asset)
+                .address(ctx, &tx.from, &tx.network)
+                .address(ctx, &tx.to, &tx.network)
+                .id(&tx.id)
+                .word(&text::status(&tx.status))
+                .wallet(ctx, activity.wallet, &tx.from);
+            if let Some(swap) = ctx.swap(&tx.network, &tx.id) {
+                facts
+                    .asset(ctx, &swap.buy)
+                    .word(&text::swap_status(&swap.status));
+            }
+        }
+        ActivityKind::SentElsewhere(moved) => {
+            facts
+                .moved(ctx, moved)
+                .word(text::ELSEWHERE)
+                .wallet(ctx, activity.wallet, &moved.from);
+        }
+        ActivityKind::Received(arrival) => {
+            facts
+                .moved(ctx, &arrival.received)
+                .word(text::RECEIVED)
+                .wallet(ctx, activity.wallet, &arrival.received.to);
+        }
+        ActivityKind::Order(swap) => {
+            facts
+                .amount(swap.amount)
+                .asset(ctx, &swap.sell)
+                .asset(ctx, &swap.buy)
+                .address(ctx, &swap.from, &swap.network)
+                .address(ctx, &swap.to, swap.buy.network())
+                .id(&swap.id)
+                .id(&swap.reference)
+                .word(&swap.provider)
+                .word(&text::swap_status(&swap.status))
+                .wallet(ctx, activity.wallet, &swap.from);
+        }
+    }
+    facts
 }
 
 fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {

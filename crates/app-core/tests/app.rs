@@ -527,6 +527,65 @@ async fn sending_starts_from_a_list_and_checks_while_typing() {
     app.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn lists_narrow_down_as_the_search_is_typed() {
+    let scratch = Scratch::new();
+    let node = bsc_node().await;
+    let (app, _requests, mut view) = imported_on(&scratch, bsc_registry(&node), false).await;
+    app.act(Action::Go(Go::Tab(Tab::Send)));
+    until(&mut view, |current| {
+        current.page.id == PageId::SendFrom
+            && current
+                .page
+                .table
+                .as_ref()
+                .is_some_and(|table| !table.rows.is_empty())
+    })
+    .await;
+    let rows = |current: &View| {
+        current
+            .page
+            .table
+            .as_ref()
+            .map_or(0, |table| table.rows.len())
+    };
+    for words in ["bnb", "smart chain", "wallet 1"] {
+        app.act(Action::Type(Field::Search, words.to_owned()));
+        until(&mut view, |current| {
+            typed(current, Field::Search) == words
+                && rows(current) == 1
+                && hint(current, Field::Search) == Some((Level::Info, "1 of 1".to_owned()))
+        })
+        .await;
+    }
+    app.act(Action::Type(Field::Search, "eth".to_owned()));
+    let missed = until(&mut view, |current| rows(current) == 0).await;
+    assert_eq!(
+        missed.page.table.as_ref().unwrap().empty,
+        "Nothing matches \u{201c}eth\u{201d}"
+    );
+    app.act(Action::Go(Go::Tab(Tab::Receive)));
+    let listed = until(&mut view, |current| {
+        current.page.id == PageId::ReceiveTo && rows(current) > 1
+    })
+    .await;
+    let all = rows(&listed);
+    let everything = format!("{all} of {all}");
+    app.act(Action::Type(Field::Search, HARDHAT_0.to_lowercase()));
+    until(&mut view, |current| {
+        rows(current) == all
+            && hint(current, Field::Search) == Some((Level::Info, everything.clone()))
+    })
+    .await;
+    for words in [format!("{HARDHAT_0} arbitrum"), "usdt avalanche".to_owned()] {
+        app.act(Action::Type(Field::Search, words));
+        until(&mut view, |current| rows(current) == 1).await;
+    }
+    app.act(Action::Type(Field::Search, "tron".to_owned()));
+    until(&mut view, |current| rows(current) == 0).await;
+    app.shutdown().await.unwrap();
+}
+
 async fn next_request(requests: &mut mpsc::Receiver<Request>) -> Request {
     tokio::time::timeout(Duration::from_secs(5), requests.recv())
         .await
@@ -987,6 +1046,43 @@ fn opener(view: &View, wanted: &[&str]) -> Action {
     row.open.clone().unwrap()
 }
 
+async fn activity_finds_the_swap(app: &App, view: &mut watch::Receiver<Arc<View>>) {
+    app.act(Action::Go(Go::Tab(Tab::Activity)));
+    let rows = |current: &View| {
+        current
+            .page
+            .table
+            .as_ref()
+            .map_or(0, |table| table.rows.len())
+    };
+    until(view, |current| {
+        current.page.id == PageId::Activity && rows(current) == 1
+    })
+    .await;
+    for words in [
+        "0.1",
+        "eth base",
+        "0x88346a0010f9c3914b9e6d507a7200bdcdede3a5",
+        "88346a",
+        "bnb done",
+    ] {
+        app.act(Action::Type(Field::Search, words.to_owned()));
+        until(view, |current| {
+            typed(current, Field::Search) == words
+                && rows(current) == 1
+                && hint(current, Field::Search) == Some((Level::Info, "1 of 1".to_owned()))
+        })
+        .await;
+    }
+    for words in ["ton", "88", "0.2"] {
+        app.act(Action::Type(Field::Search, words.to_owned()));
+        until(view, |current| {
+            typed(current, Field::Search) == words && rows(current) == 0
+        })
+        .await;
+    }
+}
+
 async fn swap_app(scratch: &Scratch) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
     let node = spending_node().await;
     let mut engine = engine_config(scratch, bsc_registry(&node));
@@ -1144,5 +1240,6 @@ async fn a_swap_lists_every_route_reviews_the_exact_deposit_and_follows_the_prov
             .iter()
             .any(|toast| toast.text == "Swap done: 0.1 BNB to ETH")
     );
+    activity_finds_the_swap(&app, &mut view).await;
     app.shutdown().await.unwrap();
 }

@@ -300,6 +300,7 @@ impl Ui {
         }
         let typing = matches!(self.focus, Some(Target::Input(_)));
         let mut list = match self.focus {
+            Some(Target::Input(Field::Search)) => vec![hints::TO_LIST, hints::CLEAR, hints::NEXT],
             Some(Target::Input(field)) => {
                 let mut list = vec![hints::SUBMIT];
                 list.push(if self.completion(field).is_some() {
@@ -324,6 +325,9 @@ impl Ui {
             None => Vec::new(),
         };
         if !typing {
+            if searchable(page) {
+                list.push(hints::SEARCH);
+            }
             if page.secret.is_some() {
                 list.push(hints::WORDS);
             }
@@ -338,7 +342,9 @@ impl Ui {
                 list.push(hints::EXPLORE);
             }
         }
-        list.push(hints::BACK);
+        if self.focus != Some(Target::Input(Field::Search)) {
+            list.push(hints::BACK);
+        }
         list.push(hints::MENU);
         if !typing {
             list.push(hints::KEYS);
@@ -383,6 +389,7 @@ impl Ui {
             KeyCode::Char('l') if control => vec![Action::Lock],
             KeyCode::Char('k') if control => self.open_menu(),
             KeyCode::F(1) => self.open_keys(),
+            KeyCode::Esc if self.focus == Some(Target::Input(Field::Search)) => self.clear_search(),
             KeyCode::Esc => vec![Action::Back],
             KeyCode::Tab => self
                 .complete()
@@ -476,6 +483,13 @@ impl Ui {
     fn typing(&mut self, field: Field, key: KeyEvent, view: &View) -> Vec<Action> {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
+            KeyCode::Enter if field == Field::Search => {
+                if has_rows(&view.page) {
+                    self.focus = Some(Target::Table);
+                    self.rows.select(Some(0));
+                }
+                return Vec::new();
+            }
             KeyCode::Enter => return vec![Action::Submit],
             KeyCode::Up => return self.moved(&view.page, false),
             KeyCode::Down => return self.moved(&view.page, true),
@@ -588,6 +602,10 @@ impl Ui {
             KeyCode::Char('r') => vec![Action::Refresh],
             KeyCode::Char(':') => self.open_menu(),
             KeyCode::Char('?') => self.open_keys(),
+            KeyCode::Char('/') if searchable(&view.page) => {
+                self.focus = Some(Target::Input(Field::Search));
+                Vec::new()
+            }
             KeyCode::Char('s') if view.page.secret.is_some() => self.run(Command::Words),
             KeyCode::Char('v') if view.page.qr.is_some() => self.run(Command::Qr),
             KeyCode::Char(digit) if digit.is_ascii_digit() => tab(digit, view),
@@ -596,6 +614,19 @@ impl Ui {
             KeyCode::PageUp => self.scrolled(false, SCROLL),
             KeyCode::PageDown => self.scrolled(true, SCROLL),
             _ => Vec::new(),
+        }
+    }
+
+    fn clear_search(&mut self) -> Vec<Action> {
+        match self.editors.get_mut(&Field::Search) {
+            Some(editor) if !editor.text().is_empty() => {
+                editor.clear();
+                vec![Action::Type(Field::Search, String::new())]
+            }
+            _ => {
+                self.focus = None;
+                Vec::new()
+            }
         }
     }
 
@@ -796,11 +827,15 @@ fn targets(page: &Page) -> Vec<Target> {
 
 fn first(page: &Page) -> Option<Target> {
     page.inputs()
-        .next()
+        .find(|input| input.field != Field::Search)
         .map(|input| Target::Input(input.field))
         .or_else(|| has_rows(page).then_some(Target::Table))
         .or_else(|| (!page.buttons.is_empty()).then_some(Target::Button(0)))
         .or_else(|| targets(page).first().copied())
+}
+
+fn searchable(page: &Page) -> bool {
+    page.inputs().any(|input| input.field == Field::Search)
 }
 
 fn has_rows(page: &Page) -> bool {

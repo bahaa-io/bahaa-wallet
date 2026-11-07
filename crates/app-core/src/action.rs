@@ -29,6 +29,7 @@ pub enum Field {
     Name,
     Address,
     Contract,
+    Search,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

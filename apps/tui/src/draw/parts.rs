@@ -21,6 +21,7 @@ use crate::ui::{Hit, Target, Ui};
 use crate::wrap::{self, cells};
 
 const INPUT_WIDTH: u16 = 72;
+const SEARCH_WIDTH: u16 = 56;
 const MAX_LABEL: u16 = 20;
 const CHOICE_GAP: u16 = 1;
 const BUTTON_GAP: u16 = 2;
@@ -419,8 +420,11 @@ fn group(
 
 fn input(buffer: &mut Buffer, area: Rect, input: &app::Input, ui: &Ui, sink: &mut Sink) {
     let focused = ui.focus == Some(Target::Input(input.field));
+    let search = input.field == Field::Search;
     let area = Rect {
-        width: area.width.min(INPUT_WIDTH),
+        width: area
+            .width
+            .min(if search { SEARCH_WIDTH } else { INPUT_WIDTH }),
         ..area
     };
     let hit = Hit::Focus(Target::Input(input.field));
@@ -439,7 +443,14 @@ fn input(buffer: &mut Buffer, area: Rect, input: &app::Input, ui: &Ui, sink: &mu
         .border_type(BorderType::Rounded)
         .border_style(border)
         .padding(Padding::horizontal(1))
-        .title(Line::styled(format!(" {} ", input.label), label));
+        .title(Line::styled(
+            if search {
+                format!(" {} {} ", input.label, hints::SEARCH_KEY)
+            } else {
+                format!(" {} ", input.label)
+            },
+            label,
+        ));
     let suggestions = ui.suggestions(input.field);
     if !suggestions.is_empty() {
         block = block.title_bottom(Line::styled(

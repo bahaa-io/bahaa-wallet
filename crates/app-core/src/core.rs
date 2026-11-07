@@ -181,6 +181,20 @@ impl Ctx<'_> {
         shown
     }
 
+    pub(crate) fn assets(&self, network: &NetworkId) -> Vec<AssetId> {
+        let custom = self
+            .data
+            .tokens
+            .iter()
+            .filter(|token| token.asset.network() == network)
+            .map(|token| token.asset.clone());
+        self.network(network)
+            .into_iter()
+            .flat_map(|network| network.assets().map(|(asset, _)| asset))
+            .chain(custom)
+            .collect()
+    }
+
     pub(crate) fn shown(&self, address: &Address, network: &NetworkId) -> String {
         self.network(network).map_or_else(
             || address.to_string(),

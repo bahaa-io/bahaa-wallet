@@ -6,6 +6,7 @@ mod format;
 mod links;
 mod parse;
 mod screen;
+mod search;
 mod text;
 mod view;
 

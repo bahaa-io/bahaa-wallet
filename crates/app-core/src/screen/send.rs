@@ -52,6 +52,7 @@ pub(crate) struct Send {
     replacing: Option<(NetworkId, String, Replace)>,
     step: Step,
     error: Option<String>,
+    search: String,
 }
 
 impl Send {
@@ -74,6 +75,7 @@ impl Send {
             replacing: None,
             step,
             error: None,
+            search: String::new(),
         }
     }
 
@@ -309,13 +311,12 @@ impl Send {
         Reply::default()
     }
 
-    fn choose_page(ctx: &Ctx<'_>) -> Page {
+    fn choose_page(&self, ctx: &Ctx<'_>) -> Page {
         super::holdings_page(
             ctx,
             PageId::SendFrom,
-            text::SEND,
-            text::PICK_SOURCE,
-            text::NOTHING_TO_SEND,
+            (text::SEND, text::PICK_SOURCE, text::NOTHING_TO_SEND),
+            &self.search,
         )
     }
 
@@ -331,7 +332,7 @@ impl Send {
             };
         }
         let Some(source) = &self.source else {
-            return Self::choose_page(ctx);
+            return self.choose_page(ctx);
         };
         let network = source.asset.network();
         let mut lines = vec![
@@ -596,6 +597,10 @@ impl Screen for Send {
     fn act(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
         match (&mut self.step, action) {
             (Step::Choose, Action::Pick(Pick::Source(position))) => self.choose(*position, ctx),
+            (Step::Choose, Action::Type(Field::Search, value)) => {
+                self.search.clone_from(value);
+                Reply::default()
+            }
             (_, Action::Submit) => self.submit(ctx),
             (Step::Confirm { password, .. }, Action::Type(Field::Password, value)) => {
                 *password = Secret::new(value);
@@ -665,7 +670,7 @@ impl Screen for Send {
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
         match &self.step {
-            Step::Choose => Self::choose_page(ctx),
+            Step::Choose => self.choose_page(ctx),
             Step::Compose => self.compose_page(ctx),
             Step::Review { draft, at } => self.review_page(draft, *at, ctx),
             Step::Confirm { password, .. } => Page {

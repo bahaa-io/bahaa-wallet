@@ -106,6 +106,11 @@ pub(crate) const ACTIVITY: &str = "Activity";
 pub(crate) const ACTIVITY_COLUMNS: [&str; 5] = ["When", "Amount", "Network", "With", "Status"];
 pub(crate) const NO_ACTIVITY: &str = "No transfers yet";
 pub(crate) const NO_MATCHES: &str = "No transfers match these filters";
+pub(crate) const SEARCH: &str = "Search";
+pub(crate) const SEARCH_ACTIVITY: &str = "Amount, token, network, address or transaction id";
+pub(crate) const SEARCH_HOLDINGS: &str = "Token, network or wallet";
+pub(crate) const SEARCH_TARGETS: &str = "Token or network";
+pub(crate) const SEARCH_RECEIVE: &str = "Address, wallet, network or token";
 pub(crate) const RECEIVED: &str = "Received";
 pub(crate) const ELSEWHERE: &str = "Sent from another app";
 pub(crate) const TRANSFER: &str = "Transfer";
@@ -530,6 +535,14 @@ pub(crate) fn replace_title(how: Replace) -> &'static str {
 
 pub(crate) fn side(asset: &str, network: &str, owner: &str) -> String {
     format!("{asset} · {network} · {owner}")
+}
+
+pub(crate) fn found(shown: usize, total: usize) -> String {
+    format!("{shown} of {total}")
+}
+
+pub(crate) fn nothing_matches(typed: &str) -> String {
+    format!("Nothing matches \u{201c}{typed}\u{201d}")
 }
 
 pub(crate) fn on_network(owner: &str, network: &str) -> String {

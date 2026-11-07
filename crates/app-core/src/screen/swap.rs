@@ -13,6 +13,7 @@ use super::{
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
+use crate::search::Facts;
 use crate::view::{Input, Level, Line, Note, Page, PageId, Row, Secret, Table, Tone};
 use crate::{format, parse, text};
 
@@ -48,6 +49,7 @@ pub(crate) struct Swap {
     routes: Option<(SwapDraft, u64)>,
     step: Step,
     error: Option<String>,
+    search: String,
 }
 
 impl Swap {
@@ -67,19 +69,7 @@ impl Swap {
                     account.wallet == source.wallet && account.serves(&network.id, network.family())
                 })
             })
-            .flat_map(|network| {
-                let custom = ctx
-                    .data
-                    .tokens
-                    .iter()
-                    .filter(|token| token.asset.network() == &network.id)
-                    .map(|token| token.asset.clone());
-                network
-                    .assets()
-                    .map(|(asset, _)| asset)
-                    .chain(custom)
-                    .collect::<Vec<_>>()
-            })
+            .flat_map(|network| ctx.assets(&network.id))
             .filter(|asset| asset != &source.asset)
             .collect();
         targets.sort_by_key(|asset| asset.network() != source.asset.network());
@@ -217,12 +207,18 @@ impl Swap {
     }
 
     fn target_page(&self, ctx: &Ctx<'_>) -> Page {
-        let rows = self
-            .targets(ctx)
-            .iter()
-            .enumerate()
+        let targets = self.targets(ctx);
+        let total = targets.len();
+        let kept = super::searched(ctx, &self.search, targets, |asset| {
+            let mut facts = Facts::default();
+            facts.asset(ctx, asset);
+            facts
+        });
+        let shown = kept.len();
+        let rows = kept
+            .into_iter()
             .map(|(position, asset)| Row {
-                cells: vec![asset_cell(ctx, asset), network_cell(ctx, asset.network())],
+                cells: vec![asset_cell(ctx, &asset), network_cell(ctx, asset.network())],
                 open: Some(Action::Pick(Pick::Buy(position))),
                 warn: false,
             })
@@ -238,10 +234,16 @@ impl Swap {
             title: text::SWAP.to_owned(),
             text: Some(text::PICK_SWAP_TARGET.to_owned()),
             lines,
+            form: vec![super::search_box(
+                &self.search,
+                text::SEARCH_TARGETS,
+                shown,
+                total,
+            )],
             table: Some(Table {
                 columns: text::TARGET_COLUMNS.map(str::to_owned).to_vec(),
                 rows,
-                empty: text::NO_TARGETS.to_owned(),
+                empty: super::search_empty(&self.search, text::NO_TARGETS),
             }),
             ..Page::default()
         }
@@ -675,8 +677,13 @@ impl Screen for Swap {
                     self.source = Some(source_of(holding));
                     self.buy = None;
                     self.routes = None;
+                    self.search.clear();
                     self.step = Step::Target;
                 }
+                Reply::default()
+            }
+            (Step::Choose | Step::Target, Action::Type(Field::Search, value)) => {
+                self.search.clone_from(value);
                 Reply::default()
             }
             (Step::Target, Action::Pick(Pick::Buy(position))) => {
@@ -771,6 +778,7 @@ impl Screen for Swap {
 
     fn back(&mut self) -> Option<Reply> {
         self.error = None;
+        self.search.clear();
         self.step = match std::mem::take(&mut self.step) {
             Step::Choose => return None,
             Step::Target => Step::Choose,
@@ -787,9 +795,8 @@ impl Screen for Swap {
             Step::Choose => super::holdings_page(
                 ctx,
                 PageId::SwapFrom,
-                text::SWAP,
-                text::PICK_SWAP_SOURCE,
-                text::NOTHING_TO_SWAP,
+                (text::SWAP, text::PICK_SWAP_SOURCE, text::NOTHING_TO_SWAP),
+                &self.search,
             ),
             Step::Target => self.target_page(ctx),
             Step::Compose => self.compose_page(ctx),

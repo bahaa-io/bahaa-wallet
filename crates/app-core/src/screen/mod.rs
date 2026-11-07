@@ -24,6 +24,7 @@ use bahaa_engine::{
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::Outcome;
 use crate::core::{Ctx, Reply};
+use crate::search::{Facts, Query};
 use crate::view::{
     Button, Cell, Choice, Group, Input, Item, Level, Line, Note, Page, PageId, Request, Row,
     Secret, Table, Tone, Value,
@@ -277,12 +278,46 @@ pub(crate) fn holding<'a>(ctx: &'a Ctx<'_>, source: &Source) -> Option<&'a Holdi
     })
 }
 
+pub(crate) fn search_box(typed: &str, about: &str, shown: usize, total: usize) -> Item {
+    let hint = if typed.trim().is_empty() {
+        about.to_owned()
+    } else {
+        text::found(shown, total)
+    };
+    Input {
+        hint: Some(note(Level::Info, hint)),
+        ..input(Field::Search, text::SEARCH, typed)
+    }
+    .into()
+}
+
+pub(crate) fn searched<T>(
+    ctx: &Ctx<'_>,
+    typed: &str,
+    items: impl IntoIterator<Item = T>,
+    facts: impl Fn(&T) -> Facts,
+) -> Vec<(usize, T)> {
+    let query = Query::new(ctx, typed);
+    items
+        .into_iter()
+        .enumerate()
+        .filter(|(_, item)| query.is_empty() || query.matches(&facts(item)))
+        .collect()
+}
+
+pub(crate) fn search_empty(typed: &str, empty: &str) -> String {
+    if typed.trim().is_empty() {
+        empty.to_owned()
+    } else {
+        text::nothing_matches(typed.trim())
+    }
+}
+
 pub(crate) fn holdings_page(
     ctx: &Ctx<'_>,
     id: PageId,
-    title: &str,
-    intro: &str,
-    empty: &str,
+    (title, intro, empty): (&str, &str, &str),
+    typed: &str,
 ) -> Page {
     let held = spendable(ctx);
     if held.is_empty() {
@@ -303,10 +338,15 @@ pub(crate) fn holdings_page(
     if several {
         columns.push(text::WALLET.to_owned());
     }
-    let rows = held
-        .iter()
-        .zip(owners)
-        .enumerate()
+    let total = held.len();
+    let kept = searched(ctx, typed, held.iter().zip(owners), |(holding, owner)| {
+        let mut facts = Facts::default();
+        facts.asset(ctx, &holding.asset).word(owner);
+        facts
+    });
+    let shown = kept.len();
+    let rows = kept
+        .into_iter()
         .map(|(position, (holding, owner))| {
             let mut cells = vec![
                 asset_cell(ctx, &holding.asset),
@@ -328,10 +368,11 @@ pub(crate) fn holdings_page(
         id,
         title: title.to_owned(),
         text: Some(intro.to_owned()),
+        form: vec![search_box(typed, text::SEARCH_HOLDINGS, shown, total)],
         table: Some(Table {
             columns,
             rows,
-            empty: empty.to_owned(),
+            empty: search_empty(typed, empty),
         }),
         ..Page::default()
     }

@@ -93,6 +93,10 @@ pub(crate) const MENU: Hint = ("Ctrl-K", "menu");
 pub(crate) const KEYS: Hint = ("?", "keys");
 pub(crate) const TABS: Hint = ("1-7", "tabs");
 pub(crate) const LOCK: Hint = ("Ctrl-L", "lock");
+pub(crate) const SEARCH: Hint = ("/", "search");
+pub(crate) const TO_LIST: Hint = ("Enter", "go to the list");
+pub(crate) const CLEAR: Hint = ("Esc", "clear");
+pub(crate) const SEARCH_KEY: &str = "/";
 pub(crate) const QUIT: Hint = ("q", "quit");
 pub(crate) const FORCE_QUIT: Hint = ("Ctrl-C", "quit");
 
@@ -114,6 +118,7 @@ pub(crate) const KEY_GROUPS: [(&str, &[Hint]); 4] = [
         "Do things",
         &[
             ("Ctrl-K  :", "command menu"),
+            ("/", "search the list"),
             ("y", "copy"),
             ("o", "open in the explorer"),
             ("v", "QR code"),

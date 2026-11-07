@@ -4,6 +4,7 @@ use super::{Screen, button, cell, input, line, network_cell, network_line, note,
 use crate::action::{Action, Field, Pick};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
+use crate::search::Facts;
 use crate::view::{Level, Page, PageId, Request, Row, Table, Tone};
 use crate::{format, links, parse, text};
 
@@ -28,6 +29,7 @@ pub(crate) struct Receive {
     asset: Option<AssetId>,
     amount: String,
     memo: String,
+    search: String,
 }
 
 impl Receive {
@@ -91,7 +93,7 @@ impl Receive {
             .collect()
     }
 
-    fn list_page(ctx: &Ctx<'_>) -> Page {
+    fn list_page(&self, ctx: &Ctx<'_>) -> Page {
         let targets = Self::targets(ctx);
         let owners = Self::owners(ctx, &targets);
         let several = super::several(&owners);
@@ -99,10 +101,26 @@ impl Receive {
         if several {
             columns.push(text::WALLET.to_owned());
         }
-        let rows = targets
-            .iter()
-            .zip(owners)
-            .enumerate()
+        let total = targets.len();
+        let kept = super::searched(
+            ctx,
+            &self.search,
+            targets.iter().zip(owners),
+            |(target, owner)| {
+                let mut facts = Facts::default();
+                facts
+                    .network(ctx, &target.network)
+                    .address(ctx, &target.address, &target.network)
+                    .word(owner);
+                for asset in ctx.assets(&target.network) {
+                    facts.asset(ctx, &asset);
+                }
+                facts
+            },
+        );
+        let shown = kept.len();
+        let rows = kept
+            .into_iter()
             .map(|(position, (target, owner))| {
                 let mut cells = vec![
                     network_cell(ctx, &target.network),
@@ -122,10 +140,16 @@ impl Receive {
             id: PageId::ReceiveTo,
             title: text::RECEIVE.to_owned(),
             text: Some(text::PICK_TARGET.to_owned()),
+            form: vec![super::search_box(
+                &self.search,
+                text::SEARCH_RECEIVE,
+                shown,
+                total,
+            )],
             table: Some(Table {
                 columns,
                 rows,
-                empty: text::LOADING.to_owned(),
+                empty: super::search_empty(&self.search, text::LOADING),
             }),
             ..Page::default()
         }
@@ -133,7 +157,7 @@ impl Receive {
 
     fn address_page(&self, target: &Target, ctx: &Ctx<'_>) -> Page {
         let Some(network) = ctx.network(&target.network) else {
-            return Self::list_page(ctx);
+            return self.list_page(ctx);
         };
         let asset = self.asset(target);
         let memo_allowed = super::memo_allowed(&asset, network.family());
@@ -185,6 +209,9 @@ impl Screen for Receive {
                     return Reply::call(target.lookup());
                 }
             }
+            Action::Type(Field::Search, value) if self.target.is_none() => {
+                self.search.clone_from(value);
+            }
             Action::Type(Field::Amount, value) => self.amount.clone_from(value),
             Action::Type(Field::Memo, value) => self.memo.clone_from(value),
             Action::Copy => {
@@ -217,7 +244,7 @@ impl Screen for Receive {
     fn page(&self, ctx: &Ctx<'_>) -> Page {
         match &self.target {
             Some(target) => self.address_page(target, ctx),
-            None => Self::list_page(ctx),
+            None => self.list_page(ctx),
         }
     }
 }
