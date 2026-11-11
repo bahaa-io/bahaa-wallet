@@ -662,3 +662,36 @@ async fn live_custom_jetton_transfers_are_emulated_with_the_real_state_limits() 
         Err(other) => panic!("{other:?}"),
     }
 }
+
+#[tokio::test]
+#[ignore = "talks to the real TON network, run with --test-threads=1"]
+async fn live_nfts_are_listed_by_tonapi_and_proven_on_chain() {
+    let registry = Registry::builtin().unwrap();
+    let chain = on(registry.get(&"ton".parse().unwrap()).unwrap(), None);
+    let owner = Address::parse(
+        ChainFamily::Ton,
+        "0:c150ffc9e97dcec52bd5807ed328fc84b0218a1f1f7c31e6a50cb7e2466a01ab",
+    )
+    .unwrap();
+    let usernames = Address::parse(
+        ChainFamily::Ton,
+        "EQCA14o1-VWhS2efqoh_9M1b_A9DtKTuoqfmkn83AbJzwnPi",
+    )
+    .unwrap();
+    let found = chain.nfts(&owner).await.unwrap();
+    assert!(!found.capped);
+    assert_ne!(found.items, Vec::new());
+    for item in &found.items {
+        let collection = item.collection.as_ref().unwrap();
+        assert_eq!(collection.address, Some(usernames), "{item:?}");
+        assert_eq!(item.trust, bahaa_types::Trust::Trusted, "{item:?}");
+        assert_eq!(item.lock, None, "{item:?}");
+        assert!(
+            item.link
+                .as_deref()
+                .unwrap()
+                .starts_with("https://nft.fragment.com/username/"),
+            "{item:?}"
+        );
+    }
+}

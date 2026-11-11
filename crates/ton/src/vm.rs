@@ -1,16 +1,23 @@
 use bahaa_chain::ChainError;
 use bahaa_types::Address;
-use num_bigint::Sign;
+use num_bigint::{BigInt, Sign};
 use ruint::aliases::U256;
 use tycho_types::boc::Boc;
 use tycho_types::cell::{Cell, CellBuilder, HashBytes};
 use tycho_types::dict::{Dict, RawDict};
 use tycho_types::models::{BlockchainConfigParams, LibDescr, OptionalAccount, StdAddr};
-use tycho_vm::{BehaviourModifiers, OwnedCellSlice, RcStackValue, VmCaller, VmGetterArgs, tuple};
+use tycho_vm::{BehaviourModifiers, OwnedCellSlice, RcStackValue, SafeRc, VmCaller, VmGetterArgs};
 
 use crate::http::Item;
 
 pub(crate) const MAX_LIBRARIES: usize = 4;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Arg<'a> {
+    Address(&'a Address),
+    Number(U256),
+    Cell(&'a [u8]),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Ran {
@@ -21,7 +28,7 @@ pub(crate) enum Ran {
 pub(crate) fn run(
     state: &[u8],
     method: &str,
-    arg: Option<&Address>,
+    args: &[Arg<'_>],
     params: &[(i32, Vec<u8>)],
     libraries: &[Vec<u8>],
     now: u32,
@@ -36,10 +43,10 @@ pub(crate) fn run(
         behaviour_modifiers: BehaviourModifiers::default(),
         config: config(params, now).ok_or_else(unreadable)?,
     };
-    let stack: Vec<RcStackValue> = match arg {
-        Some(address) => tuple![slice argument(address)?],
-        None => Vec::new(),
-    };
+    let stack = args
+        .iter()
+        .map(|arg| value(*arg))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut args = VmGetterArgs::default();
     args.now = now;
     let output = caller
@@ -67,11 +74,23 @@ pub(crate) fn library_hash(boc: &[u8]) -> Option<[u8; 32]> {
     Boc::decode(boc).ok().map(|cell| cell.repr_hash().0)
 }
 
-fn argument(address: &Address) -> Result<OwnedCellSlice, ChainError> {
-    let (workchain, hash) = crate::cells::parts(address)?;
-    let cell = CellBuilder::build_from(StdAddr::new(workchain, HashBytes(hash)))
-        .map_err(|_| ChainError::Invalid("cannot encode the method arguments"))?;
-    Ok(OwnedCellSlice::new_allow_exotic(cell))
+fn value(arg: Arg<'_>) -> Result<RcStackValue, ChainError> {
+    let unencodable = || ChainError::Invalid("cannot encode the method arguments");
+    Ok(match arg {
+        Arg::Address(address) => {
+            let (workchain, hash) = crate::cells::parts(address)?;
+            let cell = CellBuilder::build_from(StdAddr::new(workchain, HashBytes(hash)))
+                .map_err(|_| unencodable())?;
+            RcStackValue::new_dyn_value(OwnedCellSlice::new_allow_exotic(cell))
+        }
+        Arg::Number(number) => RcStackValue::new_dyn_value(BigInt::from_bytes_be(
+            Sign::Plus,
+            &number.to_be_bytes::<32>(),
+        )),
+        Arg::Cell(boc) => {
+            SafeRc::into_dyn_value(SafeRc::new(Boc::decode(boc).map_err(|_| unencodable())?))
+        }
+    })
 }
 
 fn item(value: &RcStackValue) -> Option<Item> {
@@ -142,6 +161,7 @@ fn unreadable() -> ChainError {
 mod tests {
     use serde_json::Value;
     use tycho_types::cell::CellFamily;
+    use tycho_vm::tuple;
 
     use super::*;
     use crate::lite::proven_config;
@@ -207,7 +227,7 @@ mod tests {
         let Ok(Ran::Done(found)) = run(
             &state(MASTER),
             "get_wallet_address",
-            Some(&ton(OWNER)),
+            &[Arg::Address(&ton(OWNER))],
             &params,
             &[],
             NOW,
@@ -219,13 +239,13 @@ mod tests {
         };
         assert_eq!(read_address(address), Some(ton(WALLET)));
         assert_eq!(
-            run(&state(WALLET), "get_wallet_data", None, &params, &[], NOW),
+            run(&state(WALLET), "get_wallet_data", &[], &params, &[], NOW),
             Ok(Ran::Missing(unhex(LIBRARY).try_into().unwrap()))
         );
         let Ok(Ran::Done(data)) = run(
             &state(WALLET),
             "get_wallet_data",
-            None,
+            &[],
             &params,
             &[library()],
             NOW,
@@ -253,14 +273,14 @@ mod tests {
     #[test]
     fn a_failing_method_is_refused() {
         assert!(matches!(
-            run(&state(MASTER), "no_such_method", None, &params(), &[], NOW),
+            run(&state(MASTER), "no_such_method", &[], &params(), &[], NOW),
             Err(ChainError::Rejected(reason)) if reason.contains("exit code 11")
         ));
         assert!(matches!(
             run(
                 &[0xb5, 0xee],
                 "get_wallet_address",
-                None,
+                &[],
                 &params(),
                 &[],
                 NOW
@@ -291,7 +311,7 @@ mod tests {
             run(
                 &state(MASTER),
                 "get_wallet_address",
-                Some(&ton(OWNER)),
+                &[Arg::Address(&ton(OWNER))],
                 &params(),
                 &[],
                 1_700_000_000

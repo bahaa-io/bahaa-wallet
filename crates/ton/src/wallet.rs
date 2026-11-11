@@ -532,6 +532,17 @@ pub(crate) fn read_address(boc: &[u8]) -> Option<Address> {
     crate::cells::from_ton(&address)
 }
 
+pub(crate) fn read_optional_address(boc: &[u8]) -> Result<Option<Address>, ChainError> {
+    let cell = tycho_types::boc::Boc::decode(boc).map_err(|_| ChainError::malformed())?;
+    let slice = cell.as_slice().map_err(|_| ChainError::malformed())?;
+    if slice.size_bits() == 2 && slice.size_refs() == 0 && slice.get_small_uint(0, 2) == Ok(0) {
+        return Ok(None);
+    }
+    read_address(boc)
+        .map(Some)
+        .ok_or_else(ChainError::malformed)
+}
+
 pub(crate) fn to_ton(address: &Address) -> Result<TonAddress, ChainError> {
     let (workchain, hash) = crate::cells::parts(address)?;
     Ok(TonAddress::new(i32::from(workchain), TonHash::from(hash)))

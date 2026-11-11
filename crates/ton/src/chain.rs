@@ -13,6 +13,7 @@ use ruint::aliases::U256;
 
 mod calls;
 mod incoming;
+mod nfts;
 mod send;
 mod tokens;
 mod track;
@@ -23,6 +24,7 @@ pub use send::TonPlan;
 use crate::http::{Http, Item};
 use crate::metadata;
 use crate::tl::BlockId;
+use crate::vm::Arg;
 use crate::wallet::{self, read_address};
 
 #[derive(Debug)]
@@ -128,7 +130,7 @@ impl TonChain {
         let not_token = ChainError::Invalid("this address is not a token contract");
         let stack = self
             .http
-            .run(master, "get_jetton_data", None)
+            .run(master, "get_jetton_data", &[])
             .await?
             .ok_or(not_token.clone())?;
         let [
@@ -180,7 +182,7 @@ impl TonChain {
         }
         let stack = self
             .http
-            .run(master, "get_wallet_address", Some(owner))
+            .run(master, "get_wallet_address", &[Arg::Address(owner)])
             .await?
             .ok_or(ChainError::Invalid("this address is not a token contract"))?;
         let [Item::Cell(boc)] = stack.as_slice() else {
@@ -205,7 +207,7 @@ impl TonChain {
 
     async fn jetton_balance(&self, owner: &Address, master: &Address) -> Result<U256, ChainError> {
         let wallet = self.jetton_wallet(owner, master).await?;
-        let Some(stack) = self.http.run(&wallet, "get_wallet_data", None).await? else {
+        let Some(stack) = self.http.run(&wallet, "get_wallet_data", &[]).await? else {
             return Ok(U256::ZERO);
         };
         let [

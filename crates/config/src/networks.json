@@ -569,7 +569,8 @@
         "protocol": "ton-api",
         "url": "https://tonapi.io/v2",
         "features": [
-          "history"
+          "history",
+          "nfts"
         ],
         "min_gap_ms": 1100
       }

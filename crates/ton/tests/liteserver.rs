@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use adnl::AdnlPeer;
 use adnl::crypto::{KeyPair, SecretKey};
 use bahaa_chain::{Chain, ChainError, Incoming, ScanCursor, Signed, TxId, TxStatus};
-use bahaa_config::{Endpoint, Network, Protocol, Registry};
+use bahaa_config::{ChainKind, Checkpoint, Endpoint, Feature, Network, Protocol, Registry};
 use bahaa_ton::TonChain;
-use bahaa_types::{Address, AssetId};
+use bahaa_types::{Address, AssetId, ChainFamily, Trust};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
@@ -24,6 +24,10 @@ use tonlib_core::{TonAddress, TonHash};
 use url::Url;
 
 const FIXTURE: &str = include_str!("fixtures/account_proofs.json");
+const NFTS: &str = include_str!("fixtures/nfts.json");
+const COLLECTOR: &str = "0:e9d947cff5ce632b85f90f68652b38f12181097d3a9cf1c1c6c1cae6e6b816e3";
+const NEIGHBOUR: &str = "0:c150ffc9e97dcec52bd5807ed328fc84b0218a1f1f7c31e6a50cb7e2466a01ab";
+const USERNAMES: &str = "0:80d78a35f955a14b679faa887ff4cd5bfc0f43b4a4eea2a7e6927f3701b273c2";
 const QUOTE: &str = include_str!("fixtures/quote.json");
 const TRACK: &str = include_str!("fixtures/track.json");
 const SENT: &str = "b5ee9c72410205010001100001e5880027fb320fdb12cc1b3721f24b7aa94d605395f66d142e5111e3ff8dfad20c49ca039b4b3b73fffff88b566b9008000000559e4f7c61649cead47b81fc559961f1397ad6d17bf54953722f26dc0e635781c76df6d6f81c372949e1c8cb6a2cd85973bdab865f605980a59459cdf5e17aca0701020a0ec3c86d0302030000016862005bfa00866642a075cac79e914142651bcacae9fd297238395e0f73c0e9af00f3a018685d68000000000000000000000000010400ac0f8a7ea5000000006acd70d7506cc74a400801bca4e3e99d4b7eeed43fa097305639a10a68520be36b0b239c7ece42e7159acf0004ff6641fb62598366e43e496f5529ac0a72becda285ca223c7ff1bf5a41893942027a92ffc8";
@@ -276,8 +280,13 @@ fn reply(behaviour: Behaviour, data: &[u8]) -> Vec<u8> {
         }
         GET_TRANSACTIONS => history(behaviour, data),
         GET_BLOCK_PROOF => {
-            let info = recorded(behaviour.recording, &["masterchain_info"]).unwrap();
-            let mut proof = common::anchor_proof(&info);
+            let known = i32::from_le_bytes(data[20..24].try_into().unwrap());
+            let mut proof = recorded(behaviour.recording, &["block_proofs", &known.to_string()])
+                .unwrap_or_else(|| {
+                    common::anchor_proof(
+                        &recorded(behaviour.recording, &["masterchain_info"]).unwrap(),
+                    )
+                });
             if behaviour.tamper == Tamper::Proof {
                 let at = proof.len() - 40;
                 proof[at] ^= 1;
@@ -1415,4 +1424,121 @@ async fn a_plain_gram_send_is_listed_under_the_id_tracking_uses() {
         (scanned.sent[0].from, scanned.sent[0].to),
         (ton(YOUNG), ton(SENDER))
     );
+}
+
+fn raw(text: &str) -> Address {
+    Address::parse(ChainFamily::Ton, text).unwrap()
+}
+
+fn listing(owner: &str) -> Value {
+    let fixture: Value = serde_json::from_str(NFTS).unwrap();
+    fixture["tonapi"][owner].clone()
+}
+
+async fn nft_chain(listing: Value) -> TonChain {
+    let fixture: Value = serde_json::from_str(NFTS).unwrap();
+    let server = liteserver(
+        1,
+        Behaviour {
+            recording: NFTS,
+            ..GOOD
+        },
+        Arc::default(),
+    )
+    .await;
+    let mut network = network(config(&[server], mainnet()).await);
+    if let ChainKind::Ton { checkpoint, .. } = &mut network.kind {
+        let key = &fixture["key"];
+        *checkpoint = Checkpoint {
+            seqno: u32::try_from(key["seqno"].as_u64().unwrap()).unwrap(),
+            root_hash: unhex(key["root_hash"].as_str().unwrap())
+                .try_into()
+                .unwrap(),
+            file_hash: unhex(key["file_hash"].as_str().unwrap())
+                .try_into()
+                .unwrap(),
+        };
+    }
+    let api = bahaa_testkit::serve(move |request| {
+        if request.path().ends_with("/liteserver/get_masterchain_info") {
+            bahaa_testkit::Reply::json(200, &json!({"init": {"root_hash": MAINNET}}))
+        } else {
+            bahaa_testkit::Reply::json(200, &listing)
+        }
+    })
+    .await;
+    network.endpoints.push(Endpoint {
+        protocol: Protocol::TonApi,
+        url: api,
+        features: vec![Feature::Nfts],
+        min_gap_ms: 0,
+        history_gap_ms: 0,
+    });
+    TonChain::new(network).unwrap()
+}
+
+#[tokio::test]
+async fn nfts_are_listed_by_tonapi_and_proven_from_their_own_contracts() {
+    let chain = nft_chain(listing(COLLECTOR)).await;
+    let found = chain.nfts(&raw(COLLECTOR)).await.unwrap();
+    assert!(!found.capped);
+    assert_eq!(found.items.len(), 19);
+    let count = |trust| {
+        found
+            .items
+            .iter()
+            .filter(|item| item.trust == trust)
+            .count()
+    };
+    assert_eq!(
+        (
+            count(Trust::Trusted),
+            count(Trust::Unknown),
+            count(Trust::Flagged)
+        ),
+        (17, 1, 1)
+    );
+    for item in &found.items {
+        assert_eq!(item.kind, bahaa_types::NftKind::TonItem);
+        assert_eq!(item.amount.to_string(), "1");
+        assert_eq!(item.asset.network().as_str(), "ton");
+        assert_eq!(item.lock, None);
+    }
+    let named = |address: &str| {
+        found
+            .items
+            .iter()
+            .find(|item| item.asset.nft().map(|nft| *nft.address()) == Some(raw(address)))
+            .unwrap()
+    };
+    let username = named("0:94fad2068ebd5c3a83fae144413b39e9036cf658d1e30ece3e4db9dd26b8052e");
+    assert_eq!(
+        username.collection.as_ref().unwrap().address,
+        Some(raw(USERNAMES))
+    );
+    assert_eq!(
+        username.link.as_deref(),
+        Some("https://nft.fragment.com/username/r6rrrrrrrrr.json")
+    );
+    let spam = named("0:8bed415cb3a2f10cad4e0aeaf29b20189a1204e8a2cad504fc5b4a684e141b35");
+    assert_eq!((spam.trust, &spam.collection), (Trust::Flagged, &None));
+}
+
+#[tokio::test]
+async fn listed_items_that_are_not_held_or_not_nfts_are_dropped() {
+    let mut listed = listing(COLLECTOR);
+    let items = listed["nft_items"].as_array_mut().unwrap();
+    items.push(json!({"address": "0:d59a7de5e0bd393f56314fb14737675fbf2c7d6b7dd18a6c09bda52ed7aa84d7", "trust": "whitelist"}));
+    items.push(json!({"address": USERNAMES, "trust": "whitelist"}));
+    let chain = nft_chain(listed).await;
+    let found = chain.nfts(&raw(COLLECTOR)).await.unwrap();
+    assert_eq!(found.items.len(), 19);
+    let held: Vec<Address> = found
+        .items
+        .iter()
+        .map(|item| *item.asset.nft().unwrap().address())
+        .collect();
+    assert!(!held.contains(&raw(USERNAMES)));
+    let chain = nft_chain(listing(NEIGHBOUR)).await;
+    assert_eq!(chain.nfts(&raw(COLLECTOR)).await.unwrap().items, Vec::new());
 }

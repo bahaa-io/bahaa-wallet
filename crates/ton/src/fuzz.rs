@@ -2,7 +2,8 @@ use bahaa_types::Address;
 
 use crate::tl::{self, Answer};
 use crate::{
-    blocks, body, cells, comment, emulate, fees, lite, metadata, proof, transaction, vm, wallet,
+    blocks, body, cells, comment, emulate, fees, http, lite, metadata, proof, transaction, vm,
+    wallet,
 };
 
 const OWNER: &str = "UQBEgrmXc1WWtt4qIAR-hvQHBlsYAULFCqunQ3Ollcsrb-T_";
@@ -66,6 +67,7 @@ pub fn boc(data: &[u8]) {
     let _ = wallet::parse_call(data);
     let _ = body::read_jetton_amount(data);
     let _ = wallet::read_address(data);
+    let _ = wallet::read_optional_address(data);
     let _ = emulate::destination(data);
     let _ = vm::library_hash(data);
     if let Ok((owner, _)) = Address::parse_ton(OWNER) {
@@ -87,5 +89,6 @@ pub fn json(data: &[u8]) {
     let _ = metadata::file(data);
     if let Ok(list) = serde_json::from_slice(data) {
         lite::fuzz_list(&list);
+        http::fuzz_listed(&list);
     }
 }

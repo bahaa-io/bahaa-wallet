@@ -3,8 +3,8 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use bahaa_chain::{ChainError, Failure, Pool};
-use bahaa_config::{Endpoint, Protocol};
-use bahaa_types::{Address, hex, to_plain_text};
+use bahaa_config::{Endpoint, Feature, Protocol};
+use bahaa_types::{Address, ChainFamily, MAX_NFTS, Trust, hex, to_plain_text};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use reqwest::StatusCode;
@@ -18,7 +18,7 @@ use crate::fees::Config;
 use crate::lite::{Lite, proven_library, proven_transactions, refused};
 use crate::tl::BlockId;
 use crate::transaction::{MAX_LISTED, Transaction};
-use crate::vm::{self, Ran};
+use crate::vm::{self, Arg, Ran};
 
 const MAX_REPLY: usize = 4 * 1024 * 1024;
 const MAX_MESSAGE: usize = 200;
@@ -30,6 +30,12 @@ pub(crate) enum Item {
     Num(U256),
     Negative,
     Cell(Vec<u8>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Listed {
+    pub address: Address,
+    pub trust: Trust,
 }
 
 #[derive(Clone, Copy)]
@@ -85,9 +91,18 @@ impl Http {
         &self,
         address: &Address,
         method: &str,
-        arg: Option<&Address>,
+        args: &[Arg<'_>],
     ) -> Result<Option<Vec<Item>>, ChainError> {
         let account = self.account(address).await?;
+        self.run_on(&account, method, args).await
+    }
+
+    pub(crate) async fn run_on(
+        &self,
+        account: &Account,
+        method: &str,
+        args: &[Arg<'_>],
+    ) -> Result<Option<Vec<Item>>, ChainError> {
         if !matches!(account.status, Status::Active { .. }) {
             return Ok(None);
         }
@@ -97,7 +112,7 @@ impl Http {
         let now = u32::try_from(bahaa_chain::now()).unwrap_or(u32::MAX);
         let mut libraries = Vec::new();
         for _ in 0..=vm::MAX_LIBRARIES {
-            match vm::run(&account.boc, method, arg, &params, &libraries, now)? {
+            match vm::run(&account.boc, method, args, &params, &libraries, now)? {
                 Ran::Done(items) => return Ok(Some(items)),
                 Ran::Missing(hash) => libraries.push(self.library(&hash).await?),
             }
@@ -212,6 +227,27 @@ impl Http {
                 match provider {
                     Provider::Api => api(reply)?.ok_or_else(unsupported).map(drop),
                     Provider::Center => center(reply).map(drop),
+                }
+            })
+            .await?)
+    }
+
+    pub(crate) async fn nfts(&self, owner: &Address) -> Result<(Vec<Listed>, bool), ChainError> {
+        Ok(self
+            .pool
+            .call(Some(Feature::Nfts), |endpoint| async move {
+                match endpoint.protocol {
+                    Protocol::TonApi => {
+                        self.ready(&endpoint).await?;
+                        let path = format!(
+                            "accounts/{owner}/nfts?limit={}&offset=0&indirect_ownership=false",
+                            MAX_NFTS + 1
+                        );
+                        let reply = api(self.fetch(&endpoint.url, &path, None).await?)?
+                            .ok_or_else(unsupported)?;
+                        listed(&reply).ok_or_else(malformed)
+                    }
+                    _ => Err(unsupported()),
                 }
             })
             .await?)
@@ -406,6 +442,30 @@ fn join(base: &Url, path: &str) -> Option<Url> {
     Some(url)
 }
 
+fn listed(reply: &Value) -> Option<(Vec<Listed>, bool)> {
+    let items = reply["nft_items"].as_array()?;
+    let mut listed: Vec<Listed> = Vec::new();
+    for item in items {
+        let address = Address::parse(ChainFamily::Ton, item["address"].as_str()?).ok()?;
+        let trust = match item["trust"].as_str() {
+            Some("whitelist") => Trust::Trusted,
+            Some("blacklist") => Trust::Flagged,
+            _ => Trust::Unknown,
+        };
+        if !listed.iter().any(|known| known.address == address) {
+            listed.push(Listed { address, trust });
+        }
+    }
+    let capped = listed.len() > MAX_NFTS;
+    listed.truncate(MAX_NFTS);
+    Some((listed, capped))
+}
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz_listed(reply: &Value) {
+    let _ = listed(reply);
+}
+
 fn unsupported() -> Failure<ChainError> {
     Failure::Unsupported(ChainError::Network(
         "an endpoint does not serve this request".to_owned(),
@@ -419,6 +479,35 @@ fn malformed() -> Failure<ChainError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nft_listings_keep_tonapi_trust_and_stop_at_the_limit() {
+        let item = |index: usize, trust: &str| json!({"address": format!("0:{index:064x}"), "trust": trust});
+        let reply = json!({"nft_items": [
+            item(1, "whitelist"),
+            item(2, "blacklist"),
+            item(3, "graylist"),
+            item(4, "none"),
+            item(1, "whitelist"),
+        ]});
+        let (first, capped) = listed(&reply).unwrap();
+        let trusts: Vec<Trust> = first.iter().map(|listed| listed.trust).collect();
+        assert_eq!(
+            trusts,
+            [
+                Trust::Trusted,
+                Trust::Flagged,
+                Trust::Unknown,
+                Trust::Unknown
+            ]
+        );
+        assert!(!capped);
+        let many: Vec<Value> = (0..=MAX_NFTS).map(|index| item(index, "none")).collect();
+        let (kept, capped) = listed(&json!({ "nft_items": many })).unwrap();
+        assert_eq!((kept.len(), capped), (MAX_NFTS, true));
+        assert_eq!(listed(&json!({"nft_items": [{"address": "nope"}]})), None);
+        assert_eq!(listed(&json!({"items": []})), None);
+    }
 
     #[test]
     fn requests_extend_the_endpoint_url() {
@@ -528,7 +617,7 @@ mod tests {
             let owner = raw(top["owner"]["address"].as_str().unwrap());
             let wallet = raw(top["address"].as_str().unwrap());
             let found = http
-                .run(&master, "get_wallet_address", Some(&owner))
+                .run(&master, "get_wallet_address", &[Arg::Address(&owner)])
                 .await
                 .unwrap()
                 .unwrap();
@@ -537,7 +626,7 @@ mod tests {
             };
             assert_eq!(crate::wallet::read_address(boc), Some(wallet), "{master}");
             let data = http
-                .run(&wallet, "get_wallet_data", None)
+                .run(&wallet, "get_wallet_data", &[])
                 .await
                 .unwrap()
                 .unwrap();
