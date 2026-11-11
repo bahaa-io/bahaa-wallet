@@ -696,6 +696,10 @@ impl Core {
             let (level, message) = match &swap.status {
                 SwapStatus::Done => (Level::Success, text::swap_done(&sold, &bought)),
                 SwapStatus::Refunded => (Level::Warning, text::swap_refunded(&sold)),
+                SwapStatus::Unanswered => (
+                    Level::Warning,
+                    text::swap_unanswered(text::provider_of(&swap), &sold),
+                ),
                 _ => (Level::Error, text::swap_failed(&sold)),
             };
             self.toast(level, message);

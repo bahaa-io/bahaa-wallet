@@ -141,7 +141,7 @@ impl Relay {
             return Err(SwapError::Unsupported);
         };
         let units = request.amount.units().to_string();
-        let body = json!({
+        let mut body = json!({
             "user": text_of(&request.from, true),
             "recipient": text_of(&request.to, true),
             "refundTo": text_of(&request.from, true),
@@ -153,6 +153,9 @@ impl Relay {
             "tradeType": "EXACT_INPUT",
             "useDepositAddress": origin.deposit == RelayDeposit::Address,
         });
+        if origin.deposit == RelayDeposit::Address {
+            body["strict"] = Value::Bool(true);
+        }
         let reply = fetch(self.client.post(self.endpoint("quote")?).json(&body)).await?;
         let answer: Answer = serde_json::from_value(reply).map_err(|_| unreadable())?;
         let call_mode = origin.deposit == RelayDeposit::Call;

@@ -417,7 +417,7 @@ impl Swap {
             |swap| {
                 toned_line(
                     text::STATUS,
-                    text::swap_status(&swap.status),
+                    text::swap_status(swap),
                     swap_tone(&swap.status),
                 )
             },

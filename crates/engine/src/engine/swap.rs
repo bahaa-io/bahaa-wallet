@@ -26,6 +26,9 @@ const STAND_IN: [u8; 32] = [
     0x72, 0x8b, 0xc5, 0xc0, 0x15, 0xcd, 0x52, 0xd2, 0xea, 0xa5, 0xe5, 0x26, 0xd2, 0xb1, 0x09, 0x35,
 ];
 const DEPOSIT_WINDOW: u64 = 30 * 60;
+const CALMER_AFTER: u64 = 10 * 60;
+const SLOWER_AFTER: u64 = 60 * 60;
+const GIVE_UP_AFTER: u64 = 24 * 60 * 60;
 const HEADROOM_BITS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -606,6 +609,25 @@ async fn call_order(
     })
 }
 
+fn polled(swap: &SwapRecord) -> bool {
+    swap.status.is_open()
+        && Provider::from_key(&swap.provider).is_some_and(|provider| !provider.on_chain())
+}
+
+fn unanswered(swap: &SwapRecord, now: u64) -> bool {
+    now.saturating_sub(swap.created_at) >= GIVE_UP_AFTER
+}
+
+fn pace(every: Duration, age: u64) -> Duration {
+    if age < CALMER_AFTER {
+        every
+    } else if age < SLOWER_AFTER {
+        every.saturating_mul(8)
+    } else {
+        every.saturating_mul(64)
+    }
+}
+
 fn stored(progress: Progress) -> SwapStatus {
     match progress {
         Progress::Waiting => SwapStatus::Waiting,
@@ -991,6 +1013,20 @@ impl Worker {
         if !self.unlocked() || self.polling.is_some() {
             return;
         }
+        let now = bahaa_chain::now();
+        let silent: Vec<SwapRecord> = self
+            .swaps
+            .iter()
+            .filter(|swap| polled(swap) && unanswered(swap, now))
+            .map(|swap| SwapRecord {
+                status: SwapStatus::Unanswered,
+                updated_at: now,
+                ..swap.clone()
+            })
+            .collect();
+        for record in silent {
+            let _ = self.save_swap(record);
+        }
         let open: Vec<SwapRecord> = self
             .swaps
             .iter()
@@ -1054,12 +1090,15 @@ impl Worker {
 
     pub(super) fn schedule_polling(&mut self) {
         let idle = self.polling.is_none() && self.next_poll.is_none();
-        let open = self.swaps.iter().any(|swap| {
-            swap.status.is_open()
-                && Provider::from_key(&swap.provider).is_some_and(|provider| !provider.on_chain())
-        });
-        if self.unlocked() && idle && open && self.swappers.is_some() {
-            self.next_poll = Some(Instant::now() + self.track_every);
+        let now = bahaa_chain::now();
+        let youngest = self
+            .swaps
+            .iter()
+            .filter(|swap| polled(swap))
+            .map(|swap| now.saturating_sub(swap.created_at))
+            .min();
+        if let Some(age) = youngest.filter(|_| self.unlocked() && idle && self.swappers.is_some()) {
+            self.next_poll = Some(Instant::now() + pace(self.track_every, age));
         }
     }
 
@@ -1179,7 +1218,11 @@ mod tests {
     use bahaa_swap::{Comment, Order, Provider};
     use bahaa_types::{Address, Amount, ChainFamily, hex};
 
-    use super::{lowered, memo, stand_in};
+    use std::time::Duration;
+
+    use bahaa_store::{SwapRecord, SwapStatus};
+
+    use super::{lowered, memo, pace, polled, stand_in, unanswered};
 
     const RELAY_BODY: &str = "b5ee9c7241010101004800008c0000000030786463383838323163313265313165346231346431383835633565346131366563633435656264393733616238666239363030346434366534336432336266623544d48afe";
 
@@ -1201,6 +1244,55 @@ mod tests {
             contract: None,
             typed: None,
         }
+    }
+
+    fn swap(status: SwapStatus) -> SwapRecord {
+        let evm = Address::parse(
+            ChainFamily::Evm,
+            "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+        )
+        .unwrap();
+        let amount = Amount::parse("1", 18).unwrap();
+        SwapRecord {
+            id: "0x01".to_owned(),
+            network: "arbitrum".parse().unwrap(),
+            provider: "relay".to_owned(),
+            reference: "0x02".to_owned(),
+            from: evm,
+            to: evm,
+            deposit: evm,
+            sell: "arbitrum".parse().unwrap(),
+            amount,
+            buy: "ethereum".parse().unwrap(),
+            expected: amount,
+            minimum: amount,
+            created_at: 1_000,
+            updated_at: 1_000,
+            status,
+            order: None,
+            approval: None,
+        }
+    }
+
+    #[test]
+    fn a_swap_nobody_reports_on_for_a_day_stops_being_asked_about() {
+        let waiting = swap(SwapStatus::Waiting);
+        assert!(polled(&waiting));
+        assert!(!unanswered(&waiting, 1_000 + 86_399));
+        assert!(unanswered(&waiting, 1_000 + 86_400));
+        assert!(!polled(&swap(SwapStatus::Unanswered)));
+        assert!(!polled(&swap(SwapStatus::Done)));
+    }
+
+    #[test]
+    fn open_swaps_are_asked_less_often_as_they_age() {
+        let every = Duration::from_secs(4);
+        assert_eq!(pace(every, 0), every);
+        assert_eq!(pace(every, 599), every);
+        assert_eq!(pace(every, 600), Duration::from_secs(32));
+        assert_eq!(pace(every, 3_599), Duration::from_secs(32));
+        assert_eq!(pace(every, 3_600), Duration::from_secs(256));
+        assert_eq!(pace(every, 90_000), Duration::from_secs(256));
     }
 
     #[test]

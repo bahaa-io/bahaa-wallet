@@ -2,7 +2,8 @@
 
 use bahaa_chain::Wait;
 use bahaa_swap::{
-    Charged, Comment, CostKind, Method, Progress, Provider, Providers, Relay, Request, SwapError,
+    Charged, Comment, CostKind, Method, Progress, Provider, Providers, Relay, RelayConfig,
+    RelayDeposit, Request, SwapError,
 };
 use bahaa_testkit::{Reply, serve};
 use bahaa_types::{Address, Amount, ChainFamily};
@@ -50,6 +51,13 @@ fn ether() -> Request {
 }
 
 async fn relay(answer: impl Fn(&Value) -> Value + Send + Sync + 'static) -> Relay {
+    relay_with(Providers::builtin().unwrap().relay, answer).await
+}
+
+async fn relay_with(
+    mut config: RelayConfig,
+    answer: impl Fn(&Value) -> Value + Send + Sync + 'static,
+) -> Relay {
     let url = serve(move |request| {
         if request.path().starts_with("/intents/status/v3") {
             let id = request
@@ -63,9 +71,19 @@ async fn relay(answer: impl Fn(&Value) -> Value + Send + Sync + 'static) -> Rela
         Reply::json(200, &answer(&request.json()))
     })
     .await;
-    let mut config = Providers::builtin().unwrap().relay;
     config.url = url;
     Relay::new(&config, reqwest::Client::new()).unwrap()
+}
+
+fn tron() -> Request {
+    request(
+        "tron",
+        "100",
+        6,
+        "base",
+        18,
+        Address::parse(ChainFamily::Tron, "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH").unwrap(),
+    )
 }
 
 fn recorded(body: &Value) -> Value {
@@ -86,7 +104,14 @@ fn request_id(fixture: &str) -> String {
 
 #[tokio::test]
 async fn an_ether_deposit_is_a_plain_transfer_to_the_deposit_address() {
-    let relay = relay(recorded).await;
+    let relay = relay(|body| {
+        if body["useDepositAddress"] == json!(true) && body["strict"] == json!(true) {
+            recorded(body)
+        } else {
+            json!({"message": "open deposit address"})
+        }
+    })
+    .await;
     let (route, order) = relay.quote(&ether(), NOW).await.unwrap();
     assert_eq!(order.provider, Provider::Relay);
     assert_eq!(order.reference, request_id(ETHEREUM));
@@ -136,16 +161,14 @@ async fn a_token_deposit_is_a_standard_token_transfer() {
 
 #[tokio::test]
 async fn a_tron_deposit_is_a_plain_trx_transfer() {
-    let relay = relay(recorded).await;
-    let tron = request(
-        "tron",
-        "100",
-        6,
-        "base",
-        18,
-        Address::parse(ChainFamily::Tron, "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH").unwrap(),
-    );
-    let (route, order) = relay.quote(&tron, NOW).await.unwrap();
+    let mut config = Providers::builtin().unwrap().relay;
+    config
+        .chains
+        .get_mut(&"tron".parse().unwrap())
+        .unwrap()
+        .deposit = RelayDeposit::Address;
+    let relay = relay_with(config, recorded).await;
+    let (route, order) = relay.quote(&tron(), NOW).await.unwrap();
     assert_eq!(route.expected.to_string(), "0.013606723822997492");
     assert_eq!(order.deposit.family(), ChainFamily::Tron);
     assert_eq!(order.reference, request_id(TRON));
@@ -256,6 +279,7 @@ async fn only_origins_with_keyless_plain_deposits_are_covered() {
         evm()
     )));
     assert!(!relay.covers(&request("avalanche", "10", 18, "base", 18, evm())));
+    assert!(!relay.covers(&tron()));
     assert!(!relay.covers(&request("solana", "1", 9, "base", 18, evm())));
     let ton = Address::parse(
         ChainFamily::Ton,

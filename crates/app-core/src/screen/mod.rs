@@ -184,11 +184,24 @@ pub(crate) fn swap_details(ctx: &Ctx<'_>, swap: &SwapRecord) -> Vec<Line> {
         .collect()
 }
 
+pub(crate) fn silence(ctx: &Ctx<'_>, swap: &SwapRecord) -> Option<Note> {
+    (swap.status == SwapStatus::Unanswered).then(|| {
+        note(
+            Level::Warning,
+            text::unanswered_note(
+                text::provider_of(swap),
+                &ctx.symbol(&swap.buy),
+                &ctx.network_name(swap.buy.network()),
+            ),
+        )
+    })
+}
+
 pub(crate) fn swap_tone(status: &SwapStatus) -> Tone {
     match status {
         SwapStatus::Waiting | SwapStatus::Received | SwapStatus::Swapping => Tone::Waiting,
         SwapStatus::Done => Tone::Good,
-        SwapStatus::Refunded => Tone::Warning,
+        SwapStatus::Refunded | SwapStatus::Unanswered => Tone::Warning,
         SwapStatus::Failed(_) => Tone::Bad,
     }
 }

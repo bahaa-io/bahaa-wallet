@@ -5,7 +5,8 @@ use bahaa_engine::{
 use super::send::Send;
 use super::{
     Screen, button, cell, choice, group, line, network_cell, network_line, note, picked_wallet,
-    search_box, search_empty, status_tone, swap_details, swap_tone, toned_line, wallet_group,
+    search_box, search_empty, silence, status_tone, swap_details, swap_tone, toned_line,
+    wallet_group,
 };
 use crate::action::{Action, Direction, Field, Go, Pick, Toggle};
 use crate::core::{Ctx, Nav, Reply};
@@ -171,9 +172,7 @@ fn facts(ctx: &Ctx<'_>, activity: &Activity) -> Facts {
                 .word(&text::status(&tx.status))
                 .wallet(ctx, activity.wallet, &tx.from);
             if let Some(swap) = ctx.swap(&tx.network, &tx.id) {
-                facts
-                    .asset(ctx, &swap.buy)
-                    .word(&text::swap_status(&swap.status));
+                facts.asset(ctx, &swap.buy).word(&text::swap_status(swap));
             }
         }
         ActivityKind::SentElsewhere(moved) => {
@@ -198,7 +197,7 @@ fn facts(ctx: &Ctx<'_>, activity: &Activity) -> Facts {
                 .id(&swap.id)
                 .id(&swap.reference)
                 .word(&swap.provider)
-                .word(&text::swap_status(&swap.status))
+                .word(&text::swap_status(swap))
                 .wallet(ctx, activity.wallet, &swap.from);
         }
     }
@@ -222,7 +221,7 @@ fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
                     &ctx.symbol(&swap.buy),
                     &ctx.network_name(swap.buy.network()),
                 ),
-                cell(text::swap_status(&swap.status), swap_tone(&swap.status)),
+                cell(text::swap_status(swap), swap_tone(&swap.status)),
                 false,
             ),
             None => (
@@ -247,7 +246,7 @@ fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
                 &ctx.symbol(&swap.buy),
                 &ctx.network_name(swap.buy.network()),
             ),
-            cell(text::swap_status(&swap.status), swap_tone(&swap.status)),
+            cell(text::swap_status(swap), swap_tone(&swap.status)),
             false,
         ),
         ActivityKind::Received(arrival) => {
@@ -380,7 +379,7 @@ impl Screen for Transfer {
                 buttons.retain(|button| button.action == Action::Copy);
                 let mut lines = vec![toned_line(
                     text::STATUS,
-                    text::swap_status(&swap.status),
+                    text::swap_status(swap),
                     swap_tone(&swap.status),
                 )];
                 lines.extend(swap_details(ctx, swap));
@@ -388,7 +387,9 @@ impl Screen for Transfer {
                     text::ORDER_TITLE,
                     ctx.exact(swap.amount, &ctx.symbol(&swap.sell)),
                     lines,
-                    vec![note(Level::Info, text::ORDER_NOTE)],
+                    std::iter::once(note(Level::Info, text::ORDER_NOTE))
+                        .chain(silence(ctx, swap))
+                        .collect(),
                 )
             }
             ActivityKind::Received(arrival) => (
@@ -471,16 +472,20 @@ fn sent_page(
     if let Some(swap) = ctx.swap(&tx.network, &tx.id) {
         lines.push(toned_line(
             text::SWAP,
-            text::swap_status(&swap.status),
+            text::swap_status(swap),
             swap_tone(&swap.status),
         ));
         lines.extend(swap_details(ctx, swap));
     }
-    let notes = if replaceable {
+    let mut notes = if replaceable {
         vec![note(Level::Info, text::PENDING_NOTE)]
     } else {
         Vec::new()
     };
+    notes.extend(
+        ctx.swap(&tx.network, &tx.id)
+            .and_then(|swap| silence(ctx, swap)),
+    );
     (
         if approval {
             text::APPROVAL_TITLE

@@ -169,6 +169,7 @@ pub enum SwapStatus {
     Done,
     Refunded,
     Failed(String),
+    Unanswered,
 }
 
 impl SwapStatus {

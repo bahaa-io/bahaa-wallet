@@ -1,4 +1,6 @@
-use bahaa_engine::swap::{self, Charged, CostKind, Custody, Method, Refusal, SwapStatus};
+use bahaa_engine::swap::{
+    self, Charged, CostKind, Custody, Method, Provider, Refusal, SwapRecord, SwapStatus,
+};
 use bahaa_engine::{
     Caution, ChainFamily, EngineError, FeeItem, RateUnit, Replace, SentStatus, Status, TonContract,
 };
@@ -727,15 +729,31 @@ pub(crate) fn refund_note(provider: &str, symbol: &str) -> String {
     format!("If {provider} can't finish the swap, it sends your {symbol} back to this wallet.")
 }
 
-pub(crate) fn swap_status(status: &SwapStatus) -> String {
-    match status {
-        SwapStatus::Waiting => "Waiting for your deposit".to_owned(),
+pub(crate) fn provider_of(swap: &SwapRecord) -> &'static str {
+    Provider::from_key(&swap.provider).map_or("the provider", Provider::name)
+}
+
+pub(crate) fn swap_status(swap: &SwapRecord) -> String {
+    let provider = provider_of(swap);
+    match &swap.status {
+        SwapStatus::Waiting => format!("Waiting for {provider}"),
         SwapStatus::Received => "Deposit received".to_owned(),
         SwapStatus::Swapping => "Swapping".to_owned(),
         SwapStatus::Done => "Done".to_owned(),
         SwapStatus::Refunded => "Refunded".to_owned(),
         SwapStatus::Failed(reason) => format!("Failed: {reason}"),
+        SwapStatus::Unanswered => format!("No answer from {provider}"),
     }
+}
+
+pub(crate) fn unanswered_note(provider: &str, symbol: &str, network: &str) -> String {
+    format!(
+        "{provider} didn't report on this swap for a day, so the wallet stopped asking. Your {symbol} balance on {network} shows whether it arrived."
+    )
+}
+
+pub(crate) fn swap_unanswered(provider: &str, sold: &str) -> String {
+    format!("No answer from {provider} about your swap of {sold}")
 }
 
 pub(crate) fn swap_done(sold: &str, bought: &str) -> String {
