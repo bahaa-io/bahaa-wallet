@@ -8,7 +8,7 @@ use bahaa_chain::{
 use bahaa_crypto::{DeriveError, ExposeSecret, SecretString};
 use bahaa_store::{MAX_REASON, SentKind, SentStatus, SentTx, SwapRecord};
 use bahaa_swap::TypedOrder;
-use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text, to_plain_text};
+use bahaa_types::{Address, Amount, AssetId, NetworkId, NftId, is_plain_text, to_plain_text};
 use futures_util::future::join_all;
 use tokio::time::Instant;
 
@@ -259,6 +259,12 @@ impl Worker {
         if request.asset.contract() == Some(&request.to) {
             return Err(ChainError::Invalid(
                 "that is the token's own contract address, tokens sent there are lost",
+            )
+            .into());
+        }
+        if request.asset.nft().map(NftId::address) == Some(&request.to) {
+            return Err(ChainError::Invalid(
+                "that is the NFT's own address, an NFT sent there is lost",
             )
             .into());
         }

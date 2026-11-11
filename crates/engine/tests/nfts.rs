@@ -7,10 +7,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bahaa_config::{ChainKind, Checkpoint, Endpoint, Feature, Protocol, Registry};
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Collectibles, Engine, EngineError, Mark, NftHealth, Trust, WalletId};
+use bahaa_engine::{
+    Amount, Collectibles, Engine, EngineError, Mark, NftHealth, SendRequest, Spend, Trust, WalletId,
+};
 use bahaa_testkit::Reply;
 use bahaa_types::{Address, AssetId, ChainFamily};
-use common::{Asked, Scratch, config, unhex, until};
+use common::{Asked, HARDHAT, Scratch, config, unhex, until};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
@@ -64,7 +66,7 @@ async fn registry(broken: Arc<AtomicBool>) -> Registry {
     Registry::with_networks(vec![network]).unwrap()
 }
 
-fn vault(scratch: &Scratch) {
+fn vault(scratch: &Scratch) -> bahaa_engine::Keyring {
     let mut keyring = bahaa_engine::Keyring::new(
         scratch.0.join("data").join("vault.bin"),
         bahaa_vault::KdfParams {
@@ -74,6 +76,7 @@ fn vault(scratch: &Scratch) {
         },
     );
     keyring.create(b"pw").unwrap();
+    keyring
 }
 
 fn shown(listed: &Collectibles) -> usize {
@@ -224,5 +227,35 @@ async fn listings_and_choices_survive_a_lock_even_when_the_source_is_down() {
     })
     .await;
     assert_eq!(shown(&reset), 17);
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_nft_is_never_sent_to_its_own_address() {
+    let scratch = Scratch::new();
+    let wallet = vault(&scratch).import(HARDHAT, "").unwrap();
+    let engine = Engine::start(config(
+        &scratch,
+        registry(Arc::new(AtomicBool::new(false))).await,
+        None,
+    ))
+    .unwrap();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    let asset: AssetId = ELSEWHERE.parse().unwrap();
+    let item = *asset.nft().unwrap().address();
+    let sent = engine
+        .prepare_send(SendRequest {
+            wallet,
+            account: 0,
+            asset,
+            to: item,
+            amount: Spend::Exact(Amount::parse("1", 0).unwrap()),
+            memo: None,
+        })
+        .await;
+    assert!(
+        matches!(&sent, Err(EngineError::Chain(bahaa_chain::ChainError::Invalid(text))) if text.contains("NFT's own address")),
+        "{sent:?}"
+    );
     engine.shutdown().await.unwrap();
 }
