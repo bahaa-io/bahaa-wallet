@@ -5,7 +5,8 @@ use bahaa_engine::{
 
 use super::activity::Transfer;
 use super::{
-    Screen, button, choice, group, hidden, input, line, network_line, note, status_tone, toned_line,
+    Screen, button, choice, group, hidden, input, kept_aside, line, network_line, note,
+    status_tone, toned_line,
 };
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
@@ -462,6 +463,7 @@ impl Send {
             .cautions
             .iter()
             .map(|caution| note(Level::Warning, text::caution(caution, ctx)))
+            .chain(kept_aside(&draft.transfer.from))
             .collect();
         if let Some(how) = how {
             notes.push(note(Level::Info, text::replace_note(how)));

@@ -17,8 +17,8 @@ use std::cmp::Ordering;
 
 use bahaa_engine::swap::{Provider, SwapRecord, SwapStatus};
 use bahaa_engine::{
-    AssetId, ChainFamily, Holding, NetworkId, SecretString, SentStatus, Settings, TonContract,
-    Updates, WalletId, WalletInfo, WalletKind, WordCount,
+    Address, AssetId, BitcoinScript, ChainFamily, Holding, NetworkId, SecretString, SentStatus,
+    Settings, TonContract, Updates, WalletId, WalletInfo, WalletKind, WordCount,
 };
 
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
@@ -182,6 +182,17 @@ pub(crate) fn swap_details(ctx: &Ctx<'_>, swap: &SwapRecord) -> Vec<Line> {
             ),
         )])
         .collect()
+}
+
+pub(crate) fn kept_aside(from: &Address) -> Option<Note> {
+    matches!(
+        from,
+        Address::Bitcoin {
+            script: BitcoinScript::Taproot(_),
+            ..
+        }
+    )
+    .then(|| note(Level::Info, text::KEPT_ASIDE))
 }
 
 pub(crate) fn silence(ctx: &Ctx<'_>, swap: &SwapRecord) -> Option<Note> {
@@ -526,4 +537,23 @@ pub(crate) fn picked_network(ctx: &Ctx<'_>, position: usize) -> Option<NetworkId
     ctx.networks()
         .get(position)
         .map(|network| network.id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use bahaa_engine::{Address, ChainFamily};
+
+    use super::kept_aside;
+
+    #[test]
+    fn only_taproot_senders_are_told_that_small_coins_stay() {
+        let address = |text: &str| Address::parse(ChainFamily::Bitcoin, text).unwrap();
+        assert!(
+            kept_aside(&address(
+                "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"
+            ))
+            .is_some()
+        );
+        assert!(kept_aside(&address("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu")).is_none());
+    }
 }

@@ -7,8 +7,8 @@ use ruint::aliases::U256;
 use super::activity::Transfer;
 use super::send::{Source, source_of};
 use super::{
-    Screen, asset_cell, button, cell, choice, group, hidden, input, line, network_cell, note,
-    swap_details, swap_tone, toned_line,
+    Screen, asset_cell, button, cell, choice, group, hidden, input, kept_aside, line, network_cell,
+    note, swap_details, swap_tone, toned_line,
 };
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
@@ -385,6 +385,7 @@ impl Swap {
         }
         let destination = ctx.network_name(route.buy.network());
         let mut notes = review_notes(review, (&sold, &bought), &destination);
+        notes.extend(kept_aside(&review.draft.transfer.from));
         let gone = left(review, at, ctx.now) == 0;
         if gone {
             notes.push(note(Level::Info, text::QUOTE_GONE));

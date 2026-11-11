@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::ops::Range;
@@ -17,6 +18,7 @@ pub(crate) const CHANGE: usize = 1;
 
 const GAP: u32 = 20;
 const MAX_INDEX: u32 = 1_000;
+const KEPT_UP_TO: u64 = 10_000;
 
 #[derive(Debug, Default)]
 pub(crate) struct Book {
@@ -65,13 +67,44 @@ pub(crate) struct Funds {
     pub change: Address,
 }
 
+impl Coin {
+    fn kept(&self) -> bool {
+        self.value <= KEPT_UP_TO
+            && matches!(
+                self.address,
+                Address::Bitcoin {
+                    script: BitcoinScript::Taproot(_),
+                    ..
+                }
+            )
+    }
+}
+
 impl Funds {
     pub(crate) fn total(&self) -> Result<u64, ChainError> {
-        self.coins
-            .iter()
-            .try_fold(0u64, |sum, coin| sum.checked_add(coin.value))
-            .ok_or_else(ChainError::overflow)
+        sum(self.coins.iter())
     }
+
+    pub(crate) fn available(&self) -> Result<u64, ChainError> {
+        sum(self.coins.iter().filter(|coin| !coin.kept()))
+    }
+
+    pub(crate) fn spendable(&self) -> Vec<Coin> {
+        let mut coins: Vec<Coin> = self
+            .coins
+            .iter()
+            .filter(|coin| !coin.kept())
+            .cloned()
+            .collect();
+        coins.sort_by_key(|coin| (coin.height <= 0, Reverse(coin.value)));
+        coins
+    }
+}
+
+fn sum<'a>(mut coins: impl Iterator<Item = &'a Coin>) -> Result<u64, ChainError> {
+    coins
+        .try_fold(0u64, |sum, coin| sum.checked_add(coin.value))
+        .ok_or_else(ChainError::overflow)
 }
 
 impl Book {

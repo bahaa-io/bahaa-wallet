@@ -184,6 +184,7 @@ pub(crate) const TRANSACTIONS: &str = "Transactions";
 pub(crate) const APPROVAL_TITLE: &str = "Approval";
 pub(crate) const ORDER_TITLE: &str = "Swap order";
 pub(crate) const VIEW_ORDER: &str = "View order";
+pub(crate) const KEPT_ASIDE: &str = "Coins of 10,000 sats or less stay in this wallet. On a Taproot address they often carry Ordinals or Runes, and spending them would give those away.";
 pub(crate) const ORDER_NOTE: &str = "A signed order is not a transaction: nothing leaves your wallet until a solver fills it, and an order that expires takes nothing.";
 pub(crate) const ORDER: &str = "Order";
 pub(crate) const SIGNED_ORDER: &str = "you sign an order that solvers fill at your minimum or better within 30 minutes, no network fee for the swap itself";

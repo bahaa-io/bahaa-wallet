@@ -1,5 +1,3 @@
-use std::cmp::Reverse;
-
 use bahaa_chain::{
     Call, ChainError, ContractSwap, DecodedCall, FeeItem, FeeLine, FeeQuote, PlannedCall, Signed,
     Step, Transfer,
@@ -84,7 +82,7 @@ impl BitcoinChain {
             ChainError::insufficient(
                 self.network.native.symbol.clone(),
                 U256::from(needed),
-                U256::from(funds.total().unwrap_or(u64::MAX)),
+                U256::from(funds.available().unwrap_or(u64::MAX)),
                 self.network.native.decimals,
             )
         })?;
@@ -183,8 +181,7 @@ fn pick(
     least: u64,
     rate: u64,
 ) -> Result<Picked, u64> {
-    let mut ordered: Vec<Coin> = funds.coins.clone();
-    ordered.sort_by_key(|coin| (coin.height <= 0, Reverse(coin.value)));
+    let ordered = funds.spendable();
     let mut chosen = Vec::new();
     let mut held = 0u64;
     for coin in &ordered {

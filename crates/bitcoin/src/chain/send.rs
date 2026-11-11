@@ -1,4 +1,3 @@
-use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use bahaa_chain::{
@@ -71,7 +70,7 @@ impl BitcoinChain {
             ChainError::insufficient(
                 self.network.native.symbol.clone(),
                 U256::from(needed),
-                U256::from(funds.total().unwrap_or(u64::MAX)),
+                U256::from(funds.available().unwrap_or(u64::MAX)),
                 self.network.native.decimals,
             )
         })?;
@@ -381,8 +380,7 @@ fn pick(
         value,
         script: script.to_vec(),
     };
-    let mut ordered = funds.coins.clone();
-    ordered.sort_by_key(|coin| (coin.height <= 0, Reverse(coin.value)));
+    let ordered = funds.spendable();
     let total = |coins: &[Coin]| coins.iter().map(|coin| coin.value).sum::<u64>();
     if max {
         let held = total(&ordered);
@@ -542,6 +540,34 @@ mod tests {
         let both = pick(&wallet, &TO, &change(), 45_000, false, 1_000).unwrap();
         assert_eq!(both.coins.len(), 2);
         assert_eq!(both.size, 209);
+    }
+
+    fn taproot(value: u64, n: u8) -> Coin {
+        Coin {
+            address: Address::Bitcoin {
+                script: BitcoinScript::Taproot([n; 32]),
+                testnet: false,
+            },
+            ..coin(value, true, n)
+        }
+    }
+
+    #[test]
+    fn small_taproot_coins_stay_out_of_every_send_because_they_may_carry_ordinals() {
+        let wallet = funds(vec![
+            taproot(546, 1),
+            taproot(10_000, 2),
+            taproot(10_001, 3),
+            coin(330, true, 4),
+            taproot(50_000, 5),
+        ]);
+        let max = pick(&wallet, &TO, &change(), 0, true, 1_000).unwrap();
+        let mut values: Vec<u64> = max.coins.iter().map(|coin| coin.value).collect();
+        values.sort_unstable();
+        assert_eq!(values, [330, 10_001, 50_000]);
+        assert_eq!(wallet.total().unwrap(), 70_877);
+        assert_eq!(wallet.available().unwrap(), 60_331);
+        assert!(pick(&wallet, &TO, &change(), 60_300, false, 1_000).is_err());
     }
 
     #[test]

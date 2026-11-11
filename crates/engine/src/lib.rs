@@ -22,8 +22,8 @@ pub use bahaa_store::{
     StoreError,
 };
 pub use bahaa_types::{
-    Address, AddressError, Amount, AmountError, AssetId, BitcoinType, ChainFamily, NetworkId,
-    Price, PriceId, SolanaPath, TonContract, TonForm, Utc, is_plain_text, to_plain_text,
+    Address, AddressError, Amount, AmountError, AssetId, BitcoinScript, BitcoinType, ChainFamily,
+    NetworkId, Price, PriceId, SolanaPath, TonContract, TonForm, Utc, is_plain_text, to_plain_text,
 };
 pub use bahaa_vault::KdfParams;
 pub use caution::{Arrival, Caution};
