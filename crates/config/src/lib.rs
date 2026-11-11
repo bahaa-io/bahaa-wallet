@@ -5,6 +5,6 @@ mod settings;
 pub use color::Color;
 pub use network::{
     BlockCheckpoint, ChainKind, Checkpoint, Coin, ConfigError, Endpoint, Explorer, Feature,
-    FeeModel, Network, Protocol, RETARGET_BLOCKS, Registry, Token,
+    FeeModel, KnownCollection, Network, Protocol, RETARGET_BLOCKS, Registry, Token,
 };
 pub use settings::{Fiat, Settings, Updates};

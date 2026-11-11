@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use bahaa_types::{Address, AssetId, ChainFamily, MAX_DECIMALS, NetworkId, PriceId, is_plain_text};
+use bahaa_types::{
+    Address, AssetId, ChainFamily, MAX_DECIMALS, MAX_NFT_TEXT, NetworkId, PriceId, is_plain_text,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -137,6 +139,12 @@ pub struct Token {
     pub coin: Coin,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnownCollection {
+    pub address: Address,
+    pub name: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChainKind {
     Evm {
@@ -201,6 +209,7 @@ pub struct Network {
     pub testnet: bool,
     pub native: Coin,
     pub tokens: Vec<Token>,
+    pub collections: Vec<KnownCollection>,
     pub endpoints: Vec<Endpoint>,
     pub explorer: Explorer,
     pub block_ms: u32,
@@ -226,6 +235,12 @@ impl Network {
             .iter()
             .find(|token| token.contract == *contract)
             .map(|token| &token.coin)
+    }
+
+    pub fn collection(&self, address: &Address) -> Option<&KnownCollection> {
+        self.collections
+            .iter()
+            .find(|collection| collection.address == *address)
     }
 
     pub fn assets(&self) -> impl Iterator<Item = (AssetId, &Coin)> {
@@ -308,6 +323,8 @@ struct Spec {
     native: Coin,
     #[serde(default)]
     tokens: Vec<TokenSpec>,
+    #[serde(default)]
+    collections: Vec<CollectionSpec>,
     endpoints: Vec<Endpoint>,
     explorer: Explorer,
     block_ms: u32,
@@ -370,6 +387,13 @@ struct TokenSpec {
     price: Option<PriceId>,
     #[serde(default)]
     color: Option<Color>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollectionSpec {
+    address: String,
+    name: String,
 }
 
 impl Spec {
@@ -440,6 +464,56 @@ impl Spec {
         Ok(kind)
     }
 
+    fn check_endpoints(&self) -> Result<(), &'static str> {
+        if self
+            .endpoints
+            .iter()
+            .all(|endpoint| endpoint.has(Feature::Private))
+        {
+            return Err("needs at least one endpoint");
+        }
+        let mut urls = BTreeSet::new();
+        for endpoint in &self.endpoints {
+            if endpoint.protocol.family() != self.family {
+                return Err("an endpoint speaks another chain's protocol");
+            }
+            if endpoint.url.scheme() != endpoint.protocol.scheme()
+                || endpoint.url.host_str().is_none()
+                || (endpoint.protocol == Protocol::Electrum && endpoint.url.port().is_none())
+            {
+                return Err("endpoints must use https, or ssl://host:port for Electrum servers");
+            }
+            if endpoint
+                .features
+                .iter()
+                .any(|feature| !endpoint.protocol.allows(*feature))
+            {
+                return Err("an endpoint claims a feature its protocol cannot have");
+            }
+            if endpoint.has(Feature::Private) && endpoint.features.len() != 1 {
+                return Err("a private endpoint only takes transactions");
+            }
+            if endpoint.min_gap_ms > MAX_GAP_MS {
+                return Err("an endpoint's min_gap_ms is over one minute");
+            }
+            if endpoint.history_gap_ms > MAX_GAP_MS {
+                return Err("an endpoint's history_gap_ms is over one minute");
+            }
+            if !urls.insert(endpoint.url.as_str()) {
+                return Err("an endpoint is listed twice");
+            }
+        }
+        if !self.collections.is_empty()
+            && !self
+                .endpoints
+                .iter()
+                .any(|endpoint| endpoint.has(Feature::Nfts))
+        {
+            return Err("lists NFT collections but no endpoint lists NFTs");
+        }
+        Ok(())
+    }
+
     fn validate(self) -> Result<Network, ConfigError> {
         let problem = |text: &str| ConfigError::Network {
             network: self.id.to_string(),
@@ -452,50 +526,9 @@ impl Spec {
         self.native
             .check()
             .map_err(|text| problem(&format!("native coin {text}")))?;
-        if self
-            .endpoints
-            .iter()
-            .all(|endpoint| endpoint.has(Feature::Private))
-        {
-            return Err(problem("needs at least one endpoint"));
-        }
+        self.check_endpoints().map_err(problem)?;
         if !(MIN_BLOCK_MS..=MAX_BLOCK_MS).contains(&self.block_ms) {
             return Err(problem("block_ms must be between 100 ms and one hour"));
-        }
-        let mut urls = BTreeSet::new();
-        for endpoint in &self.endpoints {
-            if endpoint.protocol.family() != self.family {
-                return Err(problem("an endpoint speaks another chain's protocol"));
-            }
-            if endpoint.url.scheme() != endpoint.protocol.scheme()
-                || endpoint.url.host_str().is_none()
-                || (endpoint.protocol == Protocol::Electrum && endpoint.url.port().is_none())
-            {
-                return Err(problem(
-                    "endpoints must use https, or ssl://host:port for Electrum servers",
-                ));
-            }
-            if endpoint
-                .features
-                .iter()
-                .any(|feature| !endpoint.protocol.allows(*feature))
-            {
-                return Err(problem(
-                    "an endpoint claims a feature its protocol cannot have",
-                ));
-            }
-            if endpoint.has(Feature::Private) && endpoint.features.len() != 1 {
-                return Err(problem("a private endpoint only takes transactions"));
-            }
-            if endpoint.min_gap_ms > MAX_GAP_MS {
-                return Err(problem("an endpoint's min_gap_ms is over one minute"));
-            }
-            if endpoint.history_gap_ms > MAX_GAP_MS {
-                return Err(problem("an endpoint's history_gap_ms is over one minute"));
-            }
-            if !urls.insert(endpoint.url.as_str()) {
-                return Err(problem("an endpoint is listed twice"));
-            }
         }
         check_template(&self.explorer.tx, "{tx}")
             .and_then(|()| check_template(&self.explorer.address, "{address}"))
@@ -519,6 +552,22 @@ impl Spec {
                 .map_err(|text| problem(&format!("token {text}")))?;
             tokens.push(Token { contract, coin });
         }
+        let mut known = BTreeSet::new();
+        let mut collections = Vec::with_capacity(self.collections.len());
+        for spec in self.collections {
+            let address = Address::parse(self.family, &spec.address)
+                .map_err(|err| problem(&format!("collection {}: {err}", spec.name)))?;
+            if !is_plain_text(&spec.name, MAX_NFT_TEXT) {
+                return Err(problem("a collection name must be plain text"));
+            }
+            if !known.insert(address) {
+                return Err(problem("a collection is listed twice"));
+            }
+            collections.push(KnownCollection {
+                address,
+                name: spec.name,
+            });
+        }
         Ok(Network {
             id: self.id,
             name: self.name,
@@ -527,6 +576,7 @@ impl Spec {
             testnet: self.testnet,
             native: self.native,
             tokens,
+            collections,
             endpoints: self.endpoints,
             explorer: self.explorer,
             block_ms: self.block_ms,
@@ -825,6 +875,41 @@ mod tests {
     }
 
     #[test]
+    fn known_collections_are_listed_only_where_nfts_are_found() {
+        let registry = Registry::builtin().unwrap();
+        let count = |id: &str| {
+            registry
+                .get(&id.parse().unwrap())
+                .unwrap()
+                .collections
+                .len()
+        };
+        for id in ["ethereum", "optimism", "avalanche", "solana", "ton"] {
+            assert!(count(id) > 0, "{id}");
+        }
+        for network in registry.networks() {
+            assert!(network.collections.is_empty() || network.offers(Feature::Nfts));
+        }
+        let ethereum = registry.get(&"ethereum".parse().unwrap()).unwrap();
+        let apes = Address::parse(
+            ChainFamily::Evm,
+            "0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+        )
+        .unwrap();
+        assert_eq!(
+            ethereum.collection(&apes).map(|known| known.name.as_str()),
+            Some("Bored Ape Yacht Club")
+        );
+        let ton = registry.get(&"ton".parse().unwrap()).unwrap();
+        let usernames = Address::parse(
+            ChainFamily::Ton,
+            "0:80d78a35f955a14b679faa887ff4cd5bfc0f43b4a4eea2a7e6927f3701b273c2",
+        )
+        .unwrap();
+        assert!(ton.collection(&usernames).is_some());
+    }
+
+    #[test]
     fn rejects_inconsistent_networks() {
         let cases: Vec<(&str, Edit)> = vec![
             ("bsc", Box::new(|n| n["chain_id"] = Value::Null)),
@@ -920,6 +1005,41 @@ mod tests {
             (
                 "bsc",
                 Box::new(|n| n["tokens"][0]["color"] = "#26a17".into()),
+            ),
+        ];
+        for (index, (id, edit)) in cases.into_iter().enumerate() {
+            assert!(edited(id, edit).is_err(), "case {index} was accepted");
+        }
+    }
+
+    #[test]
+    fn rejects_broken_collection_lists() {
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "bsc",
+                Box::new(|n| {
+                    n["collections"] = serde_json::json!([
+                        {"address": "0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D", "name": "Apes"}
+                    ]);
+                }),
+            ),
+            (
+                "ethereum",
+                Box::new(|n| n["collections"][1] = n["collections"][0].clone()),
+            ),
+            (
+                "ethereum",
+                Box::new(|n| {
+                    n["collections"][0]["address"] = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".into();
+                }),
+            ),
+            (
+                "ethereum",
+                Box::new(|n| n["collections"][0]["name"] = " Apes".into()),
+            ),
+            (
+                "solana",
+                Box::new(|n| n["collections"][0]["symbol"] = "MAD".into()),
             ),
         ];
         for (index, (id, edit)) in cases.into_iter().enumerate() {

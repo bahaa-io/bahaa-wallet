@@ -116,6 +116,148 @@
         "color": "#3a86e0"
       }
     ],
+    "collections": [
+      {
+        "address": "0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+        "name": "Bored Ape Yacht Club"
+      },
+      {
+        "address": "0x60E4d786628Fea6478F785A6d7e704777c86a7c6",
+        "name": "Mutant Ape Yacht Club"
+      },
+      {
+        "address": "0xba30E5F9Bb24caa003E9f2f0497Ad287FDF95623",
+        "name": "Bored Ape Kennel Club"
+      },
+      {
+        "address": "0x34d85c9CDeB23FA97cb08333b511ac86E1C4E258",
+        "name": "Otherdeed for Otherside"
+      },
+      {
+        "address": "0xb7F7F6C52F2e2fdb1963Eab30438024864c313F6",
+        "name": "Wrapped Cryptopunks"
+      },
+      {
+        "address": "0xED5AF388653567Af2F388E6224dC7C4b3241C544",
+        "name": "Azuki"
+      },
+      {
+        "address": "0xB6a37b5d14D502c3Ab0Ae6f3a0E058BC9517786e",
+        "name": "Azuki Elementals"
+      },
+      {
+        "address": "0x306b1ea3ecdf94aB739F1910bbda052Ed4A9f949",
+        "name": "Beanz"
+      },
+      {
+        "address": "0x8a90CAb2b38dba80c64b7734e58Ee1dB38B8992e",
+        "name": "Doodles"
+      },
+      {
+        "address": "0xBd3531dA5CF5857e7CfAA92426877b022e612cf8",
+        "name": "Pudgy Penguins"
+      },
+      {
+        "address": "0x524cAB2ec69124574082676e6F654a18df49A048",
+        "name": "Lil Pudgys"
+      },
+      {
+        "address": "0x49cF6f5d44E70224e2E23fDcdd2C053F30aDA28B",
+        "name": "CLONE X"
+      },
+      {
+        "address": "0x23581767a106ae21c074b2276D25e5C3e136a68b",
+        "name": "Moonbirds"
+      },
+      {
+        "address": "0x5Af0D9827E0c53E4799BB226655A1de152A425a5",
+        "name": "Milady Maker"
+      },
+      {
+        "address": "0x7Bd29408f11D2bFC23c34f18275bBf23bB716Bc7",
+        "name": "Meebits"
+      },
+      {
+        "address": "0xe785E82358879F061BC3dcAC6f0444462D4b5330",
+        "name": "World of Women"
+      },
+      {
+        "address": "0x1A92f7381B9F03921564a437210bB9396471050C",
+        "name": "Cool Cats"
+      },
+      {
+        "address": "0x9C8fF314C9Bc7F6e59A9d9225Fb22946427eDC03",
+        "name": "Nouns"
+      },
+      {
+        "address": "0xa7d8d9ef8D8Ce8992Df33D8b8CF4Aebabd5bD270",
+        "name": "Art Blocks"
+      },
+      {
+        "address": "0x059EDD72Cd353dF5106D2B9cC5ab83a52287aC3a",
+        "name": "Art Blocks (first contract)"
+      },
+      {
+        "address": "0x57f1887a8BF19b14fC0dF6Fd9B2acc9Af147eA85",
+        "name": "ENS"
+      },
+      {
+        "address": "0x8821BeE2ba0dF28761AffF119D66390D594CD280",
+        "name": "DeGods"
+      },
+      {
+        "address": "0x364C828eE171616a39897688A831c2499aD972ec",
+        "name": "Sappy Seals"
+      },
+      {
+        "address": "0x769272677faB02575E84945F03Eca517ACc544Cc",
+        "name": "The Captainz"
+      },
+      {
+        "address": "0x036721e5A769Cc48B3189EFbb9ccE4471E8A48B1",
+        "name": "Checks VV Originals"
+      },
+      {
+        "address": "0x34eEBEE6942d8Def3c125458D1a86e0A897fd6f9",
+        "name": "Checks VV Edition"
+      },
+      {
+        "address": "0x79FCDEF22feeD20eDDacbB2587640e45491b757f",
+        "name": "mfers"
+      },
+      {
+        "address": "0x4b15a9c28034dC83db40CD810001427d3BD7163D",
+        "name": "HV-MTL"
+      },
+      {
+        "address": "0x76BE3b62873462d2142405439777e971754E8E77",
+        "name": "Parallel Alpha"
+      },
+      {
+        "address": "0xa3AEe8BcE55BEeA1951EF834b99f3Ac60d1ABeeB",
+        "name": "VeeFriends"
+      },
+      {
+        "address": "0x57a204AA1042f6E66DD7730813f4024114d74f37",
+        "name": "CyberKongz"
+      },
+      {
+        "address": "0x7EA3Cca10668B8346aeC0bf1844A49e995527c8B",
+        "name": "CyberKongz VX"
+      },
+      {
+        "address": "0xd774557b647330C91Bf44cfEAB205095f7E6c367",
+        "name": "Nakamigos"
+      },
+      {
+        "address": "0x5CC5B05a8A13E3fBDB0BB9FcCd98D38e50F90c38",
+        "name": "The Sandbox LAND"
+      },
+      {
+        "address": "0xF87E31492Faf9A91B02Ee0dEAAd50d51d56D5d4d",
+        "name": "Decentraland LAND"
+      }
+    ],
     "endpoints": [
       {
         "protocol": "json-rpc",
@@ -335,6 +477,16 @@
         "color": "#3a86e0"
       }
     ],
+    "collections": [
+      {
+        "address": "0x8927985B358692815E18F2138964679DcA5d3b79",
+        "name": "chikn"
+      },
+      {
+        "address": "0xC70DF87e1d98f6A531c8E324C9BCEC6FC82B5E8d",
+        "name": "Smol Joes"
+      }
+    ],
     "endpoints": [
       {
         "protocol": "json-rpc",
@@ -468,6 +620,16 @@
         "color": "#3a86e0"
       }
     ],
+    "collections": [
+      {
+        "address": "0x2335022c740d17c2837f9C884Bfe4fFdbf0A95D5",
+        "name": "Optimist"
+      },
+      {
+        "address": "0xfA14e1157F35E1dAD95dC3F822A9d18c40e360E2",
+        "name": "Optimism Quests"
+      }
+    ],
     "endpoints": [
       {
         "protocol": "json-rpc",
@@ -583,6 +745,20 @@
         "color": "#26a17b"
       }
     ],
+    "collections": [
+      {
+        "address": "EQCA14o1-VWhS2efqoh_9M1b_A9DtKTuoqfmkn83AbJzwnPi",
+        "name": "Telegram Usernames"
+      },
+      {
+        "address": "EQAOQdwdw8kGftJCSFgOErM1mBjYPe4DBPq8-AhF6vr9si5N",
+        "name": "Anonymous Telegram Numbers"
+      },
+      {
+        "address": "EQC3dNlesgVD8YbAazcauIrXBPfiVhMMr5YYk2in0Mtsz0Bz",
+        "name": "TON DNS Domains"
+      }
+    ],
     "endpoints": [
       {
         "protocol": "ton-liteservers",
@@ -643,6 +819,40 @@
         "decimals": 6,
         "price": "crypto/USDC",
         "color": "#3a86e0"
+      }
+    ],
+    "collections": [
+      {
+        "address": "J1S9H3QjnRtBbbuD4HjPV6RpRhwuk4zKbxsnCHuTgh9w",
+        "name": "Mad Lads"
+      },
+      {
+        "address": "SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W",
+        "name": "Solana Monkey Business"
+      },
+      {
+        "address": "3saAedkM9o5g1u5DCqsuMZuC4GRqPB4TuMkvSsSVvGQ3",
+        "name": "Okay Bears"
+      },
+      {
+        "address": "6XxjKYFbcndh2gDcsUrmZgVEsoDxXMnfsaGY6fpTJzNr",
+        "name": "DeGods"
+      },
+      {
+        "address": "4mKSoDDqApmF1DqXvVTSL6tu2zixrSSNjqMxUnwvVzy2",
+        "name": "y00ts"
+      },
+      {
+        "address": "6mszaj17KSfVqADrQj3o4W3zoLMTykgmV37W4QadCczK",
+        "name": "Claynosaurz"
+      },
+      {
+        "address": "BUjZjAS2vbbb65g7Z1Ca9ZRVYoJscURG5L3AkVvHP9ac",
+        "name": "Famous Fox Federation"
+      },
+      {
+        "address": "5PA96eCFHJSFPY9SWFeRJUHrpoNF5XZL6RrE1JADXhxf",
+        "name": "Tensorians"
       }
     ],
     "endpoints": [
