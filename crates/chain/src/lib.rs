@@ -1,6 +1,7 @@
 mod abi;
 mod chain;
 mod clock;
+mod details;
 mod history;
 pub mod http;
 mod model;
@@ -14,6 +15,7 @@ pub use abi::{
 };
 pub use chain::Chain;
 pub use clock::{now, now_ms};
+pub use details::{Fetcher, Gateways, MAX_DETAILS_FILE, read_details};
 pub use history::{WalkEnd, covered};
 pub use model::{
     Approval, Balance, Call, ChainError, ContractSwap, Decoded, DecodedCall, FeeItem, FeeLine,

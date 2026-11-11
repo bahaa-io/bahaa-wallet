@@ -49,6 +49,7 @@ k256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "pre
 num-bigint = "0.4.8"
 open = "5.4.4"
 pbkdf2 = "0.12.2"
+percent-encoding = "2.3.2"
 prost = "0.14.4"
 qrcode = { version = "0.14.1", default-features = false }
 ratatui = "0.30.2"

@@ -1,6 +1,4 @@
-use std::time::Duration;
-
-use bahaa_chain::ChainError;
+use bahaa_chain::{ChainError, http};
 use bahaa_types::MAX_DECIMALS;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -16,8 +14,6 @@ const CHUNKS: u8 = 0x01;
 const MAX_TEXT: usize = 1024;
 const MAX_CELLS: usize = 64;
 const MAX_FILE: usize = 64 * 1024;
-const MAX_REDIRECTS: usize = 3;
-const TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const DEFAULT_DECIMALS: u8 = 9;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -107,41 +103,7 @@ pub(crate) async fn fetch(uri: &str) -> Result<Content, ChainError> {
         .ok_or(ChainError::Unsupported(
             "token details kept outside an https address",
         ))?;
-    let network = |text: String| ChainError::Network(text);
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("bahaa-wallet/", env!("CARGO_PKG_VERSION")))
-        .timeout(TIMEOUT)
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.url().scheme() == "https" && attempt.previous().len() <= MAX_REDIRECTS {
-                attempt.follow()
-            } else {
-                attempt.stop()
-            }
-        }))
-        .build()
-        .map_err(|err| network(err.to_string()))?;
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|err| network(err.without_url().to_string()))?;
-    if !response.status().is_success() {
-        return Err(network(format!(
-            "the token's details file answered HTTP {}",
-            response.status()
-        )));
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|err| network(err.without_url().to_string()))?
-    {
-        if bytes.len() + chunk.len() > MAX_FILE {
-            return Err(ChainError::Invalid("the token's details file is too large"));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
+    let bytes = http::file(&http::files()?, url, MAX_FILE).await?;
     file(&bytes).ok_or(ChainError::Invalid(
         "the token's details file is not readable",
     ))

@@ -5,6 +5,7 @@ use crate::{Address, Amount, AssetId};
 pub const MAX_NFTS: usize = 256;
 pub const MAX_NFT_TEXT: usize = 120;
 pub const MAX_NFT_LINK: usize = 2_048;
+pub const MAX_NFT_ABOUT: usize = 600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -51,4 +52,12 @@ pub struct Nft {
     pub link: Option<String>,
     pub trust: Trust,
     pub lock: Option<Lock>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Details {
+    pub name: Option<String>,
+    pub about: Option<String>,
+    pub image: Option<String>,
 }

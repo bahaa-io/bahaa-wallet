@@ -4,8 +4,8 @@ use std::sync::{PoisonError, RwLock, RwLockReadGuard};
 
 use bahaa_config::{Checkpoint, Coin, Settings};
 use bahaa_types::{
-    Address, Amount, AssetId, MAX_NFT_LINK, MAX_NFT_TEXT, MAX_NFTS, NetworkId, Nft, Price, PriceId,
-    is_plain_text,
+    Address, Amount, AssetId, Details, MAX_NFT_ABOUT, MAX_NFT_LINK, MAX_NFT_TEXT, MAX_NFTS,
+    NetworkId, Nft, Price, PriceId, is_plain_text,
 };
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableHandle};
 use serde::de::DeserializeOwned;
@@ -42,9 +42,11 @@ const NAMES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("names
 const SWAPS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("swaps");
 const NFTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("nfts");
 const MARKS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("marks");
+const DETAILS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("details");
 const SEAL: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("seal");
-const SEALED: [TableDefinition<'static, &str, &[u8]>; 12] = [
+const SEALED: [TableDefinition<'static, &str, &[u8]>; 13] = [
     CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS, NAMES, SWAPS, NFTS, MARKS,
+    DETAILS,
 ];
 const CHECK: &str = "check";
 const CHECKED: &[u8] = b"bahaa store";
@@ -163,6 +165,15 @@ pub enum Mark {
 pub struct Marked {
     pub asset: AssetId,
     pub mark: Mark,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fetched {
+    pub asset: AssetId,
+    pub link: String,
+    pub details: Option<Details>,
+    pub at: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -583,6 +594,30 @@ impl Store {
             ),
             None => self.delete(MARKS, &key).map(|_| ()),
         }
+    }
+
+    pub fn fetched(&self) -> Result<Vec<Fetched>, StoreError> {
+        self.all(DETAILS)
+    }
+
+    pub fn save_fetched(&self, fetched: &Fetched) -> Result<(), StoreError> {
+        let text =
+            |text: &Option<String>, max| text.as_ref().is_none_or(|text| is_plain_text(text, max));
+        let valid = fetched.asset.is_nft()
+            && is_plain_text(&fetched.link, MAX_NFT_LINK)
+            && fetched.details.as_ref().is_none_or(|details| {
+                text(&details.name, MAX_NFT_TEXT)
+                    && text(&details.about, MAX_NFT_ABOUT)
+                    && text(&details.image, MAX_NFT_LINK)
+            });
+        if !valid {
+            return Err(StoreError::Invalid("not an NFT's details"));
+        }
+        self.put(DETAILS, &fetched.asset.to_string(), &encode(fetched)?)
+    }
+
+    pub fn forget_fetched(&self, asset: &AssetId) -> Result<(), StoreError> {
+        self.delete(DETAILS, &asset.to_string()).map(|_| ())
     }
 
     pub fn received(&self) -> Result<Vec<Received>, StoreError> {

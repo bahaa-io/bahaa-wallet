@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 
 use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
 use bahaa_store::{
-    Contact, CustomToken, Listing, Mark, Marked, Outgoing, Received, SavedPrices, SavedQuote, Scan,
-    SentKind, SentStatus, SentTx, Store, StoreError, StoreKey, SwapRecord, SwapStatus,
-    TrustedBlock,
+    Contact, CustomToken, Fetched, Listing, Mark, Marked, Outgoing, Received, SavedPrices,
+    SavedQuote, Scan, SentKind, SentStatus, SentTx, Store, StoreError, StoreKey, SwapRecord,
+    SwapStatus, TrustedBlock,
 };
 use bahaa_types::{
-    Address, Amount, AssetId, ChainFamily, Collection, MAX_NFTS, Nft, NftKind, Price, Trust,
+    Address, Amount, AssetId, ChainFamily, Collection, Details, MAX_NFTS, Nft, NftKind, Price,
+    Trust,
 };
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use zeroize::Zeroizing;
@@ -826,4 +827,52 @@ fn wallet_names_are_kept_validated_and_forgotten() {
     assert_eq!(store.wallet_name(2).unwrap().as_deref(), Some("Daily"));
     store.lock();
     assert!(matches!(store.wallet_name(2), Err(StoreError::Locked)));
+}
+
+fn fetched(token: u64, details: Option<Details>) -> Fetched {
+    Fetched {
+        asset: ape(token).asset,
+        link: ape(token).link.unwrap(),
+        details,
+        at: 1_700_000_000,
+    }
+}
+
+#[test]
+fn fetched_details_are_sealed_validated_and_forgotten() {
+    let scratch = Scratch::new();
+    let found = Details {
+        name: Some("Ape #1".to_owned()),
+        about: None,
+        image: Some("ipfs://QmPbxeGcXhYQQNgsC6a36dDyYUcHgMLnGKnF8pVFmGsvqi".to_owned()),
+    };
+    {
+        let store = unlocked(&scratch);
+        store
+            .save_fetched(&fetched(1, Some(found.clone())))
+            .unwrap();
+        store.save_fetched(&fetched(2, None)).unwrap();
+        let mut coin = fetched(3, None);
+        coin.asset = AssetId::Native("ethereum".parse().unwrap());
+        let mut hidden = fetched(3, Some(found.clone()));
+        hidden.details.as_mut().unwrap().about = Some("a\u{202e}b".to_owned());
+        let mut long = fetched(3, Some(found.clone()));
+        long.details.as_mut().unwrap().about = Some("a".repeat(601));
+        let mut link = fetched(3, None);
+        link.link = String::new();
+        for bad in [coin, hidden, long, link] {
+            assert!(matches!(
+                store.save_fetched(&bad),
+                Err(StoreError::Invalid(_))
+            ));
+        }
+        store.lock();
+        assert_eq!(store.fetched(), Err(StoreError::Locked));
+    }
+    let store = unlocked(&scratch);
+    let mut kept = store.fetched().unwrap();
+    kept.sort_by(|a, b| a.asset.cmp(&b.asset));
+    assert_eq!(kept, [fetched(1, Some(found)), fetched(2, None)]);
+    store.forget_fetched(&ape(1).asset).unwrap();
+    assert_eq!(store.fetched().unwrap(), [fetched(2, None)]);
 }
