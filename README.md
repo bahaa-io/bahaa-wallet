@@ -86,12 +86,13 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 
 ## Limitations
 
-- **Coins received on EVM networks** show in the balance but not in activity. Finding them needs paid indexing, and the wallet uses no API keys.
+- **Some coins received on EVM networks aren't listed:** a payout made from inside a contract when the wallet can't tell which transaction paid it, and coins that came while the app was closed longer than free servers keep old balances (minutes on Arbitrum, hours or days elsewhere). The balance is always right.
 - **Short past history** for imported wallets on EVM networks and Tron, because free servers keep only recent records.
 - **Some memos aren't shown:** on received Tron token transfers, and TON's encrypted comments.
 - **Speed up and cancel are EVM and Bitcoin only.** Tron, TON and Solana can't replace a sent transaction.
 - **Expected waits are estimates:** from the servers' fee estimates on Bitcoin, from typical block times elsewhere.
 - **Bitcoin:** Native SegWit and Taproot only (not older 1… and 3… wallets), no test network yet, and coins on the way count before their first block.
+- **Small Taproot coins stay put:** Bitcoin coins of 10,000 sats or less on Taproot addresses are never spent, because they often carry Ordinals or Runes.
 - **Solana Token-2022 tokens** can't be added yet, only classic Solana tokens.
 - **EVM memos only go with coins** sent to a plain address. With tokens and contracts, they would break the call.
 - **Only listed networks** for now, and values only for assets Bahaa prices.
