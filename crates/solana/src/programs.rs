@@ -16,6 +16,7 @@ pub(crate) const CORE: Key = id("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 pub(crate) const WRAPPED: Key = id("So11111111111111111111111111111111111111112");
 
 const TRANSFER: u32 = 2;
+const CORE_TRANSFER: [u8; 2] = [14, 0];
 const TRANSFER_CHECKED: u8 = 12;
 const CREATE_IDEMPOTENT: u8 = 1;
 const UNIT_LIMIT: u8 = 2;
@@ -25,11 +26,18 @@ const fn id(text: &str) -> Key {
     bs58::decode(text.as_bytes()).into_array_const_unwrap()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Moved {
+    Coin,
+    Token { mint: Key, decimals: u8 },
+    Core { asset: Key, collection: Option<Key> },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Shape {
     pub from: Key,
     pub to: Key,
-    pub token: Option<(Key, u8)>,
+    pub moved: Moved,
     pub units: u64,
     pub memo: Option<String>,
     pub limit: u32,
@@ -47,8 +55,8 @@ impl Shape {
             accounts: Vec::new(),
             data: text.as_bytes().to_vec(),
         });
-        match self.token {
-            None => {
+        match self.moved {
+            Moved::Coin => {
                 list.extend(memo);
                 let mut data = TRANSFER.to_le_bytes().to_vec();
                 data.extend_from_slice(&self.units.to_le_bytes());
@@ -58,7 +66,7 @@ impl Shape {
                     data,
                 });
             }
-            Some((mint, decimals)) => {
+            Moved::Token { mint, decimals } => {
                 let source = token_account(&self.from, &mint)?;
                 let destination = token_account(&self.to, &mint)?;
                 list.push(Instruction {
@@ -86,6 +94,22 @@ impl Shape {
                         meta(self.from, true, false),
                     ],
                     data,
+                });
+            }
+            Moved::Core { asset, collection } => {
+                list.extend(memo);
+                list.push(Instruction {
+                    program: CORE,
+                    accounts: vec![
+                        meta(asset, false, true),
+                        meta(collection.unwrap_or(CORE), false, false),
+                        meta(self.from, true, true),
+                        meta(CORE, false, false),
+                        meta(self.to, false, false),
+                        meta(SYSTEM, false, false),
+                        meta(CORE, false, false),
+                    ],
+                    data: CORE_TRANSFER.to_vec(),
                 });
             }
         }
@@ -116,12 +140,29 @@ impl Shape {
                 .map(u64::from_le_bytes)
                 .ok_or_else(unknown)
         };
-        let (to, token, units) = match last.program {
+        let (to, moved, units) = match last.program {
             SYSTEM => (
                 last.accounts.get(1).ok_or_else(unknown)?.key,
-                None,
+                Moved::Coin,
                 units(last.data.get(4..12))?,
             ),
+            CORE => {
+                let account = |index: usize| {
+                    last.accounts
+                        .get(index)
+                        .map(|meta| meta.key)
+                        .ok_or_else(unknown)
+                };
+                let collection = Some(account(1)?).filter(|key| *key != CORE);
+                (
+                    account(4)?,
+                    Moved::Core {
+                        asset: account(0)?,
+                        collection,
+                    },
+                    1,
+                )
+            }
             TOKEN => {
                 let owner = instructions
                     .iter()
@@ -131,7 +172,11 @@ impl Shape {
                     .key;
                 let mint = last.accounts.get(1).ok_or_else(unknown)?.key;
                 let decimals = *last.data.get(9).ok_or_else(unknown)?;
-                (owner, Some((mint, decimals)), units(last.data.get(1..9))?)
+                (
+                    owner,
+                    Moved::Token { mint, decimals },
+                    units(last.data.get(1..9))?,
+                )
             }
             _ => return Err(unknown()),
         };
@@ -151,7 +196,7 @@ impl Shape {
         let shape = Self {
             from: parsed.payer,
             to,
-            token,
+            moved,
             units,
             memo,
             limit,
@@ -240,15 +285,27 @@ mod tests {
         assert_ne!(TOKEN, TOKEN_2022);
     }
 
-    fn shape(token: Option<(Key, u8)>, memo: Option<&str>) -> Shape {
+    fn shape(moved: Moved, memo: Option<&str>) -> Shape {
         Shape {
             from: [1; 32],
             to: [2; 32],
-            token,
+            moved,
             units: 1_500_000,
             memo: memo.map(str::to_owned),
             limit: 6_000,
             price: 25_000,
+        }
+    }
+
+    const TOKEN_MOVE: Moved = Moved::Token {
+        mint: [7; 32],
+        decimals: 6,
+    };
+
+    fn core(collection: Option<Key>) -> Moved {
+        Moved::Core {
+            asset: [8; 32],
+            collection,
         }
     }
 
@@ -265,10 +322,18 @@ mod tests {
     #[test]
     fn every_shape_reads_back_from_its_instructions() {
         for shape in [
-            shape(None, None),
-            shape(None, Some("deposit 4417 🙂")),
-            shape(Some(([7; 32], 6)), None),
-            shape(Some(([7; 32], 6)), Some("invoice 12")),
+            shape(Moved::Coin, None),
+            shape(Moved::Coin, Some("deposit 4417 🙂")),
+            shape(TOKEN_MOVE, None),
+            shape(TOKEN_MOVE, Some("invoice 12")),
+            Shape {
+                units: 1,
+                ..shape(core(None), None)
+            },
+            Shape {
+                units: 1,
+                ..shape(core(Some([9; 32])), Some("gift"))
+            },
         ] {
             let read = parsed(shape.from, shape.instructions().unwrap());
             assert_eq!(Shape::read(&read).unwrap(), shape);
@@ -277,7 +342,7 @@ mod tests {
 
     #[test]
     fn anything_beyond_the_shape_is_refused() {
-        let native = shape(None, Some("a"));
+        let native = shape(Moved::Coin, Some("a"));
         let mut extra = native.instructions().unwrap();
         extra.insert(2, extra[2].clone());
         assert!(Shape::read(&parsed(native.from, extra)).is_err());
@@ -290,7 +355,7 @@ mod tests {
             Shape::read(&parsed(native.from, hidden)).unwrap_err(),
             ChainError::Mismatch("the memo")
         );
-        let token = shape(Some(([7; 32], 6)), None);
+        let token = shape(TOKEN_MOVE, None);
         let mut stranger = token.instructions().unwrap();
         stranger[2].accounts[1].key = [4; 32];
         assert!(Shape::read(&parsed(token.from, stranger)).is_err());

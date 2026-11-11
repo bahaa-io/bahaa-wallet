@@ -79,3 +79,26 @@ async fn live_nfts_are_listed_by_das_and_checked_on_chain() {
             .all(|item| item.kind != bahaa_types::NftKind::SolanaCompressed)
     );
 }
+
+#[tokio::test]
+#[ignore = "talks to the real Solana network"]
+async fn live_core_and_classic_nft_transfers_pass_a_real_simulation() {
+    let chain = mainnet();
+    for asset in [
+        "CFZXxEdkoA2zwCNSpc4bLgfgEEGwYpK6eem97LCvm9KD",
+        "2jJT5adTaLXi5oeUCv9zsSXXYk8MEAiqLTzwPnAvu4W6",
+    ] {
+        let transfer = Transfer {
+            account: 0,
+            from: address("BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2"),
+            to: address(FRIEND),
+            asset: format!("solana/nft/{asset}").parse().unwrap(),
+            amount: Amount::parse("1", 0).unwrap(),
+            max: false,
+            memo: None,
+        };
+        let (plan, fee) = chain.prepare(&transfer).await.unwrap();
+        assert_eq!(chain.planned(&plan).asset, transfer.asset);
+        assert!(fee.expected().units() > ruint::aliases::U256::ZERO);
+    }
+}

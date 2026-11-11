@@ -1,4 +1,5 @@
-use std::sync::Mutex;
+use std::collections::BTreeSet;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use bahaa_chain::{
@@ -7,7 +8,7 @@ use bahaa_chain::{
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
-use bahaa_types::{Address, AssetId, MAX_DECIMALS, SolanaPath, to_plain_text};
+use bahaa_types::{Address, AssetId, MAX_DECIMALS, NftId, SolanaPath, to_plain_text};
 use ed25519_dalek::SigningKey;
 use futures_util::future::try_join_all;
 use ruint::aliases::U256;
@@ -20,7 +21,7 @@ mod send;
 pub use calls::{SolanaCall, swap_instruction};
 pub use send::SolanaPlan;
 
-use crate::programs::{Shape, TOKEN, TOKEN_2022, metadata_account, token_account};
+use crate::programs::{Moved, Shape, TOKEN, TOKEN_2022, metadata_account, token_account};
 use crate::rpc::{self, Account, Rpc, Solana};
 use crate::tx::{self, Key};
 
@@ -37,6 +38,7 @@ pub struct SolanaChain {
     rpc: Rpc,
     decimals: Decimals,
     rent: Mutex<Option<(Instant, send::Rent)>>,
+    nft_mints: Mutex<BTreeSet<Key>>,
 }
 
 impl SolanaChain {
@@ -55,6 +57,7 @@ impl SolanaChain {
             rpc,
             decimals: Decimals::default(),
             rent: Mutex::new(None),
+            nft_mints: Mutex::new(BTreeSet::new()),
         })
     }
 
@@ -178,12 +181,25 @@ impl Chain for SolanaChain {
             return Err(ChainError::Mismatch("the transaction id"));
         }
         let shape = Shape::read(&parsed)?;
-        let (asset, decimals) = match shape.token {
-            None => (
+        let nft = |id: Key| {
+            NftId::new(Address::Solana(id), None)
+                .map(|nft| (AssetId::Nft(self.network.id.clone(), Box::new(nft)), 0))
+                .map_err(|_| ChainError::malformed())
+        };
+        let known_nft = |mint: &Key| {
+            self.nft_mints
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(mint)
+        };
+        let (asset, decimals) = match shape.moved {
+            Moved::Coin => (
                 AssetId::Native(self.network.id.clone()),
                 self.network.native.decimals,
             ),
-            Some((mint, decimals)) => {
+            Moved::Core { asset, .. } => nft(asset)?,
+            Moved::Token { mint, decimals: 0 } if known_nft(&mint) => nft(mint)?,
+            Moved::Token { mint, decimals } => {
                 let known = self.known_decimals(&mint).ok_or(ChainError::Invalid(
                     "unknown token, prepare the transfer first",
                 ))?;

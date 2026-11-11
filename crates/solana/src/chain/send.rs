@@ -13,7 +13,7 @@ use ruint::aliases::U256;
 use serde_json::{Value, json};
 
 use super::{SolanaChain, TOKEN_READ, bytes, held};
-use crate::programs::{Shape, TOKEN, TOKEN_2022, token_account};
+use crate::programs::{Moved, Shape, TOKEN, TOKEN_2022, token_account};
 use crate::rpc::{self, Account, count, key, text};
 use crate::tx::{self, Key};
 
@@ -45,16 +45,9 @@ impl SolanaChain {
     ) -> Result<(SolanaPlan, FeeQuote), ChainError> {
         self.sendable(transfer)?;
         let (from, to) = (bytes(&transfer.from)?, bytes(&transfer.to)?);
-        let mint = transfer.asset.contract().map(bytes).transpose()?;
-        let decimals = match &mint {
-            None => self.network.native.decimals,
-            Some(mint) => self.token_decimals(mint).await?,
-        };
-        if !transfer.max && transfer.amount.decimals() != decimals {
-            return Err(ChainError::Invalid(
-                "the amount uses the wrong number of decimals",
-            ));
-        }
+        let moved = self.moved(transfer, &from).await?;
+        let (mint, decimals) = self.units_of_move(moved, transfer)?;
+        let coin = moved == Moved::Coin;
         let token_accounts = match &mint {
             None => Vec::new(),
             Some(mint) => vec![token_account(&from, mint)?, token_account(&to, mint)?],
@@ -74,7 +67,7 @@ impl SolanaChain {
         let mut shape = Shape {
             from,
             to,
-            token: mint.map(|mint| (mint, decimals)),
+            moved,
             units: 0,
             memo: transfer.memo.clone(),
             limit: SIMULATION_LIMIT,
@@ -96,6 +89,13 @@ impl SolanaChain {
             let opening = if tokens[1].is_none() { rent.token } else { 0 };
             state.sol.cover(SIGNATURE_FEE.saturating_add(opening))?;
             opening
+        } else if !coin {
+            if transfer.max {
+                transfer.take_all(amount(U256::from(1u8), 0)?)?;
+            }
+            shape.units = 1;
+            state.sol.cover(SIGNATURE_FEE)?;
+            0
         } else {
             shape.units = if transfer.max {
                 state.sol.held.saturating_sub(SIGNATURE_FEE)
@@ -118,7 +118,7 @@ impl SolanaChain {
         let fee = SIGNATURE_FEE
             .checked_add(priority)
             .ok_or_else(ChainError::overflow)?;
-        if mint.is_none() && transfer.max {
+        if coin && transfer.max {
             shape.units = state
                 .sol
                 .held
@@ -128,8 +128,8 @@ impl SolanaChain {
             state.first_deposit(shape.units)?;
             transfer.amount = amount(U256::from(shape.units), decimals)?;
         }
-        let moved = if mint.is_none() { shape.units } else { 0 };
-        state.spend(&[fee, opening, moved])?;
+        let sent = if coin { shape.units } else { 0 };
+        state.spend(&[fee, opening, sent])?;
         let message = tx::compile(from, blockhash, &shape.instructions()?)?;
         let fee = self.fee_quote(shape.limit, priority, opening)?;
         Ok((SolanaPlan { transfer, message }, fee))
@@ -190,8 +190,51 @@ impl SolanaChain {
             .paced(Pace::blocks(CONFIRM_SLOTS, self.network.block_ms)))
     }
 
+    async fn moved(&self, transfer: &Transfer, from: &Key) -> Result<Moved, ChainError> {
+        let Some(nft) = transfer.asset.nft() else {
+            return Ok(match transfer.asset.contract() {
+                None => Moved::Coin,
+                Some(mint) => {
+                    let mint = bytes(mint)?;
+                    Moved::Token {
+                        mint,
+                        decimals: self.token_decimals(&mint).await?,
+                    }
+                }
+            });
+        };
+        if !transfer.max && transfer.amount.units() != U256::from(1u8) {
+            return Err(ChainError::Invalid(
+                "a Solana NFT is one of a kind, send just 1",
+            ));
+        }
+        self.nft_move(from, &bytes(nft.address())?).await
+    }
+
+    fn units_of_move(
+        &self,
+        moved: Moved,
+        transfer: &Transfer,
+    ) -> Result<(Option<Key>, u8), ChainError> {
+        let (mint, decimals) = match moved {
+            Moved::Coin => (None, self.network.native.decimals),
+            Moved::Token { mint, decimals } => (Some(mint), decimals),
+            Moved::Core { .. } => (None, 0),
+        };
+        if !transfer.max && transfer.amount.decimals() != decimals {
+            return Err(ChainError::Invalid(
+                "the amount uses the wrong number of decimals",
+            ));
+        }
+        Ok((mint, decimals))
+    }
+
     fn sendable(&self, transfer: &Transfer) -> Result<(), ChainError> {
-        transfer.check(&self.network.id)?;
+        if transfer.asset.is_nft() {
+            transfer.check_nft(&self.network.id)?;
+        } else {
+            transfer.check(&self.network.id)?;
+        }
         if transfer.from == transfer.to {
             return Err(ChainError::Invalid("send to another address"));
         }
@@ -461,7 +504,7 @@ mod tests {
         let shape = Shape {
             from,
             to: [0x27; 32],
-            token: None,
+            moved: Moved::Coin,
             units: 1_000_000,
             memo: Some("deposit 4417".to_owned()),
             limit: 1_000,

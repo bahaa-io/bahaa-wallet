@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::PoisonError;
 
 use bahaa_chain::{ChainError, Found};
 use bahaa_config::Feature;
@@ -11,7 +12,7 @@ use serde_json::{Value, json};
 
 use super::{SolanaChain, bytes, held};
 use crate::metaplex;
-use crate::programs::{TOKEN, metadata_account, token_account};
+use crate::programs::{Moved, TOKEN, metadata_account, token_account};
 use crate::rpc::{self, Account};
 use crate::tx::Key;
 
@@ -56,6 +57,49 @@ impl SolanaChain {
         let mut items = self.token_nfts(&owner, &mints).await?;
         items.extend(self.core_nfts(&owner, &assets).await?);
         Ok(Found { items, capped })
+    }
+
+    pub(super) async fn nft_move(&self, owner: &Key, id: &Key) -> Result<Moved, ChainError> {
+        let not_held = ChainError::Invalid("this wallet doesn't hold that NFT");
+        let found = self
+            .accounts(
+                &[*id, metadata_account(id)?, token_account(owner, id)?],
+                None,
+            )
+            .await?;
+        let [item, record, account] = found.as_slice() else {
+            return Err(ChainError::malformed());
+        };
+        if let Some(core) = metaplex::core(item.as_ref()) {
+            if core.owner != *owner {
+                return Err(not_held);
+            }
+            return Ok(Moved::Core {
+                asset: *id,
+                collection: core.collection,
+            });
+        }
+        if !one_of_one(item.as_ref()) || held(account.as_ref(), owner, id)? != 1 {
+            return Err(not_held);
+        }
+        let record = metaplex::metadata(record.as_ref(), id)
+            .ok_or(ChainError::Invalid("this is not an NFT the wallet knows"))?;
+        match record.standard {
+            Some(4 | 5) => return Err(ChainError::Unsupported("sending programmable NFTs yet")),
+            None | Some(0 | 3) => {}
+            Some(_) => return Err(ChainError::Invalid("this is a token, not an NFT")),
+        }
+        if frozen(account.as_ref()) {
+            return Err(ChainError::Invalid("this NFT is frozen and can't be sent"));
+        }
+        self.nft_mints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id);
+        Ok(Moved::Token {
+            mint: *id,
+            decimals: 0,
+        })
     }
 
     async fn listing(&self, owner: &Key) -> Result<(Vec<Listed>, bool), ChainError> {
@@ -109,9 +153,7 @@ impl SolanaChain {
                 Some(4 | 5) => NftKind::SolanaProgrammable,
                 Some(_) => continue,
             };
-            let frozen = account
-                .as_ref()
-                .is_some_and(|account| account.data.get(108) == Some(&FROZEN));
+            let frozen = frozen(account.as_ref());
             held_nfts.push((*mint, kind, frozen, record));
         }
         let mut collections: Vec<Key> = held_nfts
@@ -248,6 +290,10 @@ fn one_of_one(mint: Option<&Account>) -> bool {
                 && account.data[44] == 0
                 && account.data[45] == 1
         })
+}
+
+fn frozen(account: Option<&Account>) -> bool {
+    account.is_some_and(|account| account.data.get(108) == Some(&FROZEN))
 }
 
 fn text(raw: &str) -> Option<String> {

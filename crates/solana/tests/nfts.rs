@@ -5,12 +5,14 @@ mod common;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use bahaa_chain::Found;
+use bahaa_chain::{Chain, ChainError, FeeItem, Found, Transfer, check_signed};
 use bahaa_solana::SolanaChain;
 use bahaa_types::{Lock, NftKind, Trust};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use common::{Ledger, address, called, node, solana_on};
+use common::{
+    FRIEND, Ledger, OWNER, address, called, node, seed, solana_on, token_account, wallet,
+};
 use serde_json::{Value, json};
 
 const FIXTURE: &str = include_str!("fixtures/nfts.json");
@@ -185,4 +187,132 @@ async fn long_listings_stop_after_three_pages() {
         .map(|params| params["page"].as_u64().unwrap())
         .collect();
     assert_eq!(pages, [1, 2, 3]);
+}
+
+const CORE: &str = "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d";
+const OWN_GNOME: &str = "3jmyDTM1pKwa1Earz7babpXszt8NfYW7xnVJDnDi83P4";
+const OWN_MAD_LAD: &str = "GoqxN61TdTdniDnXf35s6wgtCKfJTpG97uZMoR8ksZGp";
+
+fn key(text: &str) -> [u8; 32] {
+    let bahaa_types::Address::Solana(key) = address(text) else {
+        unreachable!()
+    };
+    key
+}
+
+fn sender() -> Ledger {
+    let mut ledger = ledger();
+    ledger.fees = vec![0, 1_000];
+    ledger.units = 30_000;
+    ledger
+        .accounts
+        .insert(OWNER.to_owned(), wallet(1_000_000_000));
+    ledger
+        .accounts
+        .insert(FRIEND.to_owned(), wallet(500_000_000));
+    for (account, mint) in [(OWN_GNOME, GNOME), (OWN_MAD_LAD, MAD_LAD)] {
+        ledger
+            .accounts
+            .insert(account.to_owned(), token_account(OWNER, mint, 1));
+    }
+    patched(&mut ledger, PATRIOT, |data| {
+        data[1..33].copy_from_slice(&key(OWNER));
+    });
+    ledger
+}
+
+fn sent(asset: &str) -> Transfer {
+    Transfer {
+        account: 0,
+        from: address(OWNER),
+        to: address(FRIEND),
+        asset: format!("solana/nft/{asset}").parse().unwrap(),
+        amount: bahaa_types::Amount::parse("1", 0).unwrap(),
+        max: false,
+        memo: Some("gift".to_owned()),
+    }
+}
+
+async fn sending(ledger: Ledger) -> SolanaChain {
+    let url = node(Arc::new(Mutex::new(Vec::new())), ledger).await;
+    SolanaChain::new(solana_on(&[url])).unwrap()
+}
+
+#[tokio::test]
+async fn a_classic_nft_moves_like_a_one_of_one_token_and_reads_back_as_the_nft() {
+    let chain = sending(sender()).await;
+    let (plan, fee) = chain.prepare(&sent(GNOME)).await.unwrap();
+    assert!(
+        fee.lines()
+            .iter()
+            .any(|line| line.item == FeeItem::Activation)
+    );
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    let decoded = chain.decode(&signed).unwrap();
+    check_signed(chain.planned(&plan), &decoded).unwrap();
+    assert_eq!(decoded.asset, sent(GNOME).asset);
+    assert_eq!(
+        (decoded.amount.to_string(), decoded.memo.as_deref()),
+        ("1".to_owned(), Some("gift"))
+    );
+    let mut max = sent(GNOME);
+    max.max = true;
+    let (plan, _) = chain.prepare(&max).await.unwrap();
+    assert_eq!(chain.planned(&plan).amount.to_string(), "1");
+}
+
+#[tokio::test]
+async fn a_core_nft_moves_through_the_core_program_with_its_collection() {
+    let chain = sending(sender()).await;
+    let (plan, fee) = chain.prepare(&sent(PATRIOT)).await.unwrap();
+    assert!(
+        !fee.lines()
+            .iter()
+            .any(|line| line.item == FeeItem::Activation)
+    );
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    let decoded = chain.decode(&signed).unwrap();
+    check_signed(chain.planned(&plan), &decoded).unwrap();
+    assert_eq!(decoded.asset, sent(PATRIOT).asset);
+    for needed in [CORE, PATRIOT, PATRIOTS, FRIEND] {
+        let bytes = key(needed);
+        assert!(
+            signed.bytes.windows(32).any(|window| window == bytes),
+            "{needed} missing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn only_a_held_movable_nft_is_sent_and_only_one_at_a_time() {
+    let chain = sending(sender()).await;
+    assert_eq!(
+        chain.prepare(&sent(MAD_LAD)).await.err(),
+        Some(ChainError::Unsupported("sending programmable NFTs yet"))
+    );
+    let mut two = sent(GNOME);
+    two.amount = bahaa_types::Amount::parse("2", 0).unwrap();
+    assert_eq!(
+        chain.prepare(&two).await.err(),
+        Some(ChainError::Invalid(
+            "a Solana NFT is one of a kind, send just 1"
+        ))
+    );
+    let mut stranger = sender();
+    patched(&mut stranger, PATRIOT, |data| data[1..33].fill(7));
+    stranger.accounts.remove(OWN_GNOME);
+    let chain = sending(stranger).await;
+    for asset in [PATRIOT, GNOME] {
+        assert_eq!(
+            chain.prepare(&sent(asset)).await.err(),
+            Some(ChainError::Invalid("this wallet doesn't hold that NFT"))
+        );
+    }
+    let mut frozen = sender();
+    patched(&mut frozen, OWN_GNOME, |data| data[108] = 2);
+    let chain = sending(frozen).await;
+    assert_eq!(
+        chain.prepare(&sent(GNOME)).await.err(),
+        Some(ChainError::Invalid("this NFT is frozen and can't be sent"))
+    );
 }
