@@ -305,7 +305,12 @@ async fn sends_real_bsc_usdt_on_a_forked_chain() {
         complete_since: 0,
     };
     let scanned = chain
-        .scan(&transfer.to, std::slice::from_ref(&usdt), Some(local_only))
+        .scan(
+            &transfer.to,
+            std::slice::from_ref(&usdt),
+            Some(local_only),
+            None,
+        )
         .await
         .unwrap()
         .unwrap();

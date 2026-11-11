@@ -87,7 +87,7 @@ async fn a_first_scan_reaches_back_in_chunks_and_fills_missing_times() {
     let (log, asked) = (Log::default(), Asked::default());
     let chain = EvmChain::new(bsc_on(&[ledger(log, Arc::clone(&asked), 10_000).await])).unwrap();
     let scanned = chain
-        .scan(&owner(), &assets(&TOKENS), None)
+        .scan(&owner(), &assets(&TOKENS), None, None)
         .await
         .unwrap()
         .unwrap();
@@ -176,7 +176,7 @@ async fn later_scans_continue_from_the_cursor_and_wait_when_caught_up() {
         complete_since: 50,
     };
     let scanned = chain
-        .scan(&owner(), &assets(&TOKENS), Some(cursor))
+        .scan(&owner(), &assets(&TOKENS), Some(cursor), None)
         .await
         .unwrap()
         .unwrap();
@@ -192,13 +192,13 @@ async fn later_scans_continue_from_the_cursor_and_wait_when_caught_up() {
     assert_eq!(scanned.sent, Vec::new());
     assert_eq!(asked.lock().unwrap().len(), 2);
     let caught_up = chain
-        .scan(&owner(), &assets(&TOKENS), Some(scanned.cursor))
+        .scan(&owner(), &assets(&TOKENS), Some(scanned.cursor), None)
         .await
         .unwrap();
     assert_eq!(caught_up, None);
     assert_eq!(asked.lock().unwrap().len(), 2);
     let natives_only = chain
-        .scan(&owner(), &assets(&["bsc"]), None)
+        .scan(&owner(), &assets(&["bsc"]), None, None)
         .await
         .unwrap()
         .unwrap();
@@ -223,11 +223,17 @@ async fn only_endpoints_that_serve_logs_are_asked() {
     let chain = EvmChain::new(network.clone()).unwrap();
     assert!(chain.can_scan());
     chain
-        .scan(&owner(), &assets(&TOKENS), None)
+        .scan(&owner(), &assets(&TOKENS), None, None)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(*plain_log.lock().unwrap(), Vec::<String>::new());
+    assert!(
+        !plain_log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|method| method == "eth_getLogs")
+    );
     assert!(
         logs_log
             .lock()
@@ -250,7 +256,7 @@ async fn live_bsc_incoming_usdt() {
     )
     .unwrap();
     let scanned = chain
-        .scan(&busy, &assets(&TOKENS), None)
+        .scan(&busy, &assets(&TOKENS), None, None)
         .await
         .unwrap()
         .unwrap();
@@ -321,7 +327,7 @@ async fn a_catch_up_past_what_public_servers_keep_restarts_from_recent_blocks() 
         complete_since: now - 20_000,
     };
     let scanned = chain
-        .scan(&owner(), &assets(&TOKENS), Some(behind))
+        .scan(&owner(), &assets(&TOKENS), Some(behind), None)
         .await
         .unwrap()
         .unwrap();
@@ -345,7 +351,7 @@ async fn a_catch_up_past_what_public_servers_keep_restarts_from_recent_blocks() 
         );
     }
     let next = chain
-        .scan(&owner(), &assets(&TOKENS), Some(scanned.cursor))
+        .scan(&owner(), &assets(&TOKENS), Some(scanned.cursor), None)
         .await
         .unwrap();
     assert_eq!(next, None);

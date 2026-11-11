@@ -22,7 +22,10 @@ struct FakeChain {
     head: AtomicU64,
     genesis: AtomicU64,
     asked: Mutex<Vec<(u64, u64)>>,
+    coins: AtomicU64,
 }
+
+const COINS_AT: u64 = 9_500;
 
 impl FakeChain {
     fn genesis(&self) -> u64 {
@@ -74,11 +77,40 @@ async fn bsc(chain: &Arc<FakeChain>) -> Registry {
         let params = &call["params"];
         let reply = match call["method"].as_str().unwrap() {
             "eth_chainId" => json!("0x38"),
-            "eth_getBalance" => json!("0x0"),
+            "eth_getBalance" => {
+                let at = params[1]
+                    .as_str()
+                    .and_then(|text| u64::from_str_radix(text.strip_prefix("0x")?, 16).ok())
+                    .unwrap_or(u64::MAX);
+                let held = if at >= COINS_AT {
+                    chain.coins.load(Ordering::SeqCst)
+                } else {
+                    0
+                };
+                json!(format!("0x{held:x}"))
+            }
+            "eth_getTransactionCount" => json!("0x0"),
             "eth_call" => json!(format!("0x{:064x}", 0)),
             "eth_blockNumber" => json!(format!("0x{:x}", chain.head.load(Ordering::SeqCst))),
             "eth_getBlockByNumber" => {
-                json!({"timestamp": format!("0x{:x}", chain.genesis() + number(&params[0]))})
+                let block = number(&params[0]);
+                let paid = block == COINS_AT && params[1] == json!(true);
+                let transactions = if paid {
+                    vec![json!({
+                        "hash": format!("0x{block:064x}"),
+                        "from": HARDHAT_1.to_ascii_lowercase(),
+                        "to": HARDHAT_0.to_ascii_lowercase(),
+                        "value": format!("0x{:x}", chain.coins.load(Ordering::SeqCst)),
+                        "input": "0x",
+                    })]
+                } else {
+                    Vec::new()
+                };
+                json!({
+                    "number": format!("0x{block:x}"),
+                    "timestamp": format!("0x{:x}", chain.genesis() + block),
+                    "transactions": transactions,
+                })
             }
             "eth_getLogs" if params[0]["topics"][1] == json!(padded(HARDHAT_0)) => {
                 let (from, to) = (
@@ -241,6 +273,69 @@ async fn incoming_tokens_are_found_kept_and_scanned_onward() {
     .await;
     assert_eq!(after_gap.coverage[0].complete_since, GENESIS + 95_989);
     assert_eq!(after_gap.transfers, fresh);
+}
+
+#[tokio::test]
+async fn native_coins_that_arrive_are_listed_and_announced() {
+    let scratch = Scratch::new();
+    let chain = Arc::new(FakeChain::default());
+    chain.head.store(10_000, Ordering::SeqCst);
+    chain.coins.store(200_000_000_000_000_000, Ordering::SeqCst);
+    let engine = Engine::start(config(&scratch, bsc(&chain).await, None)).unwrap();
+    let mut events = engine.events();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    let fresh: Vec<Arrival> = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(Event::Received(entries)) = events.recv().await {
+                return entries;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let coins: Vec<_> = fresh
+        .iter()
+        .map(|arrival| &arrival.received)
+        .filter(|received| received.asset == "bsc".parse().unwrap())
+        .collect();
+    assert_eq!(coins.len(), 1);
+    assert_eq!(
+        (
+            coins[0].from.to_string(),
+            coins[0].to.to_string(),
+            coins[0].amount.to_string(),
+            coins[0].block,
+            coins[0].time,
+        ),
+        (
+            HARDHAT_1.to_owned(),
+            HARDHAT_0.to_owned(),
+            "0.2".to_owned(),
+            COINS_AT,
+            GENESIS + COINS_AT
+        )
+    );
+    let incoming = engine.incoming().await.unwrap();
+    let watch = incoming.coverage[0].watch.unwrap();
+    assert_eq!(
+        (watch.block, watch.balance.to_string(), watch.nonce),
+        (9_988, "0.2".to_owned(), 0)
+    );
+    engine.lock().await.unwrap();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    let kept = incoming_until(&engine, |incoming| !incoming.coverage.is_empty()).await;
+    assert_eq!(kept.coverage[0].watch, Some(watch));
+    assert_eq!(
+        kept.transfers
+            .iter()
+            .filter(|arrival| arrival.received.asset == "bsc".parse().unwrap())
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

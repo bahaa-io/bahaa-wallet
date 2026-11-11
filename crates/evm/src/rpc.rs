@@ -51,9 +51,16 @@ pub(crate) fn classify(code: i64, message: &str) -> Failure<ChainError> {
     if limited {
         return Failure::RateLimited(ChainError::Network(message), None);
     }
-    if ["archive", "personal token", "pruned", "missing trie node"]
-        .iter()
-        .any(|needle| lower.contains(needle))
+    if [
+        "archive",
+        "personal token",
+        "pruned",
+        "missing trie node",
+        "historical state",
+        "unknown state",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
     {
         return Failure::Unsupported(ChainError::Pruned);
     }
@@ -65,13 +72,21 @@ pub(crate) fn classify(code: i64, message: &str) -> Failure<ChainError> {
             "specify an address",
             "does not exist",
             "method not found",
+            "not allowed",
         ]
         .iter()
         .any(|needle| lower.contains(needle));
     if unsupported {
         return Failure::Unsupported(ChainError::Network(message));
     }
-    if matches!(code, -32603 | -32001 | -32002 | -32004) {
+    let behind = [
+        "header not found",
+        "block not found",
+        "unsupported block number",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if behind || matches!(code, -32603 | -32001 | -32002 | -32004) {
         return Failure::Retry(ChainError::Network(message));
     }
     Failure::Fatal(ChainError::Rejected(message))

@@ -330,6 +330,7 @@ fn scan(next: u64) -> Scan {
         next,
         complete_from: 100,
         complete_since: 1_760_000_000,
+        watch: None,
     }
 }
 

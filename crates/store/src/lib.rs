@@ -205,6 +205,16 @@ pub struct Scan {
     pub next: u64,
     pub complete_from: u64,
     pub complete_since: u64,
+    #[serde(default)]
+    pub watch: Option<Watched>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Watched {
+    pub block: u64,
+    pub balance: Amount,
+    pub nonce: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

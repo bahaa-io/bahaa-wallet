@@ -67,6 +67,7 @@ impl TonChain {
             cursor: next,
             found,
             sent,
+            watch: None,
         }))
     }
 

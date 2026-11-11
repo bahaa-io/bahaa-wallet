@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 
-use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId, amount, now};
+use bahaa_chain::{ChainError, Incoming, Outgoing, ScanCursor, Scanned, TxId, Watch, amount, now};
 use bahaa_config::Feature;
 use bahaa_types::{Address, AssetId};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
-use super::{EvmChain, bytes, hex, word};
+use super::{EvmChain, bytes, hex, watch, word};
 use crate::rpc::quantity;
 
 const TRANSFER_TOPIC: &str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const CHUNK: u64 = 2_000;
-const REACH: u64 = 4_000;
+pub(super) const REACH: u64 = 4_000;
 const BUDGET: u64 = 20 * CHUNK;
 const BACKLOG: u64 = 7 * 24 * 60 * 60;
 const CONFIRMATIONS: u64 = 12;
@@ -53,8 +53,41 @@ impl EvmChain {
         owner: &Address,
         tokens: &[AssetId],
         cursor: Option<ScanCursor>,
+        watch: Option<Watch>,
     ) -> Result<Option<Scanned>, ChainError> {
         let head = block_number(&self.logs_call("eth_blockNumber", json!([])).await?)?;
+        let Some(until) = head.checked_sub(CONFIRMATIONS) else {
+            return Ok(None);
+        };
+        let native = self
+            .watched(owner, watch, until)
+            .await
+            .unwrap_or_else(|_| watch::Native::unchanged(watch));
+        let (cursor, mut found, mut sent) = match (
+            self.tokens_moved(owner, tokens, cursor, head).await?,
+            cursor,
+        ) {
+            (Some(moved), _) => moved,
+            (None, Some(cursor)) if native.watch != watch => (cursor, Vec::new(), Vec::new()),
+            _ => return Ok(None),
+        };
+        found.extend(native.found);
+        sent.extend(native.sent);
+        Ok(Some(Scanned {
+            cursor,
+            found,
+            sent,
+            watch: native.watch,
+        }))
+    }
+
+    async fn tokens_moved(
+        &self,
+        owner: &Address,
+        tokens: &[AssetId],
+        cursor: Option<ScanCursor>,
+        head: u64,
+    ) -> Result<Option<(ScanCursor, Vec<Incoming>, Vec<Outgoing>)>, ChainError> {
         let mut times = HashMap::new();
         let stale = match cursor {
             Some(cursor) if cursor.next.saturating_add(REACH) <= head => {
@@ -85,15 +118,15 @@ impl EvmChain {
             Some(cursor) if !range.reset => (cursor.complete_from, cursor.complete_since),
             _ => (range.from, self.block_time(range.from, &mut times).await?),
         };
-        Ok(Some(Scanned {
-            cursor: ScanCursor {
+        Ok(Some((
+            ScanCursor {
                 next: range.until + 1,
                 complete_from,
                 complete_since,
             },
             found,
             sent,
-        }))
+        )))
     }
 
     async fn transfers(
@@ -267,7 +300,7 @@ fn same(value: &Value, expected: &str) -> bool {
         .is_some_and(|text| text.eq_ignore_ascii_case(expected))
 }
 
-fn digits(text: &str, len: usize) -> Option<&str> {
+pub(super) fn digits(text: &str, len: usize) -> Option<&str> {
     let digits = text.strip_prefix("0x")?;
     (digits.len() == len && digits.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(digits)
 }
@@ -279,15 +312,15 @@ fn padded_address(text: &str) -> Option<[u8; 20]> {
     bahaa_types::hex::decode_array(address)
 }
 
-fn block_number(value: &Value) -> Result<u64, ChainError> {
+pub(super) fn block_number(value: &Value) -> Result<u64, ChainError> {
     u64::try_from(quantity(value)?).map_err(|_| malformed())
 }
 
-fn number(value: u64) -> String {
+pub(super) fn number(value: u64) -> String {
     format!("0x{value:x}")
 }
 
-fn malformed() -> ChainError {
+pub(super) fn malformed() -> ChainError {
     ChainError::Network("an endpoint sent a malformed log reply".to_owned())
 }
 

@@ -16,6 +16,7 @@ mod calls;
 mod logs;
 mod replace;
 mod rollup;
+mod watch;
 
 pub use calls::EvmCall;
 
@@ -691,6 +692,7 @@ pub(crate) fn fuzz(value: &Value) {
     calls::fuzz(value);
     logs::fuzz(value);
     rollup::fuzz(value);
+    watch::fuzz(value);
     let _ = already_known(value["message"].as_str().unwrap_or_default());
 }
 

@@ -116,6 +116,7 @@ impl TronChain {
             },
             found,
             sent,
+            watch: None,
         }))
     }
 

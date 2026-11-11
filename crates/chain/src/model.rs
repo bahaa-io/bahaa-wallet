@@ -375,11 +375,19 @@ pub struct Movement {
 pub type Incoming = Movement;
 pub type Outgoing = Movement;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Watch {
+    pub block: u64,
+    pub balance: Amount,
+    pub nonce: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scanned {
     pub cursor: ScanCursor,
     pub found: Vec<Incoming>,
     pub sent: Vec<Outgoing>,
+    pub watch: Option<Watch>,
 }
 
 impl ChainError {

@@ -118,6 +118,7 @@ impl SolanaChain {
             cursor: next,
             found: received,
             sent,
+            watch: None,
         }))
     }
 

@@ -5,13 +5,13 @@ use std::time::Duration;
 use bahaa_bitcoin::{BitcoinCall, BitcoinChain, BitcoinPlan};
 use bahaa_chain::{
     Approval, Balance, Chain, ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, Movement,
-    PlannedCall, Replace, ScanCursor, Scanned, Signed, Transfer, TxId, TxStatus,
+    PlannedCall, Replace, ScanCursor, Scanned, Signed, Transfer, TxId, TxStatus, Watch,
 };
 use bahaa_config::{Coin, Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmCall, EvmChain, EvmPlan};
 use bahaa_solana::{SolanaCall, SolanaChain, SolanaPlan};
-use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock};
+use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock, Watched};
 use bahaa_ton::{TonCall, TonChain, TonPlan};
 use bahaa_tron::{TronCall, TronChain, TronPlan};
 use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, TonContract};
@@ -356,10 +356,13 @@ impl AnyChain {
         address: &Address,
         assets: &[AssetId],
         cursor: Option<ScanCursor>,
+        watch: Option<Watch>,
     ) -> Result<Option<Scanned>, ChainError> {
         shielded(async {
             match self {
-                Self::Evm(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
+                Self::Evm(chain) if chain.can_scan() => {
+                    chain.scan(address, assets, cursor, watch).await
+                }
                 Self::Tron(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
                 Self::Ton(chain) if chain.can_scan() => chain.scan(address, assets, cursor).await,
                 Self::Solana(chain) if chain.can_scan() => {
@@ -697,11 +700,16 @@ pub(crate) async fn history(
         problem: None,
     };
     for account in served(chain, accounts) {
-        let cursor = cursors
+        let stored = cursors
             .iter()
-            .find(|scan| scan.network == network.id && scan.address == account.address)
-            .map(cursor_of);
-        match chain.scan(&account.address, &assets, cursor).await {
+            .find(|scan| scan.network == network.id && scan.address == account.address);
+        let cursor = stored.map(cursor_of);
+        let watch = stored.and_then(|scan| scan.watch).map(|watched| Watch {
+            block: watched.block,
+            balance: watched.balance,
+            nonce: watched.nonce,
+        });
+        match chain.scan(&account.address, &assets, cursor, watch).await {
             Ok(Some(scanned)) => result
                 .scans
                 .push(scan_of(&network.id, &account.address, scanned)),
@@ -753,6 +761,11 @@ fn scan_of(
         next: scanned.cursor.next,
         complete_from: scanned.cursor.complete_from,
         complete_since: scanned.cursor.complete_since,
+        watch: scanned.watch.map(|watch| Watched {
+            block: watch.block,
+            balance: watch.balance,
+            nonce: watch.nonce,
+        }),
     };
     let kept = |moved: Movement| bahaa_store::Movement {
         id: moved.id.to_string(),
