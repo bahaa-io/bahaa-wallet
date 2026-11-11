@@ -419,6 +419,7 @@ pub(crate) mod tests {
                 units: U256::from(units),
                 query_id: 5,
             }),
+            item: None,
             memo: None,
             call: None,
         }

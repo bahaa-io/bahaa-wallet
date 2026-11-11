@@ -1542,3 +1542,81 @@ async fn listed_items_that_are_not_held_or_not_nfts_are_dropped() {
     let chain = nft_chain(listing(NEIGHBOUR)).await;
     assert_eq!(chain.nfts(&raw(COLLECTOR)).await.unwrap().items, Vec::new());
 }
+
+fn nft_transfer(from: &str, item: &str, amount: &str) -> bahaa_chain::Transfer {
+    bahaa_chain::Transfer {
+        account: 0,
+        from: raw(from),
+        to: raw(NEIGHBOUR),
+        asset: format!("ton/nft/{item}").parse().unwrap(),
+        amount: bahaa_types::Amount::parse(amount, 0).unwrap(),
+        max: false,
+        memo: Some("for you".to_owned()),
+    }
+}
+
+#[tokio::test]
+async fn an_nft_transfer_is_priced_by_running_the_item_contract_itself() {
+    let chain = nft_chain(listing(COLLECTOR)).await;
+    let username = "0:94fad2068ebd5c3a83fae144413b39e9036cf658d1e30ece3e4db9dd26b8052e";
+    let Err(ChainError::Insufficient {
+        symbol,
+        needed,
+        available,
+    }) = chain.prepare(&nft_transfer(COLLECTOR, username, "1")).await
+    else {
+        panic!("the empty recorded wallet cannot pay");
+    };
+    assert_eq!(
+        (symbol.as_str(), available.to_string().as_str()),
+        ("GRAM", "0")
+    );
+    let needed = needed.units();
+    assert!(
+        needed > ruint::aliases::U256::from(5_000_000u32)
+            && needed < ruint::aliases::U256::from(200_000_000u32),
+        "{needed}"
+    );
+    let mut max = nft_transfer(COLLECTOR, username, "1");
+    max.max = true;
+    assert!(matches!(
+        chain.prepare(&max).await,
+        Err(ChainError::Insufficient { .. })
+    ));
+}
+
+#[tokio::test]
+async fn only_a_held_transferable_nft_is_sent_and_only_one_at_a_time() {
+    let chain = nft_chain(listing(COLLECTOR)).await;
+    let elsewhere = "0:d59a7de5e0bd393f56314fb14737675fbf2c7d6b7dd18a6c09bda52ed7aa84d7";
+    let username = "0:94fad2068ebd5c3a83fae144413b39e9036cf658d1e30ece3e4db9dd26b8052e";
+    assert_eq!(
+        chain
+            .prepare(&nft_transfer(COLLECTOR, elsewhere, "1"))
+            .await
+            .err(),
+        Some(ChainError::Invalid("this wallet doesn't hold that NFT"))
+    );
+    assert_eq!(
+        chain
+            .prepare(&nft_transfer(COLLECTOR, username, "2"))
+            .await
+            .err(),
+        Some(ChainError::Invalid(
+            "a TON NFT is one of a kind, send just 1"
+        ))
+    );
+    let mut back = nft_transfer(COLLECTOR, username, "1");
+    back.to = back.from;
+    assert_eq!(
+        chain.prepare(&back).await.err(),
+        Some(ChainError::Invalid("send the NFT to another account"))
+    );
+    let mut coin = nft_transfer(COLLECTOR, username, "1");
+    coin.asset = gram();
+    coin.amount = bahaa_types::Amount::parse("1", 9).unwrap();
+    assert!(!matches!(
+        chain.prepare(&coin).await,
+        Err(ChainError::Invalid("this wallet doesn't hold that NFT"))
+    ));
+}

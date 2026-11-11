@@ -63,6 +63,7 @@ impl TonChain {
             everything: false,
             bounce: true,
             token: None,
+            item: None,
             memo: None,
             call: Some(swap.call.data.clone()),
         };
@@ -251,6 +252,7 @@ mod tests {
             everything: false,
             bounce: true,
             token: None,
+            item: None,
             memo: None,
             call: Some(body),
         };

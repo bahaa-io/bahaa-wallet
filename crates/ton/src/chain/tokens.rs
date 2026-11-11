@@ -47,8 +47,22 @@ impl TonChain {
         order.token = Some(Token {
             wallet: ours,
             units,
-            query_id: (u64::from(order.valid_until) << 32) | u64::from(order.seqno),
+            query_id: query_id(order),
         });
+        let parties = Parties {
+            ours: (&ours, &ours_state.boc),
+            theirs: Some((&theirs, &theirs_state.boc)),
+            wallet: &wallet.boc,
+        };
+        self.attachment(order, &parties, &contracts).await
+    }
+
+    pub(super) async fn attachment(
+        &self,
+        order: &mut Order,
+        parties: &Parties<'_>,
+        contracts: &Contracts<'_>,
+    ) -> Result<u64, ChainError> {
         let params = contracts.config.encoded().ok_or_else(|| {
             ChainError::Network("the network config cannot be encoded".to_owned())
         })?;
@@ -57,20 +71,15 @@ impl TonChain {
             settings: contracts.settings,
             now: contracts.now,
         };
-        let parties = Parties {
-            ours: (&ours, &ours_state.boc),
-            theirs: (&theirs, &theirs_state.boc),
-            wallet: &wallet.boc,
-        };
         let mut libraries = Vec::new();
         order.nano = U256::from(PROBE);
-        let probe = self.flow(order, &parties, &run, &mut libraries).await?;
+        let probe = self.flow(order, parties, &run, &mut libraries).await?;
         let attachment = PROBE
             .checked_sub(probe.refund)
             .and_then(|need| need.checked_mul(2))
             .ok_or_else(ChainError::overflow)?;
         order.nano = U256::from(attachment);
-        let flow = self.flow(order, &parties, &run, &mut libraries).await?;
+        let flow = self.flow(order, parties, &run, &mut libraries).await?;
         let spent = i128::from(attachment) - i128::from(flow.refund) - flow.adjustment
             + i128::from(flow.refund_fees);
         u64::try_from(spent).map_err(|_| ChainError::overflow())
@@ -104,8 +113,12 @@ impl TonChain {
 
 pub(crate) struct Parties<'a> {
     pub ours: (&'a Address, &'a [u8]),
-    pub theirs: (&'a Address, &'a [u8]),
+    pub theirs: Option<(&'a Address, &'a [u8])>,
     pub wallet: &'a [u8],
+}
+
+pub(super) fn query_id(order: &Order) -> u64 {
+    (u64::from(order.valid_until) << 32) | u64::from(order.seqno)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -120,37 +133,52 @@ fn follow(
     parties: &Parties<'_>,
 ) -> Result<Followed, ChainError> {
     let (ours, ours_state) = parties.ours;
-    let (theirs, theirs_state) = parties.theirs;
+    let first_name = if parties.theirs.is_some() {
+        "your token wallet"
+    } else {
+        "this NFT"
+    };
     let first = match emulator.run(ours, ours_state, &wallet::delivered(order)?)? {
         Emulated::Done(hop) => hop,
         Emulated::Missing(hash) => return Ok(Followed::Missing(hash)),
     };
     if !first.success {
-        return Err(refused("your token wallet", &first));
+        return Err(refused(first_name, &first));
     }
-    let forwarded = first
-        .out
-        .iter()
-        .find(|message| emulate::destination(message).is_some_and(|(to, _)| to == *theirs))
-        .ok_or_else(|| {
+    let sends_to = |hop: &Hop, to: &Address| {
+        hop.out
+            .iter()
+            .find(|message| emulate::destination(message).is_some_and(|(found, _)| found == *to))
+            .cloned()
+    };
+    let mut hops = vec![first];
+    if let Some((theirs, theirs_state)) = parties.theirs {
+        let forwarded = sends_to(&hops[0], theirs).ok_or_else(|| {
             ChainError::Rejected("your token wallet would not forward the tokens".to_owned())
         })?;
-    let second = match emulator.run(theirs, theirs_state, forwarded)? {
-        Emulated::Done(hop) => hop,
-        Emulated::Missing(hash) => return Ok(Followed::Missing(hash)),
-    };
-    if !second.success {
-        return Err(refused("the recipient's token wallet", &second));
+        let second = match emulator.run(theirs, theirs_state, &forwarded)? {
+            Emulated::Done(hop) => hop,
+            Emulated::Missing(hash) => return Ok(Followed::Missing(hash)),
+        };
+        if !second.success {
+            return Err(refused("the recipient's token wallet", &second));
+        }
+        hops.push(second);
+    } else if sends_to(&hops[0], &order.to).is_none() {
+        return Err(ChainError::Rejected(
+            "this NFT would not tell the recipient that it moved".to_owned(),
+        ));
     }
     let mut flow = Flow {
         refund: 0,
-        adjustment: [&first, &second]
+        adjustment: hops
             .iter()
             .map(|hop| i128::from(hop.gas_fees) - i128::from(hop.charged_gas_fees))
             .sum(),
         refund_fees: 0,
     };
-    for message in &second.out {
+    let last = hops.last().ok_or_else(ChainError::malformed)?;
+    for message in &last.out {
         if let Some((to, value)) = emulate::destination(message)
             && to == order.wallet
         {
@@ -190,7 +218,7 @@ mod tests {
     ) -> Parties<'a> {
         Parties {
             ours: (ours, &states.0),
-            theirs: (theirs, &states.1),
+            theirs: Some((theirs, &states.1)),
             wallet: &states.2,
         }
     }

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use bahaa_types::{Address, Amount, AssetId, NetworkId, Nft, is_plain_text, to_plain_text};
+use bahaa_types::{Address, Amount, AssetId, NetworkId, Nft, NftId, is_plain_text, to_plain_text};
 use ruint::aliases::U256;
 use thiserror::Error;
 
@@ -103,6 +103,20 @@ impl Transfer {
             return Err(ChainError::Invalid("send more than zero"));
         }
         Ok(())
+    }
+
+    pub fn check_nft(&self, network: &NetworkId) -> Result<&NftId, ChainError> {
+        if self.asset.network() != network {
+            return Err(ChainError::Invalid("the asset belongs to another network"));
+        }
+        let nft = self
+            .asset
+            .nft()
+            .ok_or(ChainError::Invalid("this is not an NFT"))?;
+        if !self.max && (self.amount.decimals() != 0 || self.amount.is_zero()) {
+            return Err(ChainError::Invalid("send a whole number of NFTs"));
+        }
+        Ok(nft)
     }
 
     pub fn take_all(&mut self, held: Amount) -> Result<(), ChainError> {

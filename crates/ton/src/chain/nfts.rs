@@ -1,4 +1,4 @@
-use bahaa_chain::{ChainError, Found};
+use bahaa_chain::{ChainError, Found, Transfer};
 use bahaa_types::{
     Address, Amount, AssetId, Collection, Lock, MAX_NFT_LINK, MAX_NFT_TEXT, Nft, NftId, NftKind,
     Trust, is_plain_text, to_plain_text,
@@ -7,16 +7,18 @@ use futures_util::{StreamExt, TryStreamExt, stream};
 use ruint::aliases::U256;
 
 use super::TonChain;
+use super::tokens::{Contracts, Parties, query_id};
 use crate::cells::Account;
 use crate::http::{Item, Listed};
 use crate::metadata::{self, Content};
 use crate::vm::Arg;
-use crate::wallet::{read_address, read_optional_address};
+use crate::wallet::{self, Order, read_address, read_optional_address};
 
 const AT_ONCE: usize = 8;
 
 struct Held {
     listed: Listed,
+    state: Account,
     index: U256,
     collection: Option<Address>,
     content: Vec<u8>,
@@ -91,11 +93,49 @@ impl TonChain {
                 .is_some();
         Ok(Some(Held {
             listed,
+            state,
             index: *index,
             collection,
             content: content.clone(),
             soulbound,
         }))
+    }
+
+    pub(super) async fn item_order(
+        &self,
+        transfer: &Transfer,
+        item: &Address,
+        order: &mut Order,
+        wallet: &Account,
+        contracts: Contracts<'_>,
+    ) -> Result<u64, ChainError> {
+        if transfer.to == transfer.from {
+            return Err(ChainError::Invalid("send the NFT to another account"));
+        }
+        let listed = Listed {
+            address: *item,
+            trust: Trust::Unknown,
+        };
+        let held = self
+            .held(&transfer.from, listed)
+            .await?
+            .ok_or(ChainError::Invalid("this wallet doesn't hold that NFT"))?;
+        if held.soulbound {
+            return Err(ChainError::Invalid(
+                "this NFT is bound to its owner and can't be sent",
+            ));
+        }
+        order.bounce = true;
+        order.item = Some(wallet::Item {
+            address: *item,
+            query_id: query_id(order),
+        });
+        let parties = Parties {
+            ours: (item, &held.state.boc),
+            theirs: None,
+            wallet: &wallet.boc,
+        };
+        self.attachment(order, &parties, &contracts).await
     }
 
     async fn collection(&self, address: Address) -> Result<Owner, ChainError> {

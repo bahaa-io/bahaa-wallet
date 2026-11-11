@@ -21,9 +21,16 @@ use crate::comment;
 pub(crate) const SEND_MODE: u8 = 3;
 pub(crate) const SEND_ALL: u8 = 130;
 pub(crate) const TOKEN_TRANSFER: u32 = 0x0f8a_7ea5;
+pub(crate) const NFT_TRANSFER: u32 = 0x5fcc_3d14;
 pub(crate) const FORWARD_NANO: u8 = 1;
 pub(crate) const V4R2_WALLET_ID: i32 = 0x29a9_a317;
 const V4R2_GAS: u64 = 3_308;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Item {
+    pub address: Address,
+    pub query_id: u64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Token {
@@ -44,6 +51,7 @@ pub(crate) struct Order {
     pub everything: bool,
     pub bounce: bool,
     pub token: Option<Token>,
+    pub item: Option<Item>,
     pub memo: Option<String>,
     pub call: Option<Vec<u8>>,
 }
@@ -167,8 +175,8 @@ pub(crate) fn delivered(order: &Order) -> Result<Vec<u8>, ChainError> {
 
 fn outgoing(order: &Order, source: Option<&Address>) -> Result<Cell, ChainError> {
     let broken = |_| ChainError::Invalid("cannot build the wallet message");
-    let (destination, bounce, body) = match (&order.call, &order.token) {
-        (Some(call), _) => (
+    let (destination, bounce, body) = match (&order.call, &order.token, &order.item) {
+        (Some(call), _, _) => (
             order.to,
             order.bounce,
             crate::cells::bag(call)
@@ -176,7 +184,9 @@ fn outgoing(order: &Order, source: Option<&Address>) -> Result<Cell, ChainError>
                 .map(|root| (*root).clone())
                 .ok_or(ChainError::Invalid("the call body is not a cell"))?,
         ),
-        (None, None) => (
+        (None, Some(token), _) => (token.wallet, true, token_body(order, token)?),
+        (None, None, Some(item)) => (item.address, true, item_body(order, item)?),
+        (None, None, None) => (
             order.to,
             order.bounce,
             match &order.memo {
@@ -184,7 +194,6 @@ fn outgoing(order: &Order, source: Option<&Address>) -> Result<Cell, ChainError>
                 None => CellBuilder::new().build().map_err(broken)?,
             },
         ),
-        (None, Some(token)) => (token.wallet, true, token_body(order, token)?),
     };
     let src = match source {
         None => MsgAddrNone {}.into(),
@@ -216,6 +225,19 @@ fn token_body(order: &Order, token: &Token) -> Result<Cell, ChainError> {
     body.store_u64(64, token.query_id).map_err(broken)?;
     body.store_coins(&BigUint::from_bytes_be(&token.units.to_be_bytes::<32>()))
         .map_err(broken)?;
+    forwarded(body, order)
+}
+
+fn item_body(order: &Order, item: &Item) -> Result<Cell, ChainError> {
+    let broken = |_| ChainError::Invalid("cannot build the NFT transfer");
+    let mut body = CellBuilder::new();
+    body.store_u32(32, NFT_TRANSFER).map_err(broken)?;
+    body.store_u64(64, item.query_id).map_err(broken)?;
+    forwarded(body, order)
+}
+
+fn forwarded(mut body: CellBuilder, order: &Order) -> Result<Cell, ChainError> {
+    let broken = |_| ChainError::Invalid("cannot build the transfer");
     body.store_address(&to_ton(&order.to)?).map_err(broken)?;
     body.store_address(&to_ton(&order.wallet)?)
         .map_err(broken)?;
@@ -235,13 +257,31 @@ fn token_body(order: &Order, token: &Token) -> Result<Cell, ChainError> {
     body.build().map_err(broken)
 }
 
-fn token_transfer(body: &Cell, wallet: Address) -> Option<(Address, Token, Option<String>)> {
+type Moved = (Address, Option<Token>, Option<Item>, Option<String>);
+
+fn contract_transfer(body: &Cell, contract: Address) -> Option<Moved> {
     let mut parser = body.parser();
-    if parser.load_u32(32).ok()? != TOKEN_TRANSFER {
-        return None;
-    }
+    let op = parser.load_u32(32).ok()?;
     let query_id = parser.load_u64(64).ok()?;
-    let units = U256::try_from_be_slice(&parser.load_coins().ok()?.to_bytes_be())?;
+    let (token, item) = match op {
+        TOKEN_TRANSFER => {
+            let units = U256::try_from_be_slice(&parser.load_coins().ok()?.to_bytes_be())?;
+            let token = Token {
+                wallet: contract,
+                units,
+                query_id,
+            };
+            (Some(token), None)
+        }
+        NFT_TRANSFER => {
+            let item = Item {
+                address: contract,
+                query_id,
+            };
+            (None, Some(item))
+        }
+        _ => return None,
+    };
     let to = crate::cells::from_ton(&parser.load_address().ok()?)?;
     parser.load_address().ok()?;
     if parser.load_bit().ok()? {
@@ -254,15 +294,7 @@ fn token_transfer(body: &Cell, wallet: Address) -> Option<(Address, Token, Optio
     } else {
         None
     };
-    Some((
-        to,
-        Token {
-            wallet,
-            units,
-            query_id,
-        },
-        memo,
-    ))
+    Some((to, token, item, memo))
 }
 
 pub(crate) fn transfer_size(order: &Order) -> Result<(u64, u64), ChainError> {
@@ -363,22 +395,21 @@ fn read(boc: &[u8], call: bool) -> Result<Parsed, ChainError> {
     )
     .ok_or_else(invalid)?;
     let payload = &inner.body.value;
-    let (to, token, memo) = if call {
+    let (to, token, item, memo) = if call {
         if everything {
             return Err(ChainError::Invalid("not a single plain transfer"));
         }
-        (destination, None, None)
+        (destination, None, None, None)
     } else if payload.bit_len() == 0 && payload.references().is_empty() {
-        (destination, None, None)
+        (destination, None, None, None)
     } else if payload.parser().load_u32(32).ok() == Some(comment::COMMENT) {
         let memo = comment::text(payload)
             .ok_or(ChainError::Invalid("the memo is not short plain text"))?;
-        (destination, None, Some(memo))
+        (destination, None, None, Some(memo))
     } else {
-        let (to, token, memo) = token_transfer(payload, destination)
+        contract_transfer(payload, destination)
             .filter(|_| !everything)
-            .ok_or(ChainError::Invalid("not a single plain transfer"))?;
-        (to, Some(token), memo)
+            .ok_or(ChainError::Invalid("not a single plain transfer"))?
     };
     let nano =
         U256::try_from_be_slice(&sent.value.grams.amount.to_bytes_be()).ok_or_else(invalid)?;
@@ -393,6 +424,7 @@ fn read(boc: &[u8], call: bool) -> Result<Parsed, ChainError> {
         everything,
         bounce: sent.bounce,
         token,
+        item,
         memo,
         call: if call {
             Some(serialized(payload)?)
@@ -624,6 +656,7 @@ mod tests {
             everything: false,
             bounce: false,
             token: None,
+            item: None,
             memo: None,
             call: None,
         };

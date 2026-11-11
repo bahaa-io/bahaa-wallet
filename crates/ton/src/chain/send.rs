@@ -2,7 +2,7 @@ use bahaa_chain::{
     ChainError, Decoded, FeeItem, FeeLine, FeeQuote, Pace, Signed, Transfer, TxId, enough,
 };
 use bahaa_crypto::Seed;
-use bahaa_types::{Address, Amount, AssetId, TonContract};
+use bahaa_types::{Address, Amount, AssetId, NftId, TonContract};
 use ed25519_dalek::{Signature, Signer};
 use ruint::aliases::U256;
 use tonlib_core::cell::BagOfCells;
@@ -22,6 +22,13 @@ pub struct TonPlan {
     pub(super) transfer: Transfer,
     pub(super) order: Order,
     pub(super) deploy: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Moving {
+    Coin,
+    Jetton(Address),
+    Item(Address),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,13 +56,14 @@ impl TonChain {
         {
             self.token_decimals(master).await?;
         }
-        let (token, decimals) = self.sendable(transfer)?;
+        let (moving, decimals) = self.sendable(transfer)?;
         let wallet = self.http.account(&transfer.from).await?;
         let mut transfer = transfer.clone();
         if transfer.max {
-            let held = match &token {
-                None => wallet.balance,
-                Some(master) => self.jetton_balance(&transfer.from, master).await?,
+            let held = match &moving {
+                Moving::Coin => wallet.balance,
+                Moving::Jetton(master) => self.jetton_balance(&transfer.from, master).await?,
+                Moving::Item(_) => U256::from(1u8),
             };
             transfer.take_all(amount(held, decimals)?)?;
         }
@@ -74,29 +82,21 @@ impl TonChain {
                 .map_err(|_| ChainError::Invalid("the clock is out of range"))?,
             to: transfer.to,
             nano: transfer.amount.units(),
-            everything: transfer.max && token.is_none(),
+            everything: transfer.max && moving == Moving::Coin,
             bounce: false,
             token: None,
+            item: None,
             memo: transfer.memo.clone(),
             call: None,
         };
-        let contracts = match token {
-            None => {
-                order.bounce = bounces(&self.http.account(&transfer.to).await?.status);
-                None
-            }
-            Some(master) => {
-                let run = Contracts {
-                    config: &config,
-                    settings,
-                    now: clock,
-                };
-                Some(
-                    self.token_order(&transfer, &master, &mut order, &wallet, run)
-                        .await?,
-                )
-            }
+        let run = Contracts {
+            config: &config,
+            settings,
+            now: clock,
         };
+        let contracts = self
+            .contract_fees(moving, &transfer, &mut order, &wallet, run)
+            .await?;
         let fees = if order.everything {
             let fees = leave_nothing(&mut order, deploy, &wallet, (&settings, &storage), clock)?;
             transfer.amount = amount(order.nano, decimals)?;
@@ -144,7 +144,39 @@ impl TonChain {
         ))
     }
 
-    fn sendable(&self, transfer: &Transfer) -> Result<(Option<Address>, u8), ChainError> {
+    async fn contract_fees(
+        &self,
+        moving: Moving,
+        transfer: &Transfer,
+        order: &mut Order,
+        wallet: &Account,
+        run: Contracts<'_>,
+    ) -> Result<Option<u64>, ChainError> {
+        Ok(match moving {
+            Moving::Coin => {
+                order.bounce = bounces(&self.http.account(&transfer.to).await?.status);
+                None
+            }
+            Moving::Jetton(master) => Some(
+                self.token_order(transfer, &master, order, wallet, run)
+                    .await?,
+            ),
+            Moving::Item(item) => Some(self.item_order(transfer, &item, order, wallet, run).await?),
+        })
+    }
+
+    fn sendable(&self, transfer: &Transfer) -> Result<(Moving, u8), ChainError> {
+        crate::cells::parts(&transfer.from)?;
+        crate::cells::parts(&transfer.to)?;
+        if transfer.asset.is_nft() {
+            let item = *transfer.check_nft(&self.network.id)?.address();
+            if !transfer.max && transfer.amount.units() != U256::from(1u8) {
+                return Err(ChainError::Invalid(
+                    "a TON NFT is one of a kind, send just 1",
+                ));
+            }
+            return Ok((Moving::Item(item), 0));
+        }
         transfer.check(&self.network.id)?;
         let decimals = match transfer.asset.contract() {
             None => self.network.native.decimals,
@@ -157,9 +189,13 @@ impl TonChain {
                 "the amount uses the wrong number of decimals",
             ));
         }
-        crate::cells::parts(&transfer.from)?;
-        crate::cells::parts(&transfer.to)?;
-        Ok((transfer.asset.contract().copied(), decimals))
+        Ok((
+            transfer
+                .asset
+                .contract()
+                .map_or(Moving::Coin, |master| Moving::Jetton(*master)),
+            decimals,
+        ))
     }
 
     pub(super) fn sequence(
@@ -238,12 +274,22 @@ impl TonChain {
     pub(super) fn decode_signed(&self, signed: &Signed) -> Result<Decoded, ChainError> {
         let parsed = wallet::parse(&signed.bytes)?;
         self.verified(&parsed, signed)?;
-        let (asset, value) = match &parsed.order.token {
-            None => (
+        let (asset, value) = match (&parsed.order.token, &parsed.order.item) {
+            (None, None) => (
                 AssetId::Native(self.network.id.clone()),
                 amount(parsed.order.nano, self.network.native.decimals)?,
             ),
-            Some(token) => {
+            (None, Some(item)) => (
+                AssetId::Nft(
+                    self.network.id.clone(),
+                    Box::new(
+                        NftId::new(item.address, None)
+                            .map_err(|_| ChainError::Invalid("not a TON NFT"))?,
+                    ),
+                ),
+                amount(U256::from(1u8), 0)?,
+            ),
+            (Some(token), _) => {
                 let master = self
                     .token_master(&parsed.order.wallet, &token.wallet)
                     .ok_or(ChainError::Invalid(
@@ -425,6 +471,7 @@ mod tests {
                 everything: false,
                 bounce: !deploy,
                 token: None,
+                item: None,
                 memo: None,
                 call: None,
             },
@@ -755,6 +802,7 @@ mod tests {
                     everything: true,
                     bounce: false,
                     token: None,
+                    item: None,
                     memo: None,
                     call: None,
                 };
@@ -835,6 +883,7 @@ mod tests {
                 everything: false,
                 bounce: false,
                 token: None,
+                item: None,
                 memo: Some(memo.clone()),
                 call: None,
             };
@@ -1039,6 +1088,115 @@ mod tests {
             variant(None, true, wallet::FORWARD_NANO, true),
             variant(None, false, 50, true),
             variant(None, false, wallet::FORWARD_NANO, false),
+        ] {
+            assert!(refused.is_err(), "{refused:?}");
+        }
+    }
+
+    const ITEM: [u8; 32] = [0x4e; 32];
+
+    fn nft_plan(chain: &TonChain) -> TonPlan {
+        let mut plan = plan(chain, false);
+        let item = Address::Ton {
+            workchain: 0,
+            hash: ITEM,
+        };
+        plan.transfer.asset = AssetId::Nft(
+            chain.network.id.clone(),
+            Box::new(NftId::new(item, None).unwrap()),
+        );
+        plan.transfer.amount = Amount::parse("1", 0).unwrap();
+        plan.transfer.memo = Some("for you".to_owned());
+        plan.order.nano = U256::from(50_000_000u32);
+        plan.order.bounce = true;
+        plan.order.memo = plan.transfer.memo.clone();
+        plan.order.item = Some(wallet::Item {
+            address: item,
+            query_id: 77,
+        });
+        plan
+    }
+
+    #[test]
+    fn signed_nft_transfers_decode_to_the_item_and_its_new_owner() {
+        let ton = chain("ton");
+        let plan = nft_plan(&ton);
+        let signed = ton.sign(&plan, &seed()).unwrap();
+        let decoded = ton.decode(&signed).unwrap();
+        bahaa_chain::check_signed(&plan.transfer, &decoded).unwrap();
+        assert_eq!(decoded.asset, plan.transfer.asset);
+        assert_eq!((decoded.to, decoded.everything), (plan.transfer.to, false));
+        assert_eq!(decoded.memo.as_deref(), Some("for you"));
+        assert_eq!(wallet::parse(&signed.bytes).unwrap().order, plan.order);
+        let mut coin = plan.clone();
+        coin.transfer.asset = "ton".parse().unwrap();
+        assert!(bahaa_chain::check_signed(&coin.transfer, &decoded).is_err());
+    }
+
+    #[test]
+    fn an_nft_transfer_must_be_exactly_the_standard_one() {
+        let ton = chain("ton");
+        let wallet = ton.derive(&seed(), 0).unwrap();
+        let mut order = nft_plan(&ton).order;
+        order.wallet = wallet;
+        order.memo = None;
+        let standard =
+            WalletExtMsgBodyV5::from_cell(&wallet::unsigned(&order).unwrap().to_arc()).unwrap();
+        let Address::Ton { hash: ours, .. } = wallet else {
+            panic!("not TON");
+        };
+        let variant = |op: u32, response: [u8; 32], custom: bool, forward: u8| {
+            let mut body = CellBuilder::new();
+            body.store_u32(32, op).unwrap();
+            body.store_u64(64, 77).unwrap();
+            body.store_address(&TonAddress::new(0, TonHash::from([0x5c; 32])))
+                .unwrap();
+            body.store_address(&TonAddress::new(0, TonHash::from(response)))
+                .unwrap();
+            body.store_bit(custom).unwrap();
+            if custom {
+                body.store_reference(&CellBuilder::new().build().unwrap().to_arc())
+                    .unwrap();
+            }
+            body.store_coins(&BigUint::from(forward)).unwrap();
+            body.store_bit(false).unwrap();
+            let message = Message::new(
+                CommonMsgInfo::Int(IntMsgInfo {
+                    ihr_disabled: true,
+                    bounce: true,
+                    bounced: false,
+                    src: MsgAddrNone {}.into(),
+                    dest: TonAddress::new(0, TonHash::from(ITEM))
+                        .to_msg_address_int()
+                        .into(),
+                    value: CurrencyCollection::new(BigUint::from(50_000_000u32)),
+                    ihr_fee: Grams::new(BigUint::default()),
+                    fwd_fee: Grams::new(BigUint::default()),
+                    created_lt: 0,
+                    created_at: 0,
+                }),
+                body.build().unwrap().to_arc(),
+            );
+            let request = WalletExtMsgBodyV5 {
+                msgs: vec![message.to_cell().unwrap().to_arc()],
+                ..standard.clone()
+            };
+            wallet::parse(&with_body(&request, &wallet)).map(|parsed| parsed.order.item)
+        };
+        assert_eq!(
+            variant(wallet::NFT_TRANSFER, ours, false, wallet::FORWARD_NANO),
+            Ok(order.item)
+        );
+        for refused in [
+            variant(
+                wallet::NFT_TRANSFER,
+                [0x11; 32],
+                false,
+                wallet::FORWARD_NANO,
+            ),
+            variant(wallet::NFT_TRANSFER, ours, true, wallet::FORWARD_NANO),
+            variant(wallet::NFT_TRANSFER, ours, false, 50),
+            variant(0x5fcc_3d15, ours, false, wallet::FORWARD_NANO),
         ] {
             assert!(refused.is_err(), "{refused:?}");
         }
