@@ -30,6 +30,7 @@ pub enum Trust {
 #[serde(rename_all = "kebab-case")]
 pub enum Lock {
     Soulbound,
+    Frozen,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

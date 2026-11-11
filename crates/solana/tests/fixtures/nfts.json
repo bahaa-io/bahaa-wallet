@@ -1,0 +1,800 @@
+{
+  "accounts": {
+    "13oLhSJnADiB6demF11T6m2MCRgxqxBjB8yJEc5WsmZ": {
+      "data": [
+        "AQAAAJqpw83JvDcBwJ/cuCSbJRZ3v3vTqewArri8WlYu0WllAQAAAAAAAAAAAQEAAACaqcPNybw3AcCf3LgkmyUWd79706nsAK64vFpWLtFpZQ==",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 1461600,
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "rentEpoch": 18446744073709551615,
+      "space": 82
+    },
+    "2dxpuqchictYfCw3kGERW7ztAtC6yQyP9qJMMaPYHW46": {
+      "data": [
+        "BBU7mQjzfDvicKRwHJ/PJDL9WraVCB9vMEw3M+t9B0dpAAMqL9s1hRg0mMjRzdGWgYm3fAXHpho9KAJ69hBbRIggAAAATWFkIExhZHMgIzQ5MDEAAAAAAAAAAAAAAAAAAAAAAAAKAAAATUFEAAAAAAAAAMgAAABodHRwczovL21hZGxhZHMuczMudXMtd2VzdC0yLmFtYXpvbmF3cy5jb20vanNvbi80OTAxLmpzb24AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKQBAQIAAABDWuRgSlRhOMLJSTLyuXM+g4tFNNyqhsE4WdWNG4lFAQEAFTuZCPN8O+JwpHAcn88kMv1atpUIH28wTDcz630HR2kBZAEBAf8BBAEB/LMbT/nmaHvrNct8XasZ0y1npo5XYk7Lww+zrBxcCF4AAAEAAQmGIoXjcQqQ1R2eRwLemp3V6f3IrIHS0qzR4d3IJP7EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 3733800,
+      "owner": "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+      "rentEpoch": 18446744073709551615,
+      "space": 607
+    },
+    "2jJT5adTaLXi5oeUCv9zsSXXYk8MEAiqLTzwPnAvu4W6": {
+      "data": [
+        "AQAAAO4HG85nSeFTWTE25ClrU28lUyz9JJcG+hoRG69ucsXhAQAAAAAAAAAAAQEAAADuBxvOZ0nhU1kxNuQpa1NvJVMs/SSXBvoaERuvbnLF4Q==",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 1461600,
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "rentEpoch": 18446744073709551615,
+      "space": 82
+    },
+    "36asfCpqueWxeG8rtagPUvhtgkNP79i8y4Tq5NdZNzEG": {
+      "data": [
+        "BMHjMdqicAXfwx7nY3pfCaalOutvnRh+Q1eIHtyO6QCkGbHPr7yJmrpAxsamDcPk0jW9/v0uwMZsZkwNzBWbNVMgAAAAUGF3bnNob3AgZ25vbWllICMzODU5AAAAAAAAAAAAAAAKAAAAUFdORwAAAAAAAMgAAABodHRwczovL2Fyd2VhdmUubmV0L2ZpNjdpWURTLWpXdGRLZlJ1MGFGeHVfblJqS1puSFRNby05U0VLQkkxN0kAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQIAAAAcijwbPbYt85KNe6y3FlhUWMvWryypYA65STTVdgxohQEAxKmLzsNQp6lCV6qkWKkLUBCU7jK5G5UkHPIe5txF7H4BZAEBAfwBAAEBWNA4w9xsxNqPFeRHIT0iIL5UdNPclylP+/HtVu3rUlQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 3733800,
+      "owner": "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+      "rentEpoch": 18446744073709551615,
+      "space": 607
+    },
+    "8KyuwGzav7jTW9YaBGj2Qtp2q24zPUR3rD5caojXaby4": {
+      "data": [
+        "BBU7mQjzfDvicKRwHJ/PJDL9WraVCB9vMEw3M+t9B0dp/LMbT/nmaHvrNct8XasZ0y1npo5XYk7Lww+zrBxcCF4gAAAATWFkIExhZHMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKAAAATUFEAAAAAAAAAMgAAABodHRwczovL21hZGxhZHMtY29sbGVjdGlvbi5zMy51cy13ZXN0LTIuYW1hem9uYXdzLmNvbS9fY29sbGVjdGlvbi5qc29uAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPQBAQEAAAAVO5kI83w74nCkcByfzyQy/Vq2lQgfbzBMNzPrfQdHaQFkAAEB/QEEAAABAPAmAAAAAAAAAQABCYYiheNxCpDVHZ5HAt6andXp/cisgdLSrNHh3cgk/sQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 3733800,
+      "owner": "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+      "rentEpoch": 18446744073709551615,
+      "space": 607
+    },
+    "BZb5eKtKyMr4BH3AwG7QAc9HJ7mHNEGCd3ybrWePNGUy": {
+      "data": [
+        "BXcgaIM+9Z7XMOvFLXFnwiNT4KRky1IlZDzUauFNPdhPCAAAAFBhdHJpb3RzTgAAAGh0dHBzOi8vZ2F0ZXdheS5waW5pdC5pby9pcGZzL1FtVVhtMnZXdTFWaXJIbmloUFgxc1NLNUZDTEt6ZUNWeFdNQ055c1NjeWlrRXEvMAYnAABPJgAAA+AAAAAAAAAAAN4DAQAAAM6NbJJ3OpDk66Kre2Nlfzw/ebKY0YXyct/21u/Uq8DXZAAFAAQBAAAA0bq1GtximqS571PSwiG++8V3XABzR3mRJGuXRyNZPEQEAwAAAAACkAAAAAAAAAAFA9G6tRrcYpqkue9T0sIhvvvFd1wAc0d5kSRrl0cjWTxEuQAAAAAAAAAEArsAAAAAAAAAAAAAAA==",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 2944080,
+      "owner": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+      "rentEpoch": 18446744073709551615,
+      "space": 295
+    },
+    "CFZXxEdkoA2zwCNSpc4bLgfgEEGwYpK6eem97LCvm9KD": {
+      "data": [
+        "AZflEKFumP0c7zuTR7gGmDl/HoiW5d4ViPzsLIfkMk6nApzt/VaMhWoIc3IXOwr0Yuhc4/DDXzXHTbWyUIC1xLH6CQAAAFBBVCAjNTM2MFYAAABodHRwczovL2dhdGV3YXkucGluaXQuaW8vaXBmcy9RbVcyTlkzNWVHdVBNdmNlaGhBdUZURDJhemg0VFNTS1F3Qlh1OEpkOFZnS29nLzc1MTAuanNvbgADtQAAAAAAAAABAAQBAAAAAQGzAAAAAAAAAAAAAAB9yg==",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 1676400,
+      "owner": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+      "rentEpoch": 18446744073709551615,
+      "space": 202
+    },
+    "EKwF52pP7rsdJgYxwTX5mcbXiQh1D2hrd4XuozcjdkUf": {
+      "data": [
+        "BMHjMdqicAXfwx7nY3pfCaalOutvnRh+Q1eIHtyO6QCkWNA4w9xsxNqPFeRHIT0iIL5UdNPclylP+/HtVu3rUlQgAAAAcHJlQmFueAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKAAAAUFJFQkFOWAAAAMgAAABodHRwczovL25mdHN0b3JhZ2UubGluay9pcGZzL2JhZmtyZWljbHBxNG9zYmVncWdyazNvZzRiZ2ZyZDJuMzU0dDQ1cWlzY3NrajRpcTJ0bWR0a2VnbHNxAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEAAADB4zHaonAF38Me52N6XwmmpTrrb50YfkNXiB7cjukApAFkAAEB/gEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 3733800,
+      "owner": "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+      "rentEpoch": 18446744073709551615,
+      "space": 607
+    },
+    "JAC5L1uwYoLrzjUJAdU1LHAJiiURnYaFyzXhytkQ97pQ": {
+      "data": [
+        "GbHPr7yJmrpAxsamDcPk0jW9/v0uwMZsZkwNzBWbNVOX5RChbpj9HO87k0e4Bpg5fx6IluXeFYj87CyH5DJOpwEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 2039280,
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "rentEpoch": 18446744073709551615,
+      "space": 165
+    },
+    "QgLfZMEAYR8HRPbh4oHBr2pPW5n9mveyXJ6tdMW3Mfx": {
+      "data": [
+        "AAMqL9s1hRg0mMjRzdGWgYm3fAXHpho9KAJ69hBbRIiX5RChbpj9HO87k0e4Bpg5fx6IluXeFYj87CyH5DJOpwEAAAAAAAAAAQAAAD5OwfKhoCotNDozQXPmUhMMZXb/9UFpjfo4HEO6oDiCAgAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 2039280,
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "rentEpoch": 18446744073709551615,
+      "space": 165
+    }
+  },
+  "assets": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "items": [
+        {
+          "authorities": [
+            {
+              "address": "2RtGg6fsFiiF1EQzHqbd66AhW7R5bWeQGpTbv2UMkCdW",
+              "scopes": [
+                "full"
+              ]
+            }
+          ],
+          "burnt": false,
+          "compression": {
+            "asset_hash": "",
+            "compressed": false,
+            "creator_hash": "",
+            "data_hash": "",
+            "eligible": false,
+            "leaf_id": 0,
+            "seq": 0,
+            "tree": ""
+          },
+          "content": {
+            "$schema": "https://schema.metaplex.com/nft1.0.json",
+            "category": "image",
+            "files": [
+              {
+                "mime": "image/png",
+                "uri": "https://madlads.s3.us-west-2.amazonaws.com/images/4901.png"
+              },
+              {
+                "mime": "image/png",
+                "uri": "https://arweave.net/qJ5B6fx5hEt4P7XbicbJQRyTcbyLaV-OQNA1KjzdqOQ/4901.png"
+              }
+            ],
+            "json_uri": "https://madlads.s3.us-west-2.amazonaws.com/json/4901.json",
+            "links": {
+              "external_url": "https://madlads.com",
+              "image": "https://madlads.s3.us-west-2.amazonaws.com/images/4901.png"
+            },
+            "metadata": {
+              "attributes": [
+                {
+                  "trait_type": "Gender",
+                  "value": "Male"
+                },
+                {
+                  "trait_type": "Type",
+                  "value": "Light"
+                },
+                {
+                  "trait_type": "Expression",
+                  "value": "Albert"
+                },
+                {
+                  "trait_type": "Hair",
+                  "value": "Punk"
+                },
+                {
+                  "trait_type": "Eyes",
+                  "value": "Hazel"
+                },
+                {
+                  "trait_type": "Mustache",
+                  "value": "White"
+                },
+                {
+                  "trait_type": "Smoke",
+                  "value": "White"
+                },
+                {
+                  "trait_type": "Clothing",
+                  "value": "Bloody Three Piece"
+                },
+                {
+                  "trait_type": "Hand",
+                  "value": "Cigarette"
+                },
+                {
+                  "trait_type": "Glove",
+                  "value": "Brown"
+                },
+                {
+                  "trait_type": "Background",
+                  "value": "Blue"
+                }
+              ],
+              "description": "Fock it.",
+              "name": "Mad Lads #4901",
+              "symbol": "MAD",
+              "token_standard": "ProgrammableNonFungible"
+            }
+          },
+          "creators": [
+            {
+              "address": "5XvhfmRjwXkGp3jHGmaKpqeerNYjkuZZBYLVQYdeVcRv",
+              "share": 0,
+              "verified": true
+            },
+            {
+              "address": "2RtGg6fsFiiF1EQzHqbd66AhW7R5bWeQGpTbv2UMkCdW",
+              "share": 100,
+              "verified": true
+            }
+          ],
+          "grouping": [
+            {
+              "group_key": "collection",
+              "group_value": "J1S9H3QjnRtBbbuD4HjPV6RpRhwuk4zKbxsnCHuTgh9w"
+            }
+          ],
+          "id": "13oLhSJnADiB6demF11T6m2MCRgxqxBjB8yJEc5WsmZ",
+          "interface": "ProgrammableNFT",
+          "mutable": true,
+          "ownership": {
+            "delegate": "5CDvzWhMiAQYLPTXrgg9JqLcNQZdeFM9jurmko7TGShw",
+            "delegated": true,
+            "frozen": true,
+            "owner": "BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2",
+            "ownership_model": "single"
+          },
+          "royalty": {
+            "basis_points": 420,
+            "locked": false,
+            "percent": 0.042,
+            "primary_sale_happened": true,
+            "royalty_model": "creators",
+            "target": null
+          },
+          "supply": {
+            "edition_nonce": 255,
+            "print_current_supply": 0,
+            "print_max_supply": 0
+          },
+          "token_info": {
+            "associated_token_address": "QgLfZMEAYR8HRPbh4oHBr2pPW5n9mveyXJ6tdMW3Mfx",
+            "balance": 1,
+            "decimals": 0,
+            "freeze_authority": "BQjvjGN4oX5JSfQtNnmmrnrNimEGyRrMXtdGZPV8pVWU",
+            "mint_authority": "BQjvjGN4oX5JSfQtNnmmrnrNimEGyRrMXtdGZPV8pVWU",
+            "supply": 1,
+            "token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        {
+          "authorities": [
+            {
+              "address": "75PhznUpHj4BWf9hPc98qmssKmZ7cuJRGjaeM92GiMvg",
+              "scopes": [
+                "full"
+              ]
+            }
+          ],
+          "burnt": false,
+          "compression": {
+            "asset_hash": "5xiRgNtdhMm8GHeHjsvshgCArbtSFiuCLcuG9YNQujPA",
+            "compressed": true,
+            "creator_hash": "BvRVDngPb6pjv2YBxcYp1fmwqdU65cEBicrgGjtdyPRh",
+            "data_hash": "J8tyskRvfv2Fxiun1wHbFRwrLReFXfK4AZghJN9RPyAn",
+            "eligible": false,
+            "leaf_id": 7229,
+            "seq": 7232,
+            "tree": "C83rCUY6awjokZKFV1s3vhCDJn7LVCczovhBBTfyeYVu"
+          },
+          "content": {
+            "$schema": "https://schema.metaplex.com/nft1.0.json",
+            "category": "video",
+            "files": [
+              {
+                "mime": "image/png",
+                "uri": "https://cdn.shyft.to/brainfood/ep1/cover.png"
+              },
+              {
+                "mime": "video/mp4",
+                "uri": "https://cdn.shyft.to/brainfood/tracking-rafffle-events-ep-1.mp4"
+              }
+            ],
+            "json_uri": "https://cdn.shyft.to/brainfood/ep1/tracking-rafffle-events-day.json",
+            "links": {
+              "external_url": "https://youtu.be/hq25WaMWVHs",
+              "image": "https://cdn.shyft.to/brainfood/ep1/cover.png"
+            },
+            "metadata": {
+              "attributes": [
+                {
+                  "trait_type": "blog_url",
+                  "value": "https://blogs.shyft.to/how-to-track-ticket-purchased-for-a-famous-fox-raffle-on-solana-9db91a36acd"
+                },
+                {
+                  "trait_type": "github_url",
+                  "value": "https://github.com/Shyft-to/solana-brainfood/tree/main/track-tickets-sold-in-a-raffle-on-solana"
+                },
+                {
+                  "trait_type": "episode",
+                  "value": "EP 1"
+                },
+                {
+                  "trait_type": "program",
+                  "value": "RaFFFle by @famousfoxfed"
+                }
+              ],
+              "description": "In this episode, we will see how to find the number of tickets purchased for a particular FFF Raffle.",
+              "name": "Tracking RaFFFle events: EP 1",
+              "symbol": "BF",
+              "token_standard": "NonFungible"
+            }
+          },
+          "creators": [
+            {
+              "address": "2iJJNyPvCXsQZaYkxU6gWKF7umhg6BSogkRntJN9xRYQ",
+              "share": 100,
+              "verified": true
+            }
+          ],
+          "grouping": [
+            {
+              "group_key": "collection",
+              "group_value": "FYvomrQxRxTNuiteZwSEWNvGcCGJVM6vopudYNUp6nWh"
+            }
+          ],
+          "id": "13Mh412HLACcruQSBGNaycsoqpWAKFqwUPCU52oUtNGu",
+          "interface": "V1_NFT",
+          "mutable": true,
+          "ownership": {
+            "delegate": "2iJJNyPvCXsQZaYkxU6gWKF7umhg6BSogkRntJN9xRYQ",
+            "delegated": true,
+            "frozen": false,
+            "owner": "BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2",
+            "ownership_model": "single"
+          },
+          "royalty": {
+            "basis_points": 0,
+            "locked": false,
+            "percent": 0.0,
+            "primary_sale_happened": false,
+            "royalty_model": "creators",
+            "target": null
+          },
+          "supply": {
+            "edition_nonce": 0,
+            "print_current_supply": 0,
+            "print_max_supply": 0
+          }
+        },
+        {
+          "authorities": [
+            {
+              "address": "E3rcqSugG7T3ToSbpa1Nb3Z9Qj4gDNmZW6XV1U6FXvbD",
+              "scopes": [
+                "full"
+              ]
+            }
+          ],
+          "burnt": false,
+          "compression": {
+            "asset_hash": "",
+            "compressed": false,
+            "creator_hash": "",
+            "data_hash": "",
+            "eligible": false,
+            "leaf_id": 0,
+            "seq": 0,
+            "tree": ""
+          },
+          "content": {
+            "$schema": "https://schema.metaplex.com/nft1.0.json",
+            "category": "image",
+            "files": [
+              {
+                "mime": "image/png",
+                "uri": "https://www.arweave.net/m-hp2efBMkSnREaLLm9xAqCag2ZyrvVCasnQj1MJWus?ext=png"
+              }
+            ],
+            "json_uri": "https://arweave.net/fi67iYDS-jWtdKfRu0aFxu_nRjKZnHTMo-9SEKBI17I",
+            "links": {
+              "external_url": "https://pawnshopgnomies.com",
+              "image": "https://www.arweave.net/m-hp2efBMkSnREaLLm9xAqCag2ZyrvVCasnQj1MJWus?ext=png"
+            },
+            "metadata": {
+              "attributes": [
+                {
+                  "trait_type": "Background",
+                  "value": "Lavanda"
+                },
+                {
+                  "trait_type": "Body",
+                  "value": "Classic"
+                },
+                {
+                  "trait_type": "Cloth",
+                  "value": "Weed sweater"
+                },
+                {
+                  "trait_type": "Beard",
+                  "value": "Huge mustache"
+                },
+                {
+                  "trait_type": "Hat",
+                  "value": "Top hat"
+                },
+                {
+                  "trait_type": "Ears",
+                  "value": "Nothing"
+                },
+                {
+                  "trait_type": "Eyes",
+                  "value": "Stoned"
+                },
+                {
+                  "trait_type": "Mouth",
+                  "value": "Nothing"
+                }
+              ],
+              "description": "DAO-based NFT pawnshop",
+              "name": "Pawnshop gnomie #3859",
+              "symbol": "PWNG",
+              "token_standard": "NonFungible"
+            }
+          },
+          "creators": [
+            {
+              "address": "2vQfvY7inzfgVjzzxoNGEc7ZYmChqAWZJAtVUQXtgotx",
+              "share": 0,
+              "verified": true
+            },
+            {
+              "address": "EEgrfJLLdEo8GdP25BCLAaEAofcGq7Bq1Qpb9ZrXizGm",
+              "share": 100,
+              "verified": true
+            }
+          ],
+          "grouping": [
+            {
+              "group_key": "collection",
+              "group_value": "6yh2j8M3y5hDYUsJ9VP4v48eRmjTZbNuYvLcqZv9FZ15"
+            }
+          ],
+          "id": "2jJT5adTaLXi5oeUCv9zsSXXYk8MEAiqLTzwPnAvu4W6",
+          "interface": "V1_NFT",
+          "mutable": true,
+          "ownership": {
+            "delegate": null,
+            "delegated": false,
+            "frozen": false,
+            "owner": "BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2",
+            "ownership_model": "single"
+          },
+          "royalty": {
+            "basis_points": 0,
+            "locked": false,
+            "percent": 0.0,
+            "primary_sale_happened": true,
+            "royalty_model": "creators",
+            "target": null
+          },
+          "supply": {
+            "edition_nonce": 252,
+            "print_current_supply": 0,
+            "print_max_supply": 0
+          },
+          "token_info": {
+            "associated_token_address": "JAC5L1uwYoLrzjUJAdU1LHAJiiURnYaFyzXhytkQ97pQ",
+            "balance": 1,
+            "decimals": 0,
+            "freeze_authority": "H2AKVzw1Um4tW4RVUBUDsdWL9CCcbPmXvMMWywDHTef2",
+            "mint_authority": "H2AKVzw1Um4tW4RVUBUDsdWL9CCcbPmXvMMWywDHTef2",
+            "supply": 1,
+            "token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        {
+          "authorities": [
+            {
+              "address": "GABW3SULNVv2Esnr92EswWMDxd1UguTAkq9tZ199ab3o",
+              "scopes": [
+                "full"
+              ]
+            }
+          ],
+          "burnt": false,
+          "compression": {
+            "asset_hash": "",
+            "compressed": false,
+            "creator_hash": "",
+            "data_hash": "",
+            "eligible": false,
+            "leaf_id": 0,
+            "seq": 0,
+            "tree": ""
+          },
+          "content": {
+            "$schema": "https://schema.metaplex.com/nft1.0.json",
+            "category": "image",
+            "files": [
+              {
+                "mime": "image/jpeg",
+                "uri": "https://nftstorage.link/ipfs/bafybeidsp4nm4veghajldg2xwj3o2udho7pprqihoj7evaqs5y2snk6ocq/724.jpeg"
+              }
+            ],
+            "json_uri": "https://nftstorage.link/ipfs/bafybeid7ce376p2udxxfil7eyd3pmf4ih2kbepc6bfrzwtkyinarugro2q/724.json",
+            "links": {
+              "external_url": "",
+              "image": "https://nftstorage.link/ipfs/bafybeidsp4nm4veghajldg2xwj3o2udho7pprqihoj7evaqs5y2snk6ocq/724.jpeg"
+            },
+            "metadata": {
+              "attributes": [],
+              "description": "A collection of degenerates, punks, and misfits.",
+              "name": "",
+              "symbol": "DeKads"
+            }
+          },
+          "creators": [
+            {
+              "address": "BcuGMENgvfU8LcZMSy2uiL5h1s12aLpKMx1uM9hFwQT9",
+              "share": 0,
+              "verified": true
+            },
+            {
+              "address": "GABW3SULNVv2Esnr92EswWMDxd1UguTAkq9tZ199ab3o",
+              "share": 100,
+              "verified": false
+            }
+          ],
+          "grouping": [],
+          "id": "35nDovYHGroocDiRjVJUL7ddg4gxaMbDfRphHGHE9pbh",
+          "interface": "Custom",
+          "mutable": true,
+          "ownership": {
+            "delegate": null,
+            "delegated": false,
+            "frozen": false,
+            "owner": "BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2",
+            "ownership_model": "single"
+          },
+          "royalty": {
+            "basis_points": 800,
+            "locked": false,
+            "percent": 0.08,
+            "primary_sale_happened": true,
+            "royalty_model": "creators",
+            "target": null
+          },
+          "supply": {
+            "edition_nonce": 255,
+            "print_current_supply": 0,
+            "print_max_supply": 0
+          },
+          "token_info": {
+            "associated_token_address": "AKTrfncY31V3VEuWtKmKaH26azxjvLgLxa9v2RXMzs2V",
+            "balance": 1,
+            "decimals": 0,
+            "freeze_authority": "FCFco1YbFnjV7J7UPJYoBuDaqLSiszpgbqEydtGv6u52",
+            "mint_authority": "FCFco1YbFnjV7J7UPJYoBuDaqLSiszpgbqEydtGv6u52",
+            "supply": 1,
+            "token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        },
+        {
+          "asset_signer": "D5GTmCFoyQP8yJfojRD3hwdf7WJ2wJ9XcS7RVSL7E1o9",
+          "authorities": [
+            {
+              "address": "922BKyxxcT5FDVHhvFUux3SWYp7GseMyiigFRm8sxfDg",
+              "scopes": [
+                "full"
+              ]
+            }
+          ],
+          "burnt": false,
+          "compression": {
+            "asset_hash": "",
+            "compressed": false,
+            "creator_hash": "",
+            "data_hash": "",
+            "eligible": false,
+            "leaf_id": 0,
+            "seq": 0,
+            "tree": ""
+          },
+          "content": {
+            "$schema": "https://schema.metaplex.com/nft1.0.json",
+            "files": [
+              {
+                "mime": "image/png",
+                "uri": "https://na-assets.pinit.io/H4sFKzpG4b6FCWeedBFBoAE881X1zkiFZq8Yqjirh3nM/f2348bf5-271f-4865-ba04-e8f832429c86/7510"
+              },
+              {
+                "mime": "image/png",
+                "uri": "\"https://na-assets.pinit.io/H4sFKzpG4b6FCWeedBFBoAE881X1zkiFZq8Yqjirh3nM/f2348bf5-271f-4865-ba04-e8f832429c86/7510\""
+              }
+            ],
+            "json_uri": "https://gateway.pinit.io/ipfs/QmW2NY35eGuPMvcehhAuFTD2azh4TSSKQwBXu8Jd8VgKog/7510.json",
+            "links": {
+              "image": "https://na-assets.pinit.io/H4sFKzpG4b6FCWeedBFBoAE881X1zkiFZq8Yqjirh3nM/f2348bf5-271f-4865-ba04-e8f832429c86/7510"
+            },
+            "metadata": {
+              "attributes": [
+                {
+                  "trait_type": "Background",
+                  "value": "RedPrint OG"
+                },
+                {
+                  "trait_type": "Easter Egg",
+                  "value": "Empty"
+                },
+                {
+                  "trait_type": "Base",
+                  "value": "Silver"
+                },
+                {
+                  "trait_type": "Clothes",
+                  "value": "Pilot Jacket"
+                },
+                {
+                  "trait_type": "Eyebrows",
+                  "value": "Eb-angry"
+                },
+                {
+                  "trait_type": "Eyes",
+                  "value": "Green Eyes"
+                },
+                {
+                  "trait_type": "Mouth",
+                  "value": "Mouth-smile"
+                },
+                {
+                  "trait_type": "Hand",
+                  "value": "Remington 870 TAC-14"
+                },
+                {
+                  "trait_type": "Eye Accessories",
+                  "value": "ETH Charged"
+                },
+                {
+                  "trait_type": "Head Topper",
+                  "value": "Empty"
+                },
+                {
+                  "trait_type": "Cherry",
+                  "value": "Empty"
+                }
+              ],
+              "description": "9,999 classified digital operatives on the Solana blockchain, with real economic utility for holders. Royalties on secondary trades follow a 9.9% total community-first model ",
+              "name": "PAT #5360",
+              "symbol": ""
+            }
+          },
+          "creators": [],
+          "external_plugins": [],
+          "grouping": [
+            {
+              "group_key": "collection",
+              "group_value": "BZb5eKtKyMr4BH3AwG7QAc9HJ7mHNEGCd3ybrWePNGUy"
+            }
+          ],
+          "id": "CFZXxEdkoA2zwCNSpc4bLgfgEEGwYpK6eem97LCvm9KD",
+          "interface": "MplCoreAsset",
+          "is_agent": false,
+          "mpl_core_info": {
+            "plugins_json_version": 1
+          },
+          "mutable": true,
+          "ownership": {
+            "delegate": null,
+            "delegated": false,
+            "frozen": false,
+            "owner": "BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2",
+            "ownership_model": "single"
+          },
+          "plugins": {
+            "freeze_delegate": {
+              "authority": {
+                "address": null,
+                "type": "Owner"
+              },
+              "data": {
+                "frozen": false
+              },
+              "index": 0,
+              "offset": 179
+            }
+          },
+          "royalty": {
+            "basis_points": 0,
+            "locked": false,
+            "percent": 0.0,
+            "primary_sale_happened": false,
+            "royalty_model": "creators",
+            "target": null
+          }
+        },
+        {
+          "authorities": [
+            {
+              "address": "HcvynVmCA2EXQuAUfer5kRZccSboPrsktLRnXCQ57TnF",
+              "scopes": [
+                "full"
+              ]
+            }
+          ],
+          "burnt": false,
+          "compression": {
+            "asset_data_hash": "EKDHSGbrGztomDfuiV4iqiZ6LschDJPsFiXjZ83f92Md",
+            "asset_hash": "B7o6MVNVcD9896bTf4morhhVDNy14jM7rZDpFh4Zw17U",
+            "collection_hash": "8ELDm2rECwnRmWtssrp625GoRmkVY1gGvd2frBUfvXrZ",
+            "compressed": true,
+            "creator_hash": "qVHVfgisy5KsDegFsqSPYJ9R55nNwCzS6FPTuMgRE1d",
+            "data_hash": "EWi4rzLpzfHtbRDSPJNv9s93fozj7t2v6BpwSh1Z5sCi",
+            "eligible": false,
+            "flags": 0,
+            "leaf_id": 9399,
+            "seq": 15696,
+            "tree": "BUtF5GLyfXeCuKoMBR9YqTEDqC6KaxQZxJX6cTfwBs79"
+          },
+          "content": {
+            "$schema": "https://schema.metaplex.com/nft1.0.json",
+            "files": [
+              {
+                "mime": "image/png",
+                "uri": "https://imgcdn.zip/media/previews/d4bbf467-dd61-4e21-ad35-0ab438d3348f/preview.png"
+              },
+              {
+                "mime": "model/gltf-binary",
+                "uri": "https://imgcdn.zip/media/salted-glbs/d4bbf467-dd61-4e21-ad35-0ab438d3348f/r2/6041-BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2.glb"
+              }
+            ],
+            "json_uri": "https://imgcdn.zip/media/metadata/d4bbf467-dd61-4e21-ad35-0ab438d3348f/r2/6041-BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2.json",
+            "links": {
+              "animation_url": "https://imgcdn.zip/media/salted-glbs/d4bbf467-dd61-4e21-ad35-0ab438d3348f/r2/6041-BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2.glb",
+              "image": "https://imgcdn.zip/media/previews/d4bbf467-dd61-4e21-ad35-0ab438d3348f/preview.png"
+            },
+            "metadata": {
+              "attributes": [],
+              "description": "A collectible artwork minted for this campaign.",
+              "name": "0aHYQhRkAqayXW2q3fBNtQpRur1EnK6h",
+              "symbol": "",
+              "token_standard": "NonFungible"
+            }
+          },
+          "creators": [
+            {
+              "address": "CntaEq7V8ztGuJTRbiyusAHzBonPhscLSnbPqW2Jgf6P",
+              "share": 100,
+              "verified": false
+            }
+          ],
+          "grouping": [
+            {
+              "group_key": "collection",
+              "group_value": "4M3r74QNP86ysMDZ7KojyJ3rbVDB77oWxuJ4XYBMbeE8"
+            }
+          ],
+          "id": "GbjpSDm2kX1nfnuX3CKTB5G9Rc8ihaY6zkmMd2RgtFHt",
+          "interface": "MplBubblegumV2",
+          "mutable": true,
+          "ownership": {
+            "delegate": null,
+            "delegated": false,
+            "frozen": false,
+            "non_transferable": false,
+            "owner": "BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2",
+            "ownership_model": "single"
+          },
+          "royalty": {
+            "basis_points": 500,
+            "locked": false,
+            "percent": 0.05,
+            "primary_sale_happened": false,
+            "royalty_model": "creators",
+            "target": null
+          },
+          "supply": {
+            "edition_nonce": null,
+            "print_current_supply": 0,
+            "print_max_supply": 0
+          }
+        }
+      ],
+      "limit": 1000,
+      "page": 1,
+      "total": 6
+    }
+  },
+  "owner": "BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2"
+}

@@ -53,3 +53,29 @@ async fn live_history_reads_from_the_server_that_keeps_it() {
         assert!(moved.from == address(FRIEND) || moved.to == address(FRIEND));
     }
 }
+
+#[tokio::test]
+#[ignore = "talks to the real Solana network"]
+async fn live_nfts_are_listed_by_das_and_checked_on_chain() {
+    let chain = mainnet();
+    let holder = address("6ojDZ4LrTn9E4PgF5NVLjy6NLztXPSDmwQ5jKbfUsLWU");
+    let found = chain.nfts(&holder).await.unwrap();
+    assert!(!found.capped);
+    let mad_lads = found
+        .items
+        .iter()
+        .filter(|item| {
+            item.collection
+                .as_ref()
+                .and_then(|collection| collection.name.as_deref())
+                == Some("Mad Lads")
+        })
+        .count();
+    assert!(mad_lads >= 1, "{found:?}");
+    assert!(
+        found
+            .items
+            .iter()
+            .all(|item| item.kind != bahaa_types::NftKind::SolanaCompressed)
+    );
+}

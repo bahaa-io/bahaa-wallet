@@ -795,6 +795,17 @@ mod tests {
     }
 
     #[test]
+    fn nfts_are_listed_only_where_a_keyless_listing_exists() {
+        let registry = Registry::builtin().unwrap();
+        let listing: Vec<&str> = registry
+            .networks()
+            .filter(|network| network.offers(Feature::Nfts))
+            .map(|network| network.id.as_str())
+            .collect();
+        assert_eq!(listing, ["solana", "solana-devnet", "ton"]);
+    }
+
+    #[test]
     fn rejects_inconsistent_networks() {
         let cases: Vec<(&str, Edit)> = vec![
             ("bsc", Box::new(|n| n["chain_id"] = Value::Null)),

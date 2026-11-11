@@ -34,7 +34,7 @@ pub fn solana_on(urls: &[Url]) -> Network {
         .map(|url| Endpoint {
             protocol: Protocol::SolanaRpc,
             url: url.clone(),
-            features: vec![Feature::History],
+            features: vec![Feature::History, Feature::Nfts],
             min_gap_ms: 0,
             history_gap_ms: 0,
         })
@@ -89,6 +89,7 @@ pub struct Ledger {
     pub found: Value,
     pub history: Vec<Value>,
     pub transactions: HashMap<String, Value>,
+    pub assets: Value,
 }
 
 impl Ledger {
@@ -127,6 +128,7 @@ impl Ledger {
                 json!({"context": {"slot": 1}, "value": {"err": self.simulation_error, "logs": [], "unitsConsumed": self.units}})
             }
             "sendTransaction" => self.sent.clone().unwrap_or(Value::Null),
+            "getAssetsByOwner" => self.assets.clone(),
             "getSignatureStatuses" => {
                 json!({"context": {"slot": 1}, "value": [self.status]})
             }

@@ -60,6 +60,7 @@ fn answer(ledger: &Mutex<Ledger>, call: &Value) -> Value {
             {"signature": "vGWaZAYtYPZpRsBbKL1LyTZS2Upj7muftZzAH4PJfWif3XAk8vFEiV9XVtDeVRWAURJVpFYBt1sbRXxrdBRMCAQ", "slot": 9, "blockTime": 1_793_637_863, "err": null}
         ]),
         "getSignaturesForAddress" => json!([]),
+        "getAssetsByOwner" => json!({"total": 0, "limit": 1000, "page": 1, "items": []}),
         "simulateTransaction" if params[1]["innerInstructions"] == true => swap_simulation(),
         "simulateTransaction" => {
             json!({"context": {"slot": 1}, "value": {"err": null, "logs": [], "unitsConsumed": 450}})

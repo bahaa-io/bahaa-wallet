@@ -12,6 +12,7 @@ pub(crate) const MEMO: Key = id("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 pub(crate) const MEMO_V1: Key = id("Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo");
 pub(crate) const BUDGET: Key = id("ComputeBudget111111111111111111111111111111");
 pub(crate) const METADATA: Key = id("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+pub(crate) const CORE: Key = id("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 pub(crate) const WRAPPED: Key = id("So11111111111111111111111111111111111111112");
 
 const TRANSFER: u32 = 2;

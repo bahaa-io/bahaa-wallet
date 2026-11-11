@@ -14,12 +14,13 @@ use ruint::aliases::U256;
 
 mod calls;
 mod incoming;
+mod nfts;
 mod send;
 
 pub use calls::{SolanaCall, swap_instruction};
 pub use send::SolanaPlan;
 
-use crate::programs::{METADATA, Shape, TOKEN, TOKEN_2022, metadata_account, token_account};
+use crate::programs::{Shape, TOKEN, TOKEN_2022, metadata_account, token_account};
 use crate::rpc::{self, Account, Rpc, Solana};
 use crate::tx::{self, Key};
 
@@ -29,8 +30,6 @@ const TOKEN_READ: usize = 109;
 const MINT_READ: usize = 46;
 const MAX_NAME: usize = 40;
 const MAX_SYMBOL: usize = 11;
-const MAX_TEXT: usize = 200;
-const METADATA_V1: u8 = 4;
 
 #[derive(Debug)]
 pub struct SolanaChain {
@@ -309,25 +308,15 @@ fn mint_decimals(account: Option<&Account>) -> Result<u8, ChainError> {
 }
 
 fn metadata(account: Option<&Account>, mint: &Key) -> Option<(String, String)> {
-    let account = account.filter(|account| account.owner == METADATA)?;
-    let (kind, rest) = account.data.split_first()?;
-    let rest = rest.get(32..)?;
-    if *kind != METADATA_V1 || rest.get(..32)? != mint {
-        return None;
-    }
-    let mut rest = rest.get(32..)?;
-    let mut text = |max: usize| -> Option<String> {
-        let len = usize::try_from(u32::from_le_bytes(rest.get(..4)?.try_into().ok()?))
-            .ok()
-            .filter(|len| *len <= MAX_TEXT)?;
-        let raw = rest.get(4..4 + len)?;
-        rest = rest.get(4 + len..)?;
-        let clean = to_plain_text(String::from_utf8_lossy(raw).trim_end_matches('\0'), max);
+    let found = crate::metaplex::metadata(account, mint)?;
+    let clean = |text: &str, max: usize| {
+        let clean = to_plain_text(text, max);
         (!clean.is_empty()).then_some(clean)
     };
-    let name = text(MAX_NAME)?;
-    let symbol = text(MAX_SYMBOL)?;
-    Some((name, symbol))
+    Some((
+        clean(&found.name, MAX_NAME)?,
+        clean(&found.symbol, MAX_SYMBOL)?,
+    ))
 }
 
 #[cfg(fuzzing)]
@@ -339,7 +328,14 @@ pub(crate) fn fuzz(value: &serde_json::Value) {
             let _ = metadata(account.as_ref(), &[0; 32]);
         }
     }
+    if let Ok(found) = rpc::accounts(value, value["value"].as_array().map_or(0, Vec::len)) {
+        for account in &found {
+            let _ = crate::metaplex::core(account.as_ref());
+            let _ = crate::metaplex::core_collection(account.as_ref());
+        }
+    }
     incoming::fuzz(value);
+    nfts::fuzz(value);
     send::fuzz(value);
 }
 
@@ -353,6 +349,8 @@ mod tests {
     use bahaa_crypto::{Mnemonic, ed25519_seed};
 
     use super::*;
+    use crate::metaplex::METADATA_V1;
+    use crate::programs::METADATA;
 
     #[test]
     fn derives_the_accounts_phantom_derives() {

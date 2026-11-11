@@ -622,7 +622,8 @@
         "protocol": "solana-rpc",
         "url": "https://api.mainnet-beta.solana.com",
         "features": [
-          "history"
+          "history",
+          "nfts"
         ],
         "history_gap_ms": 1100
       }
@@ -808,7 +809,8 @@
         "protocol": "solana-rpc",
         "url": "https://api.devnet.solana.com",
         "features": [
-          "history"
+          "history",
+          "nfts"
         ],
         "history_gap_ms": 1100
       }

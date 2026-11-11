@@ -312,7 +312,8 @@ impl AnyChain {
         shielded(async {
             match self {
                 Self::Ton(chain) => chain.nfts(owner).await,
-                Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Self::Solana(chain) => chain.nfts(owner).await,
+                Self::Evm(_) | Self::Tron(_) | Self::Bitcoin(_) => {
                     Err(ChainError::Unsupported("NFTs"))
                 }
             }

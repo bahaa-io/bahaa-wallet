@@ -2,6 +2,7 @@ mod chain;
 #[cfg(fuzzing)]
 #[doc(hidden)]
 pub mod fuzz;
+mod metaplex;
 mod programs;
 mod rpc;
 mod tx;
