@@ -1,6 +1,6 @@
 use std::fmt;
 
-use bahaa_types::{Address, Amount, AssetId, NetworkId, is_plain_text, to_plain_text};
+use bahaa_types::{Address, Amount, AssetId, NetworkId, Nft, is_plain_text, to_plain_text};
 use ruint::aliases::U256;
 use thiserror::Error;
 
@@ -95,6 +95,9 @@ impl Transfer {
     pub fn check(&self, network: &NetworkId) -> Result<(), ChainError> {
         if self.asset.network() != network {
             return Err(ChainError::Invalid("the asset belongs to another network"));
+        }
+        if self.asset.is_nft() {
+            return Err(ChainError::Unsupported("sending NFTs"));
         }
         if !self.max && self.amount.is_zero() {
             return Err(ChainError::Invalid("send more than zero"));
@@ -383,6 +386,12 @@ pub struct Watch {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    pub items: Vec<Nft>,
+    pub capped: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scanned {
     pub cursor: ScanCursor,
     pub found: Vec<Incoming>,
@@ -440,6 +449,9 @@ pub fn enough(symbol: &str, needed: U256, held: U256, decimals: u8) -> Result<()
 pub fn on_network(network: &NetworkId, assets: &[AssetId]) -> Result<(), ChainError> {
     if assets.iter().any(|asset| asset.network() != network) {
         return Err(ChainError::Invalid("an asset belongs to another network"));
+    }
+    if assets.iter().any(AssetId::is_nft) {
+        return Err(ChainError::Invalid("NFTs are listed, not read as balances"));
     }
     Ok(())
 }

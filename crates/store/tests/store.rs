@@ -5,10 +5,13 @@ use std::path::{Path, PathBuf};
 
 use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
 use bahaa_store::{
-    Contact, CustomToken, Outgoing, Received, SavedPrices, SavedQuote, Scan, SentKind, SentStatus,
-    SentTx, Store, StoreError, StoreKey, SwapRecord, SwapStatus, TrustedBlock,
+    Contact, CustomToken, Listing, Mark, Marked, Outgoing, Received, SavedPrices, SavedQuote, Scan,
+    SentKind, SentStatus, SentTx, Store, StoreError, StoreKey, SwapRecord, SwapStatus,
+    TrustedBlock,
 };
-use bahaa_types::{Address, Amount, ChainFamily, Price};
+use bahaa_types::{
+    Address, Amount, AssetId, ChainFamily, Collection, MAX_NFTS, Nft, NftKind, Price, Trust,
+};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use zeroize::Zeroizing;
 
@@ -254,6 +257,145 @@ fn swaps_are_sealed_kept_and_updated_in_place() {
     ] {
         assert!(matches!(store.save_swap(&bad), Err(StoreError::Invalid(_))));
     }
+}
+
+const OWNER: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+const APES: &str = "0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D";
+
+fn ape(token: u64) -> Nft {
+    Nft {
+        asset: format!("ethereum/nft/{APES}/{token}").parse().unwrap(),
+        kind: NftKind::Erc721,
+        amount: Amount::parse("1", 0).unwrap(),
+        collection: Some(Collection {
+            address: Some(evm(APES)),
+            name: Some("BoredApeYachtClub".to_owned()),
+        }),
+        name: None,
+        link: Some(format!(
+            "ipfs://QmeSjSinHpPnmXmspMjwiXyN6zS4E9zccariGR3jxcaWtq/{token}"
+        )),
+        trust: Trust::Trusted,
+        lock: None,
+    }
+}
+
+fn listing(items: Vec<Nft>) -> Listing {
+    Listing {
+        network: "ethereum".parse().unwrap(),
+        address: evm(OWNER),
+        items,
+        capped: false,
+        at: 1_700_000_000,
+    }
+}
+
+#[test]
+fn nft_listings_are_sealed_and_replaced_per_account() {
+    let scratch = Scratch::new();
+    {
+        let store = unlocked(&scratch);
+        store.save_listing(&listing(vec![ape(1), ape(2)])).unwrap();
+        store.save_listing(&listing(vec![ape(2)])).unwrap();
+        let mut other = listing(vec![ape(3)]);
+        other.network = "optimism".parse().unwrap();
+        assert!(matches!(
+            store.save_listing(&other),
+            Err(StoreError::Invalid(_))
+        ));
+        store.lock();
+        assert_eq!(store.listings(), Err(StoreError::Locked));
+    }
+    let store = unlocked(&scratch);
+    assert_eq!(store.listings().unwrap(), [listing(vec![ape(2)])]);
+    store.save_listing(&listing(Vec::new())).unwrap();
+    assert_eq!(store.listings().unwrap(), [listing(Vec::new())]);
+}
+
+#[test]
+fn nft_listings_are_validated() {
+    let scratch = Scratch::new();
+    let store = unlocked(&scratch);
+    let mut coin = ape(1);
+    coin.asset = AssetId::Native("ethereum".parse().unwrap());
+    let mut fraction = ape(1);
+    fraction.amount = Amount::parse("1", 18).unwrap();
+    let mut none = ape(1);
+    none.amount = Amount::parse("0", 0).unwrap();
+    let mut hidden = ape(1);
+    hidden.name = Some("Ape\u{202e}".to_owned());
+    let mut collection = ape(1);
+    collection.collection = Some(Collection {
+        address: None,
+        name: Some(String::new()),
+    });
+    let mut link = ape(1);
+    link.link = Some("x".repeat(2_049));
+    for bad in [
+        vec![coin],
+        vec![fraction],
+        vec![none],
+        vec![hidden],
+        vec![collection],
+        vec![link],
+        vec![ape(1), ape(1)],
+        (0..=u64::try_from(MAX_NFTS).unwrap()).map(ape).collect(),
+    ] {
+        assert!(matches!(
+            store.save_listing(&listing(bad)),
+            Err(StoreError::Invalid(_))
+        ));
+    }
+    assert_eq!(store.listings().unwrap(), Vec::<Listing>::new());
+    let full: Vec<Nft> = (0..u64::try_from(MAX_NFTS).unwrap()).map(ape).collect();
+    store.save_listing(&listing(full)).unwrap();
+}
+
+#[test]
+fn shown_and_hidden_choices_are_kept_changed_and_forgotten() {
+    let scratch = Scratch::new();
+    let one = ape(1).asset;
+    let two = ape(2).asset;
+    {
+        let store = unlocked(&scratch);
+        store.save_mark(&one, Some(Mark::Shown)).unwrap();
+        store.save_mark(&two, Some(Mark::Shown)).unwrap();
+        store.save_mark(&one, Some(Mark::Hidden)).unwrap();
+        assert!(matches!(
+            store.save_mark(
+                &AssetId::Native("ethereum".parse().unwrap()),
+                Some(Mark::Hidden)
+            ),
+            Err(StoreError::Invalid(_))
+        ));
+        store.lock();
+        assert_eq!(store.marks(), Err(StoreError::Locked));
+    }
+    let store = unlocked(&scratch);
+    let mut marks = store.marks().unwrap();
+    marks.sort_by(|a, b| a.asset.cmp(&b.asset));
+    assert_eq!(
+        marks,
+        [
+            Marked {
+                asset: one.clone(),
+                mark: Mark::Hidden
+            },
+            Marked {
+                asset: two.clone(),
+                mark: Mark::Shown
+            },
+        ]
+    );
+    store.save_mark(&one, None).unwrap();
+    store.save_mark(&one, None).unwrap();
+    assert_eq!(
+        store.marks().unwrap(),
+        [Marked {
+            asset: two,
+            mark: Mark::Shown
+        }]
+    );
 }
 
 #[test]

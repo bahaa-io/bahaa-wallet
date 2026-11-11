@@ -76,6 +76,7 @@ impl Protocol {
                     | Self::Electrum
                     | Self::Esplora
             ),
+            Feature::Nfts => matches!(self, Self::TonCenter | Self::TonApi | Self::SolanaRpc),
         }
     }
 }
@@ -87,6 +88,7 @@ pub enum Feature {
     History,
     Private,
     Simulate,
+    Nfts,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -204,6 +206,10 @@ impl Network {
             ChainKind::Solana { .. } => ChainFamily::Solana,
             ChainKind::Bitcoin { .. } => ChainFamily::Bitcoin,
         }
+    }
+
+    pub fn offers(&self, feature: Feature) -> bool {
+        self.endpoints.iter().any(|endpoint| endpoint.has(feature))
     }
 
     pub fn token(&self, contract: &Address) -> Option<&Coin> {
@@ -838,6 +844,14 @@ mod tests {
             (
                 "tron",
                 Box::new(|n| n["endpoints"][0]["features"] = serde_json::json!(["logs"])),
+            ),
+            (
+                "bsc",
+                Box::new(|n| n["endpoints"][0]["features"] = serde_json::json!(["nfts"])),
+            ),
+            (
+                "ton",
+                Box::new(|n| n["endpoints"][0]["features"] = serde_json::json!(["nfts"])),
             ),
             ("bsc", Box::new(|n| n["endpoints"] = serde_json::json!([]))),
             (

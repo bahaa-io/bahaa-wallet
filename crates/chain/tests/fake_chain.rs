@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeItem, FeeLine, FeeQuote, PoolError, Signed, Transfer,
-    TxId, TxStatus, check_signed,
+    TxId, TxStatus, check_signed, on_network,
 };
 use bahaa_config::{Coin, Network, Registry};
 use bahaa_crypto::{Mnemonic, Seed};
@@ -377,6 +377,29 @@ async fn only_the_owning_seed_can_sign() {
         chain.sign(&plan, &stranger),
         Err(ChainError::Invalid(_))
     ));
+}
+
+#[test]
+fn nft_ids_never_pass_as_coins_or_tokens() {
+    let (chain, _, mut transfer) = setup();
+    let network = chain.network().id.clone();
+    let nft: AssetId = format!("{network}/nft/0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D/1")
+        .parse()
+        .unwrap();
+    transfer.asset = nft.clone();
+    transfer.amount = Amount::parse("1", 0).unwrap();
+    assert_eq!(
+        transfer.check(&network),
+        Err(ChainError::Unsupported("sending NFTs"))
+    );
+    assert!(matches!(
+        on_network(&network, &[nft]),
+        Err(ChainError::Invalid(_))
+    ));
+    assert_eq!(
+        on_network(&network, &[AssetId::Native(network.clone())]),
+        Ok(())
+    );
 }
 
 #[test]

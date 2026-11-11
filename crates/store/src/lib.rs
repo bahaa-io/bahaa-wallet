@@ -3,7 +3,10 @@ use std::path::Path;
 use std::sync::{PoisonError, RwLock, RwLockReadGuard};
 
 use bahaa_config::{Checkpoint, Coin, Settings};
-use bahaa_types::{Address, Amount, AssetId, NetworkId, Price, PriceId, is_plain_text};
+use bahaa_types::{
+    Address, Amount, AssetId, MAX_NFT_LINK, MAX_NFT_TEXT, MAX_NFTS, NetworkId, Nft, Price, PriceId,
+    is_plain_text,
+};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableHandle};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -37,9 +40,11 @@ const PRICES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("pric
 const ACCOUNTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("accounts");
 const NAMES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("names");
 const SWAPS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("swaps");
+const NFTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("nfts");
+const MARKS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("marks");
 const SEAL: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("seal");
-const SEALED: [TableDefinition<'static, &str, &[u8]>; 10] = [
-    CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS, NAMES, SWAPS,
+const SEALED: [TableDefinition<'static, &str, &[u8]>; 12] = [
+    CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS, NAMES, SWAPS, NFTS, MARKS,
 ];
 const CHECK: &str = "check";
 const CHECKED: &[u8] = b"bahaa store";
@@ -134,6 +139,30 @@ impl SentStatus {
     pub fn is_open(&self) -> bool {
         matches!(self, Self::Sending | Self::Pending)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Listing {
+    pub network: NetworkId,
+    pub address: Address,
+    pub items: Vec<Nft>,
+    pub capped: bool,
+    pub at: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mark {
+    Shown,
+    Hidden,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Marked {
+    pub asset: AssetId,
+    pub mark: Mark,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,6 +526,63 @@ impl Store {
             &format!("{}/{}", swap.network, swap.id),
             &encode(swap)?,
         )
+    }
+
+    pub fn listings(&self) -> Result<Vec<Listing>, StoreError> {
+        self.all(NFTS)
+    }
+
+    pub fn save_listing(&self, listing: &Listing) -> Result<(), StoreError> {
+        if listing.items.len() > MAX_NFTS {
+            return Err(StoreError::Invalid("too many NFTs for one account"));
+        }
+        let text =
+            |text: &Option<String>, max| text.as_ref().is_none_or(|text| is_plain_text(text, max));
+        for (index, item) in listing.items.iter().enumerate() {
+            let valid = item.asset.is_nft()
+                && item.asset.network() == &listing.network
+                && item.amount.decimals() == 0
+                && !item.amount.is_zero()
+                && text(&item.name, MAX_NFT_TEXT)
+                && text(&item.link, MAX_NFT_LINK)
+                && item
+                    .collection
+                    .as_ref()
+                    .is_none_or(|collection| text(&collection.name, MAX_NFT_TEXT))
+                && !listing.items[..index]
+                    .iter()
+                    .any(|other| other.asset == item.asset);
+            if !valid {
+                return Err(StoreError::Invalid("not an NFT listing"));
+            }
+        }
+        self.put(
+            NFTS,
+            &address_key(&listing.network, &listing.address),
+            &encode(listing)?,
+        )
+    }
+
+    pub fn marks(&self) -> Result<Vec<Marked>, StoreError> {
+        self.all(MARKS)
+    }
+
+    pub fn save_mark(&self, asset: &AssetId, mark: Option<Mark>) -> Result<(), StoreError> {
+        if !asset.is_nft() {
+            return Err(StoreError::Invalid("only NFTs can be shown or hidden"));
+        }
+        let key = asset.to_string();
+        match mark {
+            Some(mark) => self.put(
+                MARKS,
+                &key,
+                &encode(&Marked {
+                    asset: asset.clone(),
+                    mark,
+                })?,
+            ),
+            None => self.delete(MARKS, &key).map(|_| ()),
+        }
     }
 
     pub fn received(&self) -> Result<Vec<Received>, StoreError> {
