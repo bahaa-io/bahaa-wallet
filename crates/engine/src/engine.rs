@@ -14,13 +14,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bahaa_chain::{ChainError, Replace};
+use bahaa_chain::{ChainError, Gateways, Replace};
 use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{
-    Contact, CustomToken, Mark, Outgoing, Received, Scan, SentTx, Store, StoreError, StoreKey,
-    SwapRecord, TrustedBlock,
+    Contact, CustomToken, Fetched, Mark, Outgoing, Received, Scan, SentTx, Store, StoreError,
+    StoreKey, SwapRecord, TrustedBlock,
 };
 use bahaa_swap::{Providers, SwapError};
 use bahaa_types::{Address, AssetId, BitcoinType, ChainFamily, NetworkId, SolanaPath, TonContract};
@@ -40,7 +40,7 @@ use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, 
 pub use activity::{Activity, ActivityKind};
 pub use incoming::IncomingHistory;
 use nfts::Nfts;
-pub use nfts::{Collectible, Collectibles, NftHealth};
+pub use nfts::{Collectible, Collectibles, Fake, NftHealth};
 use send::{Delivered, Prepared, Quoted};
 pub use send::{Draft, DraftId, SendRequest, Spend};
 use swap::{PreparedSwap, SwapOrdered, SwapQuoted, Swappers};
@@ -62,6 +62,7 @@ pub struct EngineConfig {
     pub draft_ttl: Duration,
     pub track_every: Duration,
     pub nft_every: Duration,
+    pub gateways: Option<Gateways>,
     pub swaps: Option<Providers>,
 }
 
@@ -77,6 +78,7 @@ impl EngineConfig {
             draft_ttl: Duration::from_secs(120),
             track_every: Duration::from_secs(4),
             nft_every: Duration::from_secs(600),
+            gateways: Gateways::builtin().ok(),
             swaps: Providers::builtin().ok(),
         }
     }
@@ -191,6 +193,7 @@ enum Notice {
     Refreshed(u64),
     Nfts(u64, Box<NetworkNfts>),
     Listed(u64),
+    Details(u64, Vec<Fetched>),
     Quoted(Box<Quoted>),
     Delivered(Box<Delivered>),
     Tracked(Vec<SentTx>),
@@ -267,16 +270,14 @@ impl Engine {
             draft_ttl,
             track_every,
             nft_every,
+            gateways,
             swaps,
         } = config;
         crate::keyring::private_dir(&data_dir)?;
         let store = Store::open(&data_dir.join(STORE_FILE))?;
         let settings = store.settings()?;
         let saved = prices::empty(settings.fiat.price_base());
-        let registry = Arc::new(match registry {
-            Some(registry) => registry,
-            None => Registry::builtin()?,
-        });
+        let registry = Arc::new(registry.map_or_else(Registry::builtin, Ok)?);
         let chains: Arc<Vec<AnyChain>> = Arc::new(chains::build(&registry));
         chains::restore(&chains, &store.trusted()?);
         let trusted = chains::trusted(&chains);
@@ -293,7 +294,7 @@ impl Engine {
             fiat: settings.fiat,
             ..Portfolio::default()
         });
-        let (nft, nfts) = Nfts::new(nft_every);
+        let (nft, nfts) = Nfts::new(nft_every, gateways);
         let (notices_tx, notices) = mpsc::channel(QUEUE);
         let worker = Worker {
             keyring: Some(keyring),
@@ -1027,6 +1028,9 @@ impl Worker {
                 self.nfts_arrived(*update);
             }
             Notice::Listed(generation) if generation == self.generation => self.listing_done(),
+            Notice::Details(session, fetched) if session == self.session => {
+                self.details_arrived(fetched);
+            }
             Notice::Quoted(quoted) => self.quoted(*quoted),
             Notice::Delivered(delivered) => self.delivered(*delivered),
             Notice::Tracked(updates) => self.tracked(updates),
@@ -1048,6 +1052,7 @@ impl Worker {
             | Notice::Refreshed(_)
             | Notice::Nfts(..)
             | Notice::Listed(_)
+            | Notice::Details(..)
             | Notice::Detected(..) => {}
         }
     }
@@ -1235,6 +1240,7 @@ impl Worker {
         swaps.sort_by_key(|swap| std::cmp::Reverse(swap.created_at));
         let listings = self.store.listings()?;
         let marks = self.store.marks()?;
+        let fetched = self.store.fetched()?;
         chains::know(&self.chains, &custom);
         self.custom = Arc::new(custom);
         self.history = history;
@@ -1244,6 +1250,7 @@ impl Worker {
         self.swaps = swaps;
         self.nft.listings = listings;
         self.nft.marks = marks;
+        self.nft.fetched = fetched;
         self.saved = prices::saved(&self.store, self.settings.fiat.price_base());
         self.saved_at = None;
         self.unsaved = false;
@@ -1259,8 +1266,7 @@ impl Worker {
         self.received.clear();
         self.outgoing.clear();
         self.swaps.clear();
-        self.nft.listings.clear();
-        self.nft.marks.clear();
+        self.nft.forget();
         self.saved = prices::empty(self.settings.fiat.price_base());
         self.saved_at = None;
         self.unsaved = false;

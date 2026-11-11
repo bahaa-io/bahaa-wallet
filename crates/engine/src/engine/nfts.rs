@@ -2,11 +2,13 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bahaa_chain::ChainError;
-use bahaa_config::Network;
-use bahaa_store::{Listing, Mark, Marked};
-use bahaa_types::{Address, AssetId, NetworkId, Nft, Trust};
+use bahaa_chain::{ChainError, Fetcher, Gateways};
+use bahaa_config::{Network, Registry};
+use bahaa_store::{Fetched, Listing, Mark, Marked};
+use bahaa_types::{Address, AssetId, Collection, Details, NetworkId, Nft, Trust};
+use futures_util::StreamExt;
 use futures_util::future::join_all;
+use futures_util::stream;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -15,11 +17,22 @@ use super::{Notice, Worker};
 use crate::chains::{self, AnyChain, NetworkNfts};
 use crate::{EngineError, WalletId};
 
+mod fakes;
+
+pub use fakes::Fake;
+use fakes::Known;
+
+const FETCH_AT_ONCE: usize = 4;
+const FETCH_ROUND: usize = 16;
+const RETRY_AFTER: u64 = 3_600;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Collectible {
     pub wallet: WalletId,
     pub address: Address,
     pub nft: Nft,
+    pub details: Option<Details>,
+    pub fake: Option<Fake>,
     pub shown: bool,
     pub mark: Option<Mark>,
 }
@@ -42,36 +55,95 @@ pub struct Collectibles {
 pub(super) struct Nfts {
     pub(super) listings: Vec<Listing>,
     pub(super) marks: Vec<Marked>,
+    pub(super) fetched: Vec<Fetched>,
     pub(super) listed: BTreeSet<NetworkId>,
     pub(super) health: Vec<NftHealth>,
     pub(super) next: Option<Instant>,
     task: Option<JoinHandle<()>>,
+    fetching: Option<JoinHandle<()>>,
+    fetcher: Option<Arc<Fetcher>>,
     every: Duration,
     out: watch::Sender<Collectibles>,
 }
 
 impl Nfts {
-    pub(super) fn new(every: Duration) -> (Self, watch::Receiver<Collectibles>) {
+    pub(super) fn new(
+        every: Duration,
+        gateways: Option<Gateways>,
+    ) -> (Self, watch::Receiver<Collectibles>) {
         let (out, receiver) = watch::channel(Collectibles::default());
         let nfts = Self {
             listings: Vec::new(),
             marks: Vec::new(),
+            fetched: Vec::new(),
             listed: BTreeSet::new(),
             health: Vec::new(),
             next: None,
             task: None,
+            fetching: None,
+            fetcher: gateways
+                .and_then(|gateways| Fetcher::new(gateways).ok())
+                .map(Arc::new),
             every,
             out,
         };
         (nfts, receiver)
     }
+
+    pub(super) fn forget(&mut self) {
+        if let Some(task) = self.fetching.take() {
+            task.abort();
+        }
+        self.listings.clear();
+        self.marks.clear();
+        self.fetched.clear();
+    }
 }
 
-fn shown(nft: &Nft, mark: Option<Mark>) -> bool {
+fn shown(trust: Trust, mark: Option<Mark>) -> bool {
     match mark {
         Some(mark) => mark == Mark::Shown,
-        None => nft.trust == Trust::Trusted,
+        None => trust == Trust::Trusted,
     }
+}
+
+fn judged(
+    nft: &Nft,
+    registry: &Registry,
+    known: &Known<'_>,
+    details: Option<&Details>,
+) -> (Nft, Option<Fake>) {
+    let listed = nft
+        .collection
+        .as_ref()
+        .and_then(|collection| collection.address.as_ref())
+        .and_then(|address| registry.get(nft.asset.network())?.collection(address));
+    let mut judged = nft.clone();
+    if let Some(listed) = listed {
+        judged.collection = Some(Collection {
+            address: Some(listed.address),
+            name: Some(listed.name.clone()),
+        });
+        if nft.trust != Trust::Flagged {
+            judged.trust = Trust::Trusted;
+        }
+        return (judged, None);
+    }
+    if nft.trust != Trust::Unknown {
+        return (judged, None);
+    }
+    let texts = [
+        nft.collection
+            .as_ref()
+            .and_then(|collection| collection.name.as_deref()),
+        nft.name.as_deref(),
+        details.and_then(|details| details.name.as_deref()),
+    ];
+    let fake = known.fake(texts.into_iter().flatten());
+    if fake.is_some() {
+        judged.trust = Trust::Flagged;
+    }
+    (judged, fake)
 }
 
 impl Worker {
@@ -166,11 +238,13 @@ impl Worker {
             health.checked_at = Some(update.checked_at);
         }
         self.publish_nfts();
+        self.fetch_details();
     }
 
     pub(super) fn listing_done(&mut self) {
         self.nft.task = None;
         self.nft.next = Some(Instant::now() + self.nft.every);
+        self.forget_unheld_details();
     }
 
     pub(super) fn mark_nft(
@@ -191,6 +265,7 @@ impl Worker {
             });
         }
         self.publish_nfts();
+        self.fetch_details();
         Ok(())
     }
 
@@ -214,7 +289,8 @@ impl Worker {
         })
     }
 
-    pub(super) fn publish_nfts(&self) {
+    fn collectibles(&self) -> Vec<Collectible> {
+        let known = Known::new(&self.registry);
         let mut items: Vec<Collectible> = self
             .held_nfts()
             .map(|(wallet, address, nft)| {
@@ -224,11 +300,22 @@ impl Worker {
                     .iter()
                     .find(|marked| marked.asset == nft.asset)
                     .map(|marked| marked.mark);
+                let details = self
+                    .nft
+                    .fetched
+                    .iter()
+                    .find(|fetched| {
+                        fetched.asset == nft.asset && nft.link.as_ref() == Some(&fetched.link)
+                    })
+                    .and_then(|fetched| fetched.details.clone());
+                let (nft, fake) = judged(nft, &self.registry, &known, details.as_ref());
                 Collectible {
                     wallet,
                     address: *address,
-                    nft: nft.clone(),
-                    shown: shown(nft, mark),
+                    shown: shown(nft.trust, mark),
+                    nft,
+                    details,
+                    fake,
                     mark,
                 }
             })
@@ -246,6 +333,98 @@ impl Worker {
                 &b.nft.asset,
             ))
         });
+        items
+    }
+
+    pub(super) fn fetch_details(&mut self) {
+        if !self.unlocked() || self.nft.fetching.is_some() {
+            return;
+        }
+        let Some(reader) = self.nft.fetcher.clone() else {
+            return;
+        };
+        let now = bahaa_chain::now();
+        let mut wanted: Vec<(AssetId, String)> = Vec::new();
+        for item in self.collectibles() {
+            let Some(link) = item.nft.link.filter(|_| item.shown) else {
+                continue;
+            };
+            let fetched = self
+                .nft
+                .fetched
+                .iter()
+                .find(|fetched| fetched.asset == item.nft.asset && fetched.link == link);
+            let due = fetched.is_none_or(|fetched| {
+                fetched.details.is_none() && now >= fetched.at.saturating_add(RETRY_AFTER)
+            });
+            if due && !wanted.iter().any(|(asset, _)| *asset == item.nft.asset) {
+                wanted.push((item.nft.asset, link));
+            }
+            if wanted.len() == FETCH_ROUND {
+                break;
+            }
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        let session = self.session;
+        let notices = self.notices_tx.clone();
+        self.nft.fetching = Some(tokio::spawn(async move {
+            let mut reads = Vec::with_capacity(wanted.len());
+            for (asset, link) in wanted {
+                let reader = Arc::clone(&reader);
+                reads.push(async move {
+                    let details = reader.details(&link).await.ok();
+                    Fetched {
+                        asset,
+                        link,
+                        details,
+                        at: bahaa_chain::now(),
+                    }
+                });
+            }
+            let fetched: Vec<Fetched> = stream::iter(reads)
+                .buffer_unordered(FETCH_AT_ONCE)
+                .collect()
+                .await;
+            let _ = notices.send(Notice::Details(session, fetched)).await;
+        }));
+    }
+
+    pub(super) fn details_arrived(&mut self, fetched: Vec<Fetched>) {
+        self.nft.fetching = None;
+        for item in fetched {
+            if self.store.save_fetched(&item).is_err() {
+                continue;
+            }
+            self.nft.fetched.retain(|old| old.asset != item.asset);
+            self.nft.fetched.push(item);
+        }
+        self.publish_nfts();
+        self.fetch_details();
+    }
+
+    fn forget_unheld_details(&mut self) {
+        let held: BTreeSet<AssetId> = self
+            .held_nfts()
+            .map(|(_, _, nft)| nft.asset.clone())
+            .collect();
+        let gone: Vec<AssetId> = self
+            .nft
+            .fetched
+            .iter()
+            .filter(|fetched| !held.contains(&fetched.asset))
+            .map(|fetched| fetched.asset.clone())
+            .collect();
+        for asset in &gone {
+            if self.store.forget_fetched(asset).is_ok() {
+                self.nft.fetched.retain(|fetched| fetched.asset != *asset);
+            }
+        }
+    }
+
+    pub(super) fn publish_nfts(&self) {
+        let items = self.collectibles();
         let health = self
             .nft
             .health
@@ -305,7 +484,11 @@ mod tests {
             (Trust::Flagged, Some(Mark::Shown), true),
             (Trust::Trusted, Some(Mark::Hidden), false),
         ] {
-            assert_eq!(shown(&nft(trust), mark), expected, "{trust:?} {mark:?}");
+            assert_eq!(
+                shown(nft(trust).trust, mark),
+                expected,
+                "{trust:?} {mark:?}"
+            );
         }
     }
 }

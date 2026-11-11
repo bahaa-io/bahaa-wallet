@@ -182,6 +182,7 @@ pub fn config(scratch: &Scratch, registry: Registry, market: Option<MarketConfig
         draft_ttl: Duration::from_secs(120),
         track_every: Duration::from_millis(50),
         nft_every: Duration::from_secs(600),
+        gateways: None,
         swaps: None,
     }
 }

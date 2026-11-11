@@ -80,6 +80,7 @@ fn engine_config(scratch: &Scratch, registry: Registry) -> EngineConfig {
         },
         market: None,
         registry: Some(registry),
+        gateways: None,
         swaps: None,
         ..EngineConfig::new(scratch.0.join("data"))
     }

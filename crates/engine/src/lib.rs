@@ -6,8 +6,8 @@ mod payload;
 mod portfolio;
 
 pub use bahaa_chain::{
-    ChainError, FeeItem, FeeLine, FeeQuote, FeeRate, MAX_MEMO, Pace, RateUnit, Replace, Replaced,
-    Transfer, Wait, now,
+    ChainError, FeeItem, FeeLine, FeeQuote, FeeRate, Gateways, MAX_MEMO, Pace, RateUnit, Replace,
+    Replaced, Transfer, Wait, now,
 };
 pub use bahaa_config::{
     ChainKind, Coin, Color, ConfigError, Explorer, Fiat, Network, Registry, Settings, Token,
@@ -23,15 +23,15 @@ pub use bahaa_store::{
 };
 pub use bahaa_types::{
     Address, AddressError, Amount, AmountError, AssetId, BitcoinScript, BitcoinType, ChainFamily,
-    Collection, Lock, NetworkId, Nft, NftId, NftKind, Price, PriceId, SolanaPath, TonContract,
-    TonForm, Trust, Utc, is_plain_text, to_plain_text,
+    Collection, Details, Lock, NetworkId, Nft, NftId, NftKind, Price, PriceId, SolanaPath,
+    TonContract, TonForm, Trust, Utc, is_plain_text, to_plain_text,
 };
 pub use bahaa_vault::KdfParams;
 pub use caution::{Arrival, Caution};
 pub use engine::{
     Activity, ActivityKind, Collectible, Collectibles, Draft, DraftId, Engine, EngineConfig,
-    EngineError, Event, IncomingHistory, NftHealth, SendRequest, Spend, State, SwapDraft, SwapId,
-    SwapRequest, SwapReview, Unavailable,
+    EngineError, Event, Fake, IncomingHistory, NftHealth, SendRequest, Spend, State, SwapDraft,
+    SwapId, SwapRequest, SwapReview, Unavailable,
 };
 
 pub mod swap {
