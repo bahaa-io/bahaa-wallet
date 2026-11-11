@@ -8,7 +8,10 @@ mod pool;
 mod rpc;
 mod tokens;
 
-pub use abi::{TRANSFER_EVENT, abi_text, parse_transfer, transfer_data};
+pub use abi::{
+    NftMove, TRANSFER_EVENT, abi_string, abi_text, nft_transfer_data, parse_nft_transfer,
+    parse_transfer, transfer_data,
+};
 pub use chain::Chain;
 pub use clock::{now, now_ms};
 pub use history::{WalkEnd, covered};

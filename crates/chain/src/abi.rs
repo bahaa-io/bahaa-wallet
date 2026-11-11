@@ -1,9 +1,22 @@
+use bahaa_types::NftKind;
 use ruint::aliases::U256;
 
 const WORD: usize = 32;
 const MAX_TEXT: usize = 256;
 const TRANSFER: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 const TRANSFER_LEN: usize = 4 + WORD + WORD;
+const SAFE_TRANSFER: [u8; 4] = [0x42, 0x84, 0x2e, 0x0e];
+const SAFE_TRANSFER_UNITS: [u8; 4] = [0xf2, 0x42, 0x43, 0x2a];
+const NO_DATA: usize = 5 * WORD;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NftMove {
+    pub kind: NftKind,
+    pub from: [u8; 20],
+    pub to: [u8; 20],
+    pub id: U256,
+    pub units: U256,
+}
 
 pub const TRANSFER_EVENT: &str = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
@@ -24,6 +37,75 @@ pub fn parse_transfer(data: &[u8]) -> Option<([u8; 20], U256)> {
     Some((to, U256::from_be_slice(&data[36..])))
 }
 
+pub fn nft_transfer_data(moved: &NftMove) -> Option<Vec<u8>> {
+    let mut data = Vec::with_capacity(4 + 6 * WORD);
+    let address = |data: &mut Vec<u8>, address: &[u8; 20]| {
+        data.extend_from_slice(&[0u8; 12]);
+        data.extend_from_slice(address);
+    };
+    match moved.kind {
+        NftKind::Erc721 if moved.units == U256::from(1u8) => data.extend_from_slice(&SAFE_TRANSFER),
+        NftKind::Erc1155 => data.extend_from_slice(&SAFE_TRANSFER_UNITS),
+        _ => return None,
+    }
+    address(&mut data, &moved.from);
+    address(&mut data, &moved.to);
+    data.extend_from_slice(&moved.id.to_be_bytes::<32>());
+    if moved.kind == NftKind::Erc1155 {
+        data.extend_from_slice(&moved.units.to_be_bytes::<32>());
+        data.extend_from_slice(&U256::from(NO_DATA).to_be_bytes::<32>());
+        data.extend_from_slice(&[0u8; WORD]);
+    }
+    Some(data)
+}
+
+pub fn parse_nft_transfer(data: &[u8]) -> Option<NftMove> {
+    let selector = data.get(..4)?;
+    let kind = if selector == SAFE_TRANSFER {
+        NftKind::Erc721
+    } else if selector == SAFE_TRANSFER_UNITS {
+        NftKind::Erc1155
+    } else {
+        return None;
+    };
+    let words: Vec<&[u8]> = data[4..].chunks(WORD).collect();
+    let address = |word: &[u8]| -> Option<[u8; 20]> {
+        (word.len() == WORD && word[..12] == [0u8; 12]).then(|| word[12..].try_into().ok())?
+    };
+    let units = match (kind, words.as_slice()) {
+        (NftKind::Erc721, [_, _, _]) => U256::from(1u8),
+        (NftKind::Erc1155, [_, _, _, units, offset, length])
+            if U256::from_be_slice(offset) == U256::from(NO_DATA)
+                && length.iter().all(|byte| *byte == 0) =>
+        {
+            U256::from_be_slice(units)
+        }
+        _ => return None,
+    };
+    if data.len() % WORD != 4 {
+        return None;
+    }
+    let moved = NftMove {
+        kind,
+        from: address(words[0])?,
+        to: address(words[1])?,
+        id: U256::from_be_slice(words[2]),
+        units,
+    };
+    (nft_transfer_data(&moved)? == data).then_some(moved)
+}
+
+pub fn abi_string(data: &[u8], max: usize) -> Option<String> {
+    let offset = small(data.get(..WORD)?)?;
+    let length = small(data.get(offset..offset.checked_add(WORD)?)?)?;
+    if length > max {
+        return None;
+    }
+    let start = offset.checked_add(WORD)?;
+    let text = data.get(start..start.checked_add(length)?)?;
+    String::from_utf8(text.to_vec()).ok()
+}
+
 pub fn abi_text(data: &[u8]) -> Option<String> {
     if data.len() == WORD {
         let end = data.iter().position(|byte| *byte == 0).unwrap_or(WORD);
@@ -32,14 +114,7 @@ pub fn abi_text(data: &[u8]) -> Option<String> {
         }
         return String::from_utf8(data[..end].to_vec()).ok();
     }
-    let offset = small(data.get(..WORD)?)?;
-    let length = small(data.get(offset..offset.checked_add(WORD)?)?)?;
-    if length > MAX_TEXT {
-        return None;
-    }
-    let start = offset.checked_add(WORD)?;
-    let text = data.get(start..start.checked_add(length)?)?;
-    String::from_utf8(text.to_vec()).ok()
+    abi_string(data, MAX_TEXT)
 }
 
 fn small(word: &[u8]) -> Option<usize> {
@@ -67,6 +142,55 @@ mod tests {
         body.resize(text.len().div_ceil(WORD) * WORD, 0);
         data.extend(body);
         data
+    }
+
+    fn moved(kind: NftKind, units: u64) -> NftMove {
+        NftMove {
+            kind,
+            from: [0x11; 20],
+            to: [0x22; 20],
+            id: U256::from(4_901u32),
+            units: U256::from(units),
+        }
+    }
+
+    #[test]
+    fn nft_transfers_are_the_standard_safe_calls_and_read_back_exactly() {
+        let one = nft_transfer_data(&moved(NftKind::Erc721, 1)).unwrap();
+        assert_eq!(
+            (one[..4].to_vec(), one.len()),
+            (SAFE_TRANSFER.to_vec(), 4 + 3 * WORD)
+        );
+        assert_eq!(parse_nft_transfer(&one), Some(moved(NftKind::Erc721, 1)));
+        let many = nft_transfer_data(&moved(NftKind::Erc1155, 7)).unwrap();
+        assert_eq!(
+            (many[..4].to_vec(), many.len()),
+            (SAFE_TRANSFER_UNITS.to_vec(), 4 + 6 * WORD)
+        );
+        assert_eq!(parse_nft_transfer(&many), Some(moved(NftKind::Erc1155, 7)));
+        assert_eq!(nft_transfer_data(&moved(NftKind::Erc721, 2)), None);
+        assert_eq!(nft_transfer_data(&moved(NftKind::TonItem, 1)), None);
+        let mut longer = one.clone();
+        longer.extend([0u8; WORD]);
+        let mut dirty = one.clone();
+        dirty[4] = 1;
+        let mut extra = many.clone();
+        extra[4 + 6 * WORD - 1] = 1;
+        let mut offset = many.clone();
+        offset[4 + 5 * WORD - 1] = 0xc0;
+        let mut short = many;
+        short.truncate(4 + 5 * WORD);
+        for bad in [
+            longer,
+            dirty,
+            extra,
+            offset,
+            short,
+            one[..4 + 2 * WORD].to_vec(),
+            Vec::new(),
+        ] {
+            assert_eq!(parse_nft_transfer(&bad), None, "{bad:?}");
+        }
     }
 
     #[test]

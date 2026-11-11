@@ -37,6 +37,8 @@ pub enum FeeModel {
 #[serde(rename_all = "kebab-case")]
 pub enum Protocol {
     JsonRpc,
+    Blockscout,
+    Routescan,
     TronHttp,
     TonLiteservers,
     TonCenter,
@@ -49,7 +51,7 @@ pub enum Protocol {
 impl Protocol {
     pub fn family(self) -> ChainFamily {
         match self {
-            Self::JsonRpc => ChainFamily::Evm,
+            Self::JsonRpc | Self::Blockscout | Self::Routescan => ChainFamily::Evm,
             Self::TronHttp => ChainFamily::Tron,
             Self::TonLiteservers | Self::TonCenter | Self::TonApi => ChainFamily::Ton,
             Self::SolanaRpc => ChainFamily::Solana,
@@ -76,7 +78,14 @@ impl Protocol {
                     | Self::Electrum
                     | Self::Esplora
             ),
-            Feature::Nfts => matches!(self, Self::TonCenter | Self::TonApi | Self::SolanaRpc),
+            Feature::Nfts => matches!(
+                self,
+                Self::Blockscout
+                    | Self::Routescan
+                    | Self::TonCenter
+                    | Self::TonApi
+                    | Self::SolanaRpc
+            ),
         }
     }
 }
@@ -802,7 +811,17 @@ mod tests {
             .filter(|network| network.offers(Feature::Nfts))
             .map(|network| network.id.as_str())
             .collect();
-        assert_eq!(listing, ["solana", "solana-devnet", "ton"]);
+        assert_eq!(
+            listing,
+            [
+                "avalanche",
+                "ethereum",
+                "optimism",
+                "solana",
+                "solana-devnet",
+                "ton"
+            ]
+        );
     }
 
     #[test]

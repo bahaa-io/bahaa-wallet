@@ -3,17 +3,18 @@ use alloy_primitives::TxKind;
 use bahaa_chain::{
     Balance, Chain, ChainError, Decimals, Decoded, Failure, FeeItem, FeeLine, FeeQuote, FeeRate,
     MAX_MEMO, Pace, RateUnit, Replace, Signed, Transfer, TxId, TxStatus, Wait, abi_text, amount,
-    enough, on_network, parse_transfer, transfer_data,
+    enough, on_network, parse_nft_transfer, parse_transfer, transfer_data,
 };
-use bahaa_config::{ChainKind, Coin, Feature, Network};
+use bahaa_config::{ChainKind, Coin, Feature, Network, Protocol};
 use bahaa_crypto::{DerivationPath, Seed, secp256k1_address};
-use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS, is_plain_text};
+use bahaa_types::{Address, Amount, AssetId, MAX_DECIMALS, NftId, is_plain_text};
 use futures_util::future::{try_join, try_join_all, try_join3};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
 mod calls;
 mod logs;
+mod nfts;
 mod replace;
 mod rollup;
 mod watch;
@@ -36,6 +37,7 @@ pub struct EvmChain {
     chain_id: u64,
     rpc: Rpc,
     decimals: Decimals,
+    listings: nfts::Listings,
 }
 
 struct Held {
@@ -54,11 +56,16 @@ impl EvmChain {
         let ChainKind::Evm { chain_id, .. } = network.kind else {
             return Err(ChainError::Invalid("not an EVM network"));
         };
-        let rpc = Rpc::new(network.endpoints.clone(), Evm { chain_id })?;
+        let (calls, listings) = network
+            .endpoints
+            .iter()
+            .cloned()
+            .partition(|endpoint| endpoint.protocol == Protocol::JsonRpc);
         Ok(Self {
+            rpc: Rpc::new(calls, Evm { chain_id })?,
+            listings: nfts::Listings::new(listings)?,
             network,
             chain_id,
-            rpc,
             decimals: Decimals::default(),
         })
     }
@@ -303,6 +310,37 @@ impl EvmChain {
             .map_err(|_| ChainError::Invalid("impossible gas estimate"))
     }
 
+    async fn priced_tx(
+        &self,
+        from: &[u8; 20],
+        nonce: u64,
+        route: &Route,
+    ) -> Result<(TxEip1559, Fees), ChainError> {
+        let estimate = self.estimate(from, route).await?;
+        let gas_limit = if route.data.is_empty() && estimate == PLAIN_GAS {
+            estimate
+        } else {
+            estimate.saturating_add(estimate / 5)
+        };
+        let mut fees = self.quote(estimate, gas_limit).await?;
+        let tx = TxEip1559 {
+            chain_id: self.chain_id,
+            nonce,
+            gas_limit,
+            max_fee_per_gas: u128::try_from(fees.max_fee).map_err(|_| ChainError::overflow())?,
+            max_priority_fee_per_gas: u128::try_from(fees.tip)
+                .map_err(|_| ChainError::overflow())?,
+            to: TxKind::Call(route.call_to.into()),
+            value: route.value,
+            input: route.data.clone().into(),
+            ..TxEip1559::default()
+        };
+        if self.is_rollup() {
+            self.add_rollup_fees(&tx, estimate, &mut fees).await?;
+        }
+        Ok((tx, fees))
+    }
+
     async fn quote(&self, estimate: u64, gas_limit: u64) -> Result<Fees, ChainError> {
         let (base, tip) = self.fees().await?;
         let max_fee = base
@@ -375,6 +413,7 @@ impl EvmChain {
         let (symbol, decimals) = (&self.network.native.symbol, self.network.native.decimals);
         let units = transfer.amount.units();
         match route.token {
+            None if transfer.asset.is_nft() => enough(symbol, max, held.native, decimals)?,
             None => {
                 let needed = units.checked_add(max).ok_or_else(ChainError::overflow)?;
                 enough(symbol, needed, held.native, decimals)?;
@@ -464,6 +503,9 @@ impl Chain for EvmChain {
     }
 
     async fn prepare(&self, transfer: &Transfer) -> Result<(EvmPlan, FeeQuote), ChainError> {
+        if transfer.asset.is_nft() {
+            return self.prepare_nft(transfer).await;
+        }
         let from = bytes(&transfer.from)?;
         transfer.check(&self.network.id)?;
         Self::memo_allowed(transfer)?;
@@ -472,28 +514,7 @@ impl Chain for EvmChain {
         let mut transfer = self.resolve(&held, transfer).await?;
         let route = self.route(&transfer).await?;
         self.funds(&held, &transfer, &route, U256::ZERO)?;
-        let estimate = self.estimate(&from, &route).await?;
-        let gas_limit = if route.data.is_empty() && estimate == PLAIN_GAS {
-            estimate
-        } else {
-            estimate.saturating_add(estimate / 5)
-        };
-        let mut fees = self.quote(estimate, gas_limit).await?;
-        let mut tx = TxEip1559 {
-            chain_id: self.chain_id,
-            nonce,
-            gas_limit,
-            max_fee_per_gas: u128::try_from(fees.max_fee).map_err(|_| ChainError::overflow())?,
-            max_priority_fee_per_gas: u128::try_from(fees.tip)
-                .map_err(|_| ChainError::overflow())?,
-            to: TxKind::Call(route.call_to.into()),
-            value: route.value,
-            input: route.data.clone().into(),
-            ..TxEip1559::default()
-        };
-        if self.is_rollup() {
-            self.add_rollup_fees(&tx, estimate, &mut fees).await?;
-        }
+        let (mut tx, fees) = self.priced_tx(&from, nonce, &route).await?;
         if transfer.max && route.token.is_none() {
             self.leave_fees(&mut transfer, &mut tx, fees.max)?;
         }
@@ -533,6 +554,17 @@ impl Chain for EvmChain {
                 target,
                 AssetId::Native(self.network.id.clone()),
                 self.native(parsed.tx.value)?,
+            )
+        } else if let Some(moved) = parse_nft_transfer(&parsed.tx.input) {
+            if moved.from != parsed.from || !parsed.tx.value.is_zero() {
+                return Err(ChainError::Invalid("not a plain NFT transfer"));
+            }
+            let nft = NftId::new(Address::Evm(target), Some(moved.id))
+                .map_err(|_| ChainError::Invalid("not a plain NFT transfer"))?;
+            (
+                moved.to,
+                AssetId::Nft(self.network.id.clone(), Box::new(nft)),
+                amount(moved.units, 0)?,
             )
         } else {
             let (to, units) = parse_transfer(&parsed.tx.input)
@@ -689,6 +721,7 @@ fn word(address: &[u8; 20]) -> String {
 
 #[cfg(fuzzing)]
 pub(crate) fn fuzz(value: &Value) {
+    nfts::fuzz(value);
     calls::fuzz(value);
     logs::fuzz(value);
     rollup::fuzz(value);

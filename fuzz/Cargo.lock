@@ -678,6 +678,7 @@ dependencies = [
  "bahaa-crypto",
  "bahaa-types",
  "futures-util",
+ "reqwest",
  "ruint",
  "serde_json",
 ]

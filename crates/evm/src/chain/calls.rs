@@ -99,13 +99,20 @@ struct Moved {
 
 impl EvmChain {
     pub async fn read(&self, to: &Address, data: &[u8]) -> Result<Vec<u8>, ChainError> {
-        let reply = self
-            .rpc
-            .call(
-                "eth_call",
-                json!([{"to": hex(&bytes(to)?), "data": hex(data)}, "latest"]),
-            )
-            .await?;
+        self.read_with(&bytes(to)?, data, None).await
+    }
+
+    pub(super) async fn read_with(
+        &self,
+        to: &[u8; 20],
+        data: &[u8],
+        gas: Option<u64>,
+    ) -> Result<Vec<u8>, ChainError> {
+        let mut call = json!({"to": hex(to), "data": hex(data)});
+        if let Some(gas) = gas {
+            call["gas"] = json!(format!("{gas:#x}"));
+        }
+        let reply = self.rpc.call("eth_call", json!([call, "latest"])).await?;
         bytes_of(&reply)
     }
 

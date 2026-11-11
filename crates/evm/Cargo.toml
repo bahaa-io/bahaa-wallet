@@ -16,12 +16,12 @@ bahaa-config.workspace = true
 bahaa-crypto.workspace = true
 bahaa-types.workspace = true
 futures-util.workspace = true
+reqwest.workspace = true
 ruint.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 bahaa-testkit.workspace = true
-reqwest.workspace = true
 sha3.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "time"] }
 url.workspace = true

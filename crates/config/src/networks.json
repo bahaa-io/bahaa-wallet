@@ -152,6 +152,22 @@
         "features": [
           "private"
         ]
+      },
+      {
+        "protocol": "blockscout",
+        "url": "https://eth.blockscout.com/api/v2",
+        "features": [
+          "nfts"
+        ],
+        "min_gap_ms": 500
+      },
+      {
+        "protocol": "routescan",
+        "url": "https://api.routescan.io/v2/network/mainnet/evm/1",
+        "features": [
+          "nfts"
+        ],
+        "min_gap_ms": 500
       }
     ],
     "explorer": {
@@ -341,6 +357,14 @@
         "protocol": "json-rpc",
         "url": "https://1rpc.io/avax/c",
         "features": []
+      },
+      {
+        "protocol": "routescan",
+        "url": "https://api.routescan.io/v2/network/mainnet/evm/43114",
+        "features": [
+          "nfts"
+        ],
+        "min_gap_ms": 500
       }
     ],
     "explorer": {
@@ -467,6 +491,14 @@
         "features": [
           "simulate"
         ]
+      },
+      {
+        "protocol": "blockscout",
+        "url": "https://explorer.optimism.io/api/v2",
+        "features": [
+          "nfts"
+        ],
+        "min_gap_ms": 500
       }
     ],
     "explorer": {
