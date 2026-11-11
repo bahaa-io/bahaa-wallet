@@ -2,6 +2,7 @@ mod accounts;
 mod activity;
 mod contacts;
 mod incoming;
+mod nfts;
 mod prices;
 mod send;
 mod swap;
@@ -18,7 +19,7 @@ use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{
-    Contact, CustomToken, Outgoing, Received, Scan, SentTx, Store, StoreError, StoreKey,
+    Contact, CustomToken, Mark, Outgoing, Received, Scan, SentTx, Store, StoreError, StoreKey,
     SwapRecord, TrustedBlock,
 };
 use bahaa_swap::{Providers, SwapError};
@@ -31,13 +32,15 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
 use crate::caution::{Arrival, Caution};
-use crate::chains::{self, AnyChain, NetworkBalances, NetworkHistory};
+use crate::chains::{self, AnyChain, NetworkBalances, NetworkHistory, NetworkNfts};
 use crate::keyring;
 use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
 use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, WalletKind};
 
 pub use activity::{Activity, ActivityKind};
 pub use incoming::IncomingHistory;
+use nfts::Nfts;
+pub use nfts::{Collectible, Collectibles, NftHealth};
 use send::{Delivered, Prepared, Quoted};
 pub use send::{Draft, DraftId, SendRequest, Spend};
 use swap::{PreparedSwap, SwapOrdered, SwapQuoted, Swappers};
@@ -58,6 +61,7 @@ pub struct EngineConfig {
     pub refresh_every: Duration,
     pub draft_ttl: Duration,
     pub track_every: Duration,
+    pub nft_every: Duration,
     pub swaps: Option<Providers>,
 }
 
@@ -72,6 +76,7 @@ impl EngineConfig {
             refresh_every: Duration::from_secs(60),
             draft_ttl: Duration::from_secs(120),
             track_every: Duration::from_secs(4),
+            nft_every: Duration::from_secs(600),
             swaps: Providers::builtin().ok(),
         }
     }
@@ -134,6 +139,8 @@ enum Command {
     Lock(Reply<()>),
     Touch,
     Refresh,
+    RefreshNfts,
+    MarkNft(AssetId, Option<Mark>, Reply<()>),
     Wallets(Reply<Vec<WalletInfo>>),
     Accounts(Reply<Vec<Account>>),
     Generate(NewPhrase, SecretString, Reply<(WalletId, SecretString)>),
@@ -182,6 +189,8 @@ enum Notice {
     Balances(u64, Box<NetworkBalances>),
     History(u64, Box<NetworkHistory>),
     Refreshed(u64),
+    Nfts(u64, Box<NetworkNfts>),
+    Listed(u64),
     Quoted(Box<Quoted>),
     Delivered(Box<Delivered>),
     Tracked(Vec<SentTx>),
@@ -242,6 +251,7 @@ pub struct Engine {
     state: watch::Receiver<State>,
     prices: watch::Receiver<Snapshot>,
     portfolio: watch::Receiver<Portfolio>,
+    nfts: watch::Receiver<Collectibles>,
     registry: Arc<Registry>,
 }
 
@@ -256,6 +266,7 @@ impl Engine {
             refresh_every,
             draft_ttl,
             track_every,
+            nft_every,
             swaps,
         } = config;
         crate::keyring::private_dir(&data_dir)?;
@@ -270,11 +281,7 @@ impl Engine {
         chains::restore(&chains, &store.trusted()?);
         let trusted = chains::trusted(&chains);
         let keyring = Keyring::new(data_dir.join(VAULT_FILE), kdf);
-        let initial = if keyring.exists() {
-            State::Locked
-        } else {
-            State::NoVault
-        };
+        let initial = resting(Some(&keyring));
         let market = market.map(Market::spawn).transpose()?;
         let prices = market
             .as_ref()
@@ -286,6 +293,7 @@ impl Engine {
             fiat: settings.fiat,
             ..Portfolio::default()
         });
+        let (nft, nfts) = Nfts::new(nft_every);
         let (notices_tx, notices) = mpsc::channel(QUEUE);
         let worker = Worker {
             keyring: Some(keyring),
@@ -303,6 +311,7 @@ impl Engine {
             events: events.clone(),
             state: publish_state,
             portfolio: publish_portfolio,
+            nft,
             notices_tx,
             notices,
             accounts: Vec::new(),
@@ -345,6 +354,7 @@ impl Engine {
             state,
             prices,
             portfolio,
+            nfts,
             registry,
         })
     }
@@ -371,6 +381,18 @@ impl Engine {
 
     pub fn portfolio(&self) -> watch::Receiver<Portfolio> {
         self.portfolio.clone()
+    }
+
+    pub fn nfts(&self) -> watch::Receiver<Collectibles> {
+        self.nfts.clone()
+    }
+
+    pub fn refresh_nfts(&self) {
+        let _ = self.commands.try_send(Command::RefreshNfts);
+    }
+
+    pub async fn mark_nft(&self, asset: AssetId, mark: Option<Mark>) -> Result<(), EngineError> {
+        self.ask(|reply| Command::MarkNft(asset, mark, reply)).await
     }
 
     pub fn touch(&self) {
@@ -641,6 +663,14 @@ impl Engine {
     }
 }
 
+fn resting(keyring: Option<&Keyring>) -> State {
+    if keyring.is_some_and(Keyring::exists) {
+        State::Locked
+    } else {
+        State::NoVault
+    }
+}
+
 fn market_prices(prices: &watch::Receiver<Snapshot>) -> watch::Receiver<Snapshot> {
     let mut prices = prices.clone();
     prices.mark_unchanged();
@@ -663,6 +693,7 @@ struct Worker {
     events: broadcast::Sender<Event>,
     state: watch::Sender<State>,
     portfolio: watch::Sender<Portfolio>,
+    nft: Nfts,
     notices_tx: mpsc::Sender<Notice>,
     notices: mpsc::Receiver<Notice>,
     accounts: Vec<Account>,
@@ -746,6 +777,7 @@ impl Worker {
             let next_refresh = self.next_refresh;
             let next_track = self.next_track;
             let next_poll = self.next_poll;
+            let next_listing = self.nft.next;
             let has_market = self.market.is_some();
             tokio::select! {
                 command = self.inbox.recv() => match command {
@@ -762,6 +794,7 @@ impl Worker {
                 () = at(next_refresh) => self.start_refresh(),
                 () = at(next_track) => self.start_tracking(),
                 () = at(next_poll) => self.start_polling(),
+                () = at(next_listing) => self.start_listing(),
                 Some(notice) = self.notices.recv() => self.notice(notice).await,
                 Ok(()) = self.prices.changed(), if has_market => {
                     self.remember_prices();
@@ -801,6 +834,10 @@ impl Worker {
                 let _ = reply.send(Ok(()));
             }
             Command::Refresh => self.start_refresh(),
+            Command::RefreshNfts => self.start_listing(),
+            Command::MarkNft(asset, mark, reply) => {
+                let _ = reply.send(self.mark_nft(&asset, mark));
+            }
             Command::PrepareSend(request, reply) => self.prepare_send(&request, reply),
             Command::Replace(network, id, how, reply) => {
                 self.replace_send(&network, &id, how, reply);
@@ -986,6 +1023,10 @@ impl Worker {
                 self.history_arrived(*update);
             }
             Notice::Refreshed(generation) if generation == self.generation => self.refreshed(),
+            Notice::Nfts(generation, update) if generation == self.generation => {
+                self.nfts_arrived(*update);
+            }
+            Notice::Listed(generation) if generation == self.generation => self.listing_done(),
             Notice::Quoted(quoted) => self.quoted(*quoted),
             Notice::Delivered(delivered) => self.delivered(*delivered),
             Notice::Tracked(updates) => self.tracked(updates),
@@ -1005,6 +1046,8 @@ impl Worker {
             Notice::Balances(..)
             | Notice::History(..)
             | Notice::Refreshed(_)
+            | Notice::Nfts(..)
+            | Notice::Listed(_)
             | Notice::Detected(..) => {}
         }
     }
@@ -1190,6 +1233,8 @@ impl Worker {
         incoming::sort(&mut outgoing);
         let mut swaps = self.store.swaps()?;
         swaps.sort_by_key(|swap| std::cmp::Reverse(swap.created_at));
+        let listings = self.store.listings()?;
+        let marks = self.store.marks()?;
         chains::know(&self.chains, &custom);
         self.custom = Arc::new(custom);
         self.history = history;
@@ -1197,6 +1242,8 @@ impl Worker {
         self.received = received;
         self.outgoing = outgoing;
         self.swaps = swaps;
+        self.nft.listings = listings;
+        self.nft.marks = marks;
         self.saved = prices::saved(&self.store, self.settings.fiat.price_base());
         self.saved_at = None;
         self.unsaved = false;
@@ -1212,6 +1259,8 @@ impl Worker {
         self.received.clear();
         self.outgoing.clear();
         self.swaps.clear();
+        self.nft.listings.clear();
+        self.nft.marks.clear();
         self.saved = prices::empty(self.settings.fiat.price_base());
         self.saved_at = None;
         self.unsaved = false;
@@ -1372,6 +1421,7 @@ impl Worker {
             if accounts != self.accounts {
                 self.loaded.clear();
                 self.scanned.clear();
+                self.nft.listed.clear();
             }
             self.held.retain(|held| {
                 accounts
@@ -1388,6 +1438,7 @@ impl Worker {
                 .events
                 .send(Event::AccountsChanged(self.accounts.clone()));
             self.publish_portfolio();
+            self.publish_nfts();
             self.refresh_prices();
             self.restart_refresh();
         }
@@ -1473,6 +1524,7 @@ impl Worker {
         for (_, task) in std::mem::take(&mut self.scanning) {
             task.abort();
         }
+        self.stop_listing();
         self.generation = self.generation.wrapping_add(1);
         self.next_refresh = None;
     }
@@ -1480,6 +1532,7 @@ impl Worker {
     fn restart_refresh(&mut self) {
         self.stop_refresh();
         self.start_refresh();
+        self.start_listing();
     }
 
     fn balances_arrived(&mut self, update: NetworkBalances) {
@@ -1573,16 +1626,14 @@ impl Worker {
         self.health.clear();
         self.loaded.clear();
         self.scanned.clear();
+        self.nft.listed.clear();
+        self.nft.health.clear();
         self.keep_prices();
         self.forget_private();
-        let state = if self.keyring.as_ref().is_some_and(Keyring::exists) {
-            State::Locked
-        } else {
-            State::NoVault
-        };
-        self.set_state(state);
+        self.set_state(resting(self.keyring.as_ref()));
         self.refresh_prices();
         self.publish_portfolio();
+        self.publish_nfts();
     }
 
     fn activity(&mut self) {

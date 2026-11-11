@@ -18,19 +18,20 @@ pub use bahaa_crypto::{
 };
 pub use bahaa_market::{MarketConfig, MarketError, Quote, Snapshot, Status};
 pub use bahaa_store::{
-    Contact, CustomToken, Movement, Outgoing, Received, Scan, SentKind, SentStatus, SentTx,
+    Contact, CustomToken, Mark, Movement, Outgoing, Received, Scan, SentKind, SentStatus, SentTx,
     StoreError,
 };
 pub use bahaa_types::{
     Address, AddressError, Amount, AmountError, AssetId, BitcoinScript, BitcoinType, ChainFamily,
-    NetworkId, Price, PriceId, SolanaPath, TonContract, TonForm, Utc, is_plain_text, to_plain_text,
+    Collection, Lock, NetworkId, Nft, NftId, NftKind, Price, PriceId, SolanaPath, TonContract,
+    TonForm, Trust, Utc, is_plain_text, to_plain_text,
 };
 pub use bahaa_vault::KdfParams;
 pub use caution::{Arrival, Caution};
 pub use engine::{
-    Activity, ActivityKind, Draft, DraftId, Engine, EngineConfig, EngineError, Event,
-    IncomingHistory, SendRequest, Spend, State, SwapDraft, SwapId, SwapRequest, SwapReview,
-    Unavailable,
+    Activity, ActivityKind, Collectible, Collectibles, Draft, DraftId, Engine, EngineConfig,
+    EngineError, Event, IncomingHistory, NftHealth, SendRequest, Spend, State, SwapDraft, SwapId,
+    SwapRequest, SwapReview, Unavailable,
 };
 
 pub mod swap {

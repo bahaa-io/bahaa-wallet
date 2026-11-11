@@ -40,6 +40,7 @@ impl Scratch {
             refresh_every: Duration::from_secs(60),
             draft_ttl: Duration::from_secs(120),
             track_every: Duration::from_secs(4),
+            nft_every: Duration::from_secs(600),
             swaps: None,
         }
     }

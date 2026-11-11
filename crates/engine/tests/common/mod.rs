@@ -181,6 +181,7 @@ pub fn config(scratch: &Scratch, registry: Registry, market: Option<MarketConfig
         refresh_every: Duration::from_secs(60),
         draft_ttl: Duration::from_secs(120),
         track_every: Duration::from_millis(50),
+        nft_every: Duration::from_secs(600),
         swaps: None,
     }
 }
@@ -303,7 +304,8 @@ fn replay(recording: &Value, data: &[u8], asked: &Asked) -> Vec<u8> {
             let answer = if known == 99_727_067 {
                 recorded(&["block_proof_from_previous"])
             } else {
-                recorded(&["block_proof"])
+                recorded(&["block_proofs", &known.to_string()])
+                    .or_else(|| recorded(&["block_proof"]))
             };
             (known.to_string(), answer)
         }

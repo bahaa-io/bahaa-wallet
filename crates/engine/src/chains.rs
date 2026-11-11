@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use bahaa_bitcoin::{BitcoinCall, BitcoinChain, BitcoinPlan};
 use bahaa_chain::{
-    Approval, Balance, Chain, ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, Movement,
-    PlannedCall, Replace, ScanCursor, Scanned, Signed, Transfer, TxId, TxStatus, Watch,
+    Approval, Balance, Chain, ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, Found,
+    Movement, PlannedCall, Replace, ScanCursor, Scanned, Signed, Transfer, TxId, TxStatus, Watch,
 };
-use bahaa_config::{Coin, Network, Registry};
+use bahaa_config::{Coin, Feature, Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmCall, EvmChain, EvmPlan};
 use bahaa_solana::{SolanaCall, SolanaChain, SolanaPlan};
@@ -302,6 +302,22 @@ impl AnyChain {
             Self::Bitcoin(chain) => shielded(chain.receive_address(address)).await,
             Self::Evm(_) | Self::Tron(_) | Self::Ton(_) | Self::Solana(_) => Ok(*address),
         }
+    }
+
+    pub(crate) fn lists_nfts(&self) -> bool {
+        self.network().offers(Feature::Nfts)
+    }
+
+    async fn nfts(&self, owner: &Address) -> Result<Found, ChainError> {
+        shielded(async {
+            match self {
+                Self::Ton(chain) => chain.nfts(owner).await,
+                Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                    Err(ChainError::Unsupported("NFTs"))
+                }
+            }
+        })
+        .await
     }
 
     pub(crate) fn quote_life(&self) -> Option<Duration> {
@@ -681,6 +697,30 @@ pub(crate) async fn balances(
     for (held, problem) in join_all(reads).await {
         result.held.extend(held);
         result.problem = result.problem.or(problem);
+    }
+    result.checked_at = bahaa_chain::now();
+    result
+}
+
+pub(crate) struct NetworkNfts {
+    pub network: NetworkId,
+    pub found: Vec<(Address, Found)>,
+    pub problem: Option<String>,
+    pub checked_at: u64,
+}
+
+pub(crate) async fn nfts(chain: &AnyChain, accounts: &[Account]) -> NetworkNfts {
+    let mut result = NetworkNfts {
+        network: chain.network().id.clone(),
+        found: Vec::new(),
+        problem: None,
+        checked_at: 0,
+    };
+    for account in served(chain, accounts) {
+        match chain.nfts(&account.address).await {
+            Ok(found) => result.found.push((account.address, found)),
+            Err(err) => result.problem = Some(err.to_string()),
+        }
     }
     result.checked_at = bahaa_chain::now();
     result
