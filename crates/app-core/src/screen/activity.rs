@@ -1,7 +1,10 @@
 use bahaa_engine::{
-    Activity, ActivityKind, ChainFamily, Movement, NetworkId, Replace, SentKind, SentTx, WalletId,
+    Activity, ActivityKind, Address, Amount, AssetId, ChainFamily, Movement, NetworkId, NftArrival,
+    Replace, SentKind, SentTx, WalletId,
 };
+use ruint::aliases::U256;
 
+use super::nfts::Detail;
 use super::send::Send;
 use super::{
     Screen, button, cell, choice, group, line, network_cell, network_line, note, picked_wallet,
@@ -25,7 +28,7 @@ pub(crate) struct List {
 impl List {
     fn matches(&self, activity: &Activity) -> bool {
         let direction = match activity.kind {
-            ActivityKind::Received(_) => Direction::Received,
+            ActivityKind::Received(_) | ActivityKind::NftArrived(_) => Direction::Received,
             ActivityKind::Sent(_) | ActivityKind::SentElsewhere(_) | ActivityKind::Order(_) => {
                 Direction::Sent
             }
@@ -34,9 +37,13 @@ impl List {
             && (self.direction == Direction::All || self.direction == direction)
     }
 
-    fn hidden(&self, activity: &Activity) -> bool {
+    fn hidden(&self, ctx: &Ctx<'_>, activity: &Activity) -> bool {
         !self.show_spam
-            && matches!(&activity.kind, ActivityKind::Received(arrival) if !arrival.cautions.is_empty())
+            && match &activity.kind {
+                ActivityKind::Received(arrival) => !arrival.cautions.is_empty(),
+                ActivityKind::NftArrived(arrival) => !ctx.nft_shown(arrival),
+                _ => false,
+            }
     }
 }
 
@@ -77,7 +84,7 @@ impl Screen for List {
             .activity
             .iter()
             .enumerate()
-            .filter(|(_, activity)| self.matches(activity) && !self.hidden(activity))
+            .filter(|(_, activity)| self.matches(activity) && !self.hidden(ctx, activity))
             .collect();
         let total = listed.len();
         let rows: Vec<Row> = listed
@@ -90,7 +97,7 @@ impl Screen for List {
             .data
             .activity
             .iter()
-            .filter(|activity| self.matches(activity) && self.hidden(activity))
+            .filter(|activity| self.matches(activity) && self.hidden(ctx, activity))
             .count();
         let empty = if ctx.data.activity.is_empty() {
             text::NO_ACTIVITY.to_owned()
@@ -187,6 +194,13 @@ fn facts(ctx: &Ctx<'_>, activity: &Activity) -> Facts {
                 .word(text::RECEIVED)
                 .wallet(ctx, activity.wallet, &arrival.received.to);
         }
+        ActivityKind::NftArrived(arrival) => {
+            facts
+                .asset(ctx, &arrival.asset)
+                .word(arrival.collection.as_deref().unwrap_or_default())
+                .word(text::RECEIVED)
+                .wallet(ctx, activity.wallet, &arrival.address);
+        }
         ActivityKind::Order(swap) => {
             facts
                 .amount(swap.amount)
@@ -249,6 +263,20 @@ fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
             cell(text::swap_status(swap), swap_tone(&swap.status)),
             false,
         ),
+        ActivityKind::NftArrived(arrival) => {
+            let shown = ctx.nft_shown(arrival);
+            (
+                "+",
+                (one(), &arrival.asset),
+                arrival.collection.clone().unwrap_or_default(),
+                if shown {
+                    cell(text::RECEIVED, Tone::Good)
+                } else {
+                    cell(text::HIDDEN_NFT_ROW, Tone::Muted)
+                },
+                false,
+            )
+        }
         ActivityKind::Received(arrival) => {
             let warn = !arrival.cautions.is_empty();
             (
@@ -285,11 +313,16 @@ fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
     }
 }
 
+fn one() -> Amount {
+    Amount::new(U256::from(1u8), 0).unwrap_or_default()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Key {
     Sent(NetworkId, String),
     Moved(NetworkId, String, u64, bool),
     Order(NetworkId, String),
+    Nft(Address, AssetId, u64),
 }
 
 fn key(activity: &Activity) -> Key {
@@ -303,6 +336,9 @@ fn key(activity: &Activity) -> Key {
             Key::Moved(moved.network.clone(), moved.id.clone(), moved.index, true)
         }
         ActivityKind::Order(swap) => Key::Order(swap.network.clone(), swap.id.clone()),
+        ActivityKind::NftArrived(arrival) => {
+            Key::Nft(arrival.address, arrival.asset.clone(), arrival.time)
+        }
     }
 }
 
@@ -330,18 +366,24 @@ impl Transfer {
             .find(|activity| key(activity) == self.key)
     }
 
-    fn id(&self) -> (&NetworkId, &str) {
+    fn id(&self) -> Option<(&NetworkId, &str)> {
         match &self.key {
             Key::Sent(network, id) | Key::Moved(network, id, ..) | Key::Order(network, id) => {
-                (network, id)
+                Some((network, id))
             }
+            Key::Nft(..) => None,
         }
     }
 }
 
 impl Screen for Transfer {
     fn act(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
-        let (network, id) = self.id();
+        if let Key::Nft(address, asset, _) = &self.key {
+            return nft_action(ctx, *address, asset, action);
+        }
+        let Some((network, id)) = self.id() else {
+            return Reply::default();
+        };
         match action {
             Action::Copy => Reply::request(Request::Copy(id.to_owned())),
             Action::Explore => ctx.network(network).map_or_else(Reply::default, |network| {
@@ -354,7 +396,6 @@ impl Screen for Transfer {
     }
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
-        let (network, id) = self.id();
         let Some(activity) = self.find(ctx) else {
             return Page {
                 id: PageId::Transfer,
@@ -362,6 +403,11 @@ impl Screen for Transfer {
                 text: Some(text::LOADING.to_owned()),
                 ..Page::default()
             };
+        };
+        let (network, id) = match (&activity.kind, self.id()) {
+            (ActivityKind::NftArrived(arrival), _) => return arrival_page(ctx, arrival),
+            (_, Some(found)) => found,
+            (_, None) => return Page::default(),
         };
         let mut buttons = vec![
             button(text::COPY_ID, Action::Copy),
@@ -392,6 +438,7 @@ impl Screen for Transfer {
                         .collect(),
                 )
             }
+            ActivityKind::NftArrived(_) => return Page::default(),
             ActivityKind::Received(arrival) => (
                 text::RECEIVED_TITLE,
                 ctx.exact(
@@ -496,6 +543,75 @@ fn sent_page(
         lines,
         notes,
     )
+}
+
+fn nft_action(ctx: &Ctx<'_>, address: Address, asset: &AssetId, action: &Action) -> Reply {
+    let network = asset.network();
+    let shown = asset
+        .nft()
+        .map(|nft| ctx.shown(nft.address(), network))
+        .unwrap_or_default();
+    match action {
+        Action::Copy => Reply::request(Request::Copy(shown)),
+        Action::Explore => ctx.network(network).map_or_else(Reply::default, |network| {
+            Reply::request(Request::Open(network.explorer.address_url(&shown)))
+        }),
+        Action::Go(Go::Nft(_)) => ctx
+            .data
+            .collectibles
+            .items
+            .iter()
+            .find(|item| item.nft.asset == *asset && item.address == address)
+            .map_or_else(Reply::default, Detail::open),
+        _ => Reply::default(),
+    }
+}
+
+fn arrival_page(ctx: &Ctx<'_>, arrival: &NftArrival) -> Page {
+    let network = &arrival.network;
+    let held = ctx
+        .data
+        .collectibles
+        .items
+        .iter()
+        .any(|item| item.nft.asset == arrival.asset && item.address == arrival.address);
+    let mut lines = Vec::new();
+    if let Some(collection) = &arrival.collection {
+        lines.push(line(text::COLLECTION, collection.clone()));
+    }
+    lines.extend([
+        line(
+            text::TO,
+            ctx.owner(&arrival.address).map_or_else(
+                || format::short(&ctx.shown(&arrival.address, network)),
+                |wallet| {
+                    text::owner(
+                        &ctx.owner_label(wallet, &arrival.address),
+                        &format::short(&ctx.shown(&arrival.address, network)),
+                    )
+                },
+            ),
+        ),
+        network_line(ctx, network),
+        line(text::FOUND, format::when(arrival.time)),
+    ]);
+    let mut buttons = Vec::new();
+    if held {
+        buttons.push(button(text::OPEN_NFT, Action::Go(Go::Nft(0))));
+    }
+    buttons.extend([
+        button(text::COPY_NFT_ID, Action::Copy),
+        button(text::OPEN_EXPLORER, Action::Explore),
+    ]);
+    Page {
+        id: PageId::Transfer,
+        title: text::NFT_RECEIVED_TITLE.to_owned(),
+        headline: Some(ctx.symbol(&arrival.asset)),
+        lines,
+        notes: vec![note(Level::Info, text::NFT_FOUND_NOTE)],
+        buttons,
+        ..Page::default()
+    }
 }
 
 fn replace(network: &NetworkId, id: &str, how: Replace) -> Reply {

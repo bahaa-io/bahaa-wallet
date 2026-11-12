@@ -18,8 +18,8 @@ pub use bahaa_crypto::{
 };
 pub use bahaa_market::{MarketConfig, MarketError, Quote, Snapshot, Status};
 pub use bahaa_store::{
-    Contact, CustomToken, Mark, Movement, Outgoing, Received, Scan, SentKind, SentStatus, SentTx,
-    StoreError,
+    Contact, CustomToken, Mark, Movement, NftArrival, Outgoing, Received, Scan, SentKind,
+    SentStatus, SentTx, StoreError,
 };
 pub use bahaa_types::{
     Address, AddressError, Amount, AmountError, AssetId, BitcoinScript, BitcoinType, ChainFamily,

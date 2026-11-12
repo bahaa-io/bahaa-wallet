@@ -893,6 +893,14 @@ pub(crate) fn hidden_choice(count: usize) -> String {
     format!("{HIDDEN_NFTS} ({count})")
 }
 
+pub(crate) fn nft_arrived(name: &str) -> String {
+    format!("New NFT: {name}")
+}
+
+pub(crate) fn nfts_arrived(count: usize) -> String {
+    format!("{count} new NFTs")
+}
+
 pub(crate) fn nft_count(count: usize) -> String {
     match count {
         1 => "1 NFT".to_owned(),
@@ -901,6 +909,11 @@ pub(crate) fn nft_count(count: usize) -> String {
 }
 
 pub(crate) const NFT_GONE: &str = "This NFT is no longer in this wallet.";
+pub(crate) const NFT_RECEIVED_TITLE: &str = "NFT received";
+pub(crate) const FOUND: &str = "Found";
+pub(crate) const OPEN_NFT: &str = "Open the NFT";
+pub(crate) const HIDDEN_NFT_ROW: &str = "Hidden NFT";
+pub(crate) const NFT_FOUND_NOTE: &str = "The wallet noticed this NFT when it checked your NFTs, so the time is when it was found, not the moment it arrived.";
 pub(crate) const COPY_NFT_ID: &str = "Copy NFT id";
 
 fn named(networks: &[String]) -> String {

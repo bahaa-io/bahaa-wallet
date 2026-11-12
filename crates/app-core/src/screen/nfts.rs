@@ -9,15 +9,7 @@ use crate::view::{Cell, Item, Level, Line, Note, Page, PageId, Request, Row, Tab
 use crate::{format, text};
 
 pub(crate) fn nft_name(item: &Collectible) -> String {
-    item.nft
-        .name
-        .clone()
-        .or_else(|| {
-            item.details
-                .as_ref()
-                .and_then(|details| details.name.clone())
-        })
-        .unwrap_or_else(|| text::UNNAMED_NFT.to_owned())
+    item.label().unwrap_or_else(|| text::UNNAMED_NFT.to_owned())
 }
 
 pub(crate) fn view_group(nfts: bool) -> Item {

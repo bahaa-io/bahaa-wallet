@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use bahaa_engine::{
     Account, Activity, ActivityKind, Address, Amount, AssetId, ChainFamily, Coin, Collectible,
-    Collectibles, Contact, CustomToken, Event, Fiat, Network, NetworkId, Portfolio, Price,
-    Registry, SentStatus, SentTx, Settings, State, Status, WalletId, WalletInfo, WalletKind,
+    Collectibles, Contact, CustomToken, Event, Fiat, Network, NetworkId, NftArrival, Portfolio,
+    Price, Registry, SentStatus, SentTx, Settings, State, Status, WalletId, WalletInfo, WalletKind,
     swap::{SwapRecord, SwapStatus},
 };
 
@@ -122,16 +122,42 @@ impl Ctx<'_> {
 
     pub(crate) fn symbol(&self, asset: &AssetId) -> String {
         if asset.is_nft() {
-            return self
-                .data
-                .collectibles
-                .items
-                .iter()
-                .find(|item| item.nft.asset == *asset)
-                .map_or_else(|| text::NFT.to_owned(), screen::nft_name);
+            return self.nft_name(asset);
         }
         self.coin(asset)
             .map_or_else(|| text::UNKNOWN.to_owned(), |coin| coin.symbol.clone())
+    }
+
+    fn nft_name(&self, asset: &AssetId) -> String {
+        let held = self
+            .data
+            .collectibles
+            .items
+            .iter()
+            .find(|item| item.nft.asset == *asset)
+            .map(screen::nft_name);
+        let kept = || {
+            self.data
+                .activity
+                .iter()
+                .find_map(|activity| match &activity.kind {
+                    ActivityKind::Sent(tx) if tx.asset == *asset => tx.name.clone(),
+                    ActivityKind::NftArrived(arrival) if arrival.asset == *asset => {
+                        arrival.name.clone()
+                    }
+                    _ => None,
+                })
+        };
+        held.or_else(kept).unwrap_or_else(|| text::NFT.to_owned())
+    }
+
+    pub(crate) fn nft_shown(&self, arrival: &NftArrival) -> bool {
+        self.data
+            .collectibles
+            .items
+            .iter()
+            .find(|item| item.nft.asset == arrival.asset && item.address == arrival.address)
+            .map_or(arrival.shown, |item| item.shown)
     }
 
     pub(crate) fn collectible(
@@ -686,6 +712,27 @@ impl Core {
                 vec![Effect::Load(Load::Activity)]
             }
             Event::SentElsewhere(_) => vec![Effect::Load(Load::Activity)],
+            Event::NftArrived(arrivals) => {
+                let shown: Vec<String> = {
+                    let ctx = self.ctx();
+                    arrivals
+                        .iter()
+                        .filter(|arrival| ctx.nft_shown(arrival))
+                        .map(|arrival| {
+                            arrival
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| text::UNNAMED_NFT.to_owned())
+                        })
+                        .collect()
+                };
+                match shown.as_slice() {
+                    [] => {}
+                    [name] => self.toast(Level::Success, text::nft_arrived(name)),
+                    many => self.toast(Level::Success, text::nfts_arrived(many.len())),
+                }
+                vec![Effect::Load(Load::Activity)]
+            }
             Event::SwapUpdated(swap) => {
                 self.swapped(*swap);
                 vec![Effect::Load(Load::Activity)]

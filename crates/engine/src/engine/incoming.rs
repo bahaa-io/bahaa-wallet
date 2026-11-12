@@ -208,6 +208,7 @@ mod tests {
             replaces: None,
             kind: bahaa_store::SentKind::Transfer,
             private: false,
+            name: None,
         }
     }
 

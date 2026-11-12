@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
 use bahaa_store::{
-    Contact, CustomToken, Fetched, Listing, Mark, Marked, Outgoing, Pictured, Received,
+    Contact, CustomToken, Fetched, Listing, Mark, Marked, NftArrival, Outgoing, Pictured, Received,
     SavedPrices, SavedQuote, Scan, SentKind, SentStatus, SentTx, Store, StoreError, StoreKey,
     SwapRecord, SwapStatus, TrustedBlock,
 };
@@ -205,6 +205,7 @@ fn sent(id: &str, status: SentStatus) -> SentTx {
         replaces: None,
         kind: SentKind::Transfer,
         private: false,
+        name: None,
     }
 }
 
@@ -915,4 +916,66 @@ fn pictures_are_sealed_validated_and_forgotten() {
     assert_eq!(kept, [pictured(1, Some(painted)), pictured(2, None)]);
     store.forget_pictured(&ape(1).asset).unwrap();
     assert_eq!(store.pictured().unwrap(), [pictured(2, None)]);
+}
+
+fn arrived(time: u64, shown: bool) -> NftArrival {
+    let ape = ape(1);
+    NftArrival {
+        network: "ethereum".parse().unwrap(),
+        address: Address::parse(
+            ChainFamily::Evm,
+            "0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc",
+        )
+        .unwrap(),
+        asset: ape.asset,
+        name: Some("Ape #1".to_owned()),
+        collection: Some("Apes".to_owned()),
+        time,
+        shown,
+    }
+}
+
+#[test]
+fn arrivals_and_sent_names_are_sealed_and_validated() {
+    let scratch = Scratch::new();
+    {
+        let store = unlocked(&scratch);
+        store.save_arrival(&arrived(10, true)).unwrap();
+        store.save_arrival(&arrived(20, false)).unwrap();
+        let mut elsewhere = arrived(30, true);
+        elsewhere.network = "optimism".parse().unwrap();
+        let mut coin = arrived(30, true);
+        coin.asset = AssetId::Native("ethereum".parse().unwrap());
+        let mut hidden = arrived(30, true);
+        hidden.name = Some("a\u{202e}b".to_owned());
+        for bad in [elsewhere, coin, hidden] {
+            assert!(matches!(
+                store.save_arrival(&bad),
+                Err(StoreError::Invalid(_))
+            ));
+        }
+        let mut named = sent("0xaa", SentStatus::Confirmed);
+        named.name = Some("Ape #1".to_owned());
+        assert!(matches!(
+            store.save_sent(&named),
+            Err(StoreError::Invalid(_))
+        ));
+        named.asset = ape(1).asset;
+        store.save_sent(&named).unwrap();
+        store.lock();
+        assert_eq!(store.arrivals(), Err(StoreError::Locked));
+    }
+    let store = unlocked(&scratch);
+    let mut kept = store.arrivals().unwrap();
+    kept.sort_by_key(|arrival| arrival.time);
+    assert_eq!(kept, [arrived(10, true), arrived(20, false)]);
+    store.forget_arrival(&arrived(10, true)).unwrap();
+    assert_eq!(store.arrivals().unwrap(), [arrived(20, false)]);
+    let names: Vec<_> = store
+        .sent()
+        .unwrap()
+        .into_iter()
+        .filter_map(|tx| tx.name)
+        .collect();
+    assert_eq!(names, ["Ape #1"]);
 }

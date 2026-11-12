@@ -546,7 +546,6 @@ impl Worker {
             network,
             from: decoded.from,
             to: decoded.to,
-            asset: decoded.asset,
             amount: decoded.amount,
             sequence: decoded.sequence,
             fee_max: draft.fee.max(),
@@ -561,6 +560,8 @@ impl Worker {
             replaces: draft.replaces.clone(),
             kind: SentKind::Transfer,
             private: false,
+            name: self.nft_label(&decoded.asset),
+            asset: decoded.asset,
         })
     }
 
@@ -610,6 +611,7 @@ impl Worker {
                     replaces: None,
                     kind,
                     private: true,
+                    name: None,
                 };
                 Ok((record, signed))
             })
@@ -935,6 +937,7 @@ mod tests {
             replaces: None,
             kind: SentKind::Transfer,
             private: false,
+            name: None,
         }
     }
 

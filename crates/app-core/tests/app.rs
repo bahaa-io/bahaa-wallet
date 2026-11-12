@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bahaa_app_core::{
@@ -1265,24 +1266,22 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn nft_call(to: &str, data: &str) -> Json {
-    let (name, id) = match to {
-        BAYC => ("BoredApeYachtClub", 7_090u64),
-        PLAIN_CATS => ("Plain Cats", 3),
+    let (name, ids): (&str, &[u64]) = match to {
+        BAYC => ("BoredApeYachtClub", &[7_090, 7_091]),
+        PLAIN_CATS => ("Plain Cats", &[3, 4]),
         _ => return Json::Null,
     };
     let owner = format!("0x{:0>64}", HARDHAT_0[2..].to_ascii_lowercase());
     match data {
         "0x06fdde03" => json!(abi_text(name)),
         d if d == format!("0x01ffc9a780ac58cd{}", "0".repeat(56)) => json!(format!("0x{:064x}", 1)),
-        d if d == format!("0x6352211e{id:064x}") => json!(owner),
-        d if d == format!("0xc87b56dd{id:064x}") => {
-            json!(abi_text(&format!("https://example.com/{id}.json")))
-        }
+        d if ids.iter().any(|id| d == format!("0x6352211e{id:064x}")) => json!(owner),
+        d if d.starts_with("0xc87b56dd") => json!(abi_text("https://example.com/1.json")),
         _ => Json::Null,
     }
 }
 
-async fn nft_registry() -> Registry {
+async fn nft_registry(grown: Arc<AtomicBool>) -> Registry {
     let node = bahaa_testkit::serve(|request| {
         let call = request.json();
         let result = match call["method"].as_str() {
@@ -1302,12 +1301,18 @@ async fn nft_registry() -> Registry {
         Reply::json(200, &json!({"jsonrpc": "2.0", "id": 1, "result": result}))
     })
     .await;
-    let listing = bahaa_testkit::serve(|request| {
+    let listing = bahaa_testkit::serve(move |request| {
         let item = |contract: &str, id: u64| {
             json!({"id": id.to_string(), "token_type": "ERC-721", "value": "1", "token": {"address_hash": contract, "name": "Listed", "reputation": "ok"}})
         };
         if request.path().contains("/nft") {
-            Reply::json(200, &json!({"items": [item(BAYC, 7_090), item(PLAIN_CATS, 3)], "next_page_params": null}))
+            {
+                let mut items = vec![item(BAYC, 7_090), item(PLAIN_CATS, 3)];
+                if grown.load(Ordering::SeqCst) {
+                    items.extend([item(BAYC, 7_091), item(PLAIN_CATS, 4)]);
+                }
+                Reply::json(200, &json!({"items": items, "next_page_params": null}))
+            }
         } else {
             Reply::json(404, &json!({"message": "not here"}))
         }
@@ -1363,7 +1368,8 @@ fn buttons(view: &View) -> Vec<String> {
 #[tokio::test]
 async fn nfts_from_known_collections_show_and_the_rest_wait_in_hidden() {
     let scratch = Scratch::new();
-    let (app, mut requests, mut view) = imported_on(&scratch, nft_registry().await, false).await;
+    let (app, mut requests, mut view) =
+        imported_on(&scratch, nft_registry(Arc::default()).await, false).await;
     app.act(Action::Pick(Pick::Showing(Showing::Nfts)));
     let shown = until(&mut view, |current| {
         current.page.id == PageId::Nfts && rows(current).len() == 1
@@ -1371,7 +1377,12 @@ async fn nfts_from_known_collections_show_and_the_rest_wait_in_hidden() {
     .await;
     assert_eq!(
         rows(&shown),
-        [["Unnamed NFT", "Bored Ape Yacht Club", "Ethereum", ""]]
+        [[
+            "Bored Ape Yacht Club #7090",
+            "Bored Ape Yacht Club",
+            "Ethereum",
+            ""
+        ]]
     );
     assert_eq!(shown.page.headline.as_deref(), Some("1 NFT"));
     let hidden_choice = shown
@@ -1448,11 +1459,99 @@ async fn nfts_from_known_collections_show_and_the_rest_wait_in_hidden() {
     at(&mut view, PageId::Nft).await;
     app.act(Action::Go(Go::SendAsset));
     let compose = at(&mut view, PageId::Compose).await;
-    assert_eq!(compose.page.title, "Send Unnamed NFT");
+    assert_eq!(compose.page.title, "Send Plain Cats #3");
     let fields: Vec<Field> = compose.page.inputs().map(|input| input.field).collect();
     assert_eq!(fields, [Field::To]);
     app.act(Action::Go(Go::Tab(Tab::Portfolio)));
     let coins = at(&mut view, PageId::Portfolio).await;
     assert!(coins.page.groups().any(|group| group.label == "View"));
+
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_new_nft_is_announced_and_listed_in_activity_and_spam_stays_hidden() {
+    let scratch = Scratch::new();
+    let grown = Arc::new(AtomicBool::new(false));
+    let (app, _requests, mut view) =
+        imported_on(&scratch, nft_registry(Arc::clone(&grown)).await, false).await;
+    app.act(Action::Pick(Pick::Showing(Showing::Nfts)));
+    until(&mut view, |current| {
+        current.page.id == PageId::Nfts && rows(current).len() == 1
+    })
+    .await;
+    grown.store(true, Ordering::SeqCst);
+    app.act(Action::Refresh);
+    let noticed = until(&mut view, |current| {
+        current
+            .toasts
+            .iter()
+            .any(|toast| toast.text == "New NFT: Bored Ape Yacht Club #7091")
+    })
+    .await;
+    assert!(
+        !noticed
+            .toasts
+            .iter()
+            .any(|toast| toast.text.contains("Plain Cats"))
+    );
+    app.act(Action::Go(Go::Tab(Tab::Activity)));
+    let activity = until(&mut view, |current| {
+        current.page.id == PageId::Activity
+            && rows(current)
+                .iter()
+                .any(|row| row[1] == "+1 Bored Ape Yacht Club #7091")
+    })
+    .await;
+    assert!(
+        !rows(&activity)
+            .iter()
+            .any(|row| row[1].contains("Plain Cats"))
+    );
+    assert!(
+        activity
+            .page
+            .notes
+            .iter()
+            .any(|note| note.text == "1 flagged transfer is hidden")
+    );
+    let position = rows(&activity)
+        .iter()
+        .position(|row| row[1] == "+1 Bored Ape Yacht Club #7091")
+        .unwrap();
+    app.act(
+        activity.page.table.as_ref().unwrap().rows[position]
+            .open
+            .clone()
+            .unwrap(),
+    );
+    let found = at(&mut view, PageId::Transfer).await;
+    assert_eq!(found.page.title, "NFT received");
+    assert_eq!(
+        found.page.headline.as_deref(),
+        Some("Bored Ape Yacht Club #7091")
+    );
+    assert_eq!(
+        line_of(&found, "Collection").as_deref(),
+        Some("Bored Ape Yacht Club")
+    );
+    assert_eq!(buttons(&found)[0], "Open the NFT");
+    app.act(Action::Go(Go::Nft(0)));
+    let opened = at(&mut view, PageId::Nft).await;
+    assert_eq!(opened.page.title, "Bored Ape Yacht Club #7091");
+    app.act(Action::Back);
+    at(&mut view, PageId::Transfer).await;
+    app.act(Action::Back);
+    at(&mut view, PageId::Activity).await;
+    app.act(Action::Toggle(Toggle::HideSpam));
+    let everything = until(&mut view, |current| {
+        rows(current).iter().any(|row| row[1] == "+1 Plain Cats #4")
+    })
+    .await;
+    let hidden = rows(&everything)
+        .into_iter()
+        .find(|row| row[1] == "+1 Plain Cats #4")
+        .unwrap();
+    assert_eq!(hidden[4], "Hidden NFT");
     app.shutdown().await.unwrap();
 }

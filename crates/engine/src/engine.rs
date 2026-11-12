@@ -19,8 +19,8 @@ use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{
-    Contact, CustomToken, Fetched, Mark, Outgoing, Pictured, Received, Scan, SentTx, Store,
-    StoreError, StoreKey, SwapRecord, TrustedBlock,
+    Contact, CustomToken, Fetched, Mark, NftArrival, Outgoing, Pictured, Received, Scan, SentTx,
+    Store, StoreError, StoreKey, SwapRecord, TrustedBlock,
 };
 use bahaa_swap::{Providers, SwapError};
 use bahaa_types::{Address, AssetId, BitcoinType, ChainFamily, NetworkId, SolanaPath, TonContract};
@@ -131,6 +131,7 @@ pub enum Event {
     ContactsChanged(Vec<Contact>),
     SentElsewhere(Vec<Outgoing>),
     TokensChanged(Vec<CustomToken>),
+    NftArrived(Vec<NftArrival>),
 }
 
 type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
@@ -1253,6 +1254,7 @@ impl Worker {
         let marks = self.store.marks()?;
         let fetched = self.store.fetched()?;
         let pictured = self.store.pictured()?;
+        let arrivals = self.store.arrivals()?;
         chains::know(&self.chains, &custom);
         self.custom = Arc::new(custom);
         self.history = history;
@@ -1264,6 +1266,7 @@ impl Worker {
         self.nft.marks = marks;
         self.nft.fetched = fetched;
         self.nft.pictured = pictured;
+        self.nft.arrivals = arrivals;
         self.saved = prices::saved(&self.store, self.settings.fiat.price_base());
         self.saved_at = None;
         self.unsaved = false;

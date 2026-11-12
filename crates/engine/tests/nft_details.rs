@@ -2,20 +2,24 @@
 
 mod common;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bahaa_config::{Endpoint, Feature, KnownCollection, Protocol, Registry};
 use bahaa_crypto::SecretString;
-use bahaa_engine::{Collectible, Collectibles, Details, Engine, Fake, Gateways, Mark, Trust};
+use bahaa_engine::{
+    ActivityKind, Collectible, Collectibles, Details, Engine, Event, Fake, Gateways, Mark,
+    SendRequest, Spend, Trust,
+};
 use bahaa_testkit::Reply;
-use bahaa_types::{Address, ChainFamily};
-use common::{Scratch, config, failure, result, until};
+use bahaa_types::{Address, Amount, ChainFamily};
+use common::{HARDHAT, HARDHAT_1, Scratch, config, failure, result, until};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 use url::Url;
 
-const OWNER: &str = "0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc";
+const OWNER: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
 const KNOWN: &str = "0x1111111111111111111111111111111111111111";
 const COPY: &str = "0x2222222222222222222222222222222222222222";
 const PLAIN: &str = "0x3333333333333333333333333333333333333333";
@@ -37,20 +41,21 @@ fn text(value: &str) -> String {
 }
 
 fn contract(to: &str, data: &str) -> Value {
-    let (name, id) = match to {
-        KNOWN => ("BAT", 1),
-        COPY => ("Bored Apes Test Club", 2),
-        PLAIN => ("Plain Cats", 3),
+    let (name, ids): (&str, &[u64]) = match to {
+        KNOWN => ("BAT", &[1, 4]),
+        COPY => ("Bored Apes Test Club", &[2]),
+        PLAIN => ("Plain Cats", &[3, 5]),
         _ => return failure(3, "execution reverted"),
     };
     let supports_721 = format!("0x01ffc9a780ac58cd{}", "0".repeat(56));
     match data {
         "0x06fdde03" => result(json!(text(name))),
         d if d == supports_721 => result(json!(format!("0x{}", word(1)))),
-        d if d == format!("0x6352211e{}", word(id)) => {
+        d if ids.iter().any(|id| d == format!("0x6352211e{}", word(*id))) => {
             result(json!(format!("0x{:0>64}", &OWNER[2..])))
         }
-        d if d == format!("0xc87b56dd{}", word(id)) => {
+        d if d.starts_with("0xc87b56dd") => {
+            let id = u64::from_str_radix(&d[10..], 16).unwrap_or_default();
             result(json!(text(&format!("ipfs://{CID}/{id}"))))
         }
         _ => failure(3, "execution reverted"),
@@ -66,7 +71,15 @@ fn answer(call: &Value) -> Value {
             params[0]["data"].as_str().unwrap(),
         ),
         "eth_blockNumber" => result(json!("0x100")),
-        "eth_getBalance" | "eth_getTransactionCount" => result(json!("0x0")),
+        "eth_getBalance" => result(json!("0xde0b6b3a7640000")),
+        "eth_getTransactionCount" => result(json!("0x0")),
+        "eth_feeHistory" => {
+            result(json!({"oldestBlock": "0x1", "baseFeePerGas": ["0x3b9aca00", "0x3b9aca00"]}))
+        }
+        "eth_maxPriorityFeePerGas" => result(json!("0x3b9aca00")),
+        "eth_estimateGas" => result(json!("0x186a0")),
+        "eth_getCode" => result(json!("0x")),
+        "eth_sendRawTransaction" => result(json!(format!("0x{}", "ab".repeat(32)))),
         "eth_getLogs" => result(json!([])),
         _ => failure(-32601, "no such method"),
     }
@@ -96,14 +109,15 @@ async fn gateway(asked: Asked, broken: bool) -> Url {
     url.join("ipfs/").unwrap()
 }
 
-async fn registry() -> Registry {
+async fn registry(grown: Arc<AtomicBool>) -> Registry {
     let rpc = common::node(|call| (answer(call), Duration::ZERO)).await;
-    let listing = bahaa_testkit::serve(|request| {
+    let listing = bahaa_testkit::serve(move |request| {
         if request.path().contains("/nft") {
-            Reply::json(
-                200,
-                &json!({"items": [listed(KNOWN, 1), listed(COPY, 2), listed(PLAIN, 3)], "next_page_params": null}),
-            )
+            let mut items = vec![listed(KNOWN, 1), listed(COPY, 2), listed(PLAIN, 3)];
+            if grown.load(Ordering::SeqCst) {
+                items.extend([listed(KNOWN, 4), listed(PLAIN, 5)]);
+            }
+            Reply::json(200, &json!({"items": items, "next_page_params": null}))
         } else {
             Reply::json(404, &json!({"message": "not here"}))
         }
@@ -143,14 +157,6 @@ fn described(listed: &Collectibles, contract: &str) -> bool {
     listed.items.len() == 3 && item(listed, contract).details.is_some()
 }
 
-async fn quiet(nfts: &mut watch::Receiver<Collectibles>) {
-    until(nfts, |listed| {
-        listed.items.len() == 3 && listed.health.iter().all(|health| !health.loading)
-    })
-    .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-}
-
 async fn started(scratch: &Scratch) -> (Engine, watch::Receiver<Collectibles>, Asked, Asked) {
     let (down, up): (Asked, Asked) = (Asked::default(), Asked::default());
     let engine = Engine::start(bahaa_engine::EngineConfig {
@@ -161,7 +167,7 @@ async fn started(scratch: &Scratch) -> (Engine, watch::Receiver<Collectibles>, A
             ],
             arweave: Vec::new(),
         }),
-        ..config(scratch, registry().await, None)
+        ..config(scratch, registry(Arc::default()).await, None)
     })
     .unwrap();
     let nfts = engine.nfts();
@@ -210,7 +216,7 @@ async fn only_shown_nfts_get_their_details_and_known_collections_are_trusted() {
         (plain.nft.trust, plain.shown, &plain.fake),
         (Trust::Unknown, false, &None)
     );
-    quiet(&mut nfts).await;
+    quiet_for(&mut nfts, 3).await;
     assert_eq!(*up.lock().unwrap(), [format!("/ipfs/{CID}/1")]);
     assert_eq!(*down.lock().unwrap(), [format!("/ipfs/{CID}/1")]);
 
@@ -235,7 +241,7 @@ async fn only_shown_nfts_get_their_details_and_known_collections_are_trusted() {
         described(listed, KNOWN) && described(listed, PLAIN)
     })
     .await;
-    quiet(&mut nfts).await;
+    quiet_for(&mut nfts, 3).await;
     assert_eq!(
         *up.lock().unwrap(),
         [format!("/ipfs/{CID}/1"), format!("/ipfs/{CID}/3")]
@@ -251,7 +257,7 @@ async fn pictures_are_read_only_when_asked_for_and_only_for_shown_nfts() {
         item(&first, KNOWN).nft.asset.clone(),
         item(&first, PLAIN).nft.asset.clone(),
     );
-    quiet(&mut nfts).await;
+    quiet_for(&mut nfts, 3).await;
     assert!(
         nfts.borrow()
             .items
@@ -266,7 +272,7 @@ async fn pictures_are_read_only_when_asked_for_and_only_for_shown_nfts() {
         (picture.width(), picture.height(), picture.pixel(1, 1)),
         (2, 2, [200, 30, 60, 255])
     );
-    quiet(&mut nfts).await;
+    quiet_for(&mut nfts, 3).await;
     assert!(item(&nfts.borrow(), PLAIN).picture.is_none());
 
     engine
@@ -286,7 +292,7 @@ async fn pictures_are_read_only_when_asked_for_and_only_for_shown_nfts() {
     .await;
     engine.want_picture(known);
     engine.want_picture(plain);
-    quiet(&mut nfts).await;
+    quiet_for(&mut nfts, 3).await;
     assert_eq!(
         *up.lock().unwrap(),
         [
@@ -300,4 +306,91 @@ async fn pictures_are_read_only_when_asked_for_and_only_for_shown_nfts() {
 
 fn item_painted(listed: &Collectibles, contract: &str) -> bool {
     listed.items.len() == 3 && item(listed, contract).picture.is_some()
+}
+
+#[tokio::test]
+async fn new_nfts_are_noted_once_and_sent_ones_keep_their_name() {
+    let scratch = Scratch::new();
+    let grown = Arc::new(AtomicBool::new(false));
+    let engine = Engine::start(config(&scratch, registry(Arc::clone(&grown)).await, None)).unwrap();
+    let mut nfts = engine.nfts();
+    let mut events = engine.events();
+    engine.create(SecretString::from("pw")).await.unwrap();
+    let wallet = engine
+        .import(SecretString::from(HARDHAT), SecretString::from(""))
+        .await
+        .unwrap();
+    quiet_for(&mut nfts, 3).await;
+    let arrived = |activity: &[bahaa_engine::Activity]| {
+        activity
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                ActivityKind::NftArrived(arrival) => {
+                    Some((arrival.name.clone(), arrival.shown, entry.wallet == wallet))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(arrived(&engine.activity().await.unwrap()), []);
+
+    grown.store(true, Ordering::SeqCst);
+    engine.refresh_nfts();
+    let noted = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(Event::NftArrived(noted)) = events.recv().await {
+                return noted;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let mut seen: Vec<_> = noted
+        .iter()
+        .map(|arrival| (arrival.name.clone(), arrival.shown))
+        .collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            (Some("Bored Apes Test #4".to_owned()), true),
+            (Some("Plain Cats #5".to_owned()), false)
+        ]
+    );
+    assert_eq!(arrived(&engine.activity().await.unwrap()).len(), 2);
+
+    engine.lock().await.unwrap();
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    until(&mut nfts, |listed| listed.items.len() == 5).await;
+    engine.refresh_nfts();
+    quiet_for(&mut nfts, 5).await;
+    let kept = arrived(&engine.activity().await.unwrap());
+    assert_eq!(kept.len(), 2);
+    assert!(kept.iter().all(|(_, _, ours)| *ours));
+
+    let item = format!("ethereum/nft/{KNOWN}/1").parse().unwrap();
+    let draft = engine
+        .prepare_send(SendRequest {
+            wallet,
+            account: 0,
+            asset: item,
+            to: Address::parse(ChainFamily::Evm, HARDHAT_1).unwrap(),
+            amount: Spend::Exact(Amount::parse("1", 0).unwrap()),
+            memo: None,
+        })
+        .await
+        .unwrap();
+    let sent = engine
+        .confirm_send(draft.id, SecretString::from("pw"))
+        .await
+        .unwrap();
+    assert_eq!(sent.name.as_deref(), Some("Bored Apes Test #1"));
+}
+
+async fn quiet_for(nfts: &mut watch::Receiver<Collectibles>, items: usize) {
+    until(nfts, |listed| {
+        listed.items.len() == items && listed.health.iter().all(|health| !health.loading)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
 }

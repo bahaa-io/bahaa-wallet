@@ -1,4 +1,4 @@
-use bahaa_store::{Outgoing, SentTx, SwapRecord};
+use bahaa_store::{NftArrival, Outgoing, SentTx, SwapRecord};
 use bahaa_types::Address;
 
 use super::{EngineError, Worker};
@@ -18,6 +18,7 @@ pub enum ActivityKind {
     SentElsewhere(Outgoing),
     Received(Arrival),
     Order(SwapRecord),
+    NftArrived(NftArrival),
 }
 
 impl Worker {
@@ -62,10 +63,18 @@ impl Worker {
                     kind: ActivityKind::Order(swap.clone()),
                 })
             });
+        let arrived = self.nft.arrivals.iter().filter_map(|arrival| {
+            Some(Activity {
+                wallet: owner(&arrival.address)?,
+                time: arrival.time,
+                kind: ActivityKind::NftArrived(arrival.clone()),
+            })
+        });
         let mut all: Vec<Activity> = sent
             .chain(elsewhere)
             .chain(received)
             .chain(orders)
+            .chain(arrived)
             .collect();
         all.sort_by_key(|activity| std::cmp::Reverse(activity.time));
         Ok(all)

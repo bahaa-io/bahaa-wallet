@@ -44,11 +44,13 @@ const NFTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("nfts")
 const MARKS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("marks");
 const DETAILS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("details");
 const PICTURES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("pictures");
+const ARRIVALS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("arrivals");
 const SEAL: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("seal");
-const SEALED: [TableDefinition<'static, &str, &[u8]>; 14] = [
+const SEALED: [TableDefinition<'static, &str, &[u8]>; 15] = [
     CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS, NAMES, SWAPS, NFTS, MARKS,
-    DETAILS, PICTURES,
+    DETAILS, PICTURES, ARRIVALS,
 ];
+pub const MAX_ARRIVALS: usize = 512;
 const CHECK: &str = "check";
 const CHECKED: &[u8] = b"bahaa store";
 pub const MAX_ACCOUNTS: usize = 20;
@@ -117,6 +119,8 @@ pub struct SentTx {
     pub kind: SentKind,
     #[serde(default)]
     pub private: bool,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +188,24 @@ pub struct Pictured {
     pub link: String,
     pub picture: Option<Picture>,
     pub at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NftArrival {
+    pub network: NetworkId,
+    pub address: Address,
+    pub asset: AssetId,
+    pub name: Option<String>,
+    pub collection: Option<String>,
+    pub time: u64,
+    pub shown: bool,
+}
+
+impl NftArrival {
+    fn key(&self) -> String {
+        format!("{}/{}/{}", self.address, self.asset, self.time)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -506,6 +528,15 @@ impl Store {
         if !memo_ok(tx.memo.as_ref()) {
             return Err(StoreError::Invalid("a memo must be short plain text"));
         }
+        if tx
+            .name
+            .as_ref()
+            .is_some_and(|name| !tx.asset.is_nft() || !is_plain_text(name, MAX_NFT_TEXT))
+        {
+            return Err(StoreError::Invalid(
+                "only an NFT has a name, as short plain text",
+            ));
+        }
         if tx.status.is_open() != tx.raw.is_some() {
             return Err(StoreError::Invalid(
                 "only a transaction still on its way keeps its signed bytes",
@@ -628,6 +659,31 @@ impl Store {
 
     pub fn forget_fetched(&self, asset: &AssetId) -> Result<(), StoreError> {
         self.delete(DETAILS, &asset.to_string()).map(|_| ())
+    }
+
+    pub fn arrivals(&self) -> Result<Vec<NftArrival>, StoreError> {
+        self.all(ARRIVALS)
+    }
+
+    pub fn save_arrival(&self, arrival: &NftArrival) -> Result<(), StoreError> {
+        let text = |text: &Option<String>| {
+            text.as_ref()
+                .is_none_or(|text| is_plain_text(text, MAX_NFT_TEXT))
+        };
+        let valid = arrival
+            .asset
+            .nft()
+            .is_some_and(|_| *arrival.asset.network() == arrival.network)
+            && text(&arrival.name)
+            && text(&arrival.collection);
+        if !valid {
+            return Err(StoreError::Invalid("not an NFT that arrived"));
+        }
+        self.put(ARRIVALS, &arrival.key(), &encode(arrival)?)
+    }
+
+    pub fn forget_arrival(&self, arrival: &NftArrival) -> Result<(), StoreError> {
+        self.delete(ARRIVALS, &arrival.key()).map(|_| ())
     }
 
     pub fn pictured(&self) -> Result<Vec<Pictured>, StoreError> {

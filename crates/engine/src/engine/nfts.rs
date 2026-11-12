@@ -4,8 +4,11 @@ use std::time::Duration;
 
 use bahaa_chain::{ChainError, Fetcher, Gateways, read_picture};
 use bahaa_config::{Network, Registry};
-use bahaa_store::{Fetched, Listing, Mark, Marked, Pictured};
-use bahaa_types::{Address, AssetId, Collection, Details, NetworkId, Nft, Picture, Trust};
+use bahaa_store::{Fetched, Listing, MAX_ARRIVALS, Mark, Marked, NftArrival, Pictured};
+use bahaa_types::{
+    Address, AssetId, Collection, Details, MAX_NFT_TEXT, NetworkId, Nft, NftId, Picture, Trust,
+    to_plain_text,
+};
 use futures_util::StreamExt;
 use futures_util::future::join_all;
 use futures_util::stream;
@@ -13,7 +16,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use super::{Notice, Worker};
+use super::{Event, Notice, Worker};
 use crate::chains::{self, AnyChain, NetworkNfts};
 use crate::{EngineError, WalletId};
 
@@ -38,6 +41,28 @@ pub struct Collectible {
     pub mark: Option<Mark>,
 }
 
+impl Collectible {
+    pub fn label(&self) -> Option<String> {
+        self.nft
+            .name
+            .clone()
+            .or_else(|| {
+                self.details
+                    .as_ref()
+                    .and_then(|details| details.name.clone())
+            })
+            .or_else(|| {
+                let collection = self.nft.collection.as_ref()?.name.clone()?;
+                Some(match self.nft.asset.nft().and_then(NftId::token) {
+                    Some(token) => format!("{collection} #{token}"),
+                    None => collection,
+                })
+            })
+            .map(|label| to_plain_text(&label, MAX_NFT_TEXT))
+            .filter(|label| !label.is_empty())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NftHealth {
     pub network: NetworkId,
@@ -58,6 +83,7 @@ pub(super) struct Nfts {
     pub(super) marks: Vec<Marked>,
     pub(super) fetched: Vec<Fetched>,
     pub(super) pictured: Vec<Pictured>,
+    pub(super) arrivals: Vec<NftArrival>,
     painting: BTreeSet<AssetId>,
     pub(super) listed: BTreeSet<NetworkId>,
     pub(super) health: Vec<NftHealth>,
@@ -80,6 +106,7 @@ impl Nfts {
             marks: Vec::new(),
             fetched: Vec::new(),
             pictured: Vec::new(),
+            arrivals: Vec::new(),
             painting: BTreeSet::new(),
             listed: BTreeSet::new(),
             health: Vec::new(),
@@ -103,6 +130,7 @@ impl Nfts {
         self.marks.clear();
         self.fetched.clear();
         self.pictured.clear();
+        self.arrivals.clear();
         self.painting.clear();
     }
 }
@@ -216,6 +244,16 @@ impl Worker {
     }
 
     pub(super) fn nfts_arrived(&mut self, update: NetworkNfts) {
+        let before: Vec<(Address, bool, BTreeSet<AssetId>)> = self
+            .nft
+            .listings
+            .iter()
+            .filter(|old| old.network == update.network)
+            .map(|old| {
+                let held = old.items.iter().map(|item| item.asset.clone()).collect();
+                (old.address, old.capped, held)
+            })
+            .collect();
         let mut problem = update.problem;
         for (address, found) in update.found {
             let listing = Listing {
@@ -244,8 +282,66 @@ impl Worker {
             health.problem = problem;
             health.checked_at = Some(update.checked_at);
         }
+        self.note_arrivals(&update.network, &before);
         self.publish_nfts();
         self.fetch_details();
+    }
+
+    fn note_arrivals(
+        &mut self,
+        network: &NetworkId,
+        before: &[(Address, bool, BTreeSet<AssetId>)],
+    ) {
+        let now = bahaa_chain::now();
+        let fresh: Vec<NftArrival> = self
+            .collectibles()
+            .into_iter()
+            .filter(|item| item.nft.asset.network() == network)
+            .filter(|item| {
+                before.iter().any(|(address, capped, held)| {
+                    *address == item.address && !capped && !held.contains(&item.nft.asset)
+                })
+            })
+            .map(|item| NftArrival {
+                network: network.clone(),
+                address: item.address,
+                name: item.label(),
+                collection: item
+                    .nft
+                    .collection
+                    .as_ref()
+                    .and_then(|collection| collection.name.clone()),
+                asset: item.nft.asset,
+                time: now,
+                shown: item.shown,
+            })
+            .collect();
+        let saved: Vec<NftArrival> = fresh
+            .into_iter()
+            .filter(|arrival| self.store.save_arrival(arrival).is_ok())
+            .collect();
+        if saved.is_empty() {
+            return;
+        }
+        self.nft.arrivals.extend(saved.iter().cloned());
+        self.nft
+            .arrivals
+            .sort_by_key(|arrival| std::cmp::Reverse(arrival.time));
+        let gone = self
+            .nft
+            .arrivals
+            .split_off(self.nft.arrivals.len().min(MAX_ARRIVALS));
+        for arrival in &gone {
+            let _ = self.store.forget_arrival(arrival);
+        }
+        let _ = self.events.send(Event::NftArrived(saved));
+    }
+
+    pub(super) fn nft_label(&self, asset: &AssetId) -> Option<String> {
+        self.collectibles()
+            .into_iter()
+            .find(|item| item.nft.asset == *asset)
+            .and_then(|item| item.label())
     }
 
     pub(super) fn listing_done(&mut self) {

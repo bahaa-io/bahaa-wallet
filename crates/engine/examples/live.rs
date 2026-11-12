@@ -492,12 +492,21 @@ impl Live {
                         swap.status
                     ),
                 ),
+                ActivityKind::NftArrived(arrival) => (
+                    &arrival.network,
+                    format!(
+                        "NFT arrived {} ({}){}",
+                        arrival.name.as_deref().unwrap_or("unnamed"),
+                        arrival.asset,
+                        if arrival.shown { "" } else { " hidden" }
+                    ),
+                ),
             };
             let memo = match &activity.kind {
                 ActivityKind::Sent(tx) => tx.memo.as_ref(),
                 ActivityKind::SentElsewhere(tx) => tx.memo.as_ref(),
                 ActivityKind::Received(arrival) => arrival.received.memo.as_ref(),
-                ActivityKind::Order(_) => None,
+                ActivityKind::Order(_) | ActivityKind::NftArrived(_) => None,
             }
             .map(|memo| format!(" memo {memo:?}"))
             .unwrap_or_default();
