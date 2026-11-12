@@ -1,6 +1,7 @@
 mod activity;
 mod contacts;
 mod networks;
+mod nfts;
 mod onboarding;
 mod portfolio;
 mod receive;
@@ -11,6 +12,7 @@ mod tokens;
 mod unlock;
 mod wallets;
 
+pub(crate) use nfts::nft_name;
 pub use onboarding::completions;
 
 use std::cmp::Ordering;
@@ -511,7 +513,7 @@ pub(crate) fn revealed(phrase: &SecretString) -> Secret {
 pub(crate) fn memo_allowed(asset: &AssetId, family: ChainFamily) -> bool {
     match family {
         ChainFamily::Ton | ChainFamily::Solana => true,
-        ChainFamily::Evm | ChainFamily::Tron => asset.contract().is_none(),
+        ChainFamily::Evm | ChainFamily::Tron => matches!(asset, AssetId::Native(_)),
         ChainFamily::Bitcoin => false,
     }
 }

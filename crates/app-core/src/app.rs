@@ -99,6 +99,7 @@ impl Runtime {
     async fn run(mut self) {
         let mut state = self.engine.watch_state();
         let mut portfolio = self.engine.portfolio();
+        let mut nfts = self.engine.nfts();
         let mut events = self.engine.events();
         let mut tick = tokio::time::interval(TICK);
         self.step(Input::State(*state.borrow_and_update()));
@@ -115,6 +116,7 @@ impl Runtime {
                 Ok(()) = portfolio.changed() => {
                     Input::Portfolio(Box::new(portfolio.borrow_and_update().clone()))
                 }
+                Ok(()) = nfts.changed() => Input::Nfts(Box::new(nfts.borrow_and_update().clone())),
                 event = events.recv() => match event {
                     Ok(event) => Input::Event(Box::new(event)),
                     Err(RecvError::Lagged(_)) => Input::Lagged,

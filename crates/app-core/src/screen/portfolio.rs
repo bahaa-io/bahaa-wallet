@@ -3,13 +3,14 @@ use std::cmp::Ordering;
 use bahaa_engine::{Amount, AssetId, Holding, WalletId};
 use ruint::aliases::U256;
 
+use super::nfts::{self, Detail};
 use super::receive::Receive;
 use super::send::{Send, Source};
 use super::{
     Screen, asset_cell, button, cell, choice, group, line, network_cell, network_line, note,
     picked_wallet, wallet_group,
 };
-use crate::action::{Action, Go, Pick, Toggle};
+use crate::action::{Action, Go, Pick, Showing, Toggle};
 use crate::core::{Ctx, Nav, Reply};
 use crate::view::{Item, Level, Note, Page, PageId, Row, Share, Table, Tone};
 use crate::{format, text};
@@ -21,6 +22,8 @@ const PERMILLE: u16 = 1000;
 pub(crate) struct Portfolio {
     filter: Option<WalletId>,
     show_empty: bool,
+    nfts: bool,
+    hidden: bool,
 }
 
 struct Summary {
@@ -85,6 +88,13 @@ impl Screen for Portfolio {
         match action {
             Action::Pick(Pick::Wallet(position)) => self.filter = picked_wallet(ctx, *position),
             Action::Toggle(Toggle::HideEmpty) => self.show_empty = !self.show_empty,
+            Action::Pick(Pick::Showing(showing)) => self.nfts = *showing == Showing::Nfts,
+            Action::Toggle(Toggle::HiddenNfts) => self.hidden = !self.hidden,
+            Action::Go(Go::Nft(row)) => {
+                if let Some(item) = nfts::listed(ctx, self.filter, self.hidden).get(*row) {
+                    return Detail::open(item);
+                }
+            }
             Action::Go(Go::Asset(row)) => {
                 if let Some(summary) = self.summaries(ctx).into_iter().nth(*row) {
                     return Reply::nav(Nav::Push(Box::new(Asset {
@@ -99,6 +109,11 @@ impl Screen for Portfolio {
     }
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
+        let mut form = vec![nfts::view_group(self.nfts)];
+        form.extend(wallet_group(ctx, self.filter).map(Item::from));
+        if self.nfts {
+            return nfts::page(ctx, self.filter, self.hidden, form);
+        }
         let summaries = self.summaries(ctx);
         let total = summaries
             .iter()
@@ -122,10 +137,6 @@ impl Screen for Portfolio {
                 open: Some(Action::Go(Go::Asset(position))),
                 warn: false,
             })
-            .collect();
-        let mut form: Vec<Item> = wallet_group(ctx, self.filter)
-            .into_iter()
-            .map(Item::from)
             .collect();
         form.push(
             group(

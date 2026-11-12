@@ -7,6 +7,7 @@ use crate::hints;
 pub(crate) enum Command {
     Act(Action),
     Qr,
+    Picture,
     Words,
     Keys,
 }
@@ -117,6 +118,13 @@ fn page_entries(view: &View, list: &mut Vec<Entry>) {
             hints::KIND_APP,
             Command::Qr,
         );
+    } else if page.picture.is_some() {
+        add(
+            list,
+            hints::SHOW_PICTURE.to_owned(),
+            hints::KIND_APP,
+            Command::Picture,
+        );
     }
     if page.secret.is_some() {
         add(
@@ -189,7 +197,7 @@ fn key(view: &View, command: &Command) -> Option<&'static str> {
             .position(|tab| tab.action == *action)
             .and_then(|index| hints::TAB_KEYS.get(index).copied())
             .or_else(|| hints::shortcut(action)),
-        Command::Qr => Some("v"),
+        Command::Qr | Command::Picture => Some("v"),
         Command::Words => Some("s"),
         Command::Keys => Some("?"),
     }

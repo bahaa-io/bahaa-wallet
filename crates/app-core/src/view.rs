@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use bahaa_engine::Color;
+use bahaa_engine::{Color, Picture};
 use zeroize::Zeroizing;
 
 use crate::action::{Action, Field};
@@ -30,6 +30,7 @@ pub struct Page {
     pub error: Option<String>,
     pub buttons: Vec<Button>,
     pub qr: Option<String>,
+    pub picture: Option<Picture>,
     pub secret: Option<Secret>,
 }
 
@@ -63,6 +64,8 @@ pub enum PageId {
     Unlock,
     Portfolio,
     Asset,
+    Nfts,
+    Nft,
     Activity,
     Transfer,
     SendFrom,

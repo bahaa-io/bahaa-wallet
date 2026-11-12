@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_engine::{
-    Account, Activity, ActivityKind, Address, Amount, AssetId, ChainFamily, Coin, Contact,
-    CustomToken, Event, Fiat, Network, NetworkId, Portfolio, Price, Registry, SentStatus, SentTx,
-    Settings, State, Status, WalletId, WalletInfo, WalletKind,
+    Account, Activity, ActivityKind, Address, Amount, AssetId, ChainFamily, Coin, Collectible,
+    Collectibles, Contact, CustomToken, Event, Fiat, Network, NetworkId, Portfolio, Price,
+    Registry, SentStatus, SentTx, Settings, State, Status, WalletId, WalletInfo, WalletKind,
     swap::{SwapRecord, SwapStatus},
 };
 
@@ -23,6 +23,7 @@ pub(crate) enum Input {
     Action(u64, Action),
     State(State),
     Portfolio(Box<Portfolio>),
+    Nfts(Box<Collectibles>),
     Event(Box<Event>),
     Lagged,
     Done(u64, Box<Outcome>),
@@ -48,6 +49,7 @@ pub(crate) struct Data {
     pub wallets: Vec<WalletInfo>,
     pub accounts: Vec<Account>,
     pub portfolio: Portfolio,
+    pub collectibles: Collectibles,
     pub activity: Vec<Activity>,
     pub contacts: Vec<Contact>,
     pub tokens: Vec<CustomToken>,
@@ -119,8 +121,28 @@ impl Ctx<'_> {
     }
 
     pub(crate) fn symbol(&self, asset: &AssetId) -> String {
+        if asset.is_nft() {
+            return self
+                .data
+                .collectibles
+                .items
+                .iter()
+                .find(|item| item.nft.asset == *asset)
+                .map_or_else(|| text::NFT.to_owned(), screen::nft_name);
+        }
         self.coin(asset)
             .map_or_else(|| text::UNKNOWN.to_owned(), |coin| coin.symbol.clone())
+    }
+
+    pub(crate) fn collectible(
+        &self,
+        wallet: WalletId,
+        address: &Address,
+        asset: &AssetId,
+    ) -> Option<&Collectible> {
+        self.data.collectibles.items.iter().find(|item| {
+            item.wallet == wallet && item.address == *address && item.nft.asset == *asset
+        })
     }
 
     pub(crate) fn native_symbol(&self, network: &NetworkId) -> String {
@@ -375,6 +397,10 @@ impl Core {
             Input::State(state) => self.state(state),
             Input::Portfolio(portfolio) => {
                 self.data.portfolio = *portfolio;
+                Vec::new()
+            }
+            Input::Nfts(collectibles) => {
+                self.data.collectibles = *collectibles;
                 Vec::new()
             }
             Input::Event(event) => self.event(*event),

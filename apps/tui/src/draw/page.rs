@@ -1,10 +1,11 @@
-use bahaa_app_core::{Page, View};
+use bahaa_app_core::{Page, Picture, View};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
 use super::parts::{self, Part, Sink, Sizes};
+use super::picture;
 use super::qr::{Code, Scale};
 use crate::hints;
 use crate::theme;
@@ -14,6 +15,49 @@ const MAX_WIDTH: u16 = 104;
 const MIN_TABLE: u16 = 10;
 const BESIDE_QR: u16 = 46;
 const BESIDE_SCALE: Scale = Scale::Half;
+const BESIDE_PICTURE: u16 = 32;
+
+enum Art<'a> {
+    Code(Code),
+    Picture(&'a Picture, u16, u16),
+}
+
+impl Art<'_> {
+    fn width(&self) -> u16 {
+        match self {
+            Self::Code(code) => code.width(BESIDE_SCALE),
+            Self::Picture(_, width, _) => *width,
+        }
+    }
+
+    fn height(&self) -> u16 {
+        match self {
+            Self::Code(code) => code.height(BESIDE_SCALE),
+            Self::Picture(_, _, height) => *height,
+        }
+    }
+
+    fn draw(&self, buffer: &mut Buffer, area: Rect) {
+        match self {
+            Self::Code(code) => code.draw(buffer, area, BESIDE_SCALE),
+            Self::Picture(shown, ..) => {
+                picture::draw(shown, buffer, area, theme::base().bg.unwrap_or_default());
+            }
+        }
+    }
+}
+
+fn beside(page: &Page, area: Rect) -> Option<Art<'_>> {
+    let room = area.width.saturating_sub(BESIDE_QR + 2);
+    if let Some(code) = page.qr.as_deref().and_then(Code::new) {
+        return code
+            .fits(BESIDE_SCALE, room, area.height)
+            .then_some(Art::Code(code));
+    }
+    let shown = page.picture.as_ref()?;
+    let (width, height) = picture::fit(shown, room.min(BESIDE_PICTURE), area.height)?;
+    Some(Art::Picture(shown, width, height))
+}
 
 struct Plan {
     parts: Vec<(Part, u16, u16)>,
@@ -78,17 +122,11 @@ pub(crate) fn render(
     fill: Style,
 ) {
     let page = &view.page;
-    let beside = page.qr.as_deref().and_then(Code::new).filter(|code| {
-        code.fits(
-            BESIDE_SCALE,
-            area.width.saturating_sub(BESIDE_QR + 2),
-            area.height,
-        )
-    });
+    let beside = beside(page, area);
     let flow = Rect {
         width: beside
             .as_ref()
-            .map_or(area.width, |code| area.width - code.width(BESIDE_SCALE) - 2),
+            .map_or(area.width, |art| area.width - art.width() - 2),
         ..area
     };
     let width = flow.width.min(MAX_WIDTH);
@@ -151,16 +189,15 @@ pub(crate) fn render(
     if plan.total > scroll + flow.height {
         buffer.set_string(edge, flow.bottom() - 1, hints::MORE_BELOW, theme::accent());
     }
-    if let Some(code) = &beside {
-        code.draw(
+    if let Some(art) = &beside {
+        art.draw(
             buffer,
             Rect::new(
-                area.right() - code.width(BESIDE_SCALE),
+                area.right() - art.width(),
                 area.y,
-                code.width(BESIDE_SCALE),
-                code.height(BESIDE_SCALE),
+                art.width(),
+                art.height(),
             ),
-            BESIDE_SCALE,
         );
     }
     if let Some(cursor) = cursor

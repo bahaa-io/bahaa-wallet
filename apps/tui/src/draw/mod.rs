@@ -1,6 +1,7 @@
 mod overlay;
 mod page;
 mod parts;
+mod picture;
 mod qr;
 
 use bahaa_app_core::{Action, Banner, Level, PageId, View};
@@ -71,6 +72,7 @@ fn paint(frame: &mut Frame<'_>, view: &View, ui: &mut Ui) {
     match &ui.overlay {
         Some(Overlay::Qr) => overlay::qr(frame.buffer_mut(), area, view),
         Some(Overlay::Keys) => overlay::keys(frame.buffer_mut(), area),
+        Some(Overlay::Picture) => overlay::picture(frame.buffer_mut(), area, view),
         Some(Overlay::Menu(_)) => overlay::menu(frame, area, view, ui),
         None => {}
     }

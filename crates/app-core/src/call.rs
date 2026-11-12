@@ -1,8 +1,8 @@
 use bahaa_engine::{
     Account, Activity, Address, AssetId, BitcoinType, Caution, ChainFamily, Contact, CustomToken,
-    Draft, DraftId, Engine, EngineError, NetworkId, NewPhrase, PhraseKind, Replace, SecretString,
-    SendRequest, SentTx, Settings, SolanaPath, SwapDraft, SwapId, SwapRequest, SwapReview,
-    TonContract, WalletId, WalletInfo, swap::SwapRecord,
+    Draft, DraftId, Engine, EngineError, Mark, NetworkId, NewPhrase, PhraseKind, Replace,
+    SecretString, SendRequest, SentTx, Settings, SolanaPath, SwapDraft, SwapId, SwapRequest,
+    SwapReview, TonContract, WalletId, WalletInfo, swap::SwapRecord,
 };
 
 pub(crate) enum Call {
@@ -38,6 +38,8 @@ pub(crate) enum Call {
     RemoveContact(NetworkId, Address),
     AddToken(AssetId),
     RemoveToken(AssetId),
+    MarkNft(AssetId, Option<Mark>),
+    Picture(AssetId),
 }
 
 pub(crate) enum Outcome {
@@ -95,6 +97,7 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
         Call::Lock => done(engine.lock().await),
         Call::Refresh => {
             engine.refresh();
+            engine.refresh_nfts();
             Outcome::Done(Ok(()))
         }
         Call::Generate(words) => {
@@ -141,6 +144,11 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
         }
         Call::AddToken(asset) => Outcome::Token(engine.add_token(asset).await),
         Call::RemoveToken(asset) => done(engine.remove_token(asset).await),
+        Call::MarkNft(asset, mark) => done(engine.mark_nft(asset, mark).await),
+        Call::Picture(asset) => {
+            engine.want_picture(asset);
+            Outcome::Done(Ok(()))
+        }
     }
 }
 

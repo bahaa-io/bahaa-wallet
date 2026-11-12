@@ -24,6 +24,7 @@ pub(crate) const WORKING: &str = "Working…";
 pub(crate) const WORDS_HIDDEN: &str = "Press s to show the words. Make sure no one is watching.";
 pub(crate) const QR_TITLE: &str = "Scan to get the address";
 pub(crate) const QR_TOO_BIG: &str = "Make the window larger to show the QR code";
+pub(crate) const PICTURE_TOO_BIG: &str = "Make the window larger to show the picture";
 pub(crate) const KEYS_TOO_BIG: &str = "Make the window larger to see all keys";
 pub(crate) const TAB_KEYS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 pub(crate) const MORE_ABOVE: &str = "▲";
@@ -40,6 +41,7 @@ pub(crate) const KIND_TAB: &str = "tab";
 pub(crate) const KIND_APP: &str = "app";
 pub(crate) const STATUS: &str = "Network status";
 pub(crate) const SHOW_QR: &str = "Show the QR code";
+pub(crate) const SHOW_PICTURE: &str = "Show the picture";
 pub(crate) const SHOW_WORDS: &str = "Show or hide the words";
 pub(crate) const SHOW_KEYS: &str = "Show all keys";
 pub(crate) const REFRESH: &str = "Refresh balances";
@@ -83,6 +85,7 @@ pub(crate) const SHOW: Hint = ("Ctrl-R", "show/hide");
 pub(crate) const WORDS: Hint = ("s", "show/hide words");
 pub(crate) const COPY: Hint = ("y", "copy");
 pub(crate) const QR: Hint = ("v", "QR code");
+pub(crate) const PICTURE: Hint = ("v", "picture");
 pub(crate) const CLOSE: Hint = ("Esc", "close");
 pub(crate) const UPDATE: Hint = ("Enter", "update");
 pub(crate) const NOT_NOW: Hint = ("Esc", "later");
@@ -121,7 +124,7 @@ pub(crate) const KEY_GROUPS: [(&str, &[Hint]); 4] = [
             ("/", "search the list"),
             ("y", "copy"),
             ("o", "open in the explorer"),
-            ("v", "QR code"),
+            ("v", "QR code or picture"),
             ("s", "show or hide words"),
             ("r", "refresh balances"),
             ("Ctrl-L", "lock"),

@@ -2,7 +2,8 @@ use bahaa_engine::swap::{
     self, Charged, CostKind, Custody, Method, Provider, Refusal, SwapRecord, SwapStatus,
 };
 use bahaa_engine::{
-    Caution, ChainFamily, EngineError, FeeItem, RateUnit, Replace, SentStatus, Status, TonContract,
+    Caution, ChainFamily, EngineError, Fake, FeeItem, Lock, NftKind, RateUnit, Replace, SentStatus,
+    Status, TonContract,
 };
 
 use crate::action::{Channel, Direction, Tab};
@@ -85,6 +86,31 @@ pub(crate) const ALL_WALLETS: &str = "All";
 pub(crate) const SHOW: &str = "Show";
 pub(crate) const EMPTY_BALANCES: &str = "Empty balances";
 pub(crate) const NO_ASSETS: &str = "Nothing here yet. Receive coins to see them.";
+pub(crate) const VIEW: &str = "View";
+pub(crate) const COINS: &str = "Coins";
+pub(crate) const NFTS: &str = "NFTs";
+pub(crate) const NFT: &str = "NFT";
+pub(crate) const UNNAMED_NFT: &str = "Unnamed NFT";
+pub(crate) const HIDDEN_NFTS: &str = "Hidden NFTs";
+pub(crate) const NFT_COLUMNS: [&str; 4] = ["Name", "Collection", "Network", "Note"];
+pub(crate) const NO_NFTS: &str = "No NFTs to show. NFTs from known collections appear here.";
+pub(crate) const NO_HIDDEN_NFTS: &str = "Nothing is hidden.";
+pub(crate) const HIDDEN_NFTS_NOTE: &str = "These NFTs aren't from a collection this wallet knows, and many are spam. Open one to show it.";
+pub(crate) const COLLECTION: &str = "Collection";
+pub(crate) const HELD: &str = "You hold";
+pub(crate) const LISTED: &str = "In your list";
+pub(crate) const SEND_LOCK: &str = "Sending";
+pub(crate) const TOKEN_NUMBER: &str = "Token";
+pub(crate) const SHOW_IT: &str = "Show it";
+pub(crate) const HIDE_IT: &str = "Hide it";
+pub(crate) const USE_DEFAULT: &str = "Use the default";
+pub(crate) const SHOWN_NOW: &str = "Shown in your NFTs";
+pub(crate) const HIDDEN_NOW: &str = "Moved to Hidden NFTs";
+pub(crate) const DEFAULT_NOW: &str = "Back to the default choice";
+pub(crate) const BY_YOU: &str = "Hidden by you";
+pub(crate) const LOOKS_FAKE: &str = "Looks fake";
+pub(crate) const FLAGGED: &str = "Flagged";
+pub(crate) const UNKNOWN_COLLECTION: &str = "Unknown collection";
 pub(crate) const NETWORK: &str = "Network";
 pub(crate) const PRICE: &str = "Price";
 pub(crate) const ASSET: &str = "Asset";
@@ -799,6 +825,83 @@ pub(crate) fn failed(amount: &str, reason: &str) -> String {
 pub(crate) fn dropped(amount: &str) -> String {
     format!("Sending {amount} was dropped by the network")
 }
+
+pub(crate) fn nfts_loading(networks: &[String]) -> String {
+    format!("Still reading NFTs on {}.", named(networks))
+}
+
+pub(crate) fn nfts_problem(networks: &[String]) -> String {
+    format!(
+        "Can't read NFTs on {} right now. The last list is shown.",
+        named(networks)
+    )
+}
+
+pub(crate) fn nfts_capped(networks: &[String]) -> String {
+    format!("Only the first 256 NFTs on {} are listed.", named(networks))
+}
+
+pub(crate) fn nft_kind(kind: NftKind) -> &'static str {
+    match kind {
+        NftKind::Erc721 => "ERC-721 NFT",
+        NftKind::Erc1155 => "ERC-1155 NFT",
+        NftKind::TonItem => "TON NFT",
+        NftKind::SolanaToken => "Solana NFT",
+        NftKind::SolanaProgrammable => "Programmable Solana NFT",
+        NftKind::SolanaCore => "Core Solana NFT",
+        NftKind::SolanaCompressed => "Compressed Solana NFT",
+    }
+}
+
+pub(crate) fn lock_short(lock: Lock) -> &'static str {
+    match lock {
+        Lock::Soulbound => "Bound",
+        Lock::Frozen => "Frozen",
+        Lock::Listed => "On sale",
+        Lock::Unsupported => "Can't send",
+    }
+}
+
+pub(crate) fn lock_reason(lock: Lock) -> &'static str {
+    match lock {
+        Lock::Soulbound => "Bound to its owner, it can't be sent",
+        Lock::Frozen => "Frozen or staked, it can't be sent until it's released",
+        Lock::Listed => "Listed for sale, cancel the listing to send it",
+        Lock::Unsupported => "This wallet can't send it yet, its transfer is too large",
+    }
+}
+
+pub(crate) fn fake_reason(fake: &Fake) -> String {
+    match fake {
+        Fake::Copies(name) => format!("Hidden, its name copies {name}"),
+        Fake::WebAddress => "Hidden, it names a website, a common scam".to_owned(),
+        Fake::Bait => "Hidden, it promises a reward, a common scam".to_owned(),
+    }
+}
+
+pub(crate) const SHOWN_BY_YOU: &str = "Shown, you chose to show it";
+pub(crate) const HIDDEN_BY_YOU: &str = "Hidden, you chose to hide it";
+pub(crate) const SHOWN_KNOWN: &str = "Shown, from a known collection";
+pub(crate) const HIDDEN_FLAGGED: &str = "Hidden, flagged as fake or spam";
+pub(crate) const HIDDEN_UNKNOWN: &str = "Hidden, not from a known collection";
+
+pub(crate) fn held_count(count: &str) -> String {
+    format!("×{count}")
+}
+
+pub(crate) fn hidden_choice(count: usize) -> String {
+    format!("{HIDDEN_NFTS} ({count})")
+}
+
+pub(crate) fn nft_count(count: usize) -> String {
+    match count {
+        1 => "1 NFT".to_owned(),
+        count => format!("{count} NFTs"),
+    }
+}
+
+pub(crate) const NFT_GONE: &str = "This NFT is no longer in this wallet.";
+pub(crate) const COPY_NFT_ID: &str = "Copy NFT id";
 
 fn named(networks: &[String]) -> String {
     match networks {

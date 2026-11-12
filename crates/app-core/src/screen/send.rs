@@ -63,6 +63,7 @@ impl Send {
         } else {
             Step::Choose
         };
+        let one = source.as_ref().is_some_and(|source| source.asset.is_nft());
         Self {
             source,
             picked: false,
@@ -70,7 +71,7 @@ impl Send {
             to: None,
             to_problem: None,
             cautions: Vec::new(),
-            amount_text: String::new(),
+            amount_text: if one { "1".to_owned() } else { String::new() },
             max: false,
             memo: String::new(),
             replacing: None,
@@ -92,6 +93,12 @@ impl Send {
 
     fn held<'a>(&self, ctx: &'a Ctx<'_>) -> Option<&'a Holding> {
         super::holding(ctx, self.source.as_ref()?)
+    }
+
+    fn nft_count(&self, ctx: &Ctx<'_>) -> Option<Amount> {
+        let source = self.source.as_ref()?;
+        ctx.collectible(source.wallet, &source.address, &source.asset)
+            .map(|item| item.nft.amount)
     }
 
     fn family(&self, ctx: &Ctx<'_>) -> Option<ChainFamily> {
@@ -214,7 +221,11 @@ impl Send {
         let amount = if self.max {
             Spend::Max
         } else {
-            let decimals = ctx.coin(&source.asset).ok_or(text::UNKNOWN_ASSET)?.decimals;
+            let decimals = if source.asset.is_nft() {
+                0
+            } else {
+                ctx.coin(&source.asset).ok_or(text::UNKNOWN_ASSET)?.decimals
+            };
             Spend::Exact(parse::amount(&self.amount_text, decimals)?)
         };
         let memo = match self.memo.trim() {
@@ -278,7 +289,7 @@ impl Send {
 
     fn amount_hint(&self, ctx: &Ctx<'_>) -> Option<Note> {
         if self.max {
-            let coin = self.source.as_ref()?.asset.contract().is_none();
+            let coin = matches!(self.source.as_ref()?.asset, AssetId::Native(_));
             return Some(note(Level::Info, text::everything(coin, false)));
         }
         super::amount_hint(ctx, self.held(ctx)?, &self.amount_text)
@@ -302,8 +313,12 @@ impl Send {
             }
             Action::Toggle(Toggle::Max) => {
                 self.max = !self.max;
-                if let Some(holding) = self.held(ctx).filter(|_| self.max) {
-                    self.amount_text = holding.amount.to_string();
+                let all = self
+                    .held(ctx)
+                    .map(|holding| holding.amount)
+                    .or_else(|| self.nft_count(ctx));
+                if let Some(all) = all.filter(|_| self.max) {
+                    self.amount_text = all.to_string();
                 }
             }
             Action::Type(Field::Memo, value) => self.memo.clone_from(value),
@@ -355,6 +370,12 @@ impl Send {
                 ),
             ));
         }
+        let several = self
+            .nft_count(ctx)
+            .filter(|count| count.units() > ruint::aliases::U256::from(1u8));
+        if let Some(count) = several {
+            lines.push(line(text::HELD, count.to_string()));
+        }
         let contacts: Vec<_> = self
             .contacts(ctx)
             .into_iter()
@@ -373,22 +394,24 @@ impl Send {
         if !contacts.is_empty() {
             form.push(group(text::CONTACTS, contacts).into());
         }
-        form.extend([
-            Input {
-                hint: self.amount_hint(ctx),
-                ..input(Field::Amount, text::AMOUNT, &self.amount_text)
-            }
-            .into(),
-            group(
-                "",
-                vec![choice(
-                    text::SEND_ALL,
-                    Action::Toggle(Toggle::Max),
-                    self.max,
-                )],
-            )
-            .into(),
-        ]);
+        if !source.asset.is_nft() || several.is_some() {
+            form.extend([
+                Input {
+                    hint: self.amount_hint(ctx),
+                    ..input(Field::Amount, text::AMOUNT, &self.amount_text)
+                }
+                .into(),
+                group(
+                    "",
+                    vec![choice(
+                        text::SEND_ALL,
+                        Action::Toggle(Toggle::Max),
+                        self.max,
+                    )],
+                )
+                .into(),
+            ]);
+        }
         if self.memo_allowed(ctx) {
             form.push(input(Field::Memo, text::MEMO, &self.memo).into());
         }

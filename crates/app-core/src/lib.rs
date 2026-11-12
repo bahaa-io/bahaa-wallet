@@ -11,12 +11,12 @@ mod text;
 mod view;
 
 pub use action::{
-    Action, Channel, Contract, Currency, Direction, Family, Field, Go, Kind, Pick, Tab, Toggle,
-    Words,
+    Action, Channel, Contract, Currency, Direction, Family, Field, Go, Kind, Marking, Pick,
+    Showing, Tab, Toggle, Words,
 };
 pub use app::{App, AppConfig};
 pub use bahaa_engine::{
-    ChainFamily, Color, EngineConfig, EngineError, KdfParams, Registry, to_plain_text,
+    ChainFamily, Color, EngineConfig, EngineError, KdfParams, Picture, Registry, to_plain_text,
 };
 pub use screen::completions;
 pub use view::{

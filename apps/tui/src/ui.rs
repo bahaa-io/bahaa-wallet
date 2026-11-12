@@ -46,6 +46,7 @@ pub(crate) enum Prompt {
 
 pub(crate) enum Overlay {
     Qr,
+    Picture,
     Keys,
     Menu(Palette),
 }
@@ -295,7 +296,7 @@ impl Ui {
         }
         match self.overlay {
             Some(Overlay::Menu(_)) => return vec![hints::MOVE, hints::RUN, hints::CLOSE],
-            Some(Overlay::Qr | Overlay::Keys) => return vec![hints::CLOSE],
+            Some(Overlay::Qr | Overlay::Picture | Overlay::Keys) => return vec![hints::CLOSE],
             None => {}
         }
         let typing = matches!(self.focus, Some(Target::Input(_)));
@@ -333,6 +334,8 @@ impl Ui {
             }
             if page.qr.is_some() {
                 list.push(hints::QR);
+            } else if page.picture.is_some() {
+                list.push(hints::PICTURE);
             }
             let has = |action: Action| page.buttons.iter().any(|button| button.action == action);
             if has(Action::Copy) {
@@ -370,7 +373,7 @@ impl Ui {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match &self.overlay {
             Some(Overlay::Menu(_)) => return self.menu_key(key, view),
-            Some(Overlay::Qr | Overlay::Keys) => {
+            Some(Overlay::Qr | Overlay::Picture | Overlay::Keys) => {
                 if key.code == KeyCode::Char('c') && control {
                     return vec![Action::Quit];
                 }
@@ -470,6 +473,10 @@ impl Ui {
             Command::Act(action) => vec![action],
             Command::Qr => {
                 self.overlay = Some(Overlay::Qr);
+                Vec::new()
+            }
+            Command::Picture => {
+                self.overlay = Some(Overlay::Picture);
                 Vec::new()
             }
             Command::Words => {
@@ -608,6 +615,7 @@ impl Ui {
             }
             KeyCode::Char('s') if view.page.secret.is_some() => self.run(Command::Words),
             KeyCode::Char('v') if view.page.qr.is_some() => self.run(Command::Qr),
+            KeyCode::Char('v') if view.page.picture.is_some() => self.run(Command::Picture),
             KeyCode::Char(digit) if digit.is_ascii_digit() => tab(digit, view),
             KeyCode::Up | KeyCode::Char('k') => self.moved(&view.page, false),
             KeyCode::Down | KeyCode::Char('j') => self.moved(&view.page, true),

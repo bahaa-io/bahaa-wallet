@@ -24,6 +24,7 @@ const MARKER: &str = "▌";
 const UPDATE_WIDTH: u16 = 72;
 const NOTES_SHOWN: usize = 12;
 const BUTTON_GAP: u16 = 2;
+const BIGGEST_PICTURE: u16 = 64;
 
 pub(super) fn qr(buffer: &mut Buffer, screen: Rect, view: &View) {
     buffer.set_style(screen, theme::backdrop());
@@ -63,6 +64,38 @@ pub(super) fn qr(buffer: &mut Buffer, screen: Rect, view: &View) {
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
             buffer,
         );
+}
+
+pub(super) fn picture(buffer: &mut Buffer, screen: Rect, view: &View) {
+    buffer.set_style(screen, theme::backdrop());
+    let Some(shown) = view.page.picture.as_ref() else {
+        return;
+    };
+    let room = screen.width.saturating_sub(4).min(BIGGEST_PICTURE);
+    let fitted = super::picture::fit(shown, room, screen.height.saturating_sub(4));
+    let Some((width, height)) = fitted else {
+        centered_text(buffer, screen, hints::PICTURE_TOO_BIG, theme::text());
+        return;
+    };
+    let top = screen.height.saturating_sub(height + 2) / 2;
+    let title = view.page.title.as_str();
+    let Some(inner) = boxed(
+        buffer,
+        screen,
+        width.max(wrap::width(title) + 4) + 4,
+        height + 2,
+        title,
+        top,
+    ) else {
+        centered_text(buffer, screen, hints::PICTURE_TOO_BIG, theme::text());
+        return;
+    };
+    super::picture::draw(
+        shown,
+        buffer,
+        Rect::new(inner.x + (inner.width - width) / 2, inner.y, width, height),
+        theme::panel().bg.unwrap_or_default(),
+    );
 }
 
 pub(super) fn keys(buffer: &mut Buffer, screen: Rect) {

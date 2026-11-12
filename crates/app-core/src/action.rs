@@ -73,6 +73,7 @@ pub enum Go {
     ReceiveAsset,
     Networks,
     Developer,
+    Nft(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +106,8 @@ pub enum Pick {
     SpeedUp,
     Cancel,
     Delete,
+    Showing(Showing),
+    Mark(Marking),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +119,7 @@ pub enum Toggle {
     Developer,
     Testnets,
     Counted,
+    HiddenNfts,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -172,6 +176,20 @@ pub enum Contract {
 pub enum Path {
     Bip44Change,
     Bip44,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Showing {
+    #[default]
+    Coins,
+    Nfts,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Marking {
+    Show,
+    Hide,
+    Default,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

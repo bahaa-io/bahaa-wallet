@@ -1,13 +1,14 @@
 #![allow(clippy::unwrap_used)]
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_app_core::{
     Action, App, AppConfig, ChainFamily, Channel, Currency, Direction, EngineConfig, Family, Field,
-    Go, KdfParams, Kind, Level, Page, PageId, Pick, Registry, Request, Tab, Toggle, Tone, Value,
-    View, Words,
+    Go, KdfParams, Kind, Level, Marking, Page, PageId, Pick, Registry, Request, Showing, Tab,
+    Toggle, Tone, Value, View, Words,
 };
 use bahaa_testkit::Reply;
 use serde_json::{Value as Json, json};
@@ -1242,5 +1243,216 @@ async fn a_swap_lists_every_route_reviews_the_exact_deposit_and_follows_the_prov
             .any(|toast| toast.text == "Swap done: 0.1 BNB to ETH")
     );
     activity_finds_the_swap(&app, &mut view).await;
+    app.shutdown().await.unwrap();
+}
+
+const BAYC: &str = "0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d";
+const PLAIN_CATS: &str = "0x3333333333333333333333333333333333333333";
+
+fn abi_text(value: &str) -> String {
+    let mut body = hex(value.as_bytes());
+    while !body.len().is_multiple_of(64) {
+        body.push('0');
+    }
+    format!("0x{:064x}{:064x}{body}", 32, value.len())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
+}
+
+fn nft_call(to: &str, data: &str) -> Json {
+    let (name, id) = match to {
+        BAYC => ("BoredApeYachtClub", 7_090u64),
+        PLAIN_CATS => ("Plain Cats", 3),
+        _ => return Json::Null,
+    };
+    let owner = format!("0x{:0>64}", HARDHAT_0[2..].to_ascii_lowercase());
+    match data {
+        "0x06fdde03" => json!(abi_text(name)),
+        d if d == format!("0x01ffc9a780ac58cd{}", "0".repeat(56)) => json!(format!("0x{:064x}", 1)),
+        d if d == format!("0x6352211e{id:064x}") => json!(owner),
+        d if d == format!("0xc87b56dd{id:064x}") => {
+            json!(abi_text(&format!("https://example.com/{id}.json")))
+        }
+        _ => Json::Null,
+    }
+}
+
+async fn nft_registry() -> Registry {
+    let node = bahaa_testkit::serve(|request| {
+        let call = request.json();
+        let result = match call["method"].as_str() {
+            Some("eth_chainId") => json!("0x1"),
+            Some("eth_call") => nft_call(
+                &call["params"][0]["to"].as_str().unwrap().to_ascii_lowercase(),
+                call["params"][0]["data"].as_str().unwrap(),
+            ),
+            Some("eth_getBalance" | "eth_getTransactionCount") => json!("0x0"),
+            Some("eth_blockNumber") => json!("0x100"),
+            Some("eth_getLogs") => json!([]),
+            _ => Json::Null,
+        };
+        if result.is_null() {
+            return Reply::json(200, &json!({"jsonrpc": "2.0", "id": 1, "error": {"code": 3, "message": "execution reverted"}}));
+        }
+        Reply::json(200, &json!({"jsonrpc": "2.0", "id": 1, "result": result}))
+    })
+    .await;
+    let listing = bahaa_testkit::serve(|request| {
+        let item = |contract: &str, id: u64| {
+            json!({"id": id.to_string(), "token_type": "ERC-721", "value": "1", "token": {"address_hash": contract, "name": "Listed", "reputation": "ok"}})
+        };
+        if request.path().contains("/nft") {
+            Reply::json(200, &json!({"items": [item(BAYC, 7_090), item(PLAIN_CATS, 3)], "next_page_params": null}))
+        } else {
+            Reply::json(404, &json!({"message": "not here"}))
+        }
+    })
+    .await;
+    let mut network = Registry::builtin()
+        .unwrap()
+        .get(&"ethereum".parse().unwrap())
+        .unwrap()
+        .clone();
+    network.tokens.clear();
+    network
+        .endpoints
+        .retain(|endpoint| !endpoint.url.as_str().contains("routescan"));
+    for endpoint in &mut network.endpoints {
+        endpoint.url = if endpoint.url.as_str().contains("blockscout") {
+            listing.clone()
+        } else {
+            node.clone()
+        };
+        endpoint.min_gap_ms = 0;
+        endpoint.history_gap_ms = 0;
+    }
+    Registry::with_networks(vec![network]).unwrap()
+}
+
+fn rows(view: &View) -> Vec<Vec<String>> {
+    view.page.table.as_ref().map_or_else(Vec::new, |table| {
+        table
+            .rows
+            .iter()
+            .map(|row| row.cells.iter().map(|cell| cell.text.clone()).collect())
+            .collect()
+    })
+}
+
+fn line_of(view: &View, label: &str) -> Option<String> {
+    view.page
+        .lines
+        .iter()
+        .find(|line| line.label == label)
+        .map(|line| line.value.clone())
+}
+
+fn buttons(view: &View) -> Vec<String> {
+    view.page
+        .buttons
+        .iter()
+        .map(|button| button.label.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn nfts_from_known_collections_show_and_the_rest_wait_in_hidden() {
+    let scratch = Scratch::new();
+    let (app, mut requests, mut view) = imported_on(&scratch, nft_registry().await, false).await;
+    app.act(Action::Pick(Pick::Showing(Showing::Nfts)));
+    let shown = until(&mut view, |current| {
+        current.page.id == PageId::Nfts && rows(current).len() == 1
+    })
+    .await;
+    assert_eq!(
+        rows(&shown),
+        [["Unnamed NFT", "Bored Ape Yacht Club", "Ethereum", ""]]
+    );
+    assert_eq!(shown.page.headline.as_deref(), Some("1 NFT"));
+    let hidden_choice = shown
+        .page
+        .groups()
+        .find(|group| group.label == "Show")
+        .map(|group| group.choices[0].label.clone());
+    assert_eq!(hidden_choice.as_deref(), Some("Hidden NFTs (1)"));
+    app.act(Action::Toggle(Toggle::HiddenNfts));
+    let hidden = until(&mut view, |current| {
+        rows(current)
+            .first()
+            .is_some_and(|row| row[1] == "Plain Cats")
+    })
+    .await;
+    assert_eq!(rows(&hidden)[0][3], "Unknown collection");
+    assert!(
+        hidden
+            .page
+            .notes
+            .iter()
+            .any(|note| note.text.contains("many are spam"))
+    );
+    app.act(Action::Go(Go::Nft(0)));
+    let item = at(&mut view, PageId::Nft).await;
+    assert_eq!(
+        line_of(&item, "In your list").as_deref(),
+        Some("Hidden, not from a known collection")
+    );
+    assert_eq!(line_of(&item, "Type").as_deref(), Some("ERC-721 NFT"));
+    assert_eq!(line_of(&item, "Token").as_deref(), Some("3"));
+    assert_eq!(
+        buttons(&item),
+        ["Send", "Show it", "Copy NFT id", "Open in explorer"]
+    );
+    app.act(Action::Copy);
+    assert_eq!(
+        next_request(&mut requests).await,
+        Request::Copy("0x3333333333333333333333333333333333333333".to_owned())
+    );
+    app.act(Action::Pick(Pick::Mark(Marking::Show)));
+    let marked = until(&mut view, |current| {
+        line_of(current, "In your list").as_deref() == Some("Shown, you chose to show it")
+    })
+    .await;
+    assert!(
+        marked
+            .toasts
+            .iter()
+            .any(|toast| toast.text == "Shown in your NFTs")
+    );
+    assert_eq!(
+        buttons(&marked),
+        [
+            "Send",
+            "Hide it",
+            "Use the default",
+            "Copy NFT id",
+            "Open in explorer"
+        ]
+    );
+    app.act(Action::Back);
+    let emptied = until(&mut view, |current| {
+        current.page.id == PageId::Nfts && rows(current).is_empty()
+    })
+    .await;
+    assert_eq!(
+        emptied.page.table.as_ref().unwrap().empty,
+        "Nothing is hidden."
+    );
+    app.act(Action::Toggle(Toggle::HiddenNfts));
+    until(&mut view, |current| rows(current).len() == 2).await;
+    app.act(Action::Go(Go::Nft(1)));
+    at(&mut view, PageId::Nft).await;
+    app.act(Action::Go(Go::SendAsset));
+    let compose = at(&mut view, PageId::Compose).await;
+    assert_eq!(compose.page.title, "Send Unnamed NFT");
+    let fields: Vec<Field> = compose.page.inputs().map(|input| input.field).collect();
+    assert_eq!(fields, [Field::To]);
+    app.act(Action::Go(Go::Tab(Tab::Portfolio)));
+    let coins = at(&mut view, PageId::Portfolio).await;
+    assert!(coins.page.groups().any(|group| group.label == "View"));
     app.shutdown().await.unwrap();
 }

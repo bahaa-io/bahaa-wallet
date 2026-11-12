@@ -72,6 +72,10 @@ fn nearest(rgb: Rgb) -> u8 {
     }
 }
 
+pub(crate) fn rgb(color: Rgb) -> Color {
+    paint(color)
+}
+
 pub(crate) fn base() -> Style {
     Style::new().fg(paint(TEXT)).bg(paint(BASE))
 }
