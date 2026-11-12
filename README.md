@@ -71,6 +71,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
 - **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks and Bitcoin.
 - **Swaps:** swap coins and tokens on one network or across networks, through decentralized exchanges and keyless cross-network services. Every route is ranked by what you really receive, with the exact cost shown, and you can pick any of them. No app fee.
+- **NFTs:** your NFTs on TON, Solana, Ethereum, Optimism and Avalanche, each checked on chain, with its picture right in the terminal. Known collections show, the rest wait in Hidden, and you choose what to show. Send them like coins.
 - **Activity:** one timeline of what you sent and received, with spam flagged and hidden.
 - **Privacy:** hide every balance with one switch.
 
@@ -100,7 +101,8 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Swaps across networks go through a provider:** it holds your coins for seconds to minutes and refunds you if it fails.
 - **Avalanche swaps aren't simulated before signing:** its public servers can't.
 - **Only tracked tokens can be swapped.**
-- **Not supported yet:** NFTs, staking actions, app connections and hardware wallets.
+- **NFTs:** on five networks only and at most 256 per account and network. SVG pictures aren't shown yet. Staked or listed ones, and some compressed Solana NFTs, can't be sent.
+- **Not supported yet:** staking actions, app connections and hardware wallets.
 
 ## License
 
