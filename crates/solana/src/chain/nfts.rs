@@ -7,12 +7,13 @@ use bahaa_types::{
     Address, Amount, AssetId, Collection, Lock, MAX_NFT_LINK, MAX_NFT_TEXT, MAX_NFTS, Nft, NftId,
     NftKind, Trust, is_plain_text, to_plain_text,
 };
+use futures_util::future::try_join;
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
 use super::{SolanaChain, bytes, held};
 use crate::metaplex;
-use crate::programs::{Moved, TOKEN, metadata_account, token_account};
+use crate::programs::{Moved, TOKEN, metadata_account, token_account, token_record};
 use crate::rpc::{self, Account};
 use crate::tx::Key;
 
@@ -61,13 +62,19 @@ impl SolanaChain {
 
     pub(super) async fn nft_move(&self, owner: &Key, id: &Key) -> Result<Moved, ChainError> {
         let not_held = ChainError::Invalid("this wallet doesn't hold that NFT");
+        let source = token_account(owner, id)?;
         let found = self
             .accounts(
-                &[*id, metadata_account(id)?, token_account(owner, id)?],
+                &[
+                    *id,
+                    metadata_account(id)?,
+                    source,
+                    token_record(id, &source)?,
+                ],
                 None,
             )
             .await?;
-        let [item, record, account] = found.as_slice() else {
+        let [item, record, account, state] = found.as_slice() else {
             return Err(ChainError::malformed());
         };
         if let Some(core) = metaplex::core(item.as_ref()) {
@@ -85,7 +92,20 @@ impl SolanaChain {
         let record = metaplex::metadata(record.as_ref(), id)
             .ok_or(ChainError::Invalid("this is not an NFT the wallet knows"))?;
         match record.standard {
-            Some(4 | 5) => return Err(ChainError::Unsupported("sending programmable NFTs yet")),
+            Some(4 | 5) => {
+                return match metaplex::token_lock(state.as_ref()) {
+                    None => Ok(Moved::Programmable {
+                        mint: *id,
+                        rules: record.rules,
+                    }),
+                    Some(Lock::Listed) => Err(ChainError::Invalid(
+                        "this NFT is listed for sale, cancel the listing to send it",
+                    )),
+                    Some(_) => Err(ChainError::Invalid(
+                        "this NFT is locked, for example while staked, and can't be sent",
+                    )),
+                };
+            }
             None | Some(0 | 3) => {}
             Some(_) => return Err(ChainError::Invalid("this is a token, not an NFT")),
         }
@@ -153,8 +173,9 @@ impl SolanaChain {
                 Some(4 | 5) => NftKind::SolanaProgrammable,
                 Some(_) => continue,
             };
-            let frozen = frozen(account.as_ref());
-            held_nfts.push((*mint, kind, frozen, record));
+            let lock =
+                (kind == NftKind::SolanaToken && frozen(account.as_ref())).then_some(Lock::Frozen);
+            held_nfts.push((*mint, kind, lock, record));
         }
         let mut collections: Vec<Key> = held_nfts
             .iter()
@@ -171,7 +192,21 @@ impl SolanaChain {
             .iter()
             .map(metadata_account)
             .collect::<Result<Vec<_>, _>>()?;
-        let named = self.all_accounts(&records).await?;
+        let programmable: Vec<usize> = (0..held_nfts.len())
+            .filter(|index| held_nfts[*index].1 == NftKind::SolanaProgrammable)
+            .collect();
+        let states = programmable
+            .iter()
+            .map(|index| {
+                let mint = &held_nfts[*index].0;
+                token_record(mint, &token_account(owner, mint)?)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (named, states) =
+            try_join(self.all_accounts(&records), self.all_accounts(&states)).await?;
+        for (index, state) in programmable.into_iter().zip(&states) {
+            held_nfts[index].2 = metaplex::token_lock(state.as_ref());
+        }
         let name_of = |key: &Key| {
             let index = collections.binary_search(key).ok()?;
             metaplex::metadata(named.get(index)?.as_ref(), key)
@@ -179,7 +214,7 @@ impl SolanaChain {
         };
         held_nfts
             .into_iter()
-            .map(|(mint, kind, frozen, record)| {
+            .map(|(mint, kind, lock, record)| {
                 let collection =
                     record
                         .collection
@@ -188,7 +223,6 @@ impl SolanaChain {
                             address: Some(Address::Solana(key)),
                             name: name_of(&key),
                         });
-                let lock = (frozen && kind == NftKind::SolanaToken).then_some(Lock::Frozen);
                 Ok(Nft {
                     collection,
                     lock,

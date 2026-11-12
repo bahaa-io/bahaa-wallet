@@ -11,7 +11,8 @@ use bahaa_types::{Lock, NftKind, Trust};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use common::{
-    FRIEND, Ledger, OWNER, address, called, node, seed, solana_on, token_account, wallet,
+    FRIEND, Ledger, OWNER, RECORD_RENT, TOKEN_RENT, address, called, node, seed, solana_on,
+    token_account, wallet,
 };
 use serde_json::{Value, json};
 
@@ -19,6 +20,7 @@ const FIXTURE: &str = include_str!("fixtures/nfts.json");
 const HOLDER: &str = "BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2";
 const MAD_LAD: &str = "13oLhSJnADiB6demF11T6m2MCRgxqxBjB8yJEc5WsmZ";
 const MAD_LAD_ACCOUNT: &str = "QgLfZMEAYR8HRPbh4oHBr2pPW5n9mveyXJ6tdMW3Mfx";
+const MAD_LAD_STATE: &str = "8MH5hns5hyAK1SWWzRCxwqHiL8t1vhGNB69m2wjWHxxF";
 const GNOME: &str = "2jJT5adTaLXi5oeUCv9zsSXXYk8MEAiqLTzwPnAvu4W6";
 const GNOME_ACCOUNT: &str = "JAC5L1uwYoLrzjUJAdU1LHAJiiURnYaFyzXhytkQ97pQ";
 const GNOME_RECORD: &str = "36asfCpqueWxeG8rtagPUvhtgkNP79i8y4Tq5NdZNzEG";
@@ -93,7 +95,7 @@ async fn classic_programmable_and_core_nfts_are_proven_from_their_own_accounts()
                 "J1S9H3QjnRtBbbuD4HjPV6RpRhwuk4zKbxsnCHuTgh9w".to_owned(),
                 "Mad Lads".to_owned(),
                 Trust::Unknown,
-                None,
+                Some(Lock::Frozen),
                 "1".to_owned()
             ),
             (
@@ -162,7 +164,31 @@ async fn only_verified_collections_count_and_frozen_classics_are_locked() {
         (patriot.trust, &patriot.collection),
         (Trust::Flagged, &None)
     );
-    assert_eq!(found.items[0].lock, None);
+}
+
+#[tokio::test]
+async fn programmable_nfts_are_locked_while_staked_or_listed_for_sale() {
+    let lock_with = |edit: &dyn Fn(&mut Ledger)| {
+        let mut ledger = ledger();
+        edit(&mut ledger);
+        async move { listed(ledger).await.items[0].lock }
+    };
+    assert_eq!(lock_with(&|_| {}).await, Some(Lock::Frozen));
+    let free = |ledger: &mut Ledger| patched(ledger, MAD_LAD_STATE, |data| data[2] = 0);
+    assert_eq!(lock_with(&free).await, None);
+    let listed_state = |ledger: &mut Ledger| patched(ledger, MAD_LAD_STATE, |data| data[2] = 2);
+    assert_eq!(lock_with(&listed_state).await, Some(Lock::Listed));
+    let sale = |ledger: &mut Ledger| {
+        patched(ledger, MAD_LAD_STATE, |data| {
+            data[2] = 0;
+            data[46] = 0;
+        });
+    };
+    assert_eq!(lock_with(&sale).await, Some(Lock::Listed));
+    let missing = |ledger: &mut Ledger| {
+        ledger.accounts.remove(MAD_LAD_STATE);
+    };
+    assert_eq!(lock_with(&missing).await, Some(Lock::Frozen));
 }
 
 #[tokio::test]
@@ -192,12 +218,27 @@ async fn long_listings_stop_after_three_pages() {
 const CORE: &str = "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d";
 const OWN_GNOME: &str = "3jmyDTM1pKwa1Earz7babpXszt8NfYW7xnVJDnDi83P4";
 const OWN_MAD_LAD: &str = "GoqxN61TdTdniDnXf35s6wgtCKfJTpG97uZMoR8ksZGp";
+const OWN_MAD_LAD_STATE: &str = "DUnxPW2WfrCrihVQz1TMnnCiuCSpHqRLECDMv26AqLTr";
+const FRIEND_MAD_LAD: &str = "AF1Vyo3TvP89FLEvKqC5Nxo2X6WFTH51cF2rFoTLS8vK";
+const FRIEND_MAD_LAD_STATE: &str = "3cbZXkfGxxjTPLFBFyfMAD2eJyYbYJGgaHxpvRLbYvRQ";
+const MAD_LAD_EDITION: &str = "BQjvjGN4oX5JSfQtNnmmrnrNimEGyRrMXtdGZPV8pVWU";
+const METADATA: &str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
+const RULES: &str = "auth9SigNpDKz4sJJ1DfCTuZrZNSAgh9sFD3rboVmgg";
+const RULE_SET: &str = "eBJLFYPxJmMGKuFwpDWkzxZeUrad92kZRC5BJLpzyT9";
+const INSTRUCTIONS: &str = "Sysvar1nstructions1111111111111111111111111";
+const STATE_RENT: u64 = 1_447_680;
 
 fn key(text: &str) -> [u8; 32] {
     let bahaa_types::Address::Solana(key) = address(text) else {
         unreachable!()
     };
     key
+}
+
+fn token_state(state: u8) -> Value {
+    let mut data = vec![11, 255, state];
+    data.resize(80, 0);
+    json!({"lamports": STATE_RENT, "owner": METADATA, "executable": false, "data": [STANDARD.encode(data), "base64"], "space": 80})
 }
 
 fn sender() -> Ledger {
@@ -218,6 +259,9 @@ fn sender() -> Ledger {
     patched(&mut ledger, PATRIOT, |data| {
         data[1..33].copy_from_slice(&key(OWNER));
     });
+    ledger
+        .accounts
+        .insert(OWN_MAD_LAD_STATE.to_owned(), token_state(0));
     ledger
 }
 
@@ -284,12 +328,62 @@ async fn a_core_nft_moves_through_the_core_program_with_its_collection() {
 }
 
 #[tokio::test]
+async fn a_programmable_nft_moves_through_token_metadata_under_its_rule_set() {
+    let chain = sending(sender()).await;
+    let (plan, fee) = chain.prepare(&sent(MAD_LAD)).await.unwrap();
+    let opening = fee
+        .lines()
+        .iter()
+        .find(|line| line.item == FeeItem::Activation)
+        .unwrap();
+    assert_eq!(
+        opening.amount.units(),
+        ruint::aliases::U256::from(TOKEN_RENT + RECORD_RENT - STATE_RENT)
+    );
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    let decoded = chain.decode(&signed).unwrap();
+    check_signed(chain.planned(&plan), &decoded).unwrap();
+    assert_eq!(decoded.asset, sent(MAD_LAD).asset);
+    assert_eq!(
+        (decoded.amount.to_string(), decoded.memo.as_deref()),
+        ("1".to_owned(), Some("gift"))
+    );
+    for needed in [
+        METADATA,
+        RULES,
+        RULE_SET,
+        INSTRUCTIONS,
+        MAD_LAD_EDITION,
+        OWN_MAD_LAD,
+        OWN_MAD_LAD_STATE,
+        FRIEND_MAD_LAD,
+        FRIEND_MAD_LAD_STATE,
+    ] {
+        let bytes = key(needed);
+        assert!(
+            signed.bytes.windows(32).any(|window| window == bytes),
+            "{needed} missing"
+        );
+    }
+    let mut max = sent(MAD_LAD);
+    max.max = true;
+    let (plan, _) = chain.prepare(&max).await.unwrap();
+    assert_eq!(chain.planned(&plan).amount.to_string(), "1");
+    let mut opened = sender();
+    opened
+        .accounts
+        .insert(FRIEND_MAD_LAD.to_owned(), token_account(FRIEND, MAD_LAD, 0));
+    let (_, fee) = sending(opened).await.prepare(&sent(MAD_LAD)).await.unwrap();
+    assert!(
+        !fee.lines()
+            .iter()
+            .any(|line| line.item == FeeItem::Activation)
+    );
+}
+
+#[tokio::test]
 async fn only_a_held_movable_nft_is_sent_and_only_one_at_a_time() {
     let chain = sending(sender()).await;
-    assert_eq!(
-        chain.prepare(&sent(MAD_LAD)).await.err(),
-        Some(ChainError::Unsupported("sending programmable NFTs yet"))
-    );
     let mut two = sent(GNOME);
     two.amount = bahaa_types::Amount::parse("2", 0).unwrap();
     assert_eq!(
@@ -315,4 +409,34 @@ async fn only_a_held_movable_nft_is_sent_and_only_one_at_a_time() {
         chain.prepare(&sent(GNOME)).await.err(),
         Some(ChainError::Invalid("this NFT is frozen and can't be sent"))
     );
+    let locked =
+        ChainError::Invalid("this NFT is locked, for example while staked, and can't be sent");
+    let listed = ChainError::Invalid("this NFT is listed for sale, cancel the listing to send it");
+    for (state, refusal) in [
+        (Some(1), &locked),
+        (Some(2), &listed),
+        (Some(7), &locked),
+        (None, &locked),
+    ] {
+        let mut held = sender();
+        match state {
+            Some(state) => {
+                held.accounts
+                    .insert(OWN_MAD_LAD_STATE.to_owned(), token_state(state));
+            }
+            None => {
+                held.accounts.remove(OWN_MAD_LAD_STATE);
+            }
+        }
+        assert_eq!(
+            sending(held)
+                .await
+                .prepare(&sent(MAD_LAD))
+                .await
+                .err()
+                .as_ref(),
+            Some(refusal),
+            "{state:?}"
+        );
+    }
 }

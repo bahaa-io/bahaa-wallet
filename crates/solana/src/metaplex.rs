@@ -1,3 +1,5 @@
+use bahaa_types::Lock;
+
 use crate::programs::{CORE, METADATA};
 use crate::rpc::Account;
 use crate::tx::Key;
@@ -11,6 +13,13 @@ const MAX_CREATORS: usize = 5;
 const NO_AUTHORITY: u8 = 0;
 const ADDRESS_AUTHORITY: u8 = 1;
 const COLLECTION_AUTHORITY: u8 = 2;
+const USES: usize = 17;
+const COLLECTION_DETAILS: u8 = 1;
+const PROGRAMMABLE_V1: u8 = 0;
+const TOKEN_RECORD: u8 = 11;
+const UNLOCKED: u8 = 0;
+const LISTED: u8 = 2;
+const SALE: u8 = 0;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Metadata {
@@ -19,6 +28,7 @@ pub(crate) struct Metadata {
     pub uri: String,
     pub standard: Option<u8>,
     pub collection: Option<(bool, Key)>,
+    pub rules: Option<Key>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,7 +125,54 @@ pub(crate) fn metadata(account: Option<&Account>, mint: &Key) -> Option<Metadata
         uri,
         standard,
         collection,
+        rules: rules(&mut read),
     })
+}
+
+fn rules(read: &mut Reader<'_>) -> Option<Key> {
+    if read.present()? {
+        read.take(USES)?;
+    }
+    if read.present()? {
+        if read.byte()? > COLLECTION_DETAILS {
+            return None;
+        }
+        read.take(8)?;
+    }
+    if !read.present()? || read.byte()? != PROGRAMMABLE_V1 || !read.flag()? {
+        return None;
+    }
+    read.key()
+}
+
+pub(crate) fn token_lock(account: Option<&Account>) -> Option<Lock> {
+    match token_state(account) {
+        Some((UNLOCKED, role)) if role != Some(SALE) => None,
+        Some((UNLOCKED | LISTED, _)) => Some(Lock::Listed),
+        _ => Some(Lock::Frozen),
+    }
+}
+
+fn token_state(account: Option<&Account>) -> Option<(u8, Option<u8>)> {
+    let account = account.filter(|account| account.owner == METADATA)?;
+    let mut read = Reader(&account.data);
+    if read.byte()? != TOKEN_RECORD {
+        return None;
+    }
+    read.byte()?;
+    let state = read.byte()?;
+    if read.flag()? {
+        read.take(8)?;
+    }
+    if read.flag()? {
+        read.key()?;
+    }
+    let role = if read.flag()? {
+        Some(read.byte()?)
+    } else {
+        None
+    };
+    Some((state, role))
 }
 
 pub(crate) fn core(account: Option<&Account>) -> Option<Core> {

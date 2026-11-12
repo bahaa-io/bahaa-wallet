@@ -82,11 +82,12 @@ async fn live_nfts_are_listed_by_das_and_checked_on_chain() {
 
 #[tokio::test]
 #[ignore = "talks to the real Solana network"]
-async fn live_core_and_classic_nft_transfers_pass_a_real_simulation() {
+async fn live_core_classic_and_programmable_nft_transfers_pass_a_real_simulation() {
     let chain = mainnet();
     for asset in [
         "CFZXxEdkoA2zwCNSpc4bLgfgEEGwYpK6eem97LCvm9KD",
         "2jJT5adTaLXi5oeUCv9zsSXXYk8MEAiqLTzwPnAvu4W6",
+        "61QjtYgjuuz5AeKuCGNpJ9CrNM8Q1vFyH6xcb7VB8Qw",
     ] {
         let transfer = Transfer {
             account: 0,

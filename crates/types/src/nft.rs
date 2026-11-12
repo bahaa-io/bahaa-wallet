@@ -32,6 +32,7 @@ pub enum Trust {
 pub enum Lock {
     Soulbound,
     Frozen,
+    Listed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

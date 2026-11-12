@@ -13,10 +13,13 @@ pub(crate) const MEMO_V1: Key = id("Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo"
 pub(crate) const BUDGET: Key = id("ComputeBudget111111111111111111111111111111");
 pub(crate) const METADATA: Key = id("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 pub(crate) const CORE: Key = id("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
+pub(crate) const RULES: Key = id("auth9SigNpDKz4sJJ1DfCTuZrZNSAgh9sFD3rboVmgg");
+pub(crate) const INSTRUCTIONS: Key = id("Sysvar1nstructions1111111111111111111111111");
 pub(crate) const WRAPPED: Key = id("So11111111111111111111111111111111111111112");
 
 const TRANSFER: u32 = 2;
 const CORE_TRANSFER: [u8; 2] = [14, 0];
+const PROGRAMMABLE_TRANSFER: [u8; 2] = [49, 0];
 const TRANSFER_CHECKED: u8 = 12;
 const CREATE_IDEMPOTENT: u8 = 1;
 const UNIT_LIMIT: u8 = 2;
@@ -31,6 +34,7 @@ pub(crate) enum Moved {
     Coin,
     Token { mint: Key, decimals: u8 },
     Core { asset: Key, collection: Option<Key> },
+    Programmable { mint: Key, rules: Option<Key> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,8 +116,43 @@ impl Shape {
                     data: CORE_TRANSFER.to_vec(),
                 });
             }
+            Moved::Programmable { mint, rules } => {
+                list.extend(memo);
+                list.push(self.programmable(mint, rules)?);
+            }
         }
         Ok(list)
+    }
+
+    fn programmable(&self, mint: Key, rules: Option<Key>) -> Result<Instruction, ChainError> {
+        let source = token_account(&self.from, &mint)?;
+        let destination = token_account(&self.to, &mint)?;
+        let mut data = PROGRAMMABLE_TRANSFER.to_vec();
+        data.extend_from_slice(&self.units.to_le_bytes());
+        data.push(0);
+        Ok(Instruction {
+            program: METADATA,
+            accounts: vec![
+                meta(source, false, true),
+                meta(self.from, false, false),
+                meta(destination, false, true),
+                meta(self.to, false, false),
+                meta(mint, false, false),
+                meta(metadata_account(&mint)?, false, true),
+                meta(edition_account(&mint)?, false, false),
+                meta(token_record(&mint, &source)?, false, true),
+                meta(token_record(&mint, &destination)?, false, true),
+                meta(self.from, true, false),
+                meta(self.from, true, true),
+                meta(SYSTEM, false, false),
+                meta(INSTRUCTIONS, false, false),
+                meta(TOKEN, false, false),
+                meta(ASSOCIATED, false, false),
+                meta(rules.map_or(METADATA, |_| RULES), false, false),
+                meta(rules.unwrap_or(METADATA), false, false),
+            ],
+            data,
+        })
     }
 
     pub(crate) fn read(parsed: &Parsed) -> Result<Self, ChainError> {
@@ -140,29 +179,30 @@ impl Shape {
                 .map(u64::from_le_bytes)
                 .ok_or_else(unknown)
         };
+        let account = |index: usize| {
+            last.accounts
+                .get(index)
+                .map(|meta| meta.key)
+                .ok_or_else(unknown)
+        };
         let (to, moved, units) = match last.program {
-            SYSTEM => (
-                last.accounts.get(1).ok_or_else(unknown)?.key,
-                Moved::Coin,
-                units(last.data.get(4..12))?,
+            SYSTEM => (account(1)?, Moved::Coin, units(last.data.get(4..12))?),
+            CORE => (
+                account(4)?,
+                Moved::Core {
+                    asset: account(0)?,
+                    collection: Some(account(1)?).filter(|key| *key != CORE),
+                },
+                1,
             ),
-            CORE => {
-                let account = |index: usize| {
-                    last.accounts
-                        .get(index)
-                        .map(|meta| meta.key)
-                        .ok_or_else(unknown)
-                };
-                let collection = Some(account(1)?).filter(|key| *key != CORE);
-                (
-                    account(4)?,
-                    Moved::Core {
-                        asset: account(0)?,
-                        collection,
-                    },
-                    1,
-                )
-            }
+            METADATA => (
+                account(3)?,
+                Moved::Programmable {
+                    mint: account(4)?,
+                    rules: Some(account(16)?).filter(|key| *key != METADATA),
+                },
+                units(last.data.get(2..10))?,
+            ),
             TOKEN => {
                 let owner = instructions
                     .iter()
@@ -170,7 +210,7 @@ impl Shape {
                     .and_then(|create| create.accounts.get(2))
                     .ok_or_else(unknown)?
                     .key;
-                let mint = last.accounts.get(1).ok_or_else(unknown)?.key;
+                let mint = account(1)?;
                 let decimals = *last.data.get(9).ok_or_else(unknown)?;
                 (
                     owner,
@@ -215,6 +255,17 @@ pub(crate) fn token_account(owner: &Key, mint: &Key) -> Result<Key, ChainError> 
 
 pub(crate) fn metadata_account(mint: &Key) -> Result<Key, ChainError> {
     derived(&[b"metadata", &METADATA, mint], &METADATA)
+}
+
+pub(crate) fn edition_account(mint: &Key) -> Result<Key, ChainError> {
+    derived(&[b"metadata", &METADATA, mint, b"edition"], &METADATA)
+}
+
+pub(crate) fn token_record(mint: &Key, account: &Key) -> Result<Key, ChainError> {
+    derived(
+        &[b"metadata", &METADATA, mint, b"token_record", account],
+        &METADATA,
+    )
 }
 
 fn derived(seeds: &[&[u8]], program: &Key) -> Result<Key, ChainError> {
@@ -309,6 +360,13 @@ mod tests {
         }
     }
 
+    fn programmable(rules: Option<Key>) -> Moved {
+        Moved::Programmable {
+            mint: [10; 32],
+            rules,
+        }
+    }
+
     fn parsed(payer: Key, instructions: Vec<Instruction>) -> Parsed {
         Parsed {
             signature: [0; 64],
@@ -334,9 +392,60 @@ mod tests {
                 units: 1,
                 ..shape(core(Some([9; 32])), Some("gift"))
             },
+            Shape {
+                units: 1,
+                ..shape(programmable(None), None)
+            },
+            Shape {
+                units: 1,
+                ..shape(programmable(Some([11; 32])), Some("gift"))
+            },
         ] {
             let read = parsed(shape.from, shape.instructions().unwrap());
             assert_eq!(Shape::read(&read).unwrap(), shape);
+        }
+    }
+
+    #[test]
+    fn a_programmable_transfer_names_the_accounts_of_a_real_one() {
+        use base64::Engine;
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/pnft.json")).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(fixture["transaction"].as_str().unwrap())
+            .unwrap();
+        let wire = tx::read(&bytes).unwrap();
+        let real = wire
+            .instructions
+            .iter()
+            .find(|instruction| wire.keys[usize::from(instruction.program)] == METADATA)
+            .unwrap();
+        let keys: Vec<Key> = real
+            .accounts
+            .iter()
+            .map(|index| wire.keys[usize::from(*index)])
+            .collect();
+        let shape = Shape {
+            from: keys[1],
+            to: keys[3],
+            moved: Moved::Programmable {
+                mint: keys[4],
+                rules: Some(keys[16]),
+            },
+            units: 1,
+            memo: None,
+            limit: 1,
+            price: 0,
+        };
+        let ours = shape.instructions().unwrap().pop().unwrap();
+        assert_eq!(ours.data, real.data);
+        assert_eq!(ours.accounts.len(), keys.len());
+        for (index, (built, real)) in ours.accounts.iter().zip(&keys).enumerate() {
+            if index == 10 {
+                assert_eq!(built.key, shape.from);
+            } else {
+                assert_eq!(built.key, *real, "account {index}");
+            }
         }
     }
 

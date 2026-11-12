@@ -24,7 +24,8 @@ pub const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SYSTEM: &str = "11111111111111111111111111111111";
 const BLOCKHASH: &str = "Aiyo4Fg2XByNaEhKv3LtX5h9Q8Y2kzhhCZhsnV5fBsrw";
 const RENT: u64 = 650_240;
-const TOKEN_RENT: u64 = 1_488_440;
+pub const TOKEN_RENT: u64 = 1_488_440;
+pub const RECORD_RENT: u64 = 1_056_640;
 
 pub fn solana_on(urls: &[Url]) -> Network {
     let registry = Registry::builtin().unwrap();
@@ -113,6 +114,7 @@ impl Ledger {
             "getMinimumBalanceForRentExemption" => match params[0].as_u64().unwrap() {
                 0 => json!(RENT),
                 165 => json!(TOKEN_RENT),
+                80 => json!(RECORD_RENT),
                 other => panic!("rent for {other} bytes"),
             },
             "getLatestBlockhash" => {

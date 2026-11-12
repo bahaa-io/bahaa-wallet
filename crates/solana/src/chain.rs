@@ -197,7 +197,7 @@ impl Chain for SolanaChain {
                 AssetId::Native(self.network.id.clone()),
                 self.network.native.decimals,
             ),
-            Moved::Core { asset, .. } => nft(asset)?,
+            Moved::Core { asset, .. } | Moved::Programmable { mint: asset, .. } => nft(asset)?,
             Moved::Token { mint, decimals: 0 } if known_nft(&mint) => nft(mint)?,
             Moved::Token { mint, decimals } => {
                 let known = self.known_decimals(&mint).ok_or(ChainError::Invalid(
