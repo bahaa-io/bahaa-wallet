@@ -23,7 +23,7 @@ pub use bahaa_store::{
 };
 pub use bahaa_types::{
     Address, AddressError, Amount, AmountError, AssetId, BitcoinScript, BitcoinType, ChainFamily,
-    Collection, Details, Lock, NetworkId, Nft, NftId, NftKind, Price, PriceId, SolanaPath,
+    Collection, Details, Lock, NetworkId, Nft, NftId, NftKind, Picture, Price, PriceId, SolanaPath,
     TonContract, TonForm, Trust, Utc, is_plain_text, to_plain_text,
 };
 pub use bahaa_vault::KdfParams;

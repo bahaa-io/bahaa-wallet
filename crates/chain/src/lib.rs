@@ -8,6 +8,7 @@ pub mod fuzz;
 mod history;
 pub mod http;
 mod model;
+mod picture;
 mod pool;
 mod rpc;
 mod tokens;
@@ -26,6 +27,7 @@ pub use model::{
     Replace, Replaced, ScanCursor, Scanned, Signed, Step, Transfer, TxId, TxStatus, Wait, Watch,
     amount, check_call, check_signed, enough, memo_text, on_network,
 };
+pub use picture::{MAX_PICTURE_FILE, read_picture};
 pub use pool::{Failure, Pool, PoolError};
 pub use rpc::{Dialect, JsonRpc};
 pub use tokens::{Decimals, symbol};

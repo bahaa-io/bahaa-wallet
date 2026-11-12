@@ -5,7 +5,7 @@ use std::sync::{PoisonError, RwLock, RwLockReadGuard};
 use bahaa_config::{Checkpoint, Coin, Settings};
 use bahaa_types::{
     Address, Amount, AssetId, Details, MAX_NFT_ABOUT, MAX_NFT_LINK, MAX_NFT_TEXT, MAX_NFTS,
-    NetworkId, Nft, Price, PriceId, is_plain_text,
+    NetworkId, Nft, Picture, Price, PriceId, is_plain_text,
 };
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableHandle};
 use serde::de::DeserializeOwned;
@@ -43,10 +43,11 @@ const SWAPS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("swaps
 const NFTS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("nfts");
 const MARKS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("marks");
 const DETAILS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("details");
+const PICTURES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("pictures");
 const SEAL: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("seal");
-const SEALED: [TableDefinition<'static, &str, &[u8]>; 13] = [
+const SEALED: [TableDefinition<'static, &str, &[u8]>; 14] = [
     CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS, NAMES, SWAPS, NFTS, MARKS,
-    DETAILS,
+    DETAILS, PICTURES,
 ];
 const CHECK: &str = "check";
 const CHECKED: &[u8] = b"bahaa store";
@@ -173,6 +174,15 @@ pub struct Fetched {
     pub asset: AssetId,
     pub link: String,
     pub details: Option<Details>,
+    pub at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pictured {
+    pub asset: AssetId,
+    pub link: String,
+    pub picture: Option<Picture>,
     pub at: u64,
 }
 
@@ -618,6 +628,21 @@ impl Store {
 
     pub fn forget_fetched(&self, asset: &AssetId) -> Result<(), StoreError> {
         self.delete(DETAILS, &asset.to_string()).map(|_| ())
+    }
+
+    pub fn pictured(&self) -> Result<Vec<Pictured>, StoreError> {
+        self.all(PICTURES)
+    }
+
+    pub fn save_pictured(&self, pictured: &Pictured) -> Result<(), StoreError> {
+        if !pictured.asset.is_nft() || !is_plain_text(&pictured.link, MAX_NFT_LINK) {
+            return Err(StoreError::Invalid("not an NFT's picture"));
+        }
+        self.put(PICTURES, &pictured.asset.to_string(), &encode(pictured)?)
+    }
+
+    pub fn forget_pictured(&self, asset: &AssetId) -> Result<(), StoreError> {
+        self.delete(PICTURES, &asset.to_string()).map(|_| ())
     }
 
     pub fn received(&self) -> Result<Vec<Received>, StoreError> {

@@ -9,6 +9,7 @@ use percent_encoding::percent_decode_str;
 use reqwest::{Client, Url};
 use serde_json::Value;
 
+use crate::picture::MAX_PICTURE_FILE;
 use crate::{ChainError, http};
 
 pub const MAX_DETAILS_FILE: usize = 256 * 1024;
@@ -16,6 +17,8 @@ const MIN_ID: usize = 43;
 const MAX_ID: usize = 128;
 const BOM: &[u8] = b"\xEF\xBB\xBF";
 const IMAGES: [&str; 4] = ["https://", "ipfs://", "ar://", "data:image/"];
+pub(crate) const DETAILS_MEDIA: [&str; 3] = ["", "application/json", "text/plain"];
+pub(crate) const PICTURE_MEDIA: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const BASE64: GeneralPurpose = GeneralPurpose::new(
     &STANDARD,
     GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
@@ -54,16 +57,26 @@ impl Fetcher {
     }
 
     pub async fn details(&self, link: &str) -> Result<Details, ChainError> {
-        let unreadable = || ChainError::Invalid("the NFT's details file is not readable");
-        let urls = match locate(link, &self.gateways) {
-            Some(Located::Inline(bytes)) => return read_details(&bytes).ok_or_else(unreadable),
+        let bytes = self.file(link, &DETAILS_MEDIA, MAX_DETAILS_FILE).await?;
+        read_details(&bytes).ok_or(ChainError::Invalid(
+            "the NFT's details file is not readable",
+        ))
+    }
+
+    pub async fn picture(&self, link: &str) -> Result<Vec<u8>, ChainError> {
+        self.file(link, &PICTURE_MEDIA, MAX_PICTURE_FILE).await
+    }
+
+    async fn file(&self, link: &str, media: &[&str], max: usize) -> Result<Vec<u8>, ChainError> {
+        let urls = match locate(link, &self.gateways, media) {
+            Some(Located::Inline(bytes)) => return Ok(bytes),
             Some(Located::Web(urls)) => urls,
-            None => return Err(ChainError::Unsupported("this kind of NFT details link")),
+            None => return Err(ChainError::Unsupported("this kind of NFT link")),
         };
-        let mut failed = ChainError::Unsupported("NFT details without a gateway");
+        let mut failed = ChainError::Unsupported("an NFT link without a gateway");
         for url in urls {
-            match http::file(&self.client, url, MAX_DETAILS_FILE).await {
-                Ok(bytes) => return read_details(&bytes).ok_or_else(unreadable),
+            match http::file(&self.client, url, max).await {
+                Ok(bytes) => return Ok(bytes),
                 Err(err) => failed = err,
             }
         }
@@ -77,7 +90,7 @@ pub(crate) enum Located {
     Inline(Vec<u8>),
 }
 
-pub(crate) fn locate(link: &str, gateways: &Gateways) -> Option<Located> {
+pub(crate) fn locate(link: &str, gateways: &Gateways, media: &[&str]) -> Option<Located> {
     if let Some(rest) = link.strip_prefix("ipfs://") {
         let rest = rest.strip_prefix("ipfs/").unwrap_or(rest);
         return stored(&gateways.ipfs, rest).map(Located::Web);
@@ -86,7 +99,7 @@ pub(crate) fn locate(link: &str, gateways: &Gateways) -> Option<Located> {
         return stored(&gateways.arweave, rest).map(Located::Web);
     }
     if let Some(rest) = link.strip_prefix("data:") {
-        return inline(rest).map(Located::Inline);
+        return inline(rest, media).map(Located::Inline);
     }
     let url = Url::parse(link)
         .ok()
@@ -121,13 +134,13 @@ fn stored(bases: &[Url], rest: &str) -> Option<Vec<Url>> {
     (!urls.is_empty()).then_some(urls)
 }
 
-fn inline(rest: &str) -> Option<Vec<u8>> {
+fn inline(rest: &str, accepted: &[&str]) -> Option<Vec<u8>> {
     let (kind, body) = rest.split_once(',')?;
     let mut parts = kind.split(';');
     let media = parts.next()?.trim();
-    if !(media.is_empty()
-        || media.eq_ignore_ascii_case("application/json")
-        || media.eq_ignore_ascii_case("text/plain"))
+    if !accepted
+        .iter()
+        .any(|accepted| media.eq_ignore_ascii_case(accepted))
     {
         return None;
     }
@@ -180,7 +193,7 @@ mod tests {
     }
 
     fn web(link: &str) -> Option<Vec<String>> {
-        match locate(link, &gateways())? {
+        match locate(link, &gateways(), &DETAILS_MEDIA)? {
             Located::Web(urls) => Some(urls.iter().map(ToString::to_string).collect()),
             Located::Inline(_) => None,
         }
@@ -231,7 +244,7 @@ mod tests {
             "data:application/json;base64".to_owned(),
             String::new(),
         ] {
-            assert_eq!(locate(&link, &gateways()), None, "{link}");
+            assert_eq!(locate(&link, &gateways(), &DETAILS_MEDIA), None, "{link}");
         }
     }
 
@@ -249,7 +262,7 @@ mod tests {
             format!("data:,{json}"),
         ] {
             assert_eq!(
-                locate(&link, &gateways()),
+                locate(&link, &gateways(), &DETAILS_MEDIA),
                 Some(Located::Inline(json.as_bytes().to_vec())),
                 "{link}"
             );

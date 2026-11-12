@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 
 use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
 use bahaa_store::{
-    Contact, CustomToken, Fetched, Listing, Mark, Marked, Outgoing, Received, SavedPrices,
-    SavedQuote, Scan, SentKind, SentStatus, SentTx, Store, StoreError, StoreKey, SwapRecord,
-    SwapStatus, TrustedBlock,
+    Contact, CustomToken, Fetched, Listing, Mark, Marked, Outgoing, Pictured, Received,
+    SavedPrices, SavedQuote, Scan, SentKind, SentStatus, SentTx, Store, StoreError, StoreKey,
+    SwapRecord, SwapStatus, TrustedBlock,
 };
 use bahaa_types::{
-    Address, Amount, AssetId, ChainFamily, Collection, Details, MAX_NFTS, Nft, NftKind, Price,
-    Trust,
+    Address, Amount, AssetId, ChainFamily, Collection, Details, MAX_NFTS, Nft, NftKind, Picture,
+    Price, Trust,
 };
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use zeroize::Zeroizing;
@@ -875,4 +875,44 @@ fn fetched_details_are_sealed_validated_and_forgotten() {
     assert_eq!(kept, [fetched(1, Some(found)), fetched(2, None)]);
     store.forget_fetched(&ape(1).asset).unwrap();
     assert_eq!(store.fetched().unwrap(), [fetched(2, None)]);
+}
+
+fn pictured(token: u64, picture: Option<Picture>) -> Pictured {
+    Pictured {
+        asset: ape(token).asset,
+        link: format!("ipfs://QmPbxeGcXhYQQNgsC6a36dDyYUcHgMLnGKnF8pVFmGsvqi/{token}.png"),
+        picture,
+        at: 1_700_000_000,
+    }
+}
+
+#[test]
+fn pictures_are_sealed_validated_and_forgotten() {
+    let scratch = Scratch::new();
+    let painted = Picture::new(2, 1, vec![9, 8, 7, 255, 1, 2, 3, 0]).unwrap();
+    {
+        let store = unlocked(&scratch);
+        store
+            .save_pictured(&pictured(1, Some(painted.clone())))
+            .unwrap();
+        store.save_pictured(&pictured(2, None)).unwrap();
+        let mut coin = pictured(3, None);
+        coin.asset = AssetId::Native("ethereum".parse().unwrap());
+        let mut link = pictured(3, None);
+        link.link = "a\u{202e}b".to_owned();
+        for bad in [coin, link] {
+            assert!(matches!(
+                store.save_pictured(&bad),
+                Err(StoreError::Invalid(_))
+            ));
+        }
+        store.lock();
+        assert_eq!(store.pictured(), Err(StoreError::Locked));
+    }
+    let store = unlocked(&scratch);
+    let mut kept = store.pictured().unwrap();
+    kept.sort_by(|a, b| a.asset.cmp(&b.asset));
+    assert_eq!(kept, [pictured(1, Some(painted)), pictured(2, None)]);
+    store.forget_pictured(&ape(1).asset).unwrap();
+    assert_eq!(store.pictured().unwrap(), [pictured(2, None)]);
 }

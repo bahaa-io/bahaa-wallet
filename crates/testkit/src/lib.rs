@@ -39,16 +39,20 @@ impl Request {
 pub struct Reply {
     pub status: u16,
     pub headers: Vec<(&'static str, String)>,
-    pub body: String,
+    pub body: Vec<u8>,
     pub delay: Duration,
 }
 
 impl Reply {
     pub fn json(status: u16, value: &Value) -> Self {
+        Self::bytes(status, "application/json", value.to_string().into_bytes())
+    }
+
+    pub fn bytes(status: u16, kind: &str, body: Vec<u8>) -> Self {
         Self {
             status,
-            headers: vec![("Content-Type", "application/json".to_owned())],
-            body: value.to_string(),
+            headers: vec![("Content-Type", kind.to_owned())],
+            body,
             delay: Duration::ZERO,
         }
     }
@@ -77,7 +81,7 @@ pub async fn serve(answer: impl Fn(Request) -> Reply + Send + Sync + 'static) ->
                     reply.body.len()
                 );
                 let _ = socket.write_all(head.as_bytes()).await;
-                let _ = socket.write_all(reply.body.as_bytes()).await;
+                let _ = socket.write_all(&reply.body).await;
                 let _ = socket.shutdown().await;
             });
         }

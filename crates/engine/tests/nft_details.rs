@@ -20,6 +20,7 @@ const KNOWN: &str = "0x1111111111111111111111111111111111111111";
 const COPY: &str = "0x2222222222222222222222222222222222222222";
 const PLAIN: &str = "0x3333333333333333333333333333333333333333";
 const CID: &str = "QmeSjSinHpPnmXmspMjwiXyN6zS4E9zccariGR3jxcaWtq";
+const PNG: &str = "89504e470d0a1a0a0000000d494844520000000200000002080600000072b60d240000001149444154789c63382167f31f8419600c004b30088548ced6ad0000000049454e44ae426082";
 
 type Asked = Arc<Mutex<Vec<String>>>;
 
@@ -81,6 +82,9 @@ async fn gateway(asked: Asked, broken: bool) -> Url {
         asked.lock().unwrap().push(path.clone());
         if broken {
             return Reply::json(503, &json!({"error": "busy"}));
+        }
+        if path.rsplit('/').next().is_some_and(|name| name.contains('.')) {
+            return Reply::bytes(200, "image/png", bahaa_types::hex::decode(PNG).unwrap());
         }
         let id = path.rsplit('/').next().unwrap().to_owned();
         Reply::json(
@@ -147,9 +151,7 @@ async fn quiet(nfts: &mut watch::Receiver<Collectibles>) {
     tokio::time::sleep(Duration::from_millis(300)).await;
 }
 
-#[tokio::test]
-async fn only_shown_nfts_get_their_details_and_known_collections_are_trusted() {
-    let scratch = Scratch::new();
+async fn started(scratch: &Scratch) -> (Engine, watch::Receiver<Collectibles>, Asked, Asked) {
     let (down, up): (Asked, Asked) = (Asked::default(), Asked::default());
     let engine = Engine::start(bahaa_engine::EngineConfig {
         gateways: Some(Gateways {
@@ -159,15 +161,22 @@ async fn only_shown_nfts_get_their_details_and_known_collections_are_trusted() {
             ],
             arweave: Vec::new(),
         }),
-        ..config(&scratch, registry().await, None)
+        ..config(scratch, registry().await, None)
     })
     .unwrap();
-    let mut nfts = engine.nfts();
+    let nfts = engine.nfts();
     engine.create(SecretString::from("pw")).await.unwrap();
     engine
         .watch(Address::parse(ChainFamily::Evm, OWNER).unwrap(), true)
         .await
         .unwrap();
+    (engine, nfts, down, up)
+}
+
+#[tokio::test]
+async fn only_shown_nfts_get_their_details_and_known_collections_are_trusted() {
+    let scratch = Scratch::new();
+    let (engine, mut nfts, down, up) = started(&scratch).await;
     let first = until(&mut nfts, |listed| described(listed, KNOWN)).await;
 
     let known = item(&first, KNOWN);
@@ -231,4 +240,64 @@ async fn only_shown_nfts_get_their_details_and_known_collections_are_trusted() {
         *up.lock().unwrap(),
         [format!("/ipfs/{CID}/1"), format!("/ipfs/{CID}/3")]
     );
+}
+
+#[tokio::test]
+async fn pictures_are_read_only_when_asked_for_and_only_for_shown_nfts() {
+    let scratch = Scratch::new();
+    let (engine, mut nfts, _down, up) = started(&scratch).await;
+    let first = until(&mut nfts, |listed| described(listed, KNOWN)).await;
+    let (known, plain) = (
+        item(&first, KNOWN).nft.asset.clone(),
+        item(&first, PLAIN).nft.asset.clone(),
+    );
+    quiet(&mut nfts).await;
+    assert!(
+        nfts.borrow()
+            .items
+            .iter()
+            .all(|item| item.picture.is_none())
+    );
+    engine.want_picture(plain.clone());
+    engine.want_picture(known.clone());
+    let painted = until(&mut nfts, |listed| item(listed, KNOWN).picture.is_some()).await;
+    let picture = item(&painted, KNOWN).picture.clone().unwrap();
+    assert_eq!(
+        (picture.width(), picture.height(), picture.pixel(1, 1)),
+        (2, 2, [200, 30, 60, 255])
+    );
+    quiet(&mut nfts).await;
+    assert!(item(&nfts.borrow(), PLAIN).picture.is_none());
+
+    engine
+        .mark_nft(plain.clone(), Some(Mark::Shown))
+        .await
+        .unwrap();
+    until(&mut nfts, |listed| described(listed, PLAIN)).await;
+    engine.want_picture(plain.clone());
+    until(&mut nfts, |listed| item(listed, PLAIN).picture.is_some()).await;
+
+    engine.lock().await.unwrap();
+    until(&mut nfts, |listed| listed.items.is_empty()).await;
+    engine.unlock(SecretString::from("pw")).await.unwrap();
+    until(&mut nfts, |listed| {
+        item_painted(listed, KNOWN) && item_painted(listed, PLAIN)
+    })
+    .await;
+    engine.want_picture(known);
+    engine.want_picture(plain);
+    quiet(&mut nfts).await;
+    assert_eq!(
+        *up.lock().unwrap(),
+        [
+            format!("/ipfs/{CID}/1"),
+            format!("/ipfs/{CID}/1.png"),
+            format!("/ipfs/{CID}/3"),
+            format!("/ipfs/{CID}/3.png")
+        ]
+    );
+}
+
+fn item_painted(listed: &Collectibles, contract: &str) -> bool {
+    listed.items.len() == 3 && item(listed, contract).picture.is_some()
 }

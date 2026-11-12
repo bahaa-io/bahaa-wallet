@@ -45,6 +45,7 @@ ed25519-dalek = "3.0.0"
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
 hmac = "0.12.1"
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 k256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "precomputed-tables", "schnorr", "std"] }
 num-bigint = "0.4.8"
 open = "5.4.4"

@@ -291,7 +291,7 @@ impl Ledger {
         let text = |status, body: String| Reply {
             status,
             headers: Vec::new(),
-            body,
+            body: body.into_bytes(),
             delay: Duration::ZERO,
         };
         let path = request.path().trim_start_matches('/').to_owned();

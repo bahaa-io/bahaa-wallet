@@ -4,6 +4,7 @@ mod asset;
 pub mod hex;
 mod ids;
 mod nft;
+mod picture;
 mod price;
 mod text;
 mod time;
@@ -18,6 +19,7 @@ pub use nft::{
     Collection, Details, Lock, MAX_NFT_ABOUT, MAX_NFT_LINK, MAX_NFT_TEXT, MAX_NFTS, Nft, NftKind,
     Trust,
 };
+pub use picture::{MAX_PICTURE, Picture};
 pub use price::{MAX_SCALE, Price, PriceError};
 pub use text::{is_plain_text, to_plain_text};
 pub use time::Utc;

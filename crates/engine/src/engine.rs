@@ -19,8 +19,8 @@ use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{
-    Contact, CustomToken, Fetched, Mark, Outgoing, Received, Scan, SentTx, Store, StoreError,
-    StoreKey, SwapRecord, TrustedBlock,
+    Contact, CustomToken, Fetched, Mark, Outgoing, Pictured, Received, Scan, SentTx, Store,
+    StoreError, StoreKey, SwapRecord, TrustedBlock,
 };
 use bahaa_swap::{Providers, SwapError};
 use bahaa_types::{Address, AssetId, BitcoinType, ChainFamily, NetworkId, SolanaPath, TonContract};
@@ -142,6 +142,7 @@ enum Command {
     Touch,
     Refresh,
     RefreshNfts,
+    Picture(AssetId),
     MarkNft(AssetId, Option<Mark>, Reply<()>),
     Wallets(Reply<Vec<WalletInfo>>),
     Accounts(Reply<Vec<Account>>),
@@ -194,6 +195,7 @@ enum Notice {
     Nfts(u64, Box<NetworkNfts>),
     Listed(u64),
     Details(u64, Vec<Fetched>),
+    Pictures(u64, Vec<Pictured>),
     Quoted(Box<Quoted>),
     Delivered(Box<Delivered>),
     Tracked(Vec<SentTx>),
@@ -390,6 +392,10 @@ impl Engine {
 
     pub fn refresh_nfts(&self) {
         let _ = self.commands.try_send(Command::RefreshNfts);
+    }
+
+    pub fn want_picture(&self, asset: AssetId) {
+        let _ = self.commands.try_send(Command::Picture(asset));
     }
 
     pub async fn mark_nft(&self, asset: AssetId, mark: Option<Mark>) -> Result<(), EngineError> {
@@ -836,6 +842,7 @@ impl Worker {
             }
             Command::Refresh => self.start_refresh(),
             Command::RefreshNfts => self.start_listing(),
+            Command::Picture(asset) => self.fetch_picture(asset),
             Command::MarkNft(asset, mark, reply) => {
                 let _ = reply.send(self.mark_nft(&asset, mark));
             }
@@ -1031,6 +1038,9 @@ impl Worker {
             Notice::Details(session, fetched) if session == self.session => {
                 self.details_arrived(fetched);
             }
+            Notice::Pictures(session, pictured) if session == self.session => {
+                self.pictures_arrived(pictured);
+            }
             Notice::Quoted(quoted) => self.quoted(*quoted),
             Notice::Delivered(delivered) => self.delivered(*delivered),
             Notice::Tracked(updates) => self.tracked(updates),
@@ -1053,6 +1063,7 @@ impl Worker {
             | Notice::Nfts(..)
             | Notice::Listed(_)
             | Notice::Details(..)
+            | Notice::Pictures(..)
             | Notice::Detected(..) => {}
         }
     }
@@ -1241,6 +1252,7 @@ impl Worker {
         let listings = self.store.listings()?;
         let marks = self.store.marks()?;
         let fetched = self.store.fetched()?;
+        let pictured = self.store.pictured()?;
         chains::know(&self.chains, &custom);
         self.custom = Arc::new(custom);
         self.history = history;
@@ -1251,6 +1263,7 @@ impl Worker {
         self.nft.listings = listings;
         self.nft.marks = marks;
         self.nft.fetched = fetched;
+        self.nft.pictured = pictured;
         self.saved = prices::saved(&self.store, self.settings.fiat.price_base());
         self.saved_at = None;
         self.unsaved = false;

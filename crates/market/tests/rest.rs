@@ -29,7 +29,7 @@ fn plain(status: u16, headers: &[(&'static str, &str)], body: &str) -> Reply {
             .iter()
             .map(|(name, value)| (*name, (*value).to_owned()))
             .collect(),
-        body: body.to_owned(),
+        body: body.as_bytes().to_vec(),
         delay: Duration::ZERO,
     }
 }
