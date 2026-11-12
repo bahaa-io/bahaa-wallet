@@ -670,7 +670,7 @@ async fn live_nfts_are_listed_by_tonapi_and_proven_on_chain() {
     let chain = on(registry.get(&"ton".parse().unwrap()).unwrap(), None);
     let owner = Address::parse(
         ChainFamily::Ton,
-        "0:c150ffc9e97dcec52bd5807ed328fc84b0218a1f1f7c31e6a50cb7e2466a01ab",
+        "0:068a7a9539deb84dd1ae7a4871d0580cec104efa1c09067e2e8e4de9f2156e36",
     )
     .unwrap();
     let usernames = Address::parse(
