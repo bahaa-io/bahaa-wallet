@@ -61,7 +61,12 @@ pub(crate) fn classify(code: i64, message: &str) -> Failure<ChainError> {
         return Failure::Unsupported(ChainError::Pruned);
     }
     if code == -32601
-        || ["personal token", "request blocked", "method not found"]
+        || [
+            "personal token",
+            "request blocked",
+            "method not found",
+            "a maximum of",
+        ]
             .iter()
             .any(|needle| lower.contains(needle))
     {
@@ -167,6 +172,11 @@ mod tests {
                 "unsupported",
             ),
             (-32602, "Request blocked", "unsupported"),
+            (
+                -32602,
+                "A maximum of 10 accounts is allowed. No limit on a dedicated node: https://www.allnodes.com/sol/host/full-node",
+                "unsupported",
+            ),
             (-32601, "Method not found", "unsupported"),
             (-32005, "Node is unhealthy", "retry"),
             (-32016, "Minimum context slot has not been reached", "retry"),
