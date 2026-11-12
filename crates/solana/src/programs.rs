@@ -435,6 +435,13 @@ fn meta(key: Key, signer: bool, writable: bool) -> Meta {
     }
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(data: &[u8]) {
+    if let Ok(parsed) = tx::parse(data) {
+        let _ = Shape::read(&parsed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

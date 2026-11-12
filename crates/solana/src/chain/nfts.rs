@@ -380,4 +380,5 @@ fn text(raw: &str) -> Option<String> {
 #[cfg(fuzzing)]
 pub(crate) fn fuzz(value: &Value) {
     let _ = page_of(value);
+    compressed::fuzz(value);
 }

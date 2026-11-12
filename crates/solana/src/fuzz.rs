@@ -1,9 +1,10 @@
 use serde_json::Value;
 
-use crate::{chain, rpc, tx};
+use crate::{chain, programs, rpc, tx};
 
 pub fn raw(data: &[u8]) {
     tx::fuzz(data);
+    programs::fuzz(data);
     chain::fuzz_raw(data);
 }
 

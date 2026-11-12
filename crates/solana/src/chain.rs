@@ -360,6 +360,13 @@ pub(crate) fn fuzz(value: &serde_json::Value) {
             let _ = held(account.as_ref(), &[0; 32], &[0; 32]);
             let _ = mint_decimals(account.as_ref());
             let _ = metadata(account.as_ref(), &[0; 32]);
+            let _ = crate::metaplex::token_lock(account.as_ref());
+            if let Some(tree) = account.as_ref().and_then(|account| {
+                crate::bubblegum::Tree::read(&account.owner, &account.data, account.space)
+            }) {
+                let _ = (tree.root_at(), tree.changes(), tree.needed());
+                let _ = account.as_ref().map(|account| tree.recent(&account.data));
+            }
         }
     }
     if let Ok(found) = rpc::accounts(value, value["value"].as_array().map_or(0, Vec::len)) {

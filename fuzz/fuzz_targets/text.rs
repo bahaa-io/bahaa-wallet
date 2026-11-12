@@ -1,7 +1,9 @@
 #![no_main]
 
 use bahaa_crypto::{Mnemonic, TonMnemonic};
-use bahaa_types::{Address, Amount, ChainFamily, Price, TonForm, is_plain_text, to_plain_text};
+use bahaa_types::{
+    Address, Amount, AssetId, ChainFamily, Price, TonForm, is_plain_text, to_plain_text,
+};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -14,8 +16,13 @@ fuzz_target!(|data: &[u8]| {
     for family in ChainFamily::ALL {
         if let Ok(address) = Address::parse(family, text) {
             assert_eq!(Address::parse(family, &address.to_string()), Ok(address));
-            for (bounceable, testnet) in [(true, false), (false, false), (true, true), (false, true)] {
-                let form = TonForm { bounceable, testnet };
+            for (bounceable, testnet) in
+                [(true, false), (false, false), (true, true), (false, true)]
+            {
+                let form = TonForm {
+                    bounceable,
+                    testnet,
+                };
                 if let Some(friendly) = address.ton_friendly(form) {
                     assert_eq!(Address::parse_ton(&friendly), Ok((address, Some(form))));
                 }
@@ -24,6 +31,9 @@ fuzz_target!(|data: &[u8]| {
     }
     if let Ok(amount) = Amount::parse(text, decimals) {
         assert_eq!(Amount::parse(&amount.to_string(), decimals), Ok(amount));
+    }
+    if let Ok(asset) = text.parse::<AssetId>() {
+        assert_eq!(asset.to_string().parse::<AssetId>().ok(), Some(asset));
     }
     if let Ok(price) = Price::parse(text) {
         assert_eq!(Price::parse(&price.to_string()), Ok(price));

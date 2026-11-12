@@ -437,6 +437,17 @@ fn fits(owner: &Key, moving: &Compressed) -> bool {
         .is_ok()
 }
 
+#[cfg(fuzzing)]
+pub(super) fn fuzz(value: &Value) {
+    if let Some(claim) = claim(value) {
+        let _ = described(&claim);
+    }
+    if let Some(proof) = proof_of(value) {
+        let index = u32::try_from(proof.node).unwrap_or(u32::MAX);
+        let _ = bubblegum::root(proof.root, &proof.nodes, index);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use base64::Engine;

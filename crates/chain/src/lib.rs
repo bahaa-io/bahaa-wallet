@@ -2,6 +2,9 @@ mod abi;
 mod chain;
 mod clock;
 mod details;
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz;
 mod history;
 pub mod http;
 mod model;
