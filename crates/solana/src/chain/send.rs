@@ -23,6 +23,7 @@ const MAX_PRICE: u64 = 10_000_000;
 const MICRO: u128 = 1_000_000;
 const TOKEN_ACCOUNT: u64 = 165;
 const TOKEN_RECORD: u64 = 80;
+const COMPRESSED_FEE: u64 = 6_000;
 const RENT_FOR: Duration = Duration::from_secs(600);
 const MAX_REASON: usize = 200;
 const CONFIRM_SLOTS: u64 = 4;
@@ -79,11 +80,13 @@ impl SolanaChain {
         self.sendable(transfer)?;
         let (from, to) = (bytes(&transfer.from)?, bytes(&transfer.to)?);
         let moved = self.moved(transfer, &from).await?;
-        let (mint, decimals) = self.units_of_move(moved, transfer)?;
+        let (mint, decimals) = self.units_of_move(&moved, transfer)?;
         let coin = moved == Moved::Coin;
-        let token_accounts = touched(moved, mint.as_ref(), &from, &to)?;
-        let (wallets, tokens, rent, blockhash, price) =
-            self.read(from, to, &token_accounts).await?;
+        let token_accounts = touched(&moved, mint.as_ref(), &from, &to)?;
+        let program = program_fee(&moved);
+        let (wallets, tokens, rent, blockhash, price) = self
+            .read(from, to, &token_accounts, &locked(&moved))
+            .await?;
         let state = State {
             sol: Funds {
                 symbol: self.network.native.symbol.clone(),
@@ -126,7 +129,7 @@ impl SolanaChain {
                 transfer.take_all(amount(U256::from(1u8), 0)?)?;
             }
             shape.units = 1;
-            state.sol.cover(SIGNATURE_FEE)?;
+            state.sol.cover(SIGNATURE_FEE.saturating_add(program))?;
             Opening::default()
         } else {
             shape.units = if transfer.max {
@@ -161,9 +164,9 @@ impl SolanaChain {
             transfer.amount = amount(U256::from(shape.units), decimals)?;
         }
         let sent = if coin { shape.units } else { 0 };
-        state.spend(&[fee, opening.paid, sent], opening.refund)?;
+        state.spend(&[fee, opening.paid, sent, program], opening.refund)?;
         let message = tx::compile(from, blockhash, &shape.instructions()?)?;
-        let fee = self.fee_quote(shape.limit, priority, opening.net())?;
+        let fee = self.fee_quote(shape.limit, priority, opening.net(), program)?;
         Ok((SolanaPlan { transfer, message }, fee))
     }
 
@@ -172,12 +175,14 @@ impl SolanaChain {
         from: Key,
         to: Key,
         token_accounts: &[Key],
+        locked: &[Key],
     ) -> Result<(Vec<Option<Account>>, Vec<Option<Account>>, Rent, Key, u64), ChainError> {
         let mut writable = vec![from];
         if token_accounts.is_empty() {
             writable.push(to);
         }
         writable.extend_from_slice(token_accounts);
+        writable.extend_from_slice(locked);
         try_join5(
             self.accounts(&[from, to], Some(0)),
             async {
@@ -194,7 +199,13 @@ impl SolanaChain {
         .await
     }
 
-    fn fee_quote(&self, limit: u32, priority: u64, opening: u64) -> Result<FeeQuote, ChainError> {
+    fn fee_quote(
+        &self,
+        limit: u32,
+        priority: u64,
+        opening: u64,
+        program: u64,
+    ) -> Result<FeeQuote, ChainError> {
         let native = |lamports: u64| amount(U256::from(lamports), self.network.native.decimals);
         let mut lines = vec![
             FeeLine {
@@ -214,7 +225,13 @@ impl SolanaChain {
                 amount: native(opening)?,
             });
         }
-        let total = [SIGNATURE_FEE, priority, opening]
+        if program > 0 {
+            lines.push(FeeLine {
+                item: FeeItem::Contracts,
+                amount: native(program)?,
+            });
+        }
+        let total = [SIGNATURE_FEE, priority, opening, program]
             .into_iter()
             .try_fold(0u64, u64::checked_add)
             .ok_or_else(ChainError::overflow)?;
@@ -245,14 +262,14 @@ impl SolanaChain {
 
     fn units_of_move(
         &self,
-        moved: Moved,
+        moved: &Moved,
         transfer: &Transfer,
     ) -> Result<(Option<Key>, u8), ChainError> {
         let (mint, decimals) = match moved {
             Moved::Coin => (None, self.network.native.decimals),
-            Moved::Token { mint, decimals } => (Some(mint), decimals),
-            Moved::Core { .. } => (None, 0),
-            Moved::Programmable { mint, .. } => (Some(mint), 0),
+            Moved::Token { mint, decimals } => (Some(*mint), *decimals),
+            Moved::Core { .. } | Moved::Compressed(_) => (None, 0),
+            Moved::Programmable { mint, .. } => (Some(*mint), 0),
         };
         if !transfer.max && transfer.amount.decimals() != decimals {
             return Err(ChainError::Invalid(
@@ -462,7 +479,26 @@ impl State {
     }
 }
 
-fn touched(moved: Moved, mint: Option<&Key>, from: &Key, to: &Key) -> Result<Vec<Key>, ChainError> {
+fn program_fee(moved: &Moved) -> u64 {
+    match moved {
+        Moved::Compressed(moving) if moving.leaf.v2.is_some() => COMPRESSED_FEE,
+        _ => 0,
+    }
+}
+
+fn locked(moved: &Moved) -> Vec<Key> {
+    match moved {
+        Moved::Compressed(moving) => vec![moving.leaf.tree],
+        _ => Vec::new(),
+    }
+}
+
+fn touched(
+    moved: &Moved,
+    mint: Option<&Key>,
+    from: &Key,
+    to: &Key,
+) -> Result<Vec<Key>, ChainError> {
     let Some(mint) = mint else {
         return Ok(Vec::new());
     };

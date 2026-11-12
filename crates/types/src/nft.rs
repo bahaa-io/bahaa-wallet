@@ -33,6 +33,7 @@ pub enum Lock {
     Soulbound,
     Frozen,
     Listed,
+    Unsupported,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::PoisonError;
 
 use bahaa_chain::{ChainError, Found};
@@ -17,6 +17,8 @@ use crate::programs::{Moved, TOKEN, metadata_account, token_account, token_recor
 use crate::rpc::{self, Account};
 use crate::tx::Key;
 
+mod compressed;
+
 const PAGE: usize = 1_000;
 const MAX_PAGES: usize = 3;
 const MAX_KEYS: usize = 100;
@@ -31,32 +33,36 @@ const TOKEN_INTERFACES: [&str; 5] = [
 ];
 const CORE_INTERFACE: &str = "MplCoreAsset";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Listed {
     Token(Key),
     Core(Key),
+    Compressed(Box<compressed::Claim>),
+}
+
+impl Listed {
+    fn id(&self) -> Key {
+        match self {
+            Self::Token(id) | Self::Core(id) => *id,
+            Self::Compressed(claim) => claim.id,
+        }
+    }
 }
 
 impl SolanaChain {
     pub async fn nfts(&self, owner: &Address) -> Result<Found, ChainError> {
         let owner = bytes(owner)?;
         let (listed, capped) = self.listing(&owner).await?;
-        let mints: Vec<Key> = listed
-            .iter()
-            .filter_map(|listed| match listed {
-                Listed::Token(mint) => Some(*mint),
-                Listed::Core(_) => None,
-            })
-            .collect();
-        let assets: Vec<Key> = listed
-            .iter()
-            .filter_map(|listed| match listed {
-                Listed::Core(asset) => Some(*asset),
-                Listed::Token(_) => None,
-            })
-            .collect();
+        let (mut mints, mut assets, mut claims) = (Vec::new(), Vec::new(), Vec::new());
+        for item in listed {
+            match item {
+                Listed::Token(mint) => mints.push(mint),
+                Listed::Core(asset) => assets.push(asset),
+                Listed::Compressed(claim) => claims.push(*claim),
+            }
+        }
         let mut items = self.token_nfts(&owner, &mints).await?;
         items.extend(self.core_nfts(&owner, &assets).await?);
+        items.extend(self.compressed_nfts(&owner, claims).await?);
         Ok(Found { items, capped })
     }
 
@@ -77,6 +83,9 @@ impl SolanaChain {
         let [item, record, account, state] = found.as_slice() else {
             return Err(ChainError::malformed());
         };
+        if item.is_none() {
+            return self.compressed_move(owner, id).await;
+        }
         if let Some(core) = metaplex::core(item.as_ref()) {
             if core.owner != *owner {
                 return Err(not_held);
@@ -125,22 +134,63 @@ impl SolanaChain {
     async fn listing(&self, owner: &Key) -> Result<(Vec<Listed>, bool), ChainError> {
         let mut listed = Vec::new();
         let mut seen = BTreeSet::new();
+        let mut capped = true;
         for page in 1..=MAX_PAGES {
-            let params = json!({"ownerAddress": rpc::text(owner), "page": page, "limit": PAGE});
+            let params = json!({
+                "ownerAddress": rpc::text(owner),
+                "page": page,
+                "limit": PAGE,
+                "options": {"showUnverifiedCollections": true}
+            });
             let reply = self
                 .rpc
                 .call_with(Some(Feature::Nfts), "getAssetsByOwner", params)
                 .await?;
             let (found, full) = page_of(&reply).ok_or_else(ChainError::malformed)?;
-            listed.extend(found.into_iter().filter(|item| seen.insert(*item)));
+            listed.extend(found.into_iter().filter(|item| seen.insert(item.id())));
             if !full {
-                let capped = listed.len() > MAX_NFTS;
-                listed.truncate(MAX_NFTS);
-                return Ok((listed, capped));
+                capped = false;
+                break;
             }
         }
+        listed.sort_by_key(|item| matches!(item, Listed::Compressed(_)));
+        capped |= listed.len() > MAX_NFTS;
         listed.truncate(MAX_NFTS);
-        Ok((listed, true))
+        Ok((listed, capped))
+    }
+
+    async fn record_names(
+        &self,
+        collections: BTreeSet<Key>,
+    ) -> Result<BTreeMap<Key, Option<String>>, ChainError> {
+        let keys: Vec<Key> = collections.into_iter().collect();
+        let records = keys
+            .iter()
+            .map(metadata_account)
+            .collect::<Result<Vec<_>, _>>()?;
+        let found = self.all_accounts(&records).await?;
+        Ok(keys
+            .into_iter()
+            .zip(found)
+            .map(|(key, record)| {
+                let name =
+                    metaplex::metadata(record.as_ref(), &key).and_then(|record| text(&record.name));
+                (key, name)
+            })
+            .collect())
+    }
+
+    async fn core_names(
+        &self,
+        collections: BTreeSet<Key>,
+    ) -> Result<BTreeMap<Key, String>, ChainError> {
+        let keys: Vec<Key> = collections.into_iter().collect();
+        let found = self.all_accounts(&keys).await?;
+        Ok(keys
+            .into_iter()
+            .zip(found)
+            .filter_map(|(key, account)| Some((key, metaplex::core_collection(account.as_ref())?)))
+            .collect())
     }
 
     async fn all_accounts(&self, keys: &[Key]) -> Result<Vec<Option<Account>>, ChainError> {
@@ -177,7 +227,7 @@ impl SolanaChain {
                 (kind == NftKind::SolanaToken && frozen(account.as_ref())).then_some(Lock::Frozen);
             held_nfts.push((*mint, kind, lock, record));
         }
-        let mut collections: Vec<Key> = held_nfts
+        let collections: BTreeSet<Key> = held_nfts
             .iter()
             .filter_map(|(.., record)| {
                 record
@@ -186,12 +236,6 @@ impl SolanaChain {
                     .map(|(_, key)| key)
             })
             .collect();
-        collections.sort_unstable();
-        collections.dedup();
-        let records = collections
-            .iter()
-            .map(metadata_account)
-            .collect::<Result<Vec<_>, _>>()?;
         let programmable: Vec<usize> = (0..held_nfts.len())
             .filter(|index| held_nfts[*index].1 == NftKind::SolanaProgrammable)
             .collect();
@@ -203,15 +247,10 @@ impl SolanaChain {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let (named, states) =
-            try_join(self.all_accounts(&records), self.all_accounts(&states)).await?;
+            try_join(self.record_names(collections), self.all_accounts(&states)).await?;
         for (index, state) in programmable.into_iter().zip(&states) {
             held_nfts[index].2 = metaplex::token_lock(state.as_ref());
         }
-        let name_of = |key: &Key| {
-            let index = collections.binary_search(key).ok()?;
-            metaplex::metadata(named.get(index)?.as_ref(), key)
-                .and_then(|record| text(&record.name))
-        };
         held_nfts
             .into_iter()
             .map(|(mint, kind, lock, record)| {
@@ -221,7 +260,7 @@ impl SolanaChain {
                         .filter(|(verified, _)| *verified)
                         .map(|(_, key)| Collection {
                             address: Some(Address::Solana(key)),
-                            name: name_of(&key),
+                            name: named.get(&key).cloned().flatten(),
                         });
                 Ok(Nft {
                     collection,
@@ -240,34 +279,15 @@ impl SolanaChain {
             .filter_map(|(id, account)| metaplex::core(account.as_ref()).map(|core| (*id, core)))
             .filter(|(_, core)| core.owner == *owner)
             .collect();
-        let mut collections: Vec<Key> = held_assets
+        let collections: BTreeSet<Key> = held_assets
             .iter()
             .filter_map(|(_, core)| core.collection)
             .collect();
-        collections.sort_unstable();
-        collections.dedup();
-        let named = self.all_accounts(&collections).await?;
+        let named = self.core_names(collections).await?;
         held_assets
             .into_iter()
             .map(|(id, core)| {
-                let (collection, trust) = match core.collection {
-                    None => (None, Trust::Unknown),
-                    Some(key) => {
-                        let index = collections
-                            .binary_search(&key)
-                            .map_err(|_| ChainError::malformed())?;
-                        match metaplex::core_collection(named.get(index).and_then(Option::as_ref)) {
-                            Some(name) => (
-                                Some(Collection {
-                                    address: Some(Address::Solana(key)),
-                                    name: text(&name),
-                                }),
-                                Trust::Unknown,
-                            ),
-                            None => (None, Trust::Flagged),
-                        }
-                    }
-                };
+                let (collection, trust) = core_collection(core.collection, &named);
                 Ok(Nft {
                     collection,
                     trust,
@@ -296,13 +316,35 @@ impl SolanaChain {
     }
 }
 
+fn core_collection(
+    collection: Option<Key>,
+    named: &BTreeMap<Key, String>,
+) -> (Option<Collection>, Trust) {
+    let Some(key) = collection else {
+        return (None, Trust::Unknown);
+    };
+    match named.get(&key) {
+        Some(name) => (
+            Some(Collection {
+                address: Some(Address::Solana(key)),
+                name: text(name),
+            }),
+            Trust::Unknown,
+        ),
+        None => (None, Trust::Flagged),
+    }
+}
+
 fn page_of(reply: &Value) -> Option<(Vec<Listed>, bool)> {
     let items = reply["items"].as_array()?;
     let mut listed = Vec::new();
     for item in items {
         let id = rpc::key(&item["id"]).ok()?;
-        let compressed = item["compression"]["compressed"].as_bool().unwrap_or(false);
-        if compressed || item["burnt"].as_bool() == Some(true) {
+        if item["burnt"].as_bool() == Some(true) {
+            continue;
+        }
+        if item["compression"]["compressed"].as_bool() == Some(true) {
+            listed.extend(compressed::claim(item).map(|claim| Listed::Compressed(Box::new(claim))));
             continue;
         }
         let interface = item["interface"].as_str()?;

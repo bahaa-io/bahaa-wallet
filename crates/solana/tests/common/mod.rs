@@ -91,6 +91,8 @@ pub struct Ledger {
     pub history: Vec<Value>,
     pub transactions: HashMap<String, Value>,
     pub assets: Value,
+    pub proofs: Value,
+    pub parts: HashMap<(String, u64), String>,
 }
 
 impl Ledger {
@@ -131,6 +133,42 @@ impl Ledger {
             }
             "sendTransaction" => self.sent.clone().unwrap_or(Value::Null),
             "getAssetsByOwner" => self.assets.clone(),
+            "getAssetProofBatch" => {
+                let found: serde_json::Map<String, Value> = params["ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|id| {
+                        let id = id.as_str().unwrap();
+                        Some((id.to_owned(), self.proofs.get(id)?.clone()))
+                    })
+                    .collect();
+                Value::Object(found)
+            }
+            "getAssetProof" => self.proofs[params["id"].as_str().unwrap()].clone(),
+            "getAsset" => self.assets["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|item| item["id"] == params["id"])
+                .cloned()
+                .unwrap_or(Value::Null),
+            "getAccountInfo" => {
+                let key = params[0].as_str().unwrap();
+                let offset = params[1]["dataSlice"]["offset"].as_u64().unwrap();
+                let value = match (
+                    self.accounts.get(key),
+                    self.parts.get(&(key.to_owned(), offset)),
+                ) {
+                    (Some(account), Some(part)) => {
+                        let mut account = account.clone();
+                        account["data"] = json!([part, "base64"]);
+                        account
+                    }
+                    _ => Value::Null,
+                };
+                json!({"context": {"slot": 1}, "value": value})
+            }
             "getSignatureStatuses" => {
                 json!({"context": {"slot": 1}, "value": [self.status]})
             }

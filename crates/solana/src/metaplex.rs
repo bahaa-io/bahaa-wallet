@@ -39,24 +39,24 @@ pub(crate) struct Core {
     pub uri: String,
 }
 
-struct Reader<'a>(&'a [u8]);
+pub(crate) struct Reader<'a>(pub(crate) &'a [u8]);
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
+    pub(crate) fn take(&mut self, count: usize) -> Option<&'a [u8]> {
         let (head, rest) = self.0.split_at_checked(count)?;
         self.0 = rest;
         Some(head)
     }
 
-    fn byte(&mut self) -> Option<u8> {
+    pub(crate) fn byte(&mut self) -> Option<u8> {
         self.take(1).map(|byte| byte[0])
     }
 
-    fn key(&mut self) -> Option<Key> {
+    pub(crate) fn key(&mut self) -> Option<Key> {
         self.take(32)?.try_into().ok()
     }
 
-    fn flag(&mut self) -> Option<bool> {
+    pub(crate) fn flag(&mut self) -> Option<bool> {
         match self.byte()? {
             0 => Some(false),
             1 => Some(true),

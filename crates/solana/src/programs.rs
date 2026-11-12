@@ -2,6 +2,8 @@ use bahaa_chain::{ChainError, memo_text};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest, Sha256};
 
+use crate::bubblegum::{Compressed, Leaf, MAX_DEPTH, V2};
+use crate::metaplex::Reader;
 use crate::tx::{self, Instruction, Key, Meta, Parsed};
 
 pub(crate) const SYSTEM: Key = [0; 32];
@@ -16,10 +18,19 @@ pub(crate) const CORE: Key = id("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 pub(crate) const RULES: Key = id("auth9SigNpDKz4sJJ1DfCTuZrZNSAgh9sFD3rboVmgg");
 pub(crate) const INSTRUCTIONS: Key = id("Sysvar1nstructions1111111111111111111111111");
 pub(crate) const WRAPPED: Key = id("So11111111111111111111111111111111111111112");
+pub(crate) const BUBBLEGUM: Key = id("BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY");
+pub(crate) const SPL_COMPRESSION: Key = id("cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK");
+pub(crate) const MPL_COMPRESSION: Key = id("mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW");
+const SPL_NOOP: Key = id("noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV");
+const MPL_NOOP: Key = id("mnoopTCrg4p8ry25e4bcWA9XZjbNjMTfgYVGGEdRsf3");
 
 const TRANSFER: u32 = 2;
 const CORE_TRANSFER: [u8; 2] = [14, 0];
 const PROGRAMMABLE_TRANSFER: [u8; 2] = [49, 0];
+const COMPRESSED_TRANSFER: [u8; 8] = [163, 52, 200, 231, 140, 3, 69, 186];
+const COMPRESSED_TRANSFER_V2: [u8; 8] = [119, 40, 6, 235, 234, 221, 248, 49];
+const V1_ACCOUNTS: usize = 8;
+const V2_ACCOUNTS: usize = 11;
 const TRANSFER_CHECKED: u8 = 12;
 const CREATE_IDEMPOTENT: u8 = 1;
 const UNIT_LIMIT: u8 = 2;
@@ -29,12 +40,13 @@ const fn id(text: &str) -> Key {
     bs58::decode(text.as_bytes()).into_array_const_unwrap()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Moved {
     Coin,
     Token { mint: Key, decimals: u8 },
     Core { asset: Key, collection: Option<Key> },
     Programmable { mint: Key, rules: Option<Key> },
+    Compressed(Box<Compressed>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +71,7 @@ impl Shape {
             accounts: Vec::new(),
             data: text.as_bytes().to_vec(),
         });
-        match self.moved {
+        match &self.moved {
             Moved::Coin => {
                 list.extend(memo);
                 let mut data = TRANSFER.to_le_bytes().to_vec();
@@ -71,15 +83,15 @@ impl Shape {
                 });
             }
             Moved::Token { mint, decimals } => {
-                let source = token_account(&self.from, &mint)?;
-                let destination = token_account(&self.to, &mint)?;
+                let source = token_account(&self.from, mint)?;
+                let destination = token_account(&self.to, mint)?;
                 list.push(Instruction {
                     program: ASSOCIATED,
                     accounts: vec![
                         meta(self.from, true, true),
                         meta(destination, false, true),
                         meta(self.to, false, false),
-                        meta(mint, false, false),
+                        meta(*mint, false, false),
                         meta(SYSTEM, false, false),
                         meta(TOKEN, false, false),
                     ],
@@ -88,12 +100,12 @@ impl Shape {
                 list.extend(memo);
                 let mut data = vec![TRANSFER_CHECKED];
                 data.extend_from_slice(&self.units.to_le_bytes());
-                data.push(decimals);
+                data.push(*decimals);
                 list.push(Instruction {
                     program: TOKEN,
                     accounts: vec![
                         meta(source, false, true),
-                        meta(mint, false, false),
+                        meta(*mint, false, false),
                         meta(destination, false, true),
                         meta(self.from, true, false),
                     ],
@@ -105,7 +117,7 @@ impl Shape {
                 list.push(Instruction {
                     program: CORE,
                     accounts: vec![
-                        meta(asset, false, true),
+                        meta(*asset, false, true),
                         meta(collection.unwrap_or(CORE), false, false),
                         meta(self.from, true, true),
                         meta(CORE, false, false),
@@ -118,10 +130,68 @@ impl Shape {
             }
             Moved::Programmable { mint, rules } => {
                 list.extend(memo);
-                list.push(self.programmable(mint, rules)?);
+                list.push(self.programmable(*mint, *rules)?);
+            }
+            Moved::Compressed(moving) => {
+                list.extend(memo);
+                list.push(self.compressed(moving)?);
             }
         }
         Ok(list)
+    }
+
+    fn compressed(&self, moving: &Compressed) -> Result<Instruction, ChainError> {
+        let leaf = &moving.leaf;
+        let config = tree_config(&leaf.tree)?;
+        let mut data = Vec::with_capacity(152);
+        data.extend(match leaf.v2 {
+            None => COMPRESSED_TRANSFER,
+            Some(_) => COMPRESSED_TRANSFER_V2,
+        });
+        data.extend(moving.root);
+        data.extend(leaf.data_hash);
+        data.extend(leaf.creator_hash);
+        let mut accounts = match &leaf.v2 {
+            None => vec![
+                meta(config, false, false),
+                meta(self.from, true, false),
+                meta(leaf.delegate, false, false),
+                meta(self.to, false, false),
+                meta(leaf.tree, false, true),
+                meta(SPL_NOOP, false, false),
+                meta(SPL_COMPRESSION, false, false),
+                meta(SYSTEM, false, false),
+            ],
+            Some(v2) => {
+                data.push(1);
+                data.extend(v2.asset_data_hash);
+                match v2.flags {
+                    0 => data.push(0),
+                    flags => data.extend([1, flags]),
+                }
+                vec![
+                    meta(config, false, true),
+                    meta(self.from, true, true),
+                    meta(BUBBLEGUM, false, false),
+                    meta(self.from, false, false),
+                    meta(leaf.delegate, false, false),
+                    meta(self.to, false, false),
+                    meta(leaf.tree, false, true),
+                    meta(v2.collection.unwrap_or(BUBBLEGUM), false, false),
+                    meta(MPL_NOOP, false, false),
+                    meta(MPL_COMPRESSION, false, false),
+                    meta(SYSTEM, false, false),
+                ]
+            }
+        };
+        data.extend(leaf.nonce.to_le_bytes());
+        data.extend(leaf.index.to_le_bytes());
+        accounts.extend(moving.proof.iter().map(|node| meta(*node, false, false)));
+        Ok(Instruction {
+            program: BUBBLEGUM,
+            accounts,
+            data,
+        })
     }
 
     fn programmable(&self, mint: Key, rules: Option<Key>) -> Result<Instruction, ChainError> {
@@ -203,6 +273,10 @@ impl Shape {
                 },
                 units(last.data.get(2..10))?,
             ),
+            BUBBLEGUM => {
+                let (to, moving) = read_compressed(last).ok_or_else(unknown)?;
+                (to, Moved::Compressed(Box::new(moving)), 1)
+            }
             TOKEN => {
                 let owner = instructions
                     .iter()
@@ -261,6 +335,14 @@ pub(crate) fn edition_account(mint: &Key) -> Result<Key, ChainError> {
     derived(&[b"metadata", &METADATA, mint, b"edition"], &METADATA)
 }
 
+pub(crate) fn tree_config(tree: &Key) -> Result<Key, ChainError> {
+    derived(&[tree], &BUBBLEGUM)
+}
+
+pub(crate) fn asset_id(tree: &Key, nonce: u64) -> Result<Key, ChainError> {
+    derived(&[b"asset", tree, &nonce.to_le_bytes()], &BUBBLEGUM)
+}
+
 pub(crate) fn token_record(mint: &Key, account: &Key) -> Result<Key, ChainError> {
     derived(
         &[b"metadata", &METADATA, mint, b"token_record", account],
@@ -285,6 +367,54 @@ fn derived(seeds: &[&[u8]], program: &Key) -> Result<Key, ChainError> {
         .ok_or(ChainError::Invalid(
             "no account address exists for this token",
         ))
+}
+
+fn read_compressed(instruction: &Instruction) -> Option<(Key, Compressed)> {
+    let mut read = Reader(&instruction.data);
+    let v2 = match read.take(8)? {
+        head if head == COMPRESSED_TRANSFER => false,
+        head if head == COMPRESSED_TRANSFER_V2 => true,
+        _ => return None,
+    };
+    let (root, data_hash, creator_hash) = (read.key()?, read.key()?, read.key()?);
+    let extra = if v2 {
+        if !read.flag()? {
+            return None;
+        }
+        let asset_data_hash = read.key()?;
+        let flags = if read.flag()? { read.byte()? } else { 0 };
+        Some((asset_data_hash, flags))
+    } else {
+        None
+    };
+    let nonce = u64::from_le_bytes(read.take(8)?.try_into().ok()?);
+    let index = u32::from_le_bytes(read.take(4)?.try_into().ok()?);
+    let keys: Vec<Key> = instruction.accounts.iter().map(|meta| meta.key).collect();
+    let fixed = if v2 { V2_ACCOUNTS } else { V1_ACCOUNTS };
+    let proof = keys.get(fixed..).filter(|proof| proof.len() <= MAX_DEPTH)?;
+    let at = |v1: usize, v2: usize| keys.get(if extra.is_some() { v2 } else { v1 }).copied();
+    let leaf = Leaf {
+        tree: at(4, 6)?,
+        owner: at(1, 3)?,
+        delegate: at(2, 4)?,
+        nonce,
+        index,
+        data_hash,
+        creator_hash,
+        v2: extra.map(|(asset_data_hash, flags)| V2 {
+            collection: keys.get(7).copied().filter(|key| *key != BUBBLEGUM),
+            asset_data_hash,
+            flags,
+        }),
+    };
+    Some((
+        at(3, 5)?,
+        Compressed {
+            leaf,
+            root,
+            proof: proof.to_vec(),
+        },
+    ))
 }
 
 fn budget(tag: u8, value: &[u8]) -> Instruction {
@@ -367,6 +497,33 @@ mod tests {
         }
     }
 
+    fn compressed(v2: Option<V2>, delegate: Key, proof: usize) -> Moved {
+        Moved::Compressed(Box::new(Compressed {
+            leaf: Leaf {
+                tree: [12; 32],
+                owner: [1; 32],
+                delegate,
+                nonce: 9_399,
+                index: 9_398,
+                data_hash: [13; 32],
+                creator_hash: [14; 32],
+                v2,
+            },
+            root: [15; 32],
+            proof: (0..proof)
+                .map(|node| [u8::try_from(node).unwrap() + 100; 32])
+                .collect(),
+        }))
+    }
+
+    fn v2(collection: Option<Key>, flags: u8) -> V2 {
+        V2 {
+            collection,
+            asset_data_hash: [16; 32],
+            flags,
+        }
+    }
+
     fn parsed(payer: Key, instructions: Vec<Instruction>) -> Parsed {
         Parsed {
             signature: [0; 64],
@@ -400,9 +557,99 @@ mod tests {
                 units: 1,
                 ..shape(programmable(Some([11; 32])), Some("gift"))
             },
+            Shape {
+                units: 1,
+                ..shape(compressed(None, [1; 32], 7), None)
+            },
+            Shape {
+                units: 1,
+                ..shape(compressed(None, [17; 32], 14), Some("gift"))
+            },
+            Shape {
+                units: 1,
+                ..shape(compressed(Some(v2(Some([18; 32]), 0)), [1; 32], 6), None)
+            },
+            Shape {
+                units: 1,
+                ..shape(compressed(Some(v2(None, 8)), [17; 32], 0), Some("gift"))
+            },
         ] {
             let read = parsed(shape.from, shape.instructions().unwrap());
             assert_eq!(Shape::read(&read).unwrap(), shape);
+        }
+    }
+
+    #[test]
+    fn compressed_transfers_match_real_ones_of_both_versions() {
+        use base64::Engine;
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/bubblegum.json")).unwrap();
+        for (version, owner, fixed) in [("v1", 1, V1_ACCOUNTS), ("v2", 3, V2_ACCOUNTS)] {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(fixture[version]["transaction"].as_str().unwrap())
+                .unwrap();
+            let wire = tx::read(&bytes).unwrap();
+            let real = wire
+                .instructions
+                .iter()
+                .find(|instruction| wire.keys[usize::from(instruction.program)] == BUBBLEGUM)
+                .unwrap();
+            let [signers, signed_readonly, readonly] = wire.header.map(usize::from);
+            let flags = |index: usize| {
+                let signer = index < signers;
+                let writable = if signer {
+                    index < signers - signed_readonly
+                } else {
+                    index < wire.keys.len() - readonly
+                };
+                (signer, writable)
+            };
+            let instruction = Instruction {
+                program: BUBBLEGUM,
+                accounts: real
+                    .accounts
+                    .iter()
+                    .map(|index| {
+                        let index = usize::from(*index);
+                        let (signer, writable) = flags(index);
+                        meta(wire.keys[index], signer, writable)
+                    })
+                    .collect(),
+                data: real.data.clone(),
+            };
+            let (to, moving) = read_compressed(&instruction).unwrap();
+            assert_eq!(moving.leaf.owner, instruction.accounts[owner].key);
+            assert_eq!(moving.proof.len(), instruction.accounts.len() - fixed);
+            assert_eq!(moving.leaf.v2.is_some(), version == "v2");
+            let shape = Shape {
+                from: moving.leaf.owner,
+                to,
+                moved: Moved::Compressed(Box::new(moving)),
+                units: 1,
+                memo: None,
+                limit: 1,
+                price: 0,
+            };
+            let ours = shape.instructions().unwrap().pop().unwrap();
+            assert_eq!(ours.data, real.data, "{version}");
+            assert_eq!(ours.accounts.len(), instruction.accounts.len(), "{version}");
+            for (index, (built, seen)) in
+                ours.accounts.iter().zip(&instruction.accounts).enumerate()
+            {
+                assert_eq!(built.key, seen.key, "{version} account {index}");
+                assert!(
+                    !built.writable || seen.writable,
+                    "{version} account {index}"
+                );
+                assert!(!built.signer || seen.signer, "{version} account {index}");
+            }
+            let Moved::Compressed(moving) = &shape.moved else {
+                unreachable!()
+            };
+            assert_eq!(
+                ours.accounts[0].key,
+                tree_config(&moving.leaf.tree).unwrap()
+            );
         }
     }
 

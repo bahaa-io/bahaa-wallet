@@ -46,6 +46,7 @@ pub(crate) struct Account {
     pub owner: Key,
     pub executable: bool,
     pub data: Vec<u8>,
+    pub space: u64,
 }
 
 pub(crate) fn classify(code: i64, message: &str) -> Failure<ChainError> {
@@ -67,8 +68,8 @@ pub(crate) fn classify(code: i64, message: &str) -> Failure<ChainError> {
             "method not found",
             "a maximum of",
         ]
-            .iter()
-            .any(|needle| lower.contains(needle))
+        .iter()
+        .any(|needle| lower.contains(needle))
     {
         return Failure::Unsupported(ChainError::Network(message));
     }
@@ -109,24 +110,31 @@ pub(crate) fn accounts_params(keys: &[Key], length: Option<usize>) -> Value {
     json!([keys.iter().map(text).collect::<Vec<_>>(), options])
 }
 
+pub(crate) fn slice_params(key: &Key, offset: usize, length: usize) -> Value {
+    json!([text(key), {"encoding": "base64", "commitment": "confirmed", "dataSlice": {"offset": offset, "length": length}}])
+}
+
 pub(crate) fn accounts(reply: &Value, asked: usize) -> Result<Vec<Option<Account>>, ChainError> {
     let list = reply["value"]
         .as_array()
         .filter(|list| list.len() == asked)
         .ok_or_else(ChainError::malformed)?;
-    list.iter()
-        .map(|entry| match entry {
-            Value::Null => Ok(None),
-            entry => Ok(Some(Account {
-                lamports: count(&entry["lamports"])?,
-                owner: key(&entry["owner"])?,
-                executable: entry["executable"]
-                    .as_bool()
-                    .ok_or_else(ChainError::malformed)?,
-                data: encoded(&entry["data"])?,
-            })),
-        })
-        .collect()
+    list.iter().map(account).collect()
+}
+
+pub(crate) fn account(entry: &Value) -> Result<Option<Account>, ChainError> {
+    match entry {
+        Value::Null => Ok(None),
+        entry => Ok(Some(Account {
+            lamports: count(&entry["lamports"])?,
+            owner: key(&entry["owner"])?,
+            executable: entry["executable"]
+                .as_bool()
+                .ok_or_else(ChainError::malformed)?,
+            data: encoded(&entry["data"])?,
+            space: count(&entry["space"])?,
+        })),
+    }
 }
 
 pub(crate) fn encoded(value: &Value) -> Result<Vec<u8>, ChainError> {
@@ -227,6 +235,7 @@ mod tests {
         assert_eq!(account.lamports, 2_039_280);
         assert_eq!(text(&account.owner), owner);
         assert_eq!(account.data, [1, 2, 3]);
+        assert_eq!(account.space, 3);
         assert!(accounts(&reply, 3).is_err());
         for (field, bad) in [
             ("lamports", json!(-1)),
@@ -235,6 +244,7 @@ mod tests {
             ("data", json!(["AQID", "base58"])),
             ("data", json!(["!!", "base64"])),
             ("data", json!("AQID")),
+            ("space", json!(null)),
         ] {
             let mut broken = reply.clone();
             broken["value"][1][field] = bad;

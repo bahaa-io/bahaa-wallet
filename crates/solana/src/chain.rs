@@ -21,7 +21,7 @@ mod send;
 pub use calls::{SolanaCall, swap_instruction};
 pub use send::SolanaPlan;
 
-use crate::programs::{Moved, Shape, TOKEN, TOKEN_2022, metadata_account, token_account};
+use crate::programs::{Moved, Shape, TOKEN, TOKEN_2022, asset_id, metadata_account, token_account};
 use crate::rpc::{self, Account, Rpc, Solana};
 use crate::tx::{self, Key};
 
@@ -71,6 +71,23 @@ impl SolanaChain {
             .call("getMultipleAccounts", rpc::accounts_params(keys, length))
             .await?;
         rpc::accounts(&reply, keys.len())
+    }
+
+    async fn slice(
+        &self,
+        key: &Key,
+        offset: usize,
+        length: usize,
+    ) -> Result<Option<Vec<u8>>, ChainError> {
+        let reply = self
+            .rpc
+            .call("getAccountInfo", rpc::slice_params(key, offset, length))
+            .await?;
+        match rpc::account(&reply["value"])? {
+            Some(account) if account.data.len() == length => Ok(Some(account.data)),
+            Some(_) => Err(ChainError::malformed()),
+            None => Ok(None),
+        }
     }
 
     fn known_decimals(&self, mint: &Key) -> Option<u8> {
@@ -192,23 +209,24 @@ impl Chain for SolanaChain {
                 .unwrap_or_else(PoisonError::into_inner)
                 .contains(mint)
         };
-        let (asset, decimals) = match shape.moved {
+        let (asset, decimals) = match &shape.moved {
             Moved::Coin => (
                 AssetId::Native(self.network.id.clone()),
                 self.network.native.decimals,
             ),
-            Moved::Core { asset, .. } | Moved::Programmable { mint: asset, .. } => nft(asset)?,
-            Moved::Token { mint, decimals: 0 } if known_nft(&mint) => nft(mint)?,
+            Moved::Core { asset, .. } | Moved::Programmable { mint: asset, .. } => nft(*asset)?,
+            Moved::Compressed(moving) => nft(asset_id(&moving.leaf.tree, moving.leaf.nonce)?)?,
+            Moved::Token { mint, decimals: 0 } if known_nft(mint) => nft(*mint)?,
             Moved::Token { mint, decimals } => {
-                let known = self.known_decimals(&mint).ok_or(ChainError::Invalid(
+                let known = self.known_decimals(mint).ok_or(ChainError::Invalid(
                     "unknown token, prepare the transfer first",
                 ))?;
-                if known != decimals {
+                if known != *decimals {
                     return Err(ChainError::Mismatch("the token decimals"));
                 }
                 (
-                    AssetId::Token(self.network.id.clone(), Address::Solana(mint)),
-                    decimals,
+                    AssetId::Token(self.network.id.clone(), Address::Solana(*mint)),
+                    *decimals,
                 )
             }
         };
@@ -415,6 +433,7 @@ mod tests {
             lamports: 2_039_280,
             owner: TOKEN,
             executable: false,
+            space: 165,
             data,
         }
     }
@@ -453,6 +472,7 @@ mod tests {
             owner: [0; 32],
             executable: false,
             data: Vec::new(),
+            space: 0,
         };
         assert_eq!(held(Some(&gifted), &owner, &mint), Ok(0));
         let elsewhere = Account {
@@ -470,6 +490,7 @@ mod tests {
             lamports: 1,
             owner,
             executable: false,
+            space: 82,
             data,
         }
     }
@@ -507,6 +528,7 @@ mod tests {
             lamports: 1,
             owner: METADATA,
             executable: false,
+            space: 679,
             data,
         }
     }

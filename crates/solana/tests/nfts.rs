@@ -228,6 +228,32 @@ const RULE_SET: &str = "eBJLFYPxJmMGKuFwpDWkzxZeUrad92kZRC5BJLpzyT9";
 const INSTRUCTIONS: &str = "Sysvar1nstructions1111111111111111111111111";
 const STATE_RENT: u64 = 1_447_680;
 
+#[tokio::test]
+async fn compressed_spam_cannot_push_classic_and_core_items_past_the_cap() {
+    let mut ledger = ledger();
+    let compressed = ledger.assets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["compression"]["compressed"] == true)
+        .unwrap()
+        .clone();
+    let mut items: Vec<Value> = (0..300u16)
+        .map(|n| {
+            let mut copy = compressed.clone();
+            let mut id = [9; 32];
+            id[..2].copy_from_slice(&n.to_le_bytes());
+            copy["id"] = json!(bahaa_types::Address::Solana(id).to_string());
+            copy
+        })
+        .collect();
+    items.extend(ledger.assets["items"].as_array().unwrap().iter().cloned());
+    ledger.assets["items"] = json!(items);
+    let found = listed(ledger).await;
+    assert!(found.capped);
+    assert_eq!(ids(&found), [MAD_LAD, GNOME, PATRIOT]);
+}
+
 fn key(text: &str) -> [u8; 32] {
     let bahaa_types::Address::Solana(key) = address(text) else {
         unreachable!()

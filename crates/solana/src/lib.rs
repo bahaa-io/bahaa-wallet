@@ -1,3 +1,4 @@
+mod bubblegum;
 mod chain;
 #[cfg(fuzzing)]
 #[doc(hidden)]

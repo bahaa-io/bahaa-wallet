@@ -72,22 +72,43 @@ async fn live_nfts_are_listed_by_das_and_checked_on_chain() {
         })
         .count();
     assert!(mad_lads >= 1, "{found:?}");
-    assert!(
-        found
-            .items
-            .iter()
-            .all(|item| item.kind != bahaa_types::NftKind::SolanaCompressed)
+}
+
+#[tokio::test]
+#[ignore = "talks to the real Solana network"]
+async fn live_compressed_nfts_are_proven_against_their_trees() {
+    let chain = mainnet();
+    let found = chain
+        .nfts(&address("BDw9cp6JDBjeih6HsFwFjj2hyHb2dtkAuu6kmUGzt8v2"))
+        .await
+        .unwrap();
+    let loot = found
+        .items
+        .iter()
+        .find(|item| {
+            item.asset.nft().unwrap().address().to_string()
+                == "55H5DAZa1zkYyooT8iXVSnA4EoRUDuW1PmqmFdru2Bt"
+        })
+        .unwrap();
+    assert_eq!(loot.kind, bahaa_types::NftKind::SolanaCompressed);
+    assert_eq!(
+        loot.collection
+            .as_ref()
+            .and_then(|collection| collection.name.as_deref()),
+        Some("Portals Loot Boxes")
     );
 }
 
 #[tokio::test]
 #[ignore = "talks to the real Solana network"]
-async fn live_core_classic_and_programmable_nft_transfers_pass_a_real_simulation() {
+async fn live_nft_transfers_of_every_kind_pass_a_real_simulation() {
     let chain = mainnet();
     for asset in [
         "CFZXxEdkoA2zwCNSpc4bLgfgEEGwYpK6eem97LCvm9KD",
         "2jJT5adTaLXi5oeUCv9zsSXXYk8MEAiqLTzwPnAvu4W6",
         "61QjtYgjuuz5AeKuCGNpJ9CrNM8Q1vFyH6xcb7VB8Qw",
+        "55H5DAZa1zkYyooT8iXVSnA4EoRUDuW1PmqmFdru2Bt",
+        "GbjpSDm2kX1nfnuX3CKTB5G9Rc8ihaY6zkmMd2RgtFHt",
     ] {
         let transfer = Transfer {
             account: 0,
