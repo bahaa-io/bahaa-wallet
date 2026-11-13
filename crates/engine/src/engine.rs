@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use bahaa_chain::{ChainError, Gateways, Replace};
 use bahaa_config::{ConfigError, Registry, Settings};
-use bahaa_crypto::{ExposeSecret, SecretString};
+use bahaa_crypto::{ExposeSecret, SecretString, SeedKind};
 use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
 use bahaa_store::{
     Contact, CustomToken, Fetched, Mark, NftArrival, Outgoing, Pictured, Received, Scan, SentTx,
@@ -226,7 +226,7 @@ impl Choice {
 
 enum Choices {
     Solana(Address, Address),
-    Bitcoin(Address, Address),
+    Bitcoin(Vec<(BitcoinType, Address)>),
 }
 
 impl Command {
@@ -1124,16 +1124,20 @@ impl Worker {
                     }
                 }
                 if let Some(chain) = chains::bitcoin_mainnet(&shared) {
-                    let [segwit, taproot] = BitcoinType::ALL;
                     for id in keyring.undetected(ChainFamily::Bitcoin)? {
                         let seed = keyring.seed(id)?;
-                        candidates.push((
-                            id,
-                            Choices::Bitcoin(
-                                chain.first(seed, 0, segwit)?,
-                                chain.first(seed, 0, taproot)?,
-                            ),
-                        ));
+                        let kinds: &[BitcoinType] = if seed.kind() == SeedKind::Bip39 {
+                            &BitcoinType::FOR_PHRASES
+                        } else {
+                            &BitcoinType::FOR_KEYS
+                        };
+                        let mut kinds = kinds.to_vec();
+                        kinds.sort_by_key(|kind| *kind != BitcoinType::default());
+                        let addresses = kinds
+                            .into_iter()
+                            .map(|kind| Ok((kind, chain.first(seed, 0, kind)?)))
+                            .collect::<Result<_, EngineError>>()?;
+                        candidates.push((id, Choices::Bitcoin(addresses)));
                     }
                 }
                 Ok::<_, EngineError>(candidates)
@@ -1156,22 +1160,25 @@ impl Worker {
                             (Ok(standard), Ok(short)) => {
                                 Some(Choice::Solana(keyring::most_recent(
                                     (SolanaPath::Bip44Change, standard),
-                                    (SolanaPath::Bip44, short),
+                                    [(SolanaPath::Bip44, short)],
                                 )))
                             }
                             _ => None,
                         }
                     }
-                    (Choices::Bitcoin(segwit, taproot), _, Some(chain)) => {
-                        match join(chain.last_used(&segwit), chain.last_used(&taproot)).await {
-                            (Ok(segwit), Ok(taproot)) => {
-                                Some(Choice::Bitcoin(keyring::most_recent(
-                                    (BitcoinType::NativeSegwit, segwit),
-                                    (BitcoinType::Taproot, taproot),
-                                )))
-                            }
-                            _ => None,
-                        }
+                    (Choices::Bitcoin(addresses), _, Some(chain)) => {
+                        let used = join_all(addresses.iter().map(|(kind, address)| async {
+                            (*kind, chain.last_used(address).await)
+                        }))
+                        .await
+                        .into_iter()
+                        .map(|(kind, used)| used.ok().map(|used| (kind, used)))
+                        .collect::<Option<Vec<_>>>();
+                        used.and_then(|used| {
+                            let mut used = used.into_iter();
+                            let default = used.next()?;
+                            Some(Choice::Bitcoin(keyring::most_recent(default, used)))
+                        })
                     }
                     _ => None,
                 };
@@ -1346,7 +1353,7 @@ impl Worker {
                 match join(chain.last_used(&check.w5), chain.last_used(&check.v4r2)).await {
                     (Ok(w5), Ok(v4r2)) => Ok(keyring::most_recent(
                         (TonContract::W5, w5),
-                        (TonContract::V4R2, v4r2),
+                        [(TonContract::V4R2, v4r2)],
                     )),
                     (Err(err), _) | (_, Err(err)) => Err(err),
                 }

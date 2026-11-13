@@ -258,6 +258,122 @@ async fn a_taproot_account_follows_bip86_and_signs_with_schnorr() {
     assert!(chain.decode(&forged).is_err());
 }
 
+async fn sent_from(kind: BitcoinType, first: &str, second: &str, change: &str) -> (u64, String) {
+    let mut ledger = Ledger::new(GENESIS);
+    ledger.fund(&address(second), 30_000, 1);
+    ledger.fund(&address(change), 20_000, 2);
+    let (chain, _, ledger) = started(ledger).await;
+    let from = chain.derive_as(&seed(), 0, kind).unwrap();
+    assert_eq!(from, address(first));
+    let held = chain.balances(&from, &[native()]).await.unwrap();
+    assert_eq!(held[0].amount.to_string(), "0.0005");
+    let transfer = Transfer {
+        from,
+        ..transfer("0.00025", false)
+    };
+    let (plan, fee) = chain.prepare(&transfer).await.unwrap();
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    let decoded = chain.decode(&signed).unwrap();
+    check_signed(chain.planned(&plan), &decoded).unwrap();
+    assert_eq!(decoded.from, from);
+    chain.broadcast(&signed).await.unwrap();
+    assert_eq!(ledger.lock().unwrap().broadcast.len(), 1);
+    let mut forged = signed.clone();
+    let at = forged
+        .bytes
+        .windows(3)
+        .position(|window| window[0] == 0x02 && window[1] == 0x20)
+        .unwrap()
+        + 10;
+    forged.bytes[at] ^= 1;
+    assert!(chain.decode(&forged).is_err());
+    let units = u64::try_from(fee.expected().units()).unwrap();
+    (units, hex::encode(&signed.bytes))
+}
+
+#[tokio::test]
+async fn a_legacy_account_follows_bip44_and_signs_its_inputs_in_place() {
+    let (fee, raw) = sent_from(
+        BitcoinType::Legacy,
+        "1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA",
+        "1Ak8PffB2meyfYnbXZR9EGfLfFZVpzJvQP",
+        "1J3J6EvPrv8q6AC3VCjWV45Uf3nssNMRtH",
+    )
+    .await;
+    assert_eq!(fee, 448);
+    assert!(raw.starts_with("0200000001"), "{raw}");
+}
+
+#[tokio::test]
+async fn a_nested_segwit_account_follows_bip49_and_wraps_its_witness() {
+    let (fee, raw) = sent_from(
+        BitcoinType::NestedSegwit,
+        "37VucYSaXLCAsxYyAPfbSi9eh4iEcbShgf",
+        "3LtMnn87fqUeHBUG414p9CWwnoV6E2pNKS",
+        "34K56kSjgUCUSD8GTtuF7c9Zzwokbs6uZ7",
+    )
+    .await;
+    assert_eq!(fee, 330);
+    assert!(raw.starts_with("020000000001"), "{raw}");
+}
+
+#[tokio::test]
+async fn an_uncompressed_key_has_only_its_old_legacy_address() {
+    let mut secret = [0u8; 32];
+    secret[31] = 1;
+    let key = secp256k1_seed(&secret).unwrap();
+    let mut ledger = Ledger::new(GENESIS);
+    let old = address("1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm");
+    ledger.fund(&old, 30_000, 1);
+    let (chain, _, _) = started(ledger).await;
+    assert_eq!(
+        chain
+            .derive_as(&key, 0, BitcoinType::LegacyUncompressed)
+            .unwrap(),
+        old
+    );
+    assert_eq!(
+        chain.derive_as(&key, 0, BitcoinType::Legacy).unwrap(),
+        address("1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH")
+    );
+    assert!(
+        chain
+            .derive_as(&seed(), 0, BitcoinType::LegacyUncompressed)
+            .is_err()
+    );
+    chain
+        .derive_as(&key, 0, BitcoinType::LegacyUncompressed)
+        .unwrap();
+    let transfer = Transfer {
+        from: old,
+        ..transfer("0.00025", false)
+    };
+    let (plan, fee) = chain.prepare(&transfer).await.unwrap();
+    assert_eq!(fee.expected().to_string(), "0.00000512");
+    let signed = chain.sign(&plan, &key).unwrap();
+    check_signed(chain.planned(&plan), &chain.decode(&signed).unwrap()).unwrap();
+    assert!(hex::encode(&signed.bytes).contains("410479be667e"));
+}
+
+#[tokio::test]
+async fn an_unconfirmed_legacy_coin_must_match_its_funding_transaction() {
+    let mut ledger = Ledger::new(GENESIS);
+    let first = address("1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA");
+    ledger.fund_at(&first, 30_000, 1, 0);
+    let (chain, log, _) = started(ledger.clone()).await;
+    chain.derive_as(&seed(), 0, BitcoinType::Legacy).unwrap();
+    let held = chain.balances(&first, &[native()]).await.unwrap();
+    assert_eq!(held[0].amount.to_string(), "0.0003");
+    assert_eq!(called(&log, "blockchain.transaction.get").len(), 1);
+    for coins in ledger.unspent.values_mut() {
+        coins[0]["value"] = 90_000.into();
+    }
+    let (chain, _, _) = started(ledger).await;
+    chain.derive_as(&seed(), 0, BitcoinType::Legacy).unwrap();
+    let failed = chain.balances(&first, &[native()]).await.unwrap_err();
+    assert!(failed.to_string().contains("could not prove"), "{failed}");
+}
+
 #[tokio::test]
 async fn a_server_that_cannot_estimate_slow_targets_still_quotes() {
     let mut ledger = funded();

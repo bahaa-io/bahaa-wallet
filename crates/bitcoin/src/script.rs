@@ -1,5 +1,5 @@
 use bahaa_chain::ChainError;
-use bahaa_crypto::taproot_output;
+use bahaa_crypto::{taproot_output, uncompressed};
 use bahaa_types::{Address, BitcoinScript, BitcoinType};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
@@ -13,6 +13,7 @@ const WITNESS_V0: u8 = 0x00;
 const WITNESS_V1: u8 = 0x51;
 const PUSH_20: u8 = 0x14;
 const PUSH_32: u8 = 0x20;
+const MAX_PUSH: u8 = 0x4b;
 
 pub(crate) fn hash160(data: &[u8]) -> [u8; 20] {
     Ripemd160::digest(Sha256::digest(data)).into()
@@ -24,12 +25,58 @@ pub(crate) fn key_address(
     testnet: bool,
 ) -> Result<Address, ChainError> {
     let script = match kind {
+        BitcoinType::Legacy => BitcoinScript::PubkeyHash(hash160(public)),
+        BitcoinType::LegacyUncompressed => {
+            BitcoinScript::PubkeyHash(hash160(&uncompressed(public).map_err(unusable)?))
+        }
+        BitcoinType::NestedSegwit => BitcoinScript::ScriptHash(hash160(&nested(&hash160(public)))),
         BitcoinType::NativeSegwit => BitcoinScript::WitnessKeyHash(hash160(public)),
-        BitcoinType::Taproot => BitcoinScript::Taproot(
-            taproot_output(public).map_err(|_| ChainError::Invalid("an unusable Taproot key"))?,
-        ),
+        BitcoinType::Taproot => BitcoinScript::Taproot(taproot_output(public).map_err(unusable)?),
     };
     Ok(Address::Bitcoin { script, testnet })
+}
+
+fn unusable<E>(_: E) -> ChainError {
+    ChainError::Invalid("an unusable public key")
+}
+
+pub(crate) fn nested(key_hash: &[u8; 20]) -> Vec<u8> {
+    [&[WITNESS_V0, PUSH_20][..], key_hash].concat()
+}
+
+pub(crate) fn pushes(items: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for item in items {
+        out.push(u8::try_from(item.len()).unwrap_or(u8::MAX));
+        out.extend_from_slice(item);
+    }
+    out
+}
+
+pub(crate) fn read_pushes(mut script: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut items = Vec::new();
+    while let Some((&length, rest)) = script.split_first() {
+        if length == 0 || length > MAX_PUSH {
+            return None;
+        }
+        let (item, rest) = rest.split_at_checked(usize::from(length))?;
+        items.push(item);
+        script = rest;
+    }
+    Some(items)
+}
+
+pub(crate) fn spender(unlock: &[u8], witness: &[Vec<u8>]) -> Option<BitcoinScript> {
+    Some(match (read_pushes(unlock)?.as_slice(), witness) {
+        ([_, key], []) => BitcoinScript::PubkeyHash(hash160(key)),
+        ([redeem], [_, _]) => BitcoinScript::ScriptHash(hash160(redeem)),
+        ([], [_, key]) => BitcoinScript::WitnessKeyHash(hash160(key)),
+        _ => return None,
+    })
+}
+
+pub(crate) fn commits_value(script: BitcoinScript) -> bool {
+    !matches!(script, BitcoinScript::PubkeyHash(_))
 }
 
 pub(crate) fn locking(script: BitcoinScript) -> Vec<u8> {
@@ -73,6 +120,15 @@ pub(crate) fn dust(script: BitcoinScript) -> u64 {
     }
 }
 
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(bytes: &[u8]) {
+    if let Some(items) = read_pushes(bytes) {
+        assert_eq!(pushes(&items), bytes);
+        let _ = spender(bytes, &[]);
+        let _ = spender(bytes, &[Vec::new(), bytes.to_vec()]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bahaa_types::hex;
@@ -105,6 +161,53 @@ mod tests {
                     .to_string(),
                 address
             );
+        }
+    }
+
+    #[test]
+    fn the_first_private_key_gives_its_well_known_addresses_of_every_kind() {
+        let mut secret = [0u8; 32];
+        secret[31] = 1;
+        let key = bahaa_crypto::secp256k1_seed(&secret).unwrap();
+        let public = bahaa_crypto::compressed(
+            &bahaa_crypto::secp256k1(&key, &"m".parse().unwrap())
+                .unwrap()
+                .public_key(),
+        )
+        .unwrap();
+        for (kind, address) in [
+            (BitcoinType::Legacy, "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH"),
+            (
+                BitcoinType::LegacyUncompressed,
+                "1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm",
+            ),
+            (
+                BitcoinType::NestedSegwit,
+                "3JvL6Ymt8MVWiCNHC7oWU6nLeHNJKLZGLN",
+            ),
+            (
+                BitcoinType::NativeSegwit,
+                "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            ),
+        ] {
+            assert_eq!(
+                key_address(&public, kind, false).unwrap().to_string(),
+                address,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn script_pushes_are_direct_and_read_back_strictly() {
+        let signature = [7u8; 72];
+        let key = [2u8; 33];
+        let script = pushes(&[&signature, &key]);
+        assert_eq!(script.len(), 1 + 72 + 1 + 33);
+        assert_eq!(read_pushes(&script), Some(vec![&signature[..], &key[..]]));
+        assert_eq!(read_pushes(&[]), Some(Vec::new()));
+        for bad in [&[0x00][..], &[0x4c, 0x01, 0x00], &[0x02, 0x01], &[0x51]] {
+            assert_eq!(read_pushes(bad), None, "{bad:?}");
         }
     }
 

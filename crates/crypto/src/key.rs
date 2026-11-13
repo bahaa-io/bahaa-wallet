@@ -26,10 +26,10 @@ pub enum KeyError {
         "a Solana private key is the base58 text wallets export, a key file's list of 64 numbers, or hex"
     )]
     SolanaFormat,
-    #[error("a Bitcoin private key is WIF text starting with K, L or c, or 64 hex characters")]
+    #[error(
+        "a Bitcoin private key is WIF text starting with 5, K, L, 9 or c, or 64 hex characters"
+    )]
     BitcoinFormat,
-    #[error("old uncompressed Bitcoin keys are not supported")]
-    Uncompressed,
     #[error("a private key only has the characters 0-9 and a-f")]
     NotHex,
     #[error("this is not a valid private key")]
@@ -115,10 +115,18 @@ pub fn solana_private_key(text: &str) -> Result<Zeroizing<[u8; KEY_BYTES]>, KeyE
     pair_key(&pair)
 }
 
-pub fn bitcoin_private_key(text: &str) -> Result<Zeroizing<[u8; KEY_BYTES]>, KeyError> {
+pub struct BitcoinKey {
+    pub key: Zeroizing<[u8; KEY_BYTES]>,
+    pub compressed: bool,
+}
+
+pub fn bitcoin_private_key(text: &str) -> Result<BitcoinKey, KeyError> {
     let raw = digits(text);
     if raw.len() == 2 * KEY_BYTES && raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return private_key(raw);
+        return Ok(BitcoinKey {
+            key: private_key(raw)?,
+            compressed: true,
+        });
     }
     let text = text.trim();
     if text.len() > WIF_MAX_CHARS {
@@ -132,23 +140,28 @@ pub fn bitcoin_private_key(text: &str) -> Result<Zeroizing<[u8; KEY_BYTES]>, Key
     if !matches!(raw[0], WIF_MAINNET | WIF_TESTNET) {
         return Err(KeyError::BitcoinFormat);
     }
-    match read {
-        WIF_BYTES if raw[KEY_BYTES + 1] == WIF_COMPRESSED => {}
-        WIF_UNCOMPRESSED_BYTES => return Err(KeyError::Uncompressed),
+    let compressed = match read {
+        WIF_BYTES if raw[KEY_BYTES + 1] == WIF_COMPRESSED => true,
+        WIF_UNCOMPRESSED_BYTES => false,
         _ => return Err(KeyError::BitcoinFormat),
-    }
+    };
     let mut key = Zeroizing::new([0u8; KEY_BYTES]);
     key.copy_from_slice(&raw[1..=KEY_BYTES]);
     SecretKey::from_slice(&*key).map_err(|_| KeyError::Invalid)?;
-    Ok(key)
+    Ok(BitcoinKey { key, compressed })
 }
 
-pub fn bitcoin_wif(key: &[u8; KEY_BYTES]) -> Zeroizing<String> {
+pub fn bitcoin_wif(key: &[u8; KEY_BYTES], compressed: bool) -> Zeroizing<String> {
     let mut raw = Zeroizing::new([0u8; WIF_BYTES]);
     raw[0] = WIF_MAINNET;
     raw[1..=KEY_BYTES].copy_from_slice(key);
     raw[KEY_BYTES + 1] = WIF_COMPRESSED;
-    Zeroizing::new(bs58::encode(&raw[..]).with_check().into_string())
+    let length = if compressed {
+        WIF_BYTES
+    } else {
+        WIF_UNCOMPRESSED_BYTES
+    };
+    Zeroizing::new(bs58::encode(&raw[..length]).with_check().into_string())
 }
 
 pub fn solana_keypair(key: &[u8; KEY_BYTES]) -> Zeroizing<String> {
@@ -294,43 +307,55 @@ mod tests {
 
     const KEY: &str = "0c28fca386c7a227600b2fe50b7cae11ec86d3bf1fbe471be89827e19d72aa1d";
 
+    fn read(text: &str) -> ([u8; KEY_BYTES], bool) {
+        let read = bitcoin_private_key(text).unwrap();
+        (*read.key, read.compressed)
+    }
+
     #[test]
     fn wif_keys_round_trip_the_bitcoin_wiki_example() {
         let key: [u8; KEY_BYTES] = hex::decode_array(KEY).unwrap();
-        let wif = bitcoin_wif(&key);
+        let wif = bitcoin_wif(&key, true);
         assert_eq!(
             wif.as_str(),
             "KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98617"
         );
-        assert_eq!(*bitcoin_private_key(&wif).unwrap(), key);
+        assert_eq!(read(&wif), (key, true));
         assert_eq!(
-            *bitcoin_private_key(" cMzLdeGd5vEqxB8B6VFQoRopQ3sLAAvEzDAoQgvX54xwofSWj1fx\n")
-                .unwrap(),
-            key
+            read(" cMzLdeGd5vEqxB8B6VFQoRopQ3sLAAvEzDAoQgvX54xwofSWj1fx\n"),
+            (key, true)
+        );
+    }
+
+    #[test]
+    fn uncompressed_wif_keys_are_read_and_written_in_their_own_form() {
+        let key: [u8; KEY_BYTES] = hex::decode_array(KEY).unwrap();
+        let wif = bitcoin_wif(&key, false);
+        assert_eq!(
+            wif.as_str(),
+            "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ"
+        );
+        assert_eq!(read(&wif), (key, false));
+        assert_eq!(
+            read("91gGn1HgSap6CbU12F6z3pJri26xzp7Ay1VW6NHCoEayNXwRpu2"),
+            (key, false)
         );
     }
 
     #[test]
     fn a_hex_key_is_the_same_key_as_its_wif() {
         let key: [u8; KEY_BYTES] = hex::decode_array(KEY).unwrap();
-        assert_eq!(*bitcoin_private_key(KEY).unwrap(), key);
+        assert_eq!(read(KEY), (key, true));
+        assert_eq!(read(&format!(" 0x{} ", KEY.to_uppercase())), (key, true));
+        assert_eq!(read(&bitcoin_wif(&key, true)), read(KEY));
         assert_eq!(
-            *bitcoin_private_key(&format!(" 0x{} ", KEY.to_uppercase())).unwrap(),
-            key
+            bitcoin_private_key(&"0".repeat(64)).err(),
+            Some(KeyError::Invalid)
         );
-        assert_eq!(
-            *bitcoin_private_key(&bitcoin_wif(&key)).unwrap(),
-            *bitcoin_private_key(KEY).unwrap()
-        );
-        assert_eq!(bitcoin_private_key(&"0".repeat(64)), Err(KeyError::Invalid));
     }
 
     #[test]
     fn other_wif_forms_are_refused_with_a_reason() {
-        assert_eq!(
-            bitcoin_private_key("5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ"),
-            Err(KeyError::Uncompressed)
-        );
         for text in [
             "",
             "KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98618",
@@ -339,8 +364,8 @@ mod tests {
             &"K".repeat(60),
         ] {
             assert_eq!(
-                bitcoin_private_key(text),
-                Err(KeyError::BitcoinFormat),
+                bitcoin_private_key(text).err(),
+                Some(KeyError::BitcoinFormat),
                 "{text}"
             );
         }

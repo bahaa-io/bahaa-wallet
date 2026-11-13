@@ -96,6 +96,21 @@ impl Tx {
         sha256d(&preimage)
     }
 
+    pub(crate) fn legacy_sighash(&self, index: usize, code: &[u8]) -> Hash {
+        let mut copy = self.clone();
+        for (at, input) in copy.inputs.iter_mut().enumerate() {
+            input.script = if at == index {
+                code.to_vec()
+            } else {
+                Vec::new()
+            };
+            input.witness.clear();
+        }
+        let mut preimage = copy.encode(false);
+        preimage.extend_from_slice(&u32::from(SIGHASH_ALL).to_le_bytes());
+        sha256d(&preimage)
+    }
+
     pub(crate) fn taproot_sighash(&self, index: usize, spent: &[Output]) -> Hash {
         let mut prevouts = Vec::new();
         let mut amounts = Vec::new();
@@ -385,6 +400,7 @@ pub(crate) fn fuzz(bytes: &[u8]) {
         let _ = tx.id();
         let _ = tx.vsize();
         let _ = tx.sighash(0, &[0; 20], 0);
+        let _ = tx.legacy_sighash(0, &[]);
     }
 }
 
@@ -450,6 +466,109 @@ mod tests {
             assert_eq!(hex::encode(&script), prevout["script"].as_str().unwrap());
             assert!(read_signature(&input.witness[0]).is_some());
         }
+    }
+
+    #[test]
+    fn the_bip143_nested_example_signs_to_the_published_transaction() {
+        let mut tx = parse(&bytes("0100000001db6b1b20aa0fd7b23880be2ecbd4a98130974cf4748fb66092ac4d3ceb1a54770100000000feffffff02b8b4eb0b000000001976a914a457b684d7f0d539a46a45bbc043f35b59d0d96388ac0008af2f000000001976a914fd270b1ee6abcaea97fea7ad0402e8bd8ad6d77c88ac92040000")).unwrap();
+        let key = SecretKey::from_slice(&bytes(
+            "eb696a065ef48a2192da5b28b694f87544b30fae8327c4510137a922f32c6dcf",
+        ))
+        .unwrap();
+        let public = bahaa_crypto::compressed(&key.public_key()).unwrap();
+        let key_hash = crate::script::hash160(&public);
+        let redeem = crate::script::nested(&key_hash);
+        assert_eq!(
+            hex::encode(&crate::script::locking(
+                bahaa_types::BitcoinScript::ScriptHash(crate::script::hash160(&redeem))
+            )),
+            "a9144733f37cf4db86fbc2efed2500b4f4e49f31202387"
+        );
+        let sighash = tx.sighash(0, &key_hash, 1_000_000_000);
+        assert_eq!(
+            hex::encode(&sighash),
+            "64f3b0f4dd2bb3aa1ce8566d220cc74dda9df97d8490cc81d89d735c92e59fb6"
+        );
+        let (compact, _) = secp256k1_sign(&key, &sighash).unwrap();
+        tx.inputs[0].script = crate::script::pushes(&[&redeem]);
+        tx.inputs[0].witness = vec![signature(&compact), public.to_vec()];
+        assert_eq!(
+            hex::encode(&tx.bytes()),
+            "01000000000101db6b1b20aa0fd7b23880be2ecbd4a98130974cf4748fb66092ac4d3ceb1a5477010000001716001479091972186c449eb1ded22b78e40d009bdf0089feffffff02b8b4eb0b000000001976a914a457b684d7f0d539a46a45bbc043f35b59d0d96388ac0008af2f000000001976a914fd270b1ee6abcaea97fea7ad0402e8bd8ad6d77c88ac02473044022047ac8e878352d3ebbde1c94ce3a10d057c24175747116f8288e5d794d12d482f0220217f36a485cae903c713331d877c1f64677e3622ad4010726870540656fe9dcb012103ad1d8e89212f0b92c74d23bb710c00662ad1470198ac48c43f7d6f93a2a2687392040000"
+        );
+    }
+
+    #[test]
+    fn real_legacy_and_nested_spends_verify_with_their_sighashes() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/legacy.json")).unwrap();
+        let mut seen = Vec::new();
+        for entry in fixture.as_array().unwrap() {
+            let raw = bytes(entry["hex"].as_str().unwrap());
+            let tx = parse(&raw).unwrap();
+            assert_eq!(tx.bytes(), raw);
+            assert_eq!(id_text(&tx.id()), entry["txid"].as_str().unwrap());
+            for (index, (input, prevout)) in tx
+                .inputs
+                .iter()
+                .zip(entry["prevouts"].as_array().unwrap())
+                .enumerate()
+            {
+                let code = bytes(prevout["script"].as_str().unwrap());
+                let (signed, key, sighash) = match crate::script::read(&code).unwrap() {
+                    bahaa_types::BitcoinScript::PubkeyHash(hash) => {
+                        let [signed, key] = crate::script::read_pushes(&input.script)
+                            .unwrap()
+                            .try_into()
+                            .unwrap();
+                        assert_eq!(crate::script::hash160(key), hash);
+                        (signed, key, tx.legacy_sighash(index, &code))
+                    }
+                    bahaa_types::BitcoinScript::ScriptHash(hash) => {
+                        let [redeem] = crate::script::read_pushes(&input.script)
+                            .unwrap()
+                            .try_into()
+                            .unwrap();
+                        assert_eq!(crate::script::hash160(redeem), hash);
+                        let key = &input.witness[1];
+                        let key_hash = crate::script::hash160(key);
+                        assert_eq!(redeem, crate::script::nested(&key_hash));
+                        let value = prevout["value"].as_u64().unwrap();
+                        (
+                            &input.witness[0][..],
+                            &key[..],
+                            tx.sighash(index, &key_hash, value),
+                        )
+                    }
+                    other => panic!("{other:?}"),
+                };
+                let compact = low(read_signature(signed).unwrap());
+                assert!(bahaa_crypto::secp256k1_verify(key, &sighash, &compact));
+                assert!(!bahaa_crypto::secp256k1_verify(key, &[1; 32], &compact));
+                seen.push((entry["kind"].as_str().unwrap().to_owned(), key.len()));
+            }
+        }
+        seen.dedup();
+        assert_eq!(
+            seen,
+            [
+                ("legacy".to_owned(), 33),
+                ("nested".to_owned(), 33),
+                ("uncompressed".to_owned(), 65)
+            ]
+        );
+    }
+
+    fn low(mut compact: [u8; 64]) -> [u8; 64] {
+        let order = ruint::aliases::U256::from_be_bytes::<32>(
+            hex::decode_array("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+                .unwrap(),
+        );
+        let s = ruint::aliases::U256::from_be_slice(&compact[32..]);
+        if s > order >> 1 {
+            compact[32..].copy_from_slice(&(order - s).to_be_bytes::<32>());
+        }
+        compact
     }
 
     #[test]

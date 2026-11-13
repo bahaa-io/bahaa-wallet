@@ -7,7 +7,7 @@ use super::account::{Coin, script};
 use super::{BitcoinChain, spent};
 use crate::header::block_hash;
 use crate::proof::{Header, Headers, has_work, proves, unproven};
-use crate::script::locking;
+use crate::script::{commits_value, locking};
 use crate::tx::{Hash, Outpoint};
 
 const CHUNK: u64 = 2_016;
@@ -34,7 +34,10 @@ impl BitcoinChain {
             let trusted = self.trusted();
             coins
                 .iter()
-                .filter(|coin| coin.height > 0 && !trusted.coins.contains(&coin.outpoint))
+                .filter(|coin| {
+                    let signed_value = script(&coin.address).is_ok_and(commits_value);
+                    (coin.height > 0 || !signed_value) && !trusted.coins.contains(&coin.outpoint)
+                })
                 .collect()
         };
         if fresh.is_empty() {
@@ -52,7 +55,8 @@ impl BitcoinChain {
                 return Err(unproven("a coin it listed"));
             }
         }
-        let items: Vec<(Hash, u64)> = fresh
+        let confirmed: Vec<&Coin> = fresh.into_iter().filter(|coin| coin.height > 0).collect();
+        let items: Vec<(Hash, u64)> = confirmed
             .iter()
             .map(|coin| {
                 Ok((
@@ -64,7 +68,7 @@ impl BitcoinChain {
         self.prove(&items).await?;
         self.trusted()
             .coins
-            .extend(fresh.iter().map(|coin| coin.outpoint));
+            .extend(confirmed.iter().map(|coin| coin.outpoint));
         Ok(())
     }
 

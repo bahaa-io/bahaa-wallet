@@ -79,6 +79,15 @@ pub fn compressed(key: &PublicKey) -> Result<[u8; 33], DeriveError> {
         .map_err(|_| DeriveError::InvalidKey)
 }
 
+pub fn uncompressed(key: &[u8; 33]) -> Result<[u8; 65], DeriveError> {
+    PublicKey::from_sec1_bytes(key)
+        .map_err(|_| DeriveError::InvalidKey)?
+        .to_sec1_point(false)
+        .as_bytes()
+        .try_into()
+        .map_err(|_| DeriveError::InvalidKey)
+}
+
 struct Node {
     key: Zeroizing<[u8; 32]>,
     chain: Zeroizing<[u8; 32]>,

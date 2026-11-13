@@ -91,7 +91,7 @@ async fn a_phrase_holds_bitcoin_across_its_addresses_and_sends_it() {
 #[tokio::test]
 async fn a_bitcoin_key_and_a_watched_address_hold_one_address_each() {
     let (_scratch, engine, _) = started().await;
-    let wif = bahaa_crypto::bitcoin_wif(&[0x9d; 32]);
+    let wif = bahaa_crypto::bitcoin_wif(&[0x9d; 32], true);
     let key = engine
         .import_key(SecretString::from(wif.to_string()), ChainFamily::Bitcoin)
         .await
@@ -138,27 +138,30 @@ async fn a_bitcoin_key_and_a_watched_address_hold_one_address_each() {
     );
 }
 
-#[tokio::test]
-async fn a_phrase_used_with_taproot_is_found_there_and_remembered() {
-    const TAPROOT_FIRST: &str = "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr";
+async fn detected(funded: &str, secret: &str, key: Option<ChainFamily>) -> BitcoinType {
     let mut ledger = Ledger::new(BITCOIN_GENESIS);
-    ledger.fund(&address(TAPROOT_FIRST), 40_000, 2);
+    ledger.fund(&address(funded), 40_000, 2);
     let ledger = Arc::new(Mutex::new(ledger));
     let url = bahaa_testkit::electrum::serve(Log::default(), Arc::clone(&ledger)).await;
     let scratch = Scratch::new();
     let registry = Registry::with_networks(vec![bitcoin_network(url)]).unwrap();
     let engine = Engine::start(config(&scratch, registry, None)).unwrap();
     engine.create(SecretString::from("pw")).await.unwrap();
-    let wallet = engine
-        .import(SecretString::from(PHRASE), SecretString::from(""))
-        .await
-        .unwrap();
+    let wallet = match key {
+        Some(family) => engine.import_key(SecretString::from(secret), family).await,
+        None => {
+            engine
+                .import(SecretString::from(secret), SecretString::from(""))
+                .await
+        }
+    }
+    .unwrap();
     let mut portfolio = engine.portfolio();
     let held = until(&mut portfolio, |portfolio| {
         portfolio
             .holdings
             .iter()
-            .any(|holding| holding.address.to_string() == TAPROOT_FIRST)
+            .any(|holding| holding.address.to_string() == funded)
     })
     .await;
     assert_eq!(held.holdings[0].amount.to_string(), "0.0004");
@@ -168,16 +171,94 @@ async fn a_phrase_used_with_taproot_is_found_there_and_remembered() {
             .find(|info| info.id == wallet)
             .unwrap()
             .bitcoin
+            .unwrap()
     };
-    assert_eq!(
-        kind(engine.wallets().await.unwrap()),
-        Some(BitcoinType::Taproot)
-    );
+    let found = kind(engine.wallets().await.unwrap());
     engine.lock().await.unwrap();
     engine.unlock(SecretString::from("pw")).await.unwrap();
+    assert_eq!(kind(engine.wallets().await.unwrap()), found);
+    found
+}
+
+#[tokio::test]
+async fn a_phrase_is_found_on_the_address_type_it_was_used_with_and_remembered() {
+    for (funded, kind) in [
+        (
+            "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr",
+            BitcoinType::Taproot,
+        ),
+        ("1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA", BitcoinType::Legacy),
+        (
+            "37VucYSaXLCAsxYyAPfbSi9eh4iEcbShgf",
+            BitcoinType::NestedSegwit,
+        ),
+    ] {
+        assert_eq!(detected(funded, PHRASE, None).await, kind, "{funded}");
+    }
+}
+
+#[tokio::test]
+async fn old_keys_are_found_on_their_uncompressed_address() {
+    const FIRST_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+    const UNCOMPRESSED: &str = "1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm";
     assert_eq!(
-        kind(engine.wallets().await.unwrap()),
-        Some(BitcoinType::Taproot)
+        detected(UNCOMPRESSED, FIRST_KEY, Some(ChainFamily::Bitcoin)).await,
+        BitcoinType::LegacyUncompressed
+    );
+    assert_eq!(
+        detected(
+            "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+            FIRST_KEY,
+            Some(ChainFamily::Bitcoin)
+        )
+        .await,
+        BitcoinType::Legacy
+    );
+    let wif = bahaa_crypto::bitcoin_wif(&[0x9d; 32], false);
+    assert!(wif.starts_with('5'));
+    let (_scratch, engine, _) = started().await;
+    let key = engine
+        .import_key(SecretString::from(wif.to_string()), ChainFamily::Bitcoin)
+        .await
+        .unwrap();
+    let info = |wallets: Vec<bahaa_engine::WalletInfo>| {
+        wallets.into_iter().find(|info| info.id == key).unwrap()
+    };
+    assert_eq!(
+        info(engine.wallets().await.unwrap()).bitcoin,
+        Some(BitcoinType::LegacyUncompressed)
+    );
+    assert_eq!(
+        engine
+            .reveal(key, SecretString::from("pw"))
+            .await
+            .unwrap()
+            .expose_secret(),
+        wif.as_str()
+    );
+    let phrase = engine
+        .import(SecretString::from(PHRASE), SecretString::from(""))
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .set_bitcoin_type(phrase, BitcoinType::LegacyUncompressed)
+            .await
+            .is_err()
+    );
+    engine
+        .set_bitcoin_type(key, BitcoinType::Legacy)
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .reveal(key, SecretString::from("pw"))
+            .await
+            .unwrap()
+            .expose_secret()
+            .chars()
+            .next(),
+        Some('L')
     );
 }
 

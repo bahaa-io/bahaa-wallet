@@ -180,6 +180,7 @@ impl BitcoinChain {
                 value: output.value,
                 height: 0,
                 address,
+                uncompressed: self.book().uncompressed(&address),
             });
         }
         self.book().remember(&coins);

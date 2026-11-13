@@ -23,6 +23,7 @@ const KEPT_UP_TO: u64 = 10_000;
 #[derive(Debug, Default)]
 pub(crate) struct Book {
     keychains: HashMap<Address, Keychain>,
+    singles: HashMap<Address, BitcoinType>,
     places: HashMap<Address, Place>,
     coins: HashMap<Outpoint, (Address, u64)>,
 }
@@ -52,6 +53,7 @@ pub(crate) struct Coin {
     pub value: u64,
     pub height: i64,
     pub address: Address,
+    pub uncompressed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,6 +132,14 @@ impl Book {
             self.addresses(&first, RECEIVE, 0..1, testnet)?;
         }
         Ok(first)
+    }
+
+    pub(crate) fn single(&mut self, address: Address, kind: BitcoinType) {
+        self.singles.insert(address, kind);
+    }
+
+    pub(crate) fn uncompressed(&self, address: &Address) -> bool {
+        self.singles.get(address) == Some(&BitcoinType::LegacyUncompressed)
     }
 
     pub(crate) fn forget(&mut self) {
@@ -295,6 +305,14 @@ impl BitcoinChain {
 
     async fn unspent(&self, addresses: &[Address]) -> Result<Vec<Coin>, ChainError> {
         let lists = self.sources.unspent(&scripts(addresses)?).await?;
+        let uncompressed: Vec<Address> = {
+            let book = self.book();
+            addresses
+                .iter()
+                .filter(|address| book.uncompressed(address))
+                .copied()
+                .collect()
+        };
         let mut coins: Vec<Coin> = addresses
             .iter()
             .zip(lists)
@@ -304,6 +322,7 @@ impl BitcoinChain {
                     value: found.value,
                     height: found.height,
                     address: *address,
+                    uncompressed: uncompressed.contains(address),
                 })
             })
             .collect();

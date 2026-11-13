@@ -37,7 +37,7 @@ pub fn secp256k1_recover(
 }
 
 pub fn secp256k1_verify(
-    public: &[u8; 33],
+    public: &[u8],
     prehash: &[u8; 32],
     signature: &[u8; SIGNATURE_BYTES],
 ) -> bool {

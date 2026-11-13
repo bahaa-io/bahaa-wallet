@@ -12,16 +12,15 @@ use crate::{Reply, Request};
 pub type Log = Arc<Mutex<Vec<(String, Value)>>>;
 
 fn locking(address: &Address) -> Vec<u8> {
-    match address {
-        Address::Bitcoin {
-            script: BitcoinScript::WitnessKeyHash(hash),
-            ..
-        } => [&[0x00, 0x14][..], hash].concat(),
-        Address::Bitcoin {
-            script: BitcoinScript::Taproot(key),
-            ..
-        } => [&[0x51, 0x20][..], key].concat(),
-        _ => panic!("the fake Electrum server holds native SegWit and Taproot addresses"),
+    let Address::Bitcoin { script, .. } = address else {
+        panic!("the fake Electrum server holds Bitcoin addresses");
+    };
+    match script {
+        BitcoinScript::PubkeyHash(hash) => [&[0x76, 0xa9, 0x14][..], hash, &[0x88, 0xac]].concat(),
+        BitcoinScript::ScriptHash(hash) => [&[0xa9, 0x14][..], hash, &[0x87]].concat(),
+        BitcoinScript::WitnessKeyHash(hash) => [&[0x00, 0x14][..], hash].concat(),
+        BitcoinScript::WitnessScriptHash(hash) => [&[0x00, 0x20][..], hash].concat(),
+        BitcoinScript::Taproot(key) => [&[0x51, 0x20][..], key].concat(),
     }
 }
 
@@ -394,8 +393,11 @@ fn witnessless_id(raw: &[u8]) -> String {
     if raw[4] != 0 {
         return txid(raw);
     }
-    let inputs = usize::from(raw[6]);
-    let mut at = 7 + inputs * 41;
+    let mut at = 7;
+    for _ in 0..raw[6] {
+        at += 36;
+        at += 1 + usize::from(raw[at]) + 4;
+    }
     let outputs = usize::from(raw[at]);
     at += 1;
     for _ in 0..outputs {

@@ -5,14 +5,14 @@ use bahaa_chain::{
     TxId, TxStatus,
 };
 use bahaa_crypto::{
-    Seed, compressed, secp256k1_sign, secp256k1_verify, taproot_output, taproot_sign,
-    taproot_verify,
+    SecretKey, Seed, compressed, secp256k1_sign, secp256k1_verify, taproot_output, taproot_sign,
+    taproot_verify, uncompressed,
 };
-use bahaa_types::{Address, Amount, AssetId, BitcoinScript, BitcoinType};
+use bahaa_types::{Address, Amount, AssetId, BitcoinScript};
 use futures_util::future::try_join;
 use ruint::aliases::U256;
 
-use crate::script::{dust, hash160, key_address, locking};
+use crate::script::{dust, hash160, locking, nested, pushes, read_pushes, spender};
 use crate::source::Estimates;
 use crate::tx::{
     Input, MAX_SIGNATURE, Outpoint, Output, SEQUENCE, Tx, VERSION, id_of, id_text, parse,
@@ -23,6 +23,8 @@ use super::BitcoinChain;
 use super::account::{CHANGE, Coin, Funds, script};
 
 const KEY_BYTES: usize = 33;
+const WIDE_KEY_BYTES: usize = 65;
+const NESTED_BYTES: usize = 22;
 const SCHNORR_BYTES: usize = 64;
 
 #[derive(Clone, Debug)]
@@ -123,7 +125,6 @@ impl BitcoinChain {
                 })
             })
             .collect::<Result<Vec<_>, ChainError>>()?;
-        let stranger = || ChainError::Invalid("this seed does not own the sending account");
         for (index, coin) in plan.spent.iter().enumerate() {
             let owner = self
                 .book()
@@ -133,20 +134,9 @@ impl BitcoinChain {
                 return Err(stranger());
             }
             let key = self.key(seed, plan.transfer.account, &coin.address)?;
-            let public = compressed(&key.public_key())?;
-            let failed = |_| ChainError::Invalid("signing failed");
-            tx.inputs[index].witness = match script(&coin.address)? {
-                BitcoinScript::WitnessKeyHash(hash) if hash160(&public) == hash => {
-                    let (compact, _) = secp256k1_sign(&key, &tx.sighash(index, &hash, coin.value))
-                        .map_err(failed)?;
-                    vec![signature(&compact), public.to_vec()]
-                }
-                BitcoinScript::Taproot(output) if taproot_output(&public).ok() == Some(output) => {
-                    let sighash = tx.taproot_sighash(index, &spent);
-                    vec![taproot_sign(&key, &sighash).map_err(failed)?.to_vec()]
-                }
-                _ => return Err(stranger()),
-            };
+            let (unlock, witness) = unlocking(&tx, index, coin, &key, &spent)?;
+            tx.inputs[index].script = unlock;
+            tx.inputs[index].witness = witness;
         }
         Ok(Signed {
             id: TxId::new(id_text(&tx.id()))?,
@@ -214,23 +204,36 @@ impl BitcoinChain {
             .collect::<Result<Vec<_>, ChainError>>()?;
         let mut from = None;
         for (index, (input, (address, value))) in tx.inputs.iter().zip(&spent).enumerate() {
-            let valid = match (script(address)?, input.witness.as_slice()) {
-                (BitcoinScript::WitnessKeyHash(hash), [signature, key]) => {
-                    let sighash = tx.sighash(index, &hash, *value);
-                    <[u8; KEY_BYTES]>::try_from(key.as_slice()).is_ok_and(|key| {
-                        hash160(&key) == hash
-                            && read_signature(signature)
-                                .is_some_and(|signed| secp256k1_verify(&key, &sighash, &signed))
-                    })
+            let valid = match (
+                script(address)?,
+                read_pushes(&input.script).as_deref(),
+                input.witness.as_slice(),
+            ) {
+                (BitcoinScript::PubkeyHash(hash), Some([signature, key]), []) => {
+                    let code = locking(BitcoinScript::PubkeyHash(hash));
+                    hash160(key) == hash
+                        && verifies(key, &tx.legacy_sighash(index, &code), signature)
                 }
-                (BitcoinScript::Taproot(output), [signature]) => {
+                (BitcoinScript::ScriptHash(hash), Some([redeem]), [signature, key]) => {
+                    let key_hash = hash160(key);
+                    key.len() == KEY_BYTES
+                        && *redeem == nested(&key_hash)
+                        && hash160(redeem) == hash
+                        && verifies(key, &tx.sighash(index, &key_hash, *value), signature)
+                }
+                (BitcoinScript::WitnessKeyHash(hash), Some([]), [signature, key]) => {
+                    key.len() == KEY_BYTES
+                        && hash160(key) == hash
+                        && verifies(key, &tx.sighash(index, &hash, *value), signature)
+                }
+                (BitcoinScript::Taproot(output), Some([]), [signature]) => {
                     let sighash = tx.taproot_sighash(index, &outputs);
                     <[u8; SCHNORR_BYTES]>::try_from(signature.as_slice())
                         .is_ok_and(|signed| taproot_verify(&output, &sighash, &signed))
                 }
                 _ => false,
             };
-            if !valid || !input.script.is_empty() || input.sequence != SEQUENCE {
+            if !valid || input.sequence != SEQUENCE {
                 return Err(ChainError::Mismatch("the signatures"));
             }
             let address = *address;
@@ -330,14 +333,12 @@ impl BitcoinChain {
             .first()
             .and_then(|input| book.coin(&input.previous))
             .map(|(address, _)| address);
-        let signer = tx
-            .inputs
-            .first()
-            .and_then(|input| input.witness.get(1))
-            .and_then(|key| <[u8; KEY_BYTES]>::try_from(key.as_slice()).ok())
-            .and_then(|key| {
-                key_address(&key, BitcoinType::NativeSegwit, self.network.testnet).ok()
-            });
+        let signer = tx.inputs.first().and_then(|input| {
+            Some(Address::Bitcoin {
+                script: spender(&input.script, &input.witness)?,
+                testnet: self.network.testnet,
+            })
+        });
         let outputs: Vec<Address> = tx
             .outputs
             .iter()
@@ -360,6 +361,75 @@ impl BitcoinChain {
             None => address == from && !book.owns(from),
         }
     }
+}
+
+type Unlock = (Vec<u8>, Vec<Vec<u8>>);
+
+fn unlocking(
+    tx: &Tx,
+    index: usize,
+    coin: &Coin,
+    key: &SecretKey,
+    spent: &[Output],
+) -> Result<Unlock, ChainError> {
+    let public = compressed(&key.public_key())?;
+    let sign = |sighash: &[u8; 32]| {
+        secp256k1_sign(key, sighash)
+            .map(|(compact, _)| signature(&compact))
+            .map_err(|_| ChainError::Invalid("signing failed"))
+    };
+    match script(&coin.address)? {
+        BitcoinScript::PubkeyHash(hash) => {
+            let shown = if hash160(&public) == hash {
+                public.to_vec()
+            } else {
+                uncompressed(&public)?.to_vec()
+            };
+            if hash160(&shown) != hash {
+                return Err(stranger());
+            }
+            let code = locking(BitcoinScript::PubkeyHash(hash));
+            Ok((
+                pushes(&[&sign(&tx.legacy_sighash(index, &code))?, &shown]),
+                Vec::new(),
+            ))
+        }
+        BitcoinScript::ScriptHash(hash) => {
+            let key_hash = hash160(&public);
+            let redeem = nested(&key_hash);
+            if hash160(&redeem) != hash {
+                return Err(stranger());
+            }
+            Ok((
+                pushes(&[&redeem]),
+                vec![
+                    sign(&tx.sighash(index, &key_hash, coin.value))?,
+                    public.to_vec(),
+                ],
+            ))
+        }
+        BitcoinScript::WitnessKeyHash(hash) if hash160(&public) == hash => Ok((
+            Vec::new(),
+            vec![
+                sign(&tx.sighash(index, &hash, coin.value))?,
+                public.to_vec(),
+            ],
+        )),
+        BitcoinScript::Taproot(output) if taproot_output(&public).ok() == Some(output) => {
+            let signed = taproot_sign(key, &tx.taproot_sighash(index, spent))
+                .map_err(|_| ChainError::Invalid("signing failed"))?;
+            Ok((Vec::new(), vec![signed.to_vec()]))
+        }
+        _ => Err(stranger()),
+    }
+}
+
+fn stranger() -> ChainError {
+    ChainError::Invalid("this seed does not own the sending account")
+}
+
+fn verifies(key: &[u8], sighash: &[u8; 32], signature: &[u8]) -> bool {
+    read_signature(signature).is_some_and(|signed| secp256k1_verify(key, sighash, &signed))
 }
 
 pub(super) fn conflict(outpoint: &Outpoint) -> u64 {
@@ -440,10 +510,24 @@ fn pick(
 pub(super) fn cost(coins: &[Coin], outputs: &[Output], rate: u64) -> (u64, u64) {
     let (sorted, mut draft) = unsigned(coins, outputs.to_vec());
     for (input, coin) in draft.inputs.iter_mut().zip(&sorted) {
-        input.witness = match script(&coin.address) {
-            Ok(BitcoinScript::Taproot(_)) => vec![vec![0; SCHNORR_BYTES]],
-            _ => vec![vec![0; MAX_SIGNATURE], vec![0; KEY_BYTES]],
-        };
+        let signature = vec![0; MAX_SIGNATURE];
+        let key = vec![
+            0;
+            if coin.uncompressed {
+                WIDE_KEY_BYTES
+            } else {
+                KEY_BYTES
+            }
+        ];
+        match script(&coin.address) {
+            Ok(BitcoinScript::Taproot(_)) => input.witness = vec![vec![0; SCHNORR_BYTES]],
+            Ok(BitcoinScript::PubkeyHash(_)) => input.script = pushes(&[&signature, &key]),
+            Ok(BitcoinScript::ScriptHash(_)) => {
+                input.script = pushes(&[&[0; NESTED_BYTES]]);
+                input.witness = vec![signature, key];
+            }
+            _ => input.witness = vec![signature, key],
+        }
     }
     let size = draft.vsize();
     (size, size.saturating_mul(rate).div_ceil(1_000))
@@ -493,6 +577,7 @@ mod tests {
                 script: BitcoinScript::WitnessKeyHash([n; 20]),
                 testnet: false,
             },
+            uncompressed: false,
         }
     }
 

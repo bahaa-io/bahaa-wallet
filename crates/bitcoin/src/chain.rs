@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use bahaa_chain::{
@@ -75,7 +76,9 @@ impl BitcoinChain {
             let key = secp256k1_extended(seed, &self.path(kind, account, "")?)?;
             return self.book().register(key, kind, self.network.testnet);
         }
-        self.first(seed, account, kind)
+        let address = self.first(seed, account, kind)?;
+        self.book().single(address, kind);
+        Ok(address)
     }
 
     pub fn first(
@@ -84,7 +87,7 @@ impl BitcoinChain {
         account: u32,
         kind: BitcoinType,
     ) -> Result<Address, ChainError> {
-        let key = secp256k1(seed, &self.path(kind, account, "/0/0")?)?;
+        let key = self.secret(seed, kind, account, "/0/0")?;
         key_address(&compressed(&key.public_key())?, kind, self.network.testnet)
     }
 
@@ -95,13 +98,35 @@ impl BitcoinChain {
         rest: &str,
     ) -> Result<DerivationPath, ChainError> {
         let purpose = match kind {
+            BitcoinType::Legacy => 44,
+            BitcoinType::NestedSegwit => 49,
             BitcoinType::NativeSegwit => 84,
             BitcoinType::Taproot => 86,
+            BitcoinType::LegacyUncompressed => {
+                return Err(ChainError::Invalid(
+                    "only single private keys have uncompressed addresses",
+                ));
+            }
         };
         let coin = u32::from(self.network.testnet);
         format!("m/{purpose}'/{coin}'/{account}'{rest}")
             .parse()
             .map_err(|_| ChainError::Invalid("account index out of range"))
+    }
+
+    fn secret(
+        &self,
+        seed: &Seed,
+        kind: BitcoinType,
+        account: u32,
+        rest: &str,
+    ) -> Result<SecretKey, ChainError> {
+        let path = if seed.kind() == SeedKind::Bip39 {
+            self.path(kind, account, rest)?
+        } else {
+            DerivationPath::from_str("m").map_err(|_| ChainError::overflow())?
+        };
+        Ok(secp256k1(seed, &path)?)
     }
 
     fn key(&self, seed: &Seed, account: u32, address: &Address) -> Result<SecretKey, ChainError> {
@@ -115,7 +140,7 @@ impl BitcoinChain {
                 None => (BitcoinType::default(), "/0/0".to_owned()),
             }
         };
-        Ok(secp256k1(seed, &self.path(kind, account, &rest)?)?)
+        self.secret(seed, kind, account, &rest)
     }
 
     fn sats(&self, units: u64) -> Result<bahaa_types::Amount, ChainError> {

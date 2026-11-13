@@ -110,6 +110,8 @@ pub enum KeyringError {
     NoSolana,
     #[error("this wallet has no Bitcoin account")]
     NoBitcoin,
+    #[error("only single private keys have uncompressed addresses")]
+    PhraseUncompressed,
     #[error("this is a watch-only wallet, it has no keys")]
     WatchOnly,
     #[error("only a watch-only wallet can be left out of the total")]
@@ -312,6 +314,11 @@ impl Keyring {
         id: WalletId,
         kind: BitcoinType,
     ) -> Result<(), KeyringError> {
+        let session = self.session()?;
+        let phrase = &session.contents.entries[session.index(id)?].phrase;
+        if kind == BitcoinType::LegacyUncompressed && matches!(phrase, Phrase::Bip39 { .. }) {
+            return Err(KeyringError::PhraseUncompressed);
+        }
         self.edit(id, Some(kind), Phrase::bitcoin_mut, KeyringError::NoBitcoin)
     }
 
@@ -379,9 +386,10 @@ impl Keyring {
                 key,
                 family: ChainFamily::Solana,
             } => SecretString::from(bahaa_crypto::solana_keypair(key).to_string()),
-            Phrase::BitcoinKey { key, .. } => {
-                SecretString::from(bahaa_crypto::bitcoin_wif(key).to_string())
-            }
+            Phrase::BitcoinKey { key, kind } => SecretString::from(
+                bahaa_crypto::bitcoin_wif(key, *kind != Some(BitcoinType::LegacyUncompressed))
+                    .to_string(),
+            ),
             Phrase::Key { key, .. } | Phrase::TonKey { key, .. } => {
                 SecretString::from(hex::encode(&**key))
             }
@@ -490,12 +498,17 @@ impl fmt::Debug for Keyring {
     }
 }
 
-pub(crate) fn most_recent<T>(default: (T, Option<u64>), other: (T, Option<u64>)) -> T {
-    if other.1 > default.1 {
-        other.0
-    } else {
-        default.0
-    }
+pub(crate) fn most_recent<T>(
+    default: (T, Option<u64>),
+    others: impl IntoIterator<Item = (T, Option<u64>)>,
+) -> T {
+    others
+        .into_iter()
+        .fold(
+            default,
+            |best, next| if next.1 > best.1 { next } else { best },
+        )
+        .0
 }
 
 pub fn check_phrase(phrase: &str, passphrase: &str) -> Result<PhraseKind, KeyringError> {
@@ -524,10 +537,13 @@ fn key_phrase(text: &str, family: ChainFamily) -> Result<Phrase, KeyringError> {
             key: bahaa_crypto::solana_private_key(text)?,
             family,
         },
-        ChainFamily::Bitcoin => Phrase::BitcoinKey {
-            key: bahaa_crypto::bitcoin_private_key(text)?,
-            kind: None,
-        },
+        ChainFamily::Bitcoin => {
+            let read = bahaa_crypto::bitcoin_private_key(text)?;
+            Phrase::BitcoinKey {
+                key: read.key,
+                kind: (!read.compressed).then_some(BitcoinType::LegacyUncompressed),
+            }
+        }
     })
 }
 
@@ -643,12 +659,29 @@ mod tests {
 
     #[test]
     fn the_most_recently_used_choice_wins_and_the_default_breaks_ties() {
-        let used = |w5, v4r2| most_recent((TonContract::W5, w5), (TonContract::V4R2, v4r2));
+        let used = |w5, v4r2| most_recent((TonContract::W5, w5), [(TonContract::V4R2, v4r2)]);
         assert_eq!(used(None, None), TonContract::W5);
         assert_eq!(used(None, Some(1)), TonContract::V4R2);
         assert_eq!(used(Some(1), None), TonContract::W5);
         assert_eq!(used(Some(5), Some(9)), TonContract::V4R2);
         assert_eq!(used(Some(9), Some(5)), TonContract::W5);
         assert_eq!(used(Some(7), Some(7)), TonContract::W5);
+        let picked = |used: [Option<u64>; 3]| {
+            most_recent(
+                (BitcoinType::NativeSegwit, used[0]),
+                [
+                    (BitcoinType::Legacy, used[1]),
+                    (BitcoinType::NestedSegwit, used[2]),
+                ],
+            )
+        };
+        assert_eq!(picked([None, None, None]), BitcoinType::NativeSegwit);
+        assert_eq!(
+            picked([Some(3), Some(3), Some(3)]),
+            BitcoinType::NativeSegwit
+        );
+        assert_eq!(picked([Some(3), Some(8), Some(5)]), BitcoinType::Legacy);
+        assert_eq!(picked([None, Some(4), Some(4)]), BitcoinType::Legacy);
+        assert_eq!(picked([None, None, Some(1)]), BitcoinType::NestedSegwit);
     }
 }

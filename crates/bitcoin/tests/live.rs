@@ -108,3 +108,49 @@ async fn esplora_reads_what_electrum_reads() {
         assert_eq!(scanned.sent, reference.sent);
     }
 }
+
+#[tokio::test]
+#[ignore = "needs the public Electrum servers"]
+async fn old_address_types_read_the_same_on_every_server_and_sign_locally() {
+    for kind in [
+        bahaa_types::BitcoinType::Legacy,
+        bahaa_types::BitcoinType::NestedSegwit,
+    ] {
+        let mut seen = Vec::new();
+        for server in SERVERS {
+            let chain = BitcoinChain::new(mainnet_on(&Url::parse(server).unwrap())).unwrap();
+            let from = chain.derive_as(&seed(), 0, kind).unwrap();
+            let held = chain.balances(&from, &[native()]).await.unwrap();
+            let scanned = chain.scan(&from, &[native()], None).await.unwrap().unwrap();
+            println!(
+                "{kind:?} {server}: {from} holds {}, {} received, {} sent",
+                held[0].amount,
+                scanned.found.len(),
+                scanned.sent.len()
+            );
+            let transfer = Transfer {
+                account: 0,
+                from,
+                to: from,
+                asset: native(),
+                amount: Amount::parse("0.00001", 8).unwrap(),
+                max: false,
+                memo: None,
+            };
+            match chain.prepare(&transfer).await {
+                Ok((plan, fee)) => {
+                    let signed = chain.sign(&plan, &seed()).unwrap();
+                    bahaa_chain::check_signed(
+                        chain.planned(&plan),
+                        &chain.decode(&signed).unwrap(),
+                    )
+                    .unwrap();
+                    println!("  fee {}, signed and read back, not sent", fee.expected());
+                }
+                Err(err) => println!("  {err}"),
+            }
+            seen.push((held[0].amount, scanned.found, scanned.sent));
+        }
+        assert_eq!(seen[0], seen[1]);
+    }
+}

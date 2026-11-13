@@ -4,7 +4,7 @@ use zeroize::Zeroizing;
 
 use crate::KeyringError;
 
-const VERSION: u8 = 10;
+const VERSION: u8 = 11;
 const FIRST_VERSION: u8 = 1;
 const CONTRACT_VERSION: u8 = 3;
 const SOLANA_PATH_VERSION: u8 = 8;
@@ -33,6 +33,9 @@ const BIP44: u8 = 2;
 const UNKNOWN_TYPE: u8 = 0;
 const NATIVE_SEGWIT: u8 = 1;
 const TAPROOT_TYPE: u8 = 2;
+const LEGACY: u8 = 3;
+const NESTED_SEGWIT: u8 = 4;
+const LEGACY_UNCOMPRESSED: u8 = 5;
 
 pub enum Phrase {
     Bip39 {
@@ -226,8 +229,11 @@ pub fn encode(contents: &Contents) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
         {
             out.push(match bitcoin {
                 None => UNKNOWN_TYPE,
+                Some(BitcoinType::Legacy) => LEGACY,
+                Some(BitcoinType::NestedSegwit) => NESTED_SEGWIT,
                 Some(BitcoinType::NativeSegwit) => NATIVE_SEGWIT,
                 Some(BitcoinType::Taproot) => TAPROOT_TYPE,
+                Some(BitcoinType::LegacyUncompressed) => LEGACY_UNCOMPRESSED,
             });
         }
     }
@@ -356,7 +362,10 @@ fn read_bip39(reader: &mut Reader<'_>, version: u8) -> Result<Phrase, KeyringErr
         passphrase: SecretString::from(owned),
         contract,
         solana,
-        bitcoin: read_type(reader, version)?,
+        bitcoin: match read_type(reader, version)? {
+            Some(BitcoinType::LegacyUncompressed) => return Err(KeyringError::Damaged),
+            other => other,
+        },
     })
 }
 
@@ -366,8 +375,11 @@ fn read_type(reader: &mut Reader<'_>, version: u8) -> Result<Option<BitcoinType>
     }
     match reader.take(1)?[0] {
         UNKNOWN_TYPE => Ok(None),
+        LEGACY => Ok(Some(BitcoinType::Legacy)),
+        NESTED_SEGWIT => Ok(Some(BitcoinType::NestedSegwit)),
         NATIVE_SEGWIT => Ok(Some(BitcoinType::NativeSegwit)),
         TAPROOT_TYPE => Ok(Some(BitcoinType::Taproot)),
+        LEGACY_UNCOMPRESSED => Ok(Some(BitcoinType::LegacyUncompressed)),
         _ => Err(KeyringError::Damaged),
     }
 }
@@ -581,11 +593,7 @@ mod tests {
 
     #[test]
     fn bitcoin_keys_round_trip_with_their_address_type() {
-        for kind in [
-            None,
-            Some(BitcoinType::NativeSegwit),
-            Some(BitcoinType::Taproot),
-        ] {
+        for kind in std::iter::once(None).chain(BitcoinType::FOR_KEYS.map(Some)) {
             let contents = Contents {
                 next_id: 2,
                 entries: vec![Entry {
@@ -733,9 +741,12 @@ mod tests {
             let path_at = 1 + 4 + 2 + 4 + 1 + 1 + 16 + 2 + 5 + 1;
             for at in [path_at, path_at + 1] {
                 let mut unknown = encode(&contents).unwrap().to_vec();
-                unknown[at] = 3;
+                unknown[at] = 6;
                 assert!(matches!(decode(&unknown), Err(KeyringError::Damaged)));
             }
+            let mut uncompressed = encode(&contents).unwrap().to_vec();
+            uncompressed[path_at + 1] = LEGACY_UNCOMPRESSED;
+            assert!(matches!(decode(&uncompressed), Err(KeyringError::Damaged)));
         }
     }
 

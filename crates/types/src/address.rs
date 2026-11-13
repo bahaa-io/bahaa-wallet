@@ -71,13 +71,28 @@ impl SolanaPath {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BitcoinType {
+    Legacy,
+    NestedSegwit,
     #[default]
     NativeSegwit,
     Taproot,
+    LegacyUncompressed,
 }
 
 impl BitcoinType {
-    pub const ALL: [Self; 2] = [Self::NativeSegwit, Self::Taproot];
+    pub const FOR_PHRASES: [Self; 4] = [
+        Self::Legacy,
+        Self::NestedSegwit,
+        Self::NativeSegwit,
+        Self::Taproot,
+    ];
+    pub const FOR_KEYS: [Self; 5] = [
+        Self::Legacy,
+        Self::NestedSegwit,
+        Self::NativeSegwit,
+        Self::Taproot,
+        Self::LegacyUncompressed,
+    ];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

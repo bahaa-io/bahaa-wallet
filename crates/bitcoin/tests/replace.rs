@@ -7,20 +7,35 @@ use std::sync::{Arc, Mutex};
 use bahaa_bitcoin::BitcoinChain;
 use bahaa_chain::{Chain, Replace, Signed, Transfer, Wait, check_signed};
 use bahaa_testkit::electrum::{Ledger, Log};
-use bahaa_types::Amount;
+use bahaa_types::{Amount, BitcoinType};
 use common::{FIRST, FIRST_CHANGE, FRIEND, GENESIS, SECOND, address, bitcoin_on, native, seed};
 
 async fn sent(amount: &str, max: bool) -> (BitcoinChain, Signed) {
+    sent_as(
+        BitcoinType::NativeSegwit,
+        [FIRST, SECOND, FIRST_CHANGE],
+        amount,
+        max,
+    )
+    .await
+}
+
+async fn sent_as(
+    kind: BitcoinType,
+    [first, second, change]: [&str; 3],
+    amount: &str,
+    max: bool,
+) -> (BitcoinChain, Signed) {
     let mut ledger = Ledger::new(GENESIS);
-    ledger.fund(&address(SECOND), 30_000, 1);
-    ledger.fund(&address(FIRST_CHANGE), 20_000, 2);
+    ledger.fund(&address(second), 30_000, 1);
+    ledger.fund(&address(change), 20_000, 2);
     let ledger = Arc::new(Mutex::new(ledger));
     let url = bahaa_testkit::electrum::serve(Log::default(), ledger).await;
     let chain = BitcoinChain::new(bitcoin_on(&url)).unwrap();
-    chain.derive(&seed(), 0).unwrap();
+    chain.derive_as(&seed(), 0, kind).unwrap();
     let transfer = Transfer {
         account: 0,
-        from: address(FIRST),
+        from: address(first),
         to: address(FRIEND),
         asset: native(),
         amount: Amount::parse(amount, 8).unwrap(),
@@ -75,4 +90,26 @@ async fn speeding_up_a_max_send_lowers_the_amount_by_the_extra_fee() {
     assert_eq!(chain.planned(&plan).amount.to_string(), "0.00049466");
     let signed = chain.sign(&plan, &seed()).unwrap();
     check_signed(chain.planned(&plan), &chain.decode(&signed).unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn a_legacy_send_is_sped_up_with_freshly_signed_legacy_inputs() {
+    let (chain, original) = sent_as(
+        BitcoinType::Legacy,
+        [
+            "1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA",
+            "1Ak8PffB2meyfYnbXZR9EGfLfFZVpzJvQP",
+            "1J3J6EvPrv8q6AC3VCjWV45Uf3nssNMRtH",
+        ],
+        "0.00025",
+        false,
+    )
+    .await;
+    let (plan, fee) = chain.replace(&original, 0, Replace::SpeedUp).await.unwrap();
+    assert_eq!(fee.replaced().unwrap().fee.to_string(), "0.00000448");
+    assert_eq!(fee.expected().to_string(), "0.00000674");
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    let decoded = chain.decode(&signed).unwrap();
+    check_signed(chain.planned(&plan), &decoded).unwrap();
+    assert_eq!(decoded.sequence, chain.decode(&original).unwrap().sequence);
 }
