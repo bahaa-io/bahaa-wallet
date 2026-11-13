@@ -320,6 +320,15 @@ impl AnyChain {
         }
     }
 
+    pub(crate) async fn sns_address(&self, name: &str) -> Result<Option<Address>, ChainError> {
+        match self {
+            Self::Solana(chain) => shielded(chain.sns_address(name)).await,
+            Self::Evm(_) | Self::Tron(_) | Self::Ton(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("Solana names outside Solana"))
+            }
+        }
+    }
+
     pub(crate) async fn receive_address(&self, address: &Address) -> Result<Address, ChainError> {
         match self {
             Self::Bitcoin(chain) => shielded(chain.receive_address(address)).await,

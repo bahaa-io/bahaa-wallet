@@ -17,9 +17,11 @@ mod calls;
 mod incoming;
 mod nfts;
 mod send;
+mod sns;
 
 pub use calls::{SolanaCall, swap_instruction};
 pub use send::SolanaPlan;
+pub use sns::normalize as sns_normalize;
 
 use crate::programs::{Moved, Shape, TOKEN, TOKEN_2022, asset_id, metadata_account, token_account};
 use crate::rpc::{self, Account, Rpc, Solana};
@@ -436,6 +438,7 @@ pub(crate) fn fuzz(value: &serde_json::Value) {
     if let Ok(found) = rpc::accounts(value, value["value"].as_array().map_or(0, Vec::len)) {
         for account in &found {
             crate::token::fuzz(account.as_ref());
+            sns::fuzz(account.as_ref());
             let _ = metadata(account.as_ref(), &[0; 32]);
             let _ = crate::metaplex::token_lock(account.as_ref());
             if let Some(tree) = account.as_ref().and_then(|account| {

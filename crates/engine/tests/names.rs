@@ -100,6 +100,13 @@ async fn names_resolve_to_the_record_of_the_asked_network() {
         ton_elsewhere.to_string().contains("TON name"),
         "{ton_elsewhere}"
     );
+    let solana_elsewhere = resolve("bonfida.sns", "bitcoin").await.unwrap_err();
+    assert!(
+        solana_elsewhere.to_string().contains("Solana name"),
+        "{solana_elsewhere}"
+    );
+    let paused = resolve("bonfida.sol", "solana").await.unwrap_err();
+    assert!(paused.to_string().contains(".sns"), "{paused}");
     assert!(matches!(
         resolve("vitalik.eth", "polygon").await,
         Err(EngineError::UnknownNetwork)

@@ -14,6 +14,8 @@ const SOLANA: u64 = 501;
 const TRON: u64 = 195;
 const TRON_PREFIX: u8 = 0x41;
 const TON_ENDINGS: [&str; 2] = [".ton", ".t.me"];
+const SNS_ENDING: &str = ".sns";
+const PAUSED_ENDING: &str = ".sol";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
@@ -26,11 +28,13 @@ pub struct Resolved {
 pub enum NameService {
     Ens,
     TonDns,
+    Sns,
 }
 
 enum Lookup {
     Ens { ethereum: usize, coins: Vec<u64> },
     TonDns { ton: usize },
+    Sns { solana: usize },
 }
 
 impl Worker {
@@ -48,7 +52,16 @@ impl Worker {
                 Lookup::Ens { ethereum, coins } => {
                     ens(&chains[ethereum], &target, &coins, name).await
                 }
-                Lookup::TonDns { ton } => ton_dns(&chains[ton], name).await,
+                Lookup::TonDns { ton } => native(
+                    chains[ton].dns_address(&name).await,
+                    name,
+                    NameService::TonDns,
+                ),
+                Lookup::Sns { solana } => native(
+                    chains[solana].sns_address(&name).await,
+                    name,
+                    NameService::Sns,
+                ),
             };
             let _ = reply.send(result.map_err(EngineError::from));
         });
@@ -63,22 +76,44 @@ impl Worker {
             .chain_index(network)
             .ok_or(EngineError::UnknownNetwork)?;
         let target = self.chains[index].network().clone();
-        let lower = name.trim().to_ascii_lowercase();
-        let ton_name = TON_ENDINGS.iter().any(|ending| lower.ends_with(ending));
-        match (ton_name, target.family() == ChainFamily::Ton) {
-            (true, true) => Ok((
+        let lower = name.trim().to_lowercase();
+        let family = target.family();
+        if lower.ends_with(PAUSED_ENDING) {
+            return Err(ChainError::Invalid(
+                "SNS has paused .sol names for now, use the .sns name",
+            )
+            .into());
+        }
+        let native = if TON_ENDINGS.iter().any(|ending| lower.ends_with(ending)) {
+            Some(ChainFamily::Ton)
+        } else if lower.ends_with(SNS_ENDING) {
+            Some(ChainFamily::Solana)
+        } else {
+            None
+        };
+        match native {
+            Some(ChainFamily::Ton) if family == ChainFamily::Ton => Ok((
                 Lookup::TonDns { ton: index },
                 target,
                 bahaa_ton::dns_normalize(name)?,
             )),
-            (true, false) => Err(ChainError::Invalid(
+            Some(ChainFamily::Solana) if family == ChainFamily::Solana && !target.testnet => Ok((
+                Lookup::Sns { solana: index },
+                target,
+                bahaa_solana::sns_normalize(name)?,
+            )),
+            Some(ChainFamily::Ton) => Err(ChainError::Invalid(
                 "this is a TON name, it only points to TON addresses",
             )
             .into()),
-            (false, true) => {
+            Some(_) => Err(ChainError::Invalid(
+                "this is a Solana name, it only points to Solana mainnet addresses",
+            )
+            .into()),
+            None if family == ChainFamily::Ton => {
                 Err(ChainError::Unsupported("names other than .ton and .t.me on TON").into())
             }
-            (false, false) => {
+            None => {
                 let coins = coin_types(&target).ok_or(ChainError::Unsupported("names yet"))?;
                 let ethereum = chains::ethereum_mainnet(&self.chains)
                     .ok_or(ChainError::Unsupported("names without Ethereum"))?;
@@ -92,14 +127,18 @@ impl Worker {
     }
 }
 
-async fn ton_dns(ton: &AnyChain, name: String) -> Result<Resolved, ChainError> {
-    let address = ton.dns_address(&name).await?.ok_or(ChainError::Invalid(
+fn native(
+    found: Result<Option<Address>, ChainError>,
+    name: String,
+    service: NameService,
+) -> Result<Resolved, ChainError> {
+    let address = found?.ok_or(ChainError::Invalid(
         "this name has no address on this network",
     ))?;
     Ok(Resolved {
         name,
         address,
-        service: NameService::TonDns,
+        service,
     })
 }
 

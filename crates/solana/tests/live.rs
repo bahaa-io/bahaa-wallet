@@ -172,3 +172,45 @@ async fn live_token_2022_transfers_pass_a_real_simulation() {
         assert_eq!(quote.withheld().is_some(), fee, "{mint}");
     }
 }
+
+#[tokio::test]
+#[ignore = "talks to the real Solana mainnet"]
+async fn live_sns_names_follow_records_owners_and_nft_holders() {
+    let chain = mainnet();
+    for (name, expected) in [
+        (
+            "bonfida.sns",
+            "Fw1ETanDZafof7xEULsnq9UY6o71Tpds89tNwPkWLb1v",
+        ),
+        (
+            "wallet-guide-6.sns",
+            "Hf4daCT4tC2Vy9RCe9q8avT68yAsNJ1dQe6xiQqyGuqZ",
+        ),
+        (
+            "wallet-guide-4.sns",
+            "Hf4daCT4tC2Vy9RCe9q8avT68yAsNJ1dQe6xiQqyGuqZ",
+        ),
+        (
+            "sns-ip-5-wallet-1.sns",
+            "ALd1XSrQMCPSRayYUoUZnp6KcP6gERfJhWzkP49CkXKs",
+        ),
+    ] {
+        assert_eq!(
+            chain
+                .sns_address(name)
+                .await
+                .unwrap()
+                .map(|address| address.to_string())
+                .as_deref(),
+            Some(expected),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        chain
+            .sns_address("this-should-not-exist-4417.sns")
+            .await
+            .unwrap(),
+        None
+    );
+}

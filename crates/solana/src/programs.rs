@@ -19,6 +19,10 @@ pub(crate) const RULES: Key = id("auth9SigNpDKz4sJJ1DfCTuZrZNSAgh9sFD3rboVmgg");
 pub(crate) const INSTRUCTIONS: Key = id("Sysvar1nstructions1111111111111111111111111");
 pub(crate) const WRAPPED: Key = id("So11111111111111111111111111111111111111112");
 pub(crate) const BUBBLEGUM: Key = id("BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY");
+pub(crate) const NAME_SERVICE: Key = id("namesLPneVptA9Z5rqUDD9tMTWEJwofgaYwp8cawRkX");
+pub(crate) const NAME_TOKENIZER: Key = id("nftD3vbNkNqfj2Sd3HZwbpw4BxxKWr4AjGb9X38JeZk");
+pub(crate) const SNS_ROOT: Key = id("58PwtjSDuFHuUkYjH9BYnnQKHfwo9reZhC2zMJv9JPkx");
+pub(crate) const RECORD_V2_CLASS: Key = id("2pMnqHvei2N5oDcVGCRdZx48gqti199wr5CsyTTafsbo");
 pub(crate) const SPL_COMPRESSION: Key = id("cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK");
 pub(crate) const MPL_COMPRESSION: Key = id("mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW");
 const SPL_NOOP: Key = id("noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV");
@@ -360,7 +364,7 @@ pub(crate) fn token_record(mint: &Key, account: &Key) -> Result<Key, ChainError>
     )
 }
 
-fn derived(seeds: &[&[u8]], program: &Key) -> Result<Key, ChainError> {
+pub(crate) fn derived(seeds: &[&[u8]], program: &Key) -> Result<Key, ChainError> {
     (0..=u8::MAX)
         .rev()
         .find_map(|bump| {
