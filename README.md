@@ -70,6 +70,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Solana tokens:** classic and Token-2022, with amounts shown as the token defines them and any token fee shown before you send.
 - **Bitcoin:** every address type (Legacy 1…, Nested SegWit 3…, Native SegWit and Taproot) and old uncompressed keys, found from your wallet's history, with a fresh address for every payment.
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
+- **Fee speeds:** on Bitcoin, EVM networks and Solana, pick Slow, Normal or Fast and see what each costs and how long it should take.
 - **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks and Bitcoin.
 - **Swaps:** swap coins and tokens on one network or across networks, through decentralized exchanges and keyless cross-network services. Every route is ranked by what you really receive, with the exact cost shown, and you can pick any of them. No app fee.
 - **NFTs:** your NFTs on TON, Solana, Ethereum, Optimism and Avalanche, each checked on chain, with its picture right in the terminal. Known collections show, the rest wait in Hidden, and you choose what to show. Send them like coins, and see new ones arrive in Activity.
@@ -92,6 +93,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Short past history** for imported wallets on EVM networks and Tron, because free servers keep only recent records.
 - **Some memos aren't shown:** on received Tron token transfers, and TON's encrypted comments.
 - **Speed up and cancel are EVM and Bitcoin only.** Tron, TON and Solana can't replace a sent transaction.
+- **Tron and TON set their own fees,** so they have no speed choice.
 - **Expected waits are estimates:** from the servers' fee estimates on Bitcoin, from typical block times elsewhere.
 - **Bitcoin:** one address type per wallet at a time, no test network yet, and coins on the way count before their first block.
 - **Small Taproot coins stay put:** Bitcoin coins of 10,000 sats or less on Taproot addresses are never spent, because they often carry Ordinals or Runes.
