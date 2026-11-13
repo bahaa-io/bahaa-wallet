@@ -67,6 +67,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 
 - **Wallets:** create or import 12- and 24-word phrases, TON's own phrases, or a single private key for any network, with several wallets and accounts.
 - **Balances:** coins and tokens on every network, valued in USD, EUR or IRT.
+- **Solana tokens:** classic and Token-2022, with amounts shown as the token defines them and any token fee shown before you send.
 - **Bitcoin:** every address type (Legacy 1…, Nested SegWit 3…, Native SegWit and Taproot) and old uncompressed keys, found from your wallet's history, with a fresh address for every payment.
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
 - **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks and Bitcoin.
@@ -94,7 +95,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Expected waits are estimates:** from the servers' fee estimates on Bitcoin, from typical block times elsewhere.
 - **Bitcoin:** one address type per wallet at a time, no test network yet, and coins on the way count before their first block.
 - **Small Taproot coins stay put:** Bitcoin coins of 10,000 sats or less on Taproot addresses are never spent, because they often carry Ordinals or Runes.
-- **Solana Token-2022 tokens** can't be added yet, only classic Solana tokens.
+- **Solana Token-2022:** tokens that run their own program on every transfer can't be sent yet, and private (confidential) balances aren't shown.
 - **EVM memos only go with coins** sent to a plain address. With tokens and contracts, they would break the call.
 - **Only listed networks** for now, and values only for assets Bahaa prices.
 - **Public servers:** if a network's servers are down, that network pauses until they're back.
