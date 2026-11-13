@@ -17,6 +17,7 @@ pub(crate) enum Arg<'a> {
     Address(&'a Address),
     Number(U256),
     Cell(&'a [u8]),
+    Bytes(&'a [u8]),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,10 +91,24 @@ fn value(arg: Arg<'_>) -> Result<RcStackValue, ChainError> {
         Arg::Cell(boc) => {
             SafeRc::into_dyn_value(SafeRc::new(Boc::decode(boc).map_err(|_| unencodable())?))
         }
+        Arg::Bytes(bytes) => {
+            let mut builder = CellBuilder::new();
+            builder
+                .store_raw(
+                    bytes,
+                    u16::try_from(bytes.len() * 8).map_err(|_| unencodable())?,
+                )
+                .map_err(|_| unencodable())?;
+            let cell = builder.build().map_err(|_| unencodable())?;
+            RcStackValue::new_dyn_value(OwnedCellSlice::new_allow_exotic(cell))
+        }
     })
 }
 
 fn item(value: &RcStackValue) -> Option<Item> {
+    if value.is_null() {
+        return Some(Item::Null);
+    }
     if let Some(number) = value.as_int() {
         let (sign, bytes) = number.to_bytes_be();
         if sign == Sign::Minus {

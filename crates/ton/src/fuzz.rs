@@ -61,6 +61,7 @@ pub fn answer(data: &[u8]) {
 
 pub fn boc(data: &[u8]) {
     blocks::fuzz(data);
+    crate::chain::fuzz_dns(data);
     transaction::fuzz(data);
     let _ = metadata::content(data);
     let _ = wallet::parse(data);

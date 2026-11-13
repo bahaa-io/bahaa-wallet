@@ -695,3 +695,25 @@ async fn live_nfts_are_listed_by_tonapi_and_proven_on_chain() {
         );
     }
 }
+
+#[tokio::test]
+#[ignore = "talks to the real TON network, run with --test-threads=1"]
+async fn live_ton_names_resolve_through_proven_dns() {
+    let registry = Registry::builtin().unwrap();
+    let chain = TonChain::new(registry.get(&"ton".parse().unwrap()).unwrap().clone()).unwrap();
+    assert_eq!(
+        chain
+            .dns_address("Foundation.ton")
+            .await
+            .unwrap()
+            .map(|address| address.to_string()),
+        Some("0:83dfd552e63729b472fcbcc8c45ebcc6691702558b68ec7527e1ba403a0f31a8".to_owned())
+    );
+    assert_eq!(
+        chain
+            .dns_address("this-name-should-not-exist-4417.ton")
+            .await
+            .unwrap(),
+        None
+    );
+}

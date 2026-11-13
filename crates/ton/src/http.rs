@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use url::Url;
 
 use crate::cells::{Account, Status};
-use crate::fees::Config;
+use crate::fees::{Config, Param};
 use crate::lite::{Lite, proven_library, proven_transactions, refused};
 use crate::tl::BlockId;
 use crate::transaction::{MAX_LISTED, Transaction};
@@ -24,12 +24,15 @@ const MAX_REPLY: usize = 4 * 1024 * 1024;
 const MAX_MESSAGE: usize = 200;
 const TIMEOUT: Duration = Duration::from_secs(20);
 const CONFIG_FOR: Duration = Duration::from_secs(600);
+const DNS_ROOT: i32 = 4;
+const MASTERCHAIN: i8 = -1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Item {
     Num(U256),
     Negative,
     Cell(Vec<u8>),
+    Null,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +136,31 @@ impl Http {
                 }
             })
             .await?)
+    }
+
+    pub(crate) async fn dns_root(&self) -> Result<Address, ChainError> {
+        let param = self
+            .pool
+            .call(None, |endpoint| async move {
+                match endpoint.protocol {
+                    Protocol::TonLiteservers => {
+                        self.lite.config_param(&endpoint.url, DNS_ROOT).await
+                    }
+                    _ => Err(unsupported()),
+                }
+            })
+            .await?;
+        let Param::Present(cell) = param else {
+            return Err(ChainError::Unsupported("names on this TON network"));
+        };
+        let hash: [u8; 32] = (cell.bit_len() == 256)
+            .then(|| cell.data().try_into().ok())
+            .flatten()
+            .ok_or_else(ChainError::malformed)?;
+        Ok(Address::Ton {
+            workchain: MASTERCHAIN,
+            hash,
+        })
     }
 
     pub(crate) async fn config(&self) -> Result<Config, ChainError> {

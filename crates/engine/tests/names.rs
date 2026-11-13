@@ -95,6 +95,11 @@ async fn names_resolve_to_the_record_of_the_asked_network() {
         Err(EngineError::Chain(bahaa_engine::ChainError::Unsupported(_)))
     ));
     assert!(resolve("vit alik.eth", "ethereum").await.is_err());
+    let ton_elsewhere = resolve("foundation.ton", "base").await.unwrap_err();
+    assert!(
+        ton_elsewhere.to_string().contains("TON name"),
+        "{ton_elsewhere}"
+    );
     assert!(matches!(
         resolve("vitalik.eth", "polygon").await,
         Err(EngineError::UnknownNetwork)

@@ -311,6 +311,15 @@ impl AnyChain {
         }
     }
 
+    pub(crate) async fn dns_address(&self, name: &str) -> Result<Option<Address>, ChainError> {
+        match self {
+            Self::Ton(chain) => shielded(chain.dns_address(name)).await,
+            Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("TON names outside TON"))
+            }
+        }
+    }
+
     pub(crate) async fn receive_address(&self, address: &Address) -> Result<Address, ChainError> {
         match self {
             Self::Bitcoin(chain) => shielded(chain.receive_address(address)).await,

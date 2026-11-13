@@ -18,5 +18,5 @@ mod vm;
 mod wallet;
 
 pub use body::Body;
-pub use chain::{TonCall, TonChain, TonPlan};
+pub use chain::{TonCall, TonChain, TonPlan, dns_normalize};
 pub use comment::read_comment;

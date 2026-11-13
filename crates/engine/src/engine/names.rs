@@ -13,6 +13,7 @@ const BITCOIN: u64 = 0;
 const SOLANA: u64 = 501;
 const TRON: u64 = 195;
 const TRON_PREFIX: u8 = 0x41;
+const TON_ENDINGS: [&str; 2] = [".ton", ".t.me"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
@@ -24,12 +25,17 @@ pub struct Resolved {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NameService {
     Ens,
+    TonDns,
+}
+
+enum Lookup {
+    Ens { ethereum: usize, coins: Vec<u64> },
+    TonDns { ton: usize },
 }
 
 impl Worker {
     pub(super) fn resolve_name(&self, name: &str, network: &NetworkId, reply: Reply<Resolved>) {
-        let found = self.name_target(name, network);
-        let (target, coins, ethereum, name) = match found {
+        let (lookup, target, name) = match self.name_lookup(name, network) {
             Ok(found) => found,
             Err(err) => {
                 let _ = reply.send(Err(err));
@@ -38,25 +44,63 @@ impl Worker {
         };
         let chains = Arc::clone(&self.chains);
         tokio::spawn(async move {
-            let result = ens(&chains[ethereum], &target, &coins, name).await;
+            let result = match lookup {
+                Lookup::Ens { ethereum, coins } => {
+                    ens(&chains[ethereum], &target, &coins, name).await
+                }
+                Lookup::TonDns { ton } => ton_dns(&chains[ton], name).await,
+            };
             let _ = reply.send(result.map_err(EngineError::from));
         });
     }
 
-    fn name_target(
+    fn name_lookup(
         &self,
         name: &str,
         network: &NetworkId,
-    ) -> Result<(Network, Vec<u64>, usize, String), EngineError> {
-        let target = self
+    ) -> Result<(Lookup, Network, String), EngineError> {
+        let index = self
             .chain_index(network)
-            .map(|index| self.chains[index].network().clone())
             .ok_or(EngineError::UnknownNetwork)?;
-        let coins = coin_types(&target).ok_or(ChainError::Unsupported("names yet"))?;
-        let ethereum = chains::ethereum_mainnet(&self.chains)
-            .ok_or(ChainError::Unsupported("names without Ethereum"))?;
-        Ok((target, coins, ethereum, bahaa_evm::ens_normalize(name)?))
+        let target = self.chains[index].network().clone();
+        let lower = name.trim().to_ascii_lowercase();
+        let ton_name = TON_ENDINGS.iter().any(|ending| lower.ends_with(ending));
+        match (ton_name, target.family() == ChainFamily::Ton) {
+            (true, true) => Ok((
+                Lookup::TonDns { ton: index },
+                target,
+                bahaa_ton::dns_normalize(name)?,
+            )),
+            (true, false) => Err(ChainError::Invalid(
+                "this is a TON name, it only points to TON addresses",
+            )
+            .into()),
+            (false, true) => {
+                Err(ChainError::Unsupported("names other than .ton and .t.me on TON").into())
+            }
+            (false, false) => {
+                let coins = coin_types(&target).ok_or(ChainError::Unsupported("names yet"))?;
+                let ethereum = chains::ethereum_mainnet(&self.chains)
+                    .ok_or(ChainError::Unsupported("names without Ethereum"))?;
+                Ok((
+                    Lookup::Ens { ethereum, coins },
+                    target,
+                    bahaa_evm::ens_normalize(name)?,
+                ))
+            }
+        }
     }
+}
+
+async fn ton_dns(ton: &AnyChain, name: String) -> Result<Resolved, ChainError> {
+    let address = ton.dns_address(&name).await?.ok_or(ChainError::Invalid(
+        "this name has no address on this network",
+    ))?;
+    Ok(Resolved {
+        name,
+        address,
+        service: NameService::TonDns,
+    })
 }
 
 async fn ens(

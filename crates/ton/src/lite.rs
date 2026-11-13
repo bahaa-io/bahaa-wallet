@@ -19,7 +19,7 @@ use url::Url;
 
 use crate::blocks::{self, Trust};
 use crate::cells::{Account, account, account_at};
-use crate::fees::{Config, PARAMS};
+use crate::fees::{Config, PARAMS, Param};
 use crate::proof::{self, Proven};
 use crate::tl::{self, AccountState, Answer, BlockId, ConfigInfo};
 use crate::transaction::{self, MAX_LISTED, Transaction};
@@ -101,6 +101,24 @@ impl Lite {
             |last| tl::get_config_params(last, &PARAMS),
             tl::config_info,
             |last, info| proven_config(last, &info),
+        )
+        .await
+    }
+
+    pub(crate) async fn config_param(
+        &self,
+        config: &Url,
+        id: i32,
+    ) -> Result<Param, Failure<ChainError>> {
+        self.ask_at(
+            config,
+            |last| tl::get_config_params(last, &[id]),
+            tl::config_info,
+            |last, info| {
+                proven_params(last, &info, &[id])?
+                    .pop()
+                    .ok_or_else(|| Failure::retry("a liteserver left out a config parameter"))
+            },
         )
         .await
     }
@@ -590,11 +608,19 @@ pub(crate) fn proven_config(
     last: &BlockId,
     info: &ConfigInfo,
 ) -> Result<Config, Failure<ChainError>> {
+    Config::new(proven_params(last, info, &PARAMS)?)
+        .ok_or_else(|| Failure::retry("a liteserver sent a config proof that does not hold"))
+}
+
+fn proven_params(
+    last: &BlockId,
+    info: &ConfigInfo,
+    ids: &[i32],
+) -> Result<Vec<Param>, Failure<ChainError>> {
     if info.block != *last {
         return Err(Failure::retry("a liteserver answered for another block"));
     }
-    proof::config(last, &info.state_proof, &info.config_proof, &PARAMS)
-        .and_then(Config::new)
+    proof::config(last, &info.state_proof, &info.config_proof, ids)
         .ok_or_else(|| Failure::retry("a liteserver sent a config proof that does not hold"))
 }
 

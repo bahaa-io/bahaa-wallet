@@ -12,6 +12,7 @@ use ed25519_dalek::SigningKey;
 use ruint::aliases::U256;
 
 mod calls;
+mod dns;
 mod incoming;
 mod nfts;
 mod send;
@@ -19,6 +20,7 @@ mod tokens;
 mod track;
 
 pub use calls::TonCall;
+pub use dns::normalize as dns_normalize;
 pub use send::TonPlan;
 
 use crate::http::{Http, Item};
@@ -341,6 +343,11 @@ pub(crate) fn block(checkpoint: &Checkpoint) -> BlockId {
         root_hash: checkpoint.root_hash,
         file_hash: checkpoint.file_hash,
     }
+}
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz_dns(data: &[u8]) {
+    dns::fuzz(data);
 }
 
 #[cfg(test)]

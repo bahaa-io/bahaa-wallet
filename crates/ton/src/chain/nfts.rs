@@ -80,7 +80,7 @@ impl TonChain {
         let initialized = match init {
             Item::Negative => true,
             Item::Num(flag) => !flag.is_zero(),
-            Item::Cell(_) => false,
+            Item::Cell(_) | Item::Null => false,
         };
         if !initialized || read_address(holder) != Some(*owner) {
             return Ok(None);
