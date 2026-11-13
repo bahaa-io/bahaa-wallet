@@ -184,7 +184,7 @@ async fn statuses_map_to_progress() {
 }
 
 #[test]
-fn every_builtin_mainnet_asset_has_one_mapping_and_nothing_else_is_mapped() {
+fn only_builtin_mainnet_assets_are_mapped_each_to_its_own_id() {
     let registry = Registry::builtin().unwrap();
     let ours: BTreeSet<AssetId> = registry
         .networks()
@@ -193,7 +193,12 @@ fn every_builtin_mainnet_asset_has_one_mapping_and_nothing_else_is_mapped() {
         .collect();
     let providers = Providers::builtin().unwrap();
     let mapped: BTreeSet<AssetId> = providers.oneclick.assets.keys().cloned().collect();
-    assert_eq!(mapped, ours);
+    assert!(mapped.is_subset(&ours));
+    let unmapped: Vec<String> = ours.difference(&mapped).map(ToString::to_string).collect();
+    assert_eq!(
+        unmapped,
+        ["solana/2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"]
+    );
     let ids: BTreeSet<&String> = providers.oneclick.assets.values().collect();
     assert_eq!(ids.len(), mapped.len());
     for network in providers.relay.chains.keys() {

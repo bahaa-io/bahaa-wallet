@@ -25,6 +25,8 @@ const FRIEND: &str = "2bUBiBNZyD29gP1oV6de7nxowMLoDBtopMMTGgMvjG5m";
 const SYSTEM: &str = "11111111111111111111111111111111";
 const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const USDT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+const PYUSD: &str = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
+const TOKEN_2022: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
 #[derive(Default)]
 struct Ledger {
@@ -35,11 +37,11 @@ fn account(lamports: u64) -> Value {
     json!({"lamports": lamports, "owner": SYSTEM, "executable": false, "data": ["", "base64"], "space": 0})
 }
 
-fn mint(decimals: u8) -> Value {
+fn mint(program: &str, decimals: u8) -> Value {
     let mut data = vec![0u8; 82];
     data[44] = decimals;
     data[45] = 1;
-    json!({"lamports": 1, "owner": TOKEN, "executable": false, "data": [STANDARD.encode(data), "base64"], "space": 82})
+    json!({"lamports": 1, "owner": program, "executable": false, "data": [STANDARD.encode(data), "base64"], "space": 82})
 }
 
 fn answer(ledger: &Mutex<Ledger>, call: &Value) -> Value {
@@ -55,7 +57,8 @@ fn answer(ledger: &Mutex<Ledger>, call: &Value) -> Value {
                 .map(|key| match key.as_str().unwrap() {
                     OWNER => account(1_250_000_000),
                     FRIEND => account(1),
-                    USDT | USDC => mint(6),
+                    USDT | USDC => mint(TOKEN, 6),
+                    PYUSD => mint(TOKEN_2022, 6),
                     _ => Value::Null,
                 })
                 .collect();

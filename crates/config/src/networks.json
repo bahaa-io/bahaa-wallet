@@ -819,6 +819,14 @@
         "decimals": 6,
         "price": "crypto/USDC",
         "color": "#3a86e0"
+      },
+      {
+        "contract": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "symbol": "PYUSD",
+        "name": "PayPal USD",
+        "decimals": 6,
+        "price": "crypto/PYUSD",
+        "color": "#3b6fef"
       }
     ],
     "collections": [
