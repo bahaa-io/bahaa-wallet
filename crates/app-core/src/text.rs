@@ -151,6 +151,10 @@ pub(crate) const TO: &str = "To";
 pub(crate) const FEE: &str = "Fee";
 pub(crate) const MOST_FEE: &str = "Most it can cost";
 pub(crate) const MEMO: &str = "Memo";
+pub(crate) const TOKEN_FEE: &str = "Token fee";
+pub(crate) const ARRIVES: &str = "They receive";
+pub(crate) const WITHHELD_NOTE: &str =
+    "This token keeps a fee from every transfer, so the recipient gets less than you send.";
 pub(crate) const TIME: &str = "Time";
 pub(crate) const TRANSACTION: &str = "Transaction";
 pub(crate) const COPY_ID: &str = "Copy transaction id";

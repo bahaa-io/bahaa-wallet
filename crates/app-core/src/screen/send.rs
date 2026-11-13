@@ -461,6 +461,14 @@ impl Send {
         if let Some(memo) = &transfer.memo {
             lines.push(line(text::MEMO, memo.clone()));
         }
+        let withheld = draft.fee.withheld();
+        if let Some(fee) = withheld {
+            let symbol = ctx.symbol(&transfer.asset);
+            lines.push(line(text::TOKEN_FEE, format::exact(fee, &symbol)));
+            if let Ok(arrives) = transfer.amount.checked_sub(fee) {
+                lines.push(line(text::ARRIVES, format::exact(arrives, &symbol)));
+            }
+        }
         lines.extend(fee_lines(&draft.fee, network, ctx));
         let left = remaining(draft, at, ctx.now);
         if ctx.data.settings.developer_mode {
@@ -487,6 +495,7 @@ impl Send {
             .iter()
             .map(|caution| note(Level::Warning, text::caution(caution, ctx)))
             .chain(kept_aside(&draft.transfer.from))
+            .chain(withheld.map(|_| note(Level::Info, text::WITHHELD_NOTE)))
             .collect();
         if let Some(how) = how {
             notes.push(note(Level::Info, text::replace_note(how)));
