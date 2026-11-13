@@ -105,6 +105,19 @@ async fn names_resolve_to_the_record_of_the_asked_network() {
         solana_elsewhere.to_string().contains("Solana name"),
         "{solana_elsewhere}"
     );
+    let bnb_elsewhere = resolve("spaceid.bnb", "ethereum").await.unwrap_err();
+    assert!(
+        bnb_elsewhere.to_string().contains("BNB Chain"),
+        "{bnb_elsewhere}"
+    );
+    assert!(matches!(
+        resolve("brad.crypto", "ethereum").await,
+        Err(EngineError::Chain(bahaa_engine::ChainError::Unsupported(_)))
+    ));
+    assert_eq!(
+        resolve("shop.travel", "ethereum").await.unwrap().service,
+        NameService::Ens
+    );
     let paused = resolve("bonfida.sol", "solana").await.unwrap_err();
     assert!(paused.to_string().contains(".sns"), "{paused}");
     assert!(matches!(

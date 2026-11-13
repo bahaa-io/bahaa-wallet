@@ -29,3 +29,52 @@ async fn live_ens_names_resolve_on_chain_and_off_chain() {
         None
     );
 }
+
+#[tokio::test]
+#[ignore = "talks to the real BNB Chain, Arbitrum, Polygon and Ethereum"]
+async fn live_space_id_and_unstoppable_names_resolve_only_while_held() {
+    let registry = Registry::builtin().unwrap();
+    let chain =
+        |id: &str| EvmChain::new(registry.get(&id.parse().unwrap()).unwrap().clone()).unwrap();
+    let hex = |bytes: [u8; 20]| bahaa_types::hex::encode(&bytes);
+    let spaceid = Some("b5932a6b7d50a966aec6c74c97385412fb497540".to_owned());
+    assert_eq!(
+        chain("bsc")
+            .space_id_address("spaceid.bnb")
+            .await
+            .unwrap()
+            .map(hex),
+        spaceid
+    );
+    assert_eq!(
+        chain("arbitrum")
+            .space_id_address("spaceid.arb")
+            .await
+            .unwrap()
+            .map(hex),
+        spaceid
+    );
+    assert_eq!(
+        chain("arbitrum")
+            .space_id_address("doge.arb")
+            .await
+            .unwrap(),
+        None
+    );
+    let polygon = chain("polygon");
+    assert_eq!(
+        polygon
+            .unstoppable_address("brad.crypto", "BTC", "BTC")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("bc1q359khn0phg58xgezyqsuuaha28zkwx047c0c3y")
+    );
+    assert_eq!(
+        polygon
+            .unstoppable_address("zz-nothing-4417.crypto", "ETH", "ETH")
+            .await
+            .unwrap(),
+        None
+    );
+}

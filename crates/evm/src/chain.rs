@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 mod calls;
 mod ens;
 mod logs;
+mod names;
 mod nfts;
 mod replace;
 mod rollup;
@@ -22,6 +23,7 @@ mod watch;
 
 pub use calls::EvmCall;
 pub use ens::normalize as ens_normalize;
+pub use names::{space_id_home, unstoppable_chains, unstoppable_normalize};
 
 use crate::rpc::{Evm, Rpc, quantity};
 use crate::tx;
@@ -863,6 +865,7 @@ pub(crate) fn fuzz(value: &Value) {
 #[cfg(fuzzing)]
 pub(crate) fn fuzz_input(input: &[u8]) {
     ens::fuzz(input);
+    names::fuzz(input);
     let _ = memo(input);
 }
 

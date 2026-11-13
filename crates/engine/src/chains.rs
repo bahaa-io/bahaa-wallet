@@ -320,6 +320,31 @@ impl AnyChain {
         }
     }
 
+    pub(crate) async fn space_id_address(&self, name: &str) -> Result<Option<Address>, ChainError> {
+        match self {
+            Self::Evm(chain) => shielded(chain.space_id_address(name))
+                .await
+                .map(|found| found.map(Address::Evm)),
+            Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("SPACE ID names"))
+            }
+        }
+    }
+
+    pub(crate) async fn unstoppable_address(
+        &self,
+        name: &str,
+        network: &str,
+        token: &str,
+    ) -> Result<Option<String>, ChainError> {
+        match self {
+            Self::Evm(chain) => shielded(chain.unstoppable_address(name, network, token)).await,
+            Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("Unstoppable Domains names"))
+            }
+        }
+    }
+
     pub(crate) async fn sns_address(&self, name: &str) -> Result<Option<Address>, ChainError> {
         match self {
             Self::Solana(chain) => shielded(chain.sns_address(name)).await,
@@ -602,10 +627,10 @@ pub(crate) fn ton_mainnet(chains: &[AnyChain]) -> Option<&TonChain> {
     })
 }
 
-pub(crate) fn ethereum_mainnet(chains: &[AnyChain]) -> Option<usize> {
-    chains
-        .iter()
-        .position(|chain| matches!(chain.network().kind, ChainKind::Evm { chain_id: 1, .. }))
+pub(crate) fn evm_chain(chains: &[AnyChain], id: u64) -> Option<usize> {
+    chains.iter().position(
+        |chain| matches!(chain.network().kind, ChainKind::Evm { chain_id, .. } if chain_id == id),
+    )
 }
 
 pub(crate) fn solana_mainnet(chains: &[AnyChain]) -> Option<&SolanaChain> {

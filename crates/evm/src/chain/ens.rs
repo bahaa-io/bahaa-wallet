@@ -153,7 +153,7 @@ fn dns_encoded(name: &str) -> Result<Vec<u8>, ChainError> {
     Ok(encoded)
 }
 
-fn namehash(name: &str) -> [u8; 32] {
+pub(super) fn namehash(name: &str) -> [u8; 32] {
     name.rsplit('.').fold([0; 32], |node, label| {
         let mut joined = node.to_vec();
         joined.extend_from_slice(keccak256(label.as_bytes()).as_slice());
@@ -161,7 +161,7 @@ fn namehash(name: &str) -> [u8; 32] {
     })
 }
 
-fn selector(signature: &str) -> [u8; 4] {
+pub(super) fn selector(signature: &str) -> [u8; 4] {
     let hash = keccak256(signature.as_bytes());
     [hash[0], hash[1], hash[2], hash[3]]
 }

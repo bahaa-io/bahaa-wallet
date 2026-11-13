@@ -16,6 +16,8 @@ const TRON_PREFIX: u8 = 0x41;
 const TON_ENDINGS: [&str; 2] = [".ton", ".t.me"];
 const SNS_ENDING: &str = ".sns";
 const PAUSED_ENDING: &str = ".sol";
+const NO_ADDRESS: &str = "this name has no address on this network";
+const CANT_USE: &str = "this name points to an address this network can't use";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
@@ -29,12 +31,28 @@ pub enum NameService {
     Ens,
     TonDns,
     Sns,
+    SpaceId,
+    Unstoppable,
 }
 
 enum Lookup {
-    Ens { ethereum: usize, coins: Vec<u64> },
-    TonDns { ton: usize },
-    Sns { solana: usize },
+    Ens {
+        ethereum: usize,
+        coins: Vec<u64>,
+    },
+    TonDns {
+        ton: usize,
+    },
+    Sns {
+        solana: usize,
+    },
+    SpaceId {
+        chain: usize,
+    },
+    Unstoppable {
+        readers: Vec<usize>,
+        codes: (&'static str, &'static str),
+    },
 }
 
 impl Worker {
@@ -62,6 +80,14 @@ impl Worker {
                     name,
                     NameService::Sns,
                 ),
+                Lookup::SpaceId { chain } => native(
+                    chains[chain].space_id_address(&name).await,
+                    name,
+                    NameService::SpaceId,
+                ),
+                Lookup::Unstoppable { readers, codes } => {
+                    unstoppable(&chains, &readers, &target, codes, name).await
+                }
             };
             let _ = reply.send(result.map_err(EngineError::from));
         });
@@ -84,46 +110,50 @@ impl Worker {
             )
             .into());
         }
-        let native = if TON_ENDINGS.iter().any(|ending| lower.ends_with(ending)) {
-            Some(ChainFamily::Ton)
-        } else if lower.ends_with(SNS_ENDING) {
-            Some(ChainFamily::Solana)
-        } else {
-            None
-        };
-        match native {
-            Some(ChainFamily::Ton) if family == ChainFamily::Ton => Ok((
-                Lookup::TonDns { ton: index },
-                target,
-                bahaa_ton::dns_normalize(name)?,
-            )),
-            Some(ChainFamily::Solana) if family == ChainFamily::Solana && !target.testnet => Ok((
-                Lookup::Sns { solana: index },
-                target,
-                bahaa_solana::sns_normalize(name)?,
-            )),
-            Some(ChainFamily::Ton) => Err(ChainError::Invalid(
-                "this is a TON name, it only points to TON addresses",
-            )
-            .into()),
-            Some(_) => Err(ChainError::Invalid(
-                "this is a Solana name, it only points to Solana mainnet addresses",
-            )
-            .into()),
-            None if family == ChainFamily::Ton => {
-                Err(ChainError::Unsupported("names other than .ton and .t.me on TON").into())
+        if TON_ENDINGS.iter().any(|ending| lower.ends_with(ending)) {
+            if family != ChainFamily::Ton {
+                return Err(ChainError::Invalid(
+                    "this is a TON name, it only points to TON addresses",
+                )
+                .into());
             }
-            None => {
-                let coins = coin_types(&target).ok_or(ChainError::Unsupported("names yet"))?;
-                let ethereum = chains::ethereum_mainnet(&self.chains)
-                    .ok_or(ChainError::Unsupported("names without Ethereum"))?;
-                Ok((
-                    Lookup::Ens { ethereum, coins },
-                    target,
-                    bahaa_evm::ens_normalize(name)?,
-                ))
-            }
+            let name = bahaa_ton::dns_normalize(name)?;
+            return Ok((Lookup::TonDns { ton: index }, target, name));
         }
+        if lower.ends_with(SNS_ENDING) {
+            if family != ChainFamily::Solana || target.testnet {
+                return Err(ChainError::Invalid(
+                    "this is a Solana name, it only points to Solana mainnet addresses",
+                )
+                .into());
+            }
+            let name = bahaa_solana::sns_normalize(name)?;
+            return Ok((Lookup::Sns { solana: index }, target, name));
+        }
+        if let Some((home, elsewhere)) = bahaa_evm::space_id_home(&lower) {
+            if !matches!(target.kind, ChainKind::Evm { chain_id, .. } if chain_id == home) {
+                return Err(ChainError::Invalid(elsewhere).into());
+            }
+            let name = bahaa_evm::ens_normalize(name)?;
+            return Ok((Lookup::SpaceId { chain: index }, target, name));
+        }
+        if let Some(homes) = bahaa_evm::unstoppable_chains(&lower) {
+            let codes = unstoppable_codes(&target).ok_or(ChainError::Unsupported("names yet"))?;
+            let readers = homes
+                .iter()
+                .map(|home| chains::evm_chain(&self.chains, *home))
+                .collect::<Option<Vec<_>>>()
+                .ok_or(ChainError::Unsupported(
+                    "names without Polygon, Ethereum and Base",
+                ))?;
+            let name = bahaa_evm::unstoppable_normalize(name)?;
+            return Ok((Lookup::Unstoppable { readers, codes }, target, name));
+        }
+        let coins = coin_types(&target).ok_or(ChainError::Unsupported("ENS names"))?;
+        let ethereum = chains::evm_chain(&self.chains, 1)
+            .ok_or(ChainError::Unsupported("names without Ethereum"))?;
+        let name = bahaa_evm::ens_normalize(name)?;
+        Ok((Lookup::Ens { ethereum, coins }, target, name))
     }
 }
 
@@ -132,9 +162,7 @@ fn native(
     name: String,
     service: NameService,
 ) -> Result<Resolved, ChainError> {
-    let address = found?.ok_or(ChainError::Invalid(
-        "this name has no address on this network",
-    ))?;
+    let address = found?.ok_or(ChainError::Invalid(NO_ADDRESS))?;
     Ok(Resolved {
         name,
         address,
@@ -150,9 +178,7 @@ async fn ens(
 ) -> Result<Resolved, ChainError> {
     for coin in coins {
         if let Some(bytes) = ethereum.ens_address(&name, *coin).await? {
-            let address = address_of(target, &bytes).ok_or(ChainError::Invalid(
-                "this name points to an address this network can't use",
-            ))?;
+            let address = address_of(target, &bytes).ok_or(ChainError::Invalid(CANT_USE))?;
             return Ok(Resolved {
                 name,
                 address,
@@ -160,9 +186,57 @@ async fn ens(
             });
         }
     }
-    Err(ChainError::Invalid(
-        "this name has no address on this network",
-    ))
+    Err(ChainError::Invalid(NO_ADDRESS))
+}
+
+async fn unstoppable(
+    chains: &[AnyChain],
+    readers: &[usize],
+    target: &Network,
+    (network, token): (&str, &str),
+    name: String,
+) -> Result<Resolved, ChainError> {
+    for reader in readers {
+        if let Some(text) = chains[*reader]
+            .unstoppable_address(&name, network, token)
+            .await?
+        {
+            let address = Address::parse(target.family(), &text)
+                .ok()
+                .filter(|address| !matches!(address, Address::Bitcoin { testnet: true, .. }))
+                .ok_or(ChainError::Invalid(CANT_USE))?;
+            return Ok(Resolved {
+                name,
+                address,
+                service: NameService::Unstoppable,
+            });
+        }
+    }
+    Err(ChainError::Invalid(NO_ADDRESS))
+}
+
+fn unstoppable_codes(network: &Network) -> Option<(&'static str, &'static str)> {
+    if network.testnet {
+        return None;
+    }
+    Some(match network.kind {
+        ChainKind::Evm { chain_id: 1, .. } => ("ETH", "ETH"),
+        ChainKind::Evm { chain_id: 10, .. } => ("OP", "ETH"),
+        ChainKind::Evm { chain_id: 56, .. } => ("BSC", "BNB"),
+        ChainKind::Evm { chain_id: 137, .. } => ("MATIC", "POL"),
+        ChainKind::Evm { chain_id: 8453, .. } => ("BASE", "ETH"),
+        ChainKind::Evm {
+            chain_id: 42_161, ..
+        } => ("ARB1", "ETH"),
+        ChainKind::Evm {
+            chain_id: 43_114, ..
+        } => ("AVAX", "AVAX"),
+        ChainKind::Evm { .. } => return None,
+        ChainKind::Bitcoin { .. } => ("BTC", "BTC"),
+        ChainKind::Solana { .. } => ("SOL", "SOL"),
+        ChainKind::Tron { .. } => ("TRX", "TRX"),
+        ChainKind::Ton { .. } => ("TON", "TON"),
+    })
 }
 
 fn coin_types(network: &Network) -> Option<Vec<u64>> {

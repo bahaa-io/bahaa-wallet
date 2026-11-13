@@ -18,6 +18,12 @@ pub struct NftMove {
     pub units: U256,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum Arg<'a> {
+    Uint(U256),
+    Bytes(&'a [u8]),
+}
+
 pub const TRANSFER_EVENT: &str = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
 pub fn transfer_data(to: &[u8; 20], units: U256) -> Vec<u8> {
@@ -126,19 +132,27 @@ pub fn push_uint(data: &mut Vec<u8>, value: U256) {
     data.extend_from_slice(&value.to_be_bytes::<WORD>());
 }
 
+pub fn encode(args: &[Arg<'_>]) -> Vec<u8> {
+    let mut head = Vec::with_capacity(args.len() * WORD);
+    let mut tail = Vec::new();
+    for arg in args {
+        match arg {
+            Arg::Uint(value) => push_uint(&mut head, *value),
+            Arg::Bytes(bytes) => {
+                push_uint(&mut head, U256::from(args.len() * WORD + tail.len()));
+                push_uint(&mut tail, U256::from(bytes.len()));
+                tail.extend_from_slice(bytes);
+                tail.resize(tail.len() + padded(bytes.len()) - bytes.len(), 0);
+            }
+        }
+    }
+    head.extend(tail);
+    head
+}
+
 pub fn encode_bytes(items: &[&[u8]]) -> Vec<u8> {
-    let mut data = Vec::new();
-    let mut offset = items.len() * WORD;
-    for item in items {
-        push_uint(&mut data, U256::from(offset));
-        offset += WORD + padded(item.len());
-    }
-    for item in items {
-        push_uint(&mut data, U256::from(item.len()));
-        data.extend_from_slice(item);
-        data.resize(data.len() + padded(item.len()) - item.len(), 0);
-    }
-    data
+    let args: Vec<Arg<'_>> = items.iter().map(|item| Arg::Bytes(item)).collect();
+    encode(&args)
 }
 
 pub fn push_bytes_list(data: &mut Vec<u8>, items: &[Vec<u8>]) {
@@ -229,6 +243,21 @@ mod tests {
             id: U256::from(4_901u32),
             units: U256::from(units),
         }
+    }
+
+    #[test]
+    fn mixed_arguments_put_numbers_in_place_and_bytes_at_the_end() {
+        let mut expected = [word(0x60), word(0xa0), word(7)].concat();
+        expected.extend(encoded("ETH")[WORD..].to_vec());
+        expected.extend(encoded("BTC")[WORD..].to_vec());
+        assert_eq!(
+            encode(&[
+                Arg::Bytes(b"ETH"),
+                Arg::Bytes(b"BTC"),
+                Arg::Uint(U256::from(7))
+            ]),
+            expected
+        );
     }
 
     #[test]
