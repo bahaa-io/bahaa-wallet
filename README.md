@@ -58,7 +58,7 @@ Your wallets and settings are kept.
 | Optimism | ETH | USDT, USDC |
 | Tron | TRX | USDT |
 | TON | GRAM | USDT |
-| Solana | SOL | USDT, USDC |
+| Solana | SOL | USDT, USDC, PYUSD |
 | Bitcoin | BTC | none |
 
 You can add any other token by its contract address. Test networks (BSC testnet, Tron Nile, TON testnet and Solana Devnet) are available too, hidden until you turn them on.
