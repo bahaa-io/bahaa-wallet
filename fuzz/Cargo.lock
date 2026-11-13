@@ -686,6 +686,7 @@ dependencies = [
  "bahaa-config",
  "bahaa-crypto",
  "bahaa-types",
+ "ens-normalize-rs",
  "futures-util",
  "reqwest",
  "ruint",
@@ -1784,6 +1785,23 @@ dependencies = [
  "rustversion",
  "scopeguard",
  "simdutf8",
+]
+
+[[package]]
+name = "ens-normalize-rs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c916b4f7647f93321222ec36a6c2c1d65bcd32a1e49fba804c010df681088c4"
+dependencies = [
+ "anyhow",
+ "itertools 0.13.0",
+ "lazy_static",
+ "serde",
+ "serde_json",
+ "serde_plain",
+ "serde_with",
+ "thiserror 2.0.21",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -3967,6 +3985,15 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_plain"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ce1fc6db65a611022b23a0dec6975d63fb80a302cb3388835ff02c097258d50"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

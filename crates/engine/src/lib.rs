@@ -30,8 +30,8 @@ pub use bahaa_vault::KdfParams;
 pub use caution::{Arrival, Caution};
 pub use engine::{
     Activity, ActivityKind, Collectible, Collectibles, Draft, DraftId, Engine, EngineConfig,
-    EngineError, Event, Fake, IncomingHistory, NftHealth, SendRequest, Spend, State, SwapDraft,
-    SwapId, SwapRequest, SwapReview, Unavailable,
+    EngineError, Event, Fake, IncomingHistory, NameService, NftHealth, Resolved, SendRequest,
+    Spend, State, SwapDraft, SwapId, SwapRequest, SwapReview, Unavailable,
 };
 
 pub mod swap {

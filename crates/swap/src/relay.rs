@@ -497,7 +497,10 @@ fn ton_message(data: &Value, request: &Request) -> Result<(Address, Vec<u8>), Sw
 #[cfg(fuzzing)]
 pub(crate) fn fuzz(data: &[u8]) {
     let _ = approved_spender(data, U256::from(1u8));
-    if let Some(units) = data.get(4..).and_then(|args| crate::abi::uint(args, 1)) {
+    if let Some(units) = data
+        .get(4..)
+        .and_then(|args| bahaa_chain::abi::uint(args, 1))
+    {
         let _ = approved_spender(data, units);
     }
 }

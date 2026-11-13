@@ -15,6 +15,7 @@ bahaa-chain.workspace = true
 bahaa-config.workspace = true
 bahaa-crypto.workspace = true
 bahaa-types.workspace = true
+ens-normalize-rs.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
 ruint.workspace = true

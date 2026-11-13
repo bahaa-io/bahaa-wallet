@@ -11,3 +11,4 @@ mod source;
 mod tx;
 
 pub use chain::{BitcoinCall, BitcoinChain, BitcoinPlan};
+pub use script::read as read_script;

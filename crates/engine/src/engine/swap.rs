@@ -810,7 +810,7 @@ impl Worker {
         let session = self.session;
         tokio::spawn(async move {
             let mut request = picked.request.clone();
-            let result = async {
+            let result = Box::pin(async {
                 let chain = &chains[picked.chain];
                 let now = bahaa_chain::now();
                 let (mut route, mut order) = swappers.order(&picked, chain, now).await?;
@@ -876,7 +876,7 @@ impl Worker {
                     steps: Vec::new(),
                     checked: false,
                 })
-            }
+            })
             .await;
             let ordered = SwapOrdered {
                 session,

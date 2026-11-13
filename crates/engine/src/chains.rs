@@ -8,7 +8,7 @@ use bahaa_chain::{
     Movement, PlannedCall, Replace, ScanCursor, Scanned, Signed, Speed, Transfer, TxId, TxStatus,
     Watch,
 };
-use bahaa_config::{Coin, Feature, Network, Registry};
+use bahaa_config::{ChainKind, Coin, Feature, Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmCall, EvmChain, EvmPlan};
 use bahaa_solana::{SolanaCall, SolanaChain, SolanaPlan};
@@ -298,6 +298,19 @@ impl AnyChain {
         }
     }
 
+    pub(crate) async fn ens_address(
+        &self,
+        name: &str,
+        coin: u64,
+    ) -> Result<Option<Vec<u8>>, ChainError> {
+        match self {
+            Self::Evm(chain) => shielded(chain.ens_address(name, coin)).await,
+            Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("ENS names outside Ethereum"))
+            }
+        }
+    }
+
     pub(crate) async fn receive_address(&self, address: &Address) -> Result<Address, ChainError> {
         match self {
             Self::Bitcoin(chain) => shielded(chain.receive_address(address)).await,
@@ -569,6 +582,12 @@ pub(crate) fn ton_mainnet(chains: &[AnyChain]) -> Option<&TonChain> {
         AnyChain::Ton(ton) if !ton.network().testnet => Some(&**ton),
         _ => None,
     })
+}
+
+pub(crate) fn ethereum_mainnet(chains: &[AnyChain]) -> Option<usize> {
+    chains
+        .iter()
+        .position(|chain| matches!(chain.network().kind, ChainKind::Evm { chain_id: 1, .. }))
 }
 
 pub(crate) fn solana_mainnet(chains: &[AnyChain]) -> Option<&SolanaChain> {

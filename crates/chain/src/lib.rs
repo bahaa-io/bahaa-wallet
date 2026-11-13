@@ -1,4 +1,4 @@
-mod abi;
+pub mod abi;
 mod chain;
 mod clock;
 mod details;

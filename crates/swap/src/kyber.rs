@@ -8,11 +8,11 @@ use ruint::aliases::U256;
 use serde_json::json;
 use url::Url;
 
-use crate::abi;
 use crate::config::KyberConfig;
 use crate::order::{Contract, Order, Provider, QUOTE_LIFE, Request, SwapError};
 use crate::reply::{fetch, unreadable};
 use crate::route::{Method, Route};
+use bahaa_chain::abi;
 
 const SWAP: [u8; 4] = [0xe2, 0x1f, 0xd0, 0xe9];
 const NATIVE: [u8; 20] = [0xee; 20];

@@ -54,6 +54,19 @@ impl<D: Dialect> JsonRpc<D> {
         Ok(self
             .pool
             .call(need, |endpoint| {
+                self.settled(endpoint, method, params.clone())
+            })
+            .await?)
+    }
+
+    pub async fn answer(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<Result<Value, Value>, ChainError> {
+        Ok(self
+            .pool
+            .call(None, |endpoint| {
                 self.attempt(endpoint, method, params.clone())
             })
             .await?)
@@ -68,7 +81,7 @@ impl<D: Dialect> JsonRpc<D> {
         match self
             .pool
             .call(Some(need), |endpoint| {
-                self.attempt(endpoint, method, params.clone())
+                self.settled(endpoint, method, params.clone())
             })
             .await
         {
@@ -89,10 +102,21 @@ impl<D: Dialect> JsonRpc<D> {
         Ok(self
             .pool
             .call_all(need, |endpoint| {
-                let attempt = self.attempt(endpoint, method, params.clone());
+                let attempt = self.settled(endpoint, method, params.clone());
                 async move { judge(attempt.await) }
             })
             .await?)
+    }
+
+    async fn settled(
+        &self,
+        endpoint: Endpoint,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, Failure<ChainError>> {
+        self.attempt(endpoint, method, params)
+            .await?
+            .map_err(|error| self.dialect.classify(&error))
     }
 
     async fn attempt(
@@ -100,7 +124,7 @@ impl<D: Dialect> JsonRpc<D> {
         endpoint: Endpoint,
         method: &str,
         params: Value,
-    ) -> Result<Value, Failure<ChainError>> {
+    ) -> Result<Result<Value, Value>, Failure<ChainError>> {
         let key = endpoint.url.to_string();
         let refusal = (key.clone(), method.to_owned());
         if self.refused_recently(&refusal) {
@@ -118,7 +142,10 @@ impl<D: Dialect> JsonRpc<D> {
             );
             let _turn = turn.lock().await;
             if !self.is_verified(&key) {
-                let reply = self.send(&endpoint.url, D::CHECK, json!([])).await?;
+                let reply = self
+                    .send(&endpoint.url, D::CHECK, json!([]))
+                    .await?
+                    .map_err(|error| self.dialect.classify(&error))?;
                 self.dialect.check(&reply).map_err(Failure::Retry)?;
                 self.verified
                     .lock()
@@ -162,7 +189,7 @@ impl<D: Dialect> JsonRpc<D> {
         url: &Url,
         method: &str,
         params: Value,
-    ) -> Result<Value, Failure<ChainError>> {
+    ) -> Result<Result<Value, Value>, Failure<ChainError>> {
         let network = |text: String| Failure::Retry(ChainError::Network(text));
         let (status, body) = http::exchange(
             self.http
@@ -171,23 +198,24 @@ impl<D: Dialect> JsonRpc<D> {
         )
         .await?;
         let reply: Option<Value> = serde_json::from_slice(&body).ok();
-        let error = reply
-            .as_ref()
-            .and_then(|reply| reply.get("error"))
-            .map(|error| self.dialect.classify(error));
+        let error = reply.as_ref().and_then(|reply| reply.get("error"));
+        let failure = error.map(|error| self.dialect.classify(error));
         if !status.is_success() {
-            return Err(match error {
+            return Err(match failure {
                 Some(failure @ (Failure::Unsupported(_) | Failure::RateLimited(..))) => failure,
                 _ => network(format!("HTTP {status}")),
             });
         }
-        if let Some(failure) = error {
-            return Err(failure);
+        match (failure, error) {
+            (Some(Failure::Fatal(_)), Some(error)) => return Ok(Err(error.clone())),
+            (Some(failure), _) => return Err(failure),
+            (None, _) => {}
         }
         let reply = reply.ok_or_else(|| network("reply is not JSON".to_owned()))?;
         reply
             .get("result")
             .cloned()
+            .map(Ok)
             .ok_or_else(|| network("reply without a result".to_owned()))
     }
 }

@@ -42,6 +42,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 directories = "6.0.0"
 ed25519-dalek = "3.0.0"
+ens-normalize-rs = "0.2.0"
 futures-util = { version = "0.3.34", features = ["sink"] }
 getrandom = "0.4.3"
 hmac = "0.12.1"

@@ -8,11 +8,11 @@ use ruint::aliases::U256;
 use serde_json::Value;
 use url::Url;
 
-use crate::abi;
 use crate::config::AcrossConfig;
 use crate::order::{Contract, Order, Progress, Provider, QUOTE_LIFE, Request, SwapError};
 use crate::reply::{fetch, unreadable};
 use crate::route::{Charged, Cost, CostKind, Method, Route};
+use bahaa_chain::abi;
 
 const DEPOSIT: [u8; 4] = [0x7b, 0x93, 0x92, 0x32];
 const HEAD_WORDS: usize = 12;

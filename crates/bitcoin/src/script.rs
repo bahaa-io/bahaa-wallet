@@ -92,7 +92,7 @@ pub(crate) fn locking(script: BitcoinScript) -> Vec<u8> {
     }
 }
 
-pub(crate) fn read(script: &[u8]) -> Option<BitcoinScript> {
+pub fn read(script: &[u8]) -> Option<BitcoinScript> {
     match script {
         [DUP, HASH160, PUSH_20, hash @ .., EQUALVERIFY, CHECKSIG] => {
             Some(BitcoinScript::PubkeyHash(hash.try_into().ok()?))

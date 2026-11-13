@@ -2,6 +2,7 @@ mod accounts;
 mod activity;
 mod contacts;
 mod incoming;
+mod names;
 mod nfts;
 mod prices;
 mod send;
@@ -39,6 +40,7 @@ use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, 
 
 pub use activity::{Activity, ActivityKind};
 pub use incoming::IncomingHistory;
+pub use names::{NameService, Resolved};
 use nfts::Nfts;
 pub use nfts::{Collectible, Collectibles, Fake, NftHealth};
 use send::{Delivered, Prepared, Quoted};
@@ -162,6 +164,7 @@ enum Command {
     RemoveAccount(WalletId, u32, Reply<()>),
     Choose(WalletId, Choice, Reply<()>),
     ReceiveAddress(NetworkId, Address, Reply<Address>),
+    ResolveName(String, NetworkId, Reply<Resolved>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
     ChangePassword(SecretString, SecretString, Reply<()>),
     CheckPassword(SecretString, Reply<()>),
@@ -245,6 +248,7 @@ impl Command {
                 | Self::Cautions(..)
                 | Self::Tokens(_)
                 | Self::ReceiveAddress(..)
+                | Self::ResolveName(..)
                 | Self::Shutdown(_)
         )
     }
@@ -524,6 +528,15 @@ impl Engine {
         address: Address,
     ) -> Result<Address, EngineError> {
         self.ask(|reply| Command::ReceiveAddress(network, address, reply))
+            .await
+    }
+
+    pub async fn resolve_name(
+        &self,
+        name: String,
+        network: NetworkId,
+    ) -> Result<Resolved, EngineError> {
+        self.ask(|reply| Command::ResolveName(name, network, reply))
             .await
     }
 
@@ -875,6 +888,9 @@ impl Worker {
             Command::RemoveToken(asset, reply) => answer(reply, self.remove_token(&asset)),
             Command::ReceiveAddress(network, address, reply) => {
                 self.receive_address(&network, address, reply);
+            }
+            Command::ResolveName(name, network, reply) => {
+                self.resolve_name(&name, &network, reply);
             }
             Command::Touch | Command::Shutdown(_) => {}
             command @ (Command::Wallets(_)

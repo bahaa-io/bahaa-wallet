@@ -117,6 +117,83 @@ pub fn abi_text(data: &[u8]) -> Option<String> {
     abi_string(data, MAX_TEXT)
 }
 
+pub fn push_address(data: &mut Vec<u8>, address: &[u8; 20]) {
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(address);
+}
+
+pub fn push_uint(data: &mut Vec<u8>, value: U256) {
+    data.extend_from_slice(&value.to_be_bytes::<WORD>());
+}
+
+pub fn encode_bytes(items: &[&[u8]]) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut offset = items.len() * WORD;
+    for item in items {
+        push_uint(&mut data, U256::from(offset));
+        offset += WORD + padded(item.len());
+    }
+    for item in items {
+        push_uint(&mut data, U256::from(item.len()));
+        data.extend_from_slice(item);
+        data.resize(data.len() + padded(item.len()) - item.len(), 0);
+    }
+    data
+}
+
+pub fn push_bytes_list(data: &mut Vec<u8>, items: &[Vec<u8>]) {
+    push_uint(data, U256::from(items.len()));
+    let items: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();
+    data.extend(encode_bytes(&items));
+}
+
+pub fn uint(data: &[u8], index: usize) -> Option<U256> {
+    let start = index.checked_mul(WORD)?;
+    let word: [u8; WORD] = data.get(start..start.checked_add(WORD)?)?.try_into().ok()?;
+    Some(U256::from_be_bytes(word))
+}
+
+pub fn address(data: &[u8], index: usize) -> Option<[u8; 20]> {
+    let word = uint(data, index)?.to_be_bytes::<WORD>();
+    word[..12]
+        .iter()
+        .all(|byte| *byte == 0)
+        .then(|| word[12..].try_into().ok())
+        .flatten()
+}
+
+pub fn tail(data: &[u8], index: usize) -> Option<&[u8]> {
+    let offset = usize::try_from(uint(data, index)?).ok()?;
+    if offset % WORD != 0 {
+        return None;
+    }
+    data.get(offset..)
+}
+
+pub fn length(data: &[u8], index: usize) -> Option<usize> {
+    usize::try_from(uint(tail(data, index)?, 0)?).ok()
+}
+
+pub fn bytes_at(data: &[u8], index: usize) -> Option<&[u8]> {
+    let tail = tail(data, index)?;
+    let length = usize::try_from(uint(tail, 0)?).ok()?;
+    tail.get(WORD..WORD.checked_add(length)?)
+}
+
+pub fn bytes_list(data: &[u8], index: usize) -> Option<Vec<&[u8]>> {
+    let list = tail(data, index)?;
+    let count = usize::try_from(uint(list, 0)?).ok()?;
+    let body = list.get(WORD..)?;
+    if count > body.len() / WORD {
+        return None;
+    }
+    (0..count).map(|item| bytes_at(body, item)).collect()
+}
+
+fn padded(length: usize) -> usize {
+    length.div_ceil(WORD) * WORD
+}
+
 fn small(word: &[u8]) -> Option<usize> {
     let (high, low) = word.split_at(WORD - 8);
     if high.iter().any(|byte| *byte != 0) {

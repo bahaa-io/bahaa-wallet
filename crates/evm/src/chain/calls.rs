@@ -673,7 +673,7 @@ fn merged(lines: Vec<(FeeItem, U256)>) -> Result<Vec<(FeeItem, U256)>, ChainErro
     Ok(merged)
 }
 
-fn bytes_of(value: &Value) -> Result<Vec<u8>, ChainError> {
+pub(super) fn bytes_of(value: &Value) -> Result<Vec<u8>, ChainError> {
     value
         .as_str()
         .and_then(|text| text.strip_prefix("0x"))
