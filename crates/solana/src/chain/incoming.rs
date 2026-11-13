@@ -190,7 +190,7 @@ impl SolanaChain {
                 json!([id.as_str(), {
                     "encoding": "base64",
                     "commitment": "finalized",
-                    "maxSupportedTransactionVersion": 0
+                    "maxSupportedTransactionVersion": 1
                 }]),
             )
             .await?;
@@ -454,7 +454,7 @@ mod tests {
 
     fn id(found: &Value) -> TxId {
         let raw = rpc::encoded(&found["transaction"]).unwrap();
-        tx::id(&tx::read(&raw).unwrap().signatures[0]).unwrap()
+        tx::id(&tx::read_any(&raw).unwrap().signatures[0]).unwrap()
     }
 
     #[test]
@@ -577,5 +577,32 @@ mod tests {
         assert!(listed(&json!({})).is_err());
         let long: Vec<Value> = (0..=PAGE).map(|_| page[0].clone()).collect();
         assert!(listed(&json!(long)).is_err());
+    }
+
+    #[test]
+    fn a_version_1_transaction_reads_like_any_other() {
+        let found = recorded("v1");
+        let (received, moved) = movement(
+            &found,
+            &solana("4gpafHuFrZxLHXiy7sqpAeg2WVeyXzX898MKF4q5PhYP"),
+            &history(
+                "3TziWHWUMA2YAERkCoWxwE6vVguoRp5RakSmYnfEoDVv",
+                Some("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"),
+            ),
+            &id(&found),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(received);
+        assert_eq!(moved.amount.to_string(), "0.010572");
+        assert_eq!(
+            moved.from,
+            Address::Solana(solana("9Vh6fqJjDkqSTZ8bDXseVxGb2yQEMkEhhtte2anQCHSf"))
+        );
+        assert_eq!(
+            moved.id.as_str(),
+            "5MNxN8ndh3XbtieZsBbStsc5f57r2LE72zCRBNAwu7SyMzQGMTD7oN4Xf6J9wq3AMXU9Yuz7AEPdcpTTV17QuvB3"
+        );
+        assert_eq!(moved.block, 468_944_673);
     }
 }

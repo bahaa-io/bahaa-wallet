@@ -6,6 +6,10 @@ pub(crate) type Key = [u8; 32];
 pub(crate) const MAX_TX: usize = 1232;
 const SIGNATURE: usize = 64;
 const VERSIONED: u8 = 0x80;
+const V1: u8 = 0x81;
+const MAX_V1: usize = 4096;
+const MAX_V1_ITEMS: u8 = 64;
+const V1_CONFIG: u32 = 0b1_1111;
 const MAX_LEN: usize = 0xffff;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,8 +207,71 @@ pub(crate) fn read(bytes: &[u8]) -> Option<Wire<'_>> {
     })
 }
 
+pub(crate) fn read_any(bytes: &[u8]) -> Option<Wire<'_>> {
+    if bytes.first() == Some(&V1) {
+        read_v1(bytes)
+    } else {
+        read(bytes)
+    }
+}
+
+fn read_v1(bytes: &[u8]) -> Option<Wire<'_>> {
+    if bytes.len() > MAX_V1 {
+        return None;
+    }
+    let mut reader = Reader(bytes);
+    if reader.byte()? != V1 {
+        return None;
+    }
+    let header: [u8; 3] = reader.array()?;
+    let mask = u32::from_le_bytes(reader.array()?);
+    if header[0] == 0 || mask & !V1_CONFIG != 0 {
+        return None;
+    }
+    let blockhash = reader.array()?;
+    let (count, addresses) = (reader.byte()?, reader.byte()?);
+    if count > MAX_V1_ITEMS || addresses > MAX_V1_ITEMS {
+        return None;
+    }
+    let mut keys = Vec::new();
+    for _ in 0..addresses {
+        keys.push(reader.array()?);
+    }
+    reader.take(4 * usize::try_from(mask.count_ones()).ok()?)?;
+    let mut sizes = Vec::new();
+    for _ in 0..count {
+        let program = reader.byte()?;
+        let accounts = reader.byte()?;
+        let data = u16::from_le_bytes(reader.array()?);
+        sizes.push((program, usize::from(accounts), usize::from(data)));
+    }
+    let mut instructions = Vec::new();
+    for (program, accounts, data) in sizes {
+        instructions.push(Compiled {
+            program,
+            accounts: reader.take(accounts)?.to_vec(),
+            data: reader.take(data)?.to_vec(),
+        });
+    }
+    let message = &bytes[..bytes.len() - reader.0.len()];
+    let mut signatures = Vec::new();
+    for _ in 0..header[0] {
+        signatures.push(reader.array()?);
+    }
+    reader.0.is_empty().then_some(Wire {
+        signatures,
+        message,
+        versioned: true,
+        header,
+        keys,
+        blockhash,
+        instructions,
+        lookups: Vec::new(),
+    })
+}
+
 pub(crate) fn fetched<'a>(bytes: &'a [u8], id: &TxId) -> Result<Wire<'a>, ChainError> {
-    let wire = read(bytes).ok_or_else(ChainError::malformed)?;
+    let wire = read_any(bytes).ok_or_else(ChainError::malformed)?;
     if self::id(&wire.signatures[0])? != *id {
         return Err(ChainError::Network(
             "an endpoint answered for another transaction".to_owned(),
@@ -315,6 +382,7 @@ impl<'a> Reader<'a> {
 pub(crate) fn fuzz(data: &[u8]) {
     let _ = parse(data);
     let _ = read(data);
+    let _ = read_any(data);
 }
 
 #[cfg(test)]
@@ -454,5 +522,41 @@ mod tests {
         two[0] = 2;
         assert!(parse(&two).is_err());
         assert!(parse(&[]).is_err());
+    }
+
+    fn v1(mask: u32, addresses: u8, signatures: usize) -> Vec<u8> {
+        let mut bytes = vec![V1, 1, 0, 1];
+        bytes.extend_from_slice(&mask.to_le_bytes());
+        bytes.extend_from_slice(&[5; 32]);
+        bytes.extend_from_slice(&[1, addresses]);
+        for key in 0..addresses {
+            bytes.extend_from_slice(&[key; 32]);
+        }
+        bytes.extend(std::iter::repeat_n(
+            9,
+            4 * usize::try_from(mask.count_ones()).unwrap(),
+        ));
+        bytes.extend_from_slice(&[2, 2, 4, 0, 0, 1, 7, 7, 7, 7]);
+        bytes.extend(std::iter::repeat_n(3, 64 * signatures));
+        bytes
+    }
+
+    #[test]
+    fn version_1_transactions_carry_their_signatures_at_the_end() {
+        let bytes = v1(0b1111, 3, 1);
+        let wire = read_any(&bytes).unwrap();
+        assert_eq!(wire.keys, [[0; 32], [1; 32], [2; 32]]);
+        assert_eq!(wire.blockhash, [5; 32]);
+        assert_eq!(wire.signatures, [[3; 64]]);
+        assert_eq!(wire.message, &bytes[..bytes.len() - 64]);
+        assert_eq!(wire.instructions[0].program, 2);
+        assert_eq!(wire.instructions[0].accounts, [0, 1]);
+        assert_eq!(wire.instructions[0].data, [7; 4]);
+        assert!(read(&bytes).is_none());
+        assert!(read_any(&v1(0b10_0000, 3, 1)).is_none());
+        assert!(read_any(&v1(0, 65, 1)).is_none());
+        assert!(read_any(&v1(0, 3, 2)).is_none());
+        assert!(read_any(&v1(0, 3, 0)).is_none());
+        assert!(read_any(&v1(0b1_1111, 3, 1)).is_some());
     }
 }

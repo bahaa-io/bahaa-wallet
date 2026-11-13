@@ -483,7 +483,7 @@ impl SolanaChain {
                 json!([id.as_str(), {
                     "encoding": "base64",
                     "commitment": "confirmed",
-                    "maxSupportedTransactionVersion": 0
+                    "maxSupportedTransactionVersion": 1
                 }]),
             )
             .await?;
