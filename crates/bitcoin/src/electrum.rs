@@ -199,8 +199,10 @@ impl Electrum {
         self.batch(&calls, |answers| {
             let mut rates = answers
                 .into_iter()
-                .map(|answer| match answer {
+                .enumerate()
+                .map(|(at, answer)| match answer {
                     Ok(raw) => Ok(rate(raw.get(), SATS_PER_COIN)),
+                    Err(_) if (1..TARGETS.len()).contains(&at) => Ok(None),
                     Err(refusal) => Err(refusal.failure()),
                 })
                 .collect::<Result<Vec<_>, _>>()?;

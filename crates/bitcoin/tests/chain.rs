@@ -257,3 +257,23 @@ async fn a_taproot_account_follows_bip86_and_signs_with_schnorr() {
     forged.bytes[last] ^= 1;
     assert!(chain.decode(&forged).is_err());
 }
+
+#[tokio::test]
+async fn a_server_that_cannot_estimate_slow_targets_still_quotes() {
+    let mut ledger = funded();
+    ledger.unestimated = vec![72, 144];
+    let (chain, _, _) = started(ledger).await;
+    chain.derive(&seed(), 0).unwrap();
+    let (_, fee) = chain.prepare(&transfer("0.00025", false)).await.unwrap();
+    assert_eq!(fee.expected().to_string(), "0.00000282");
+    assert_eq!(fee.pace().wait, Some(Wait::About(1_200)));
+    let mut ledger = funded();
+    ledger.unestimated = vec![2];
+    let (chain, _, _) = started(ledger).await;
+    chain.derive(&seed(), 0).unwrap();
+    let failed = chain
+        .prepare(&transfer("0.00025", false))
+        .await
+        .unwrap_err();
+    assert!(failed.to_string().contains("cannot estimate"), "{failed}");
+}

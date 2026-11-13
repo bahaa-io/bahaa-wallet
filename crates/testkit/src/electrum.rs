@@ -118,6 +118,7 @@ pub struct Ledger {
     pub transactions: HashMap<String, String>,
     pub broadcast: Vec<String>,
     pub refusal: Option<String>,
+    pub unestimated: Vec<u64>,
     pub forge_proofs: bool,
     blocks: HashMap<String, u64>,
     headers: HashMap<u64, [u8; 80]>,
@@ -186,6 +187,9 @@ impl Ledger {
                 json!({"count": end.saturating_sub(start), "hex": hex::encode(&headers), "max": 2016})
             }
             "blockchain.transaction.get_merkle" => self.proof(&key, params[1].as_u64().unwrap()),
+            "blockchain.estimatefee" if self.unestimated.contains(&params[0].as_u64().unwrap()) => {
+                return Err(format!("cannot estimate fee for {} blocks", params[0]));
+            }
             "blockchain.estimatefee" => match params[0].as_u64().unwrap() {
                 0..=2 => serde_json::from_str("2e-05").unwrap(),
                 3..=6 => serde_json::from_str("1.2e-05").unwrap(),
