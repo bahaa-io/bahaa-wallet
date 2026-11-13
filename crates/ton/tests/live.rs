@@ -711,6 +711,14 @@ async fn live_ton_names_resolve_through_proven_dns() {
     );
     assert_eq!(
         chain
+            .dns_address("gosal.t.me")
+            .await
+            .unwrap()
+            .map(|address| address.to_string()),
+        Some("0:4bab343ae759aa67cfe7a0af4ab3d2258484fd593142c57e9cad3c064039f4dd".to_owned())
+    );
+    assert_eq!(
+        chain
             .dns_address("this-name-should-not-exist-4417.ton")
             .await
             .unwrap(),
