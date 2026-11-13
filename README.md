@@ -67,7 +67,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 
 - **Wallets:** create or import 12- and 24-word phrases, TON's own phrases, or a single private key for any network, with several wallets and accounts.
 - **Balances:** coins and tokens on every network, valued in USD, EUR or IRT.
-- **Bitcoin:** Native SegWit and Taproot, found from your phrase's history, with a fresh address for every payment.
+- **Bitcoin:** every address type (Legacy 1…, Nested SegWit 3…, Native SegWit and Taproot) and old uncompressed keys, found from your wallet's history, with a fresh address for every payment.
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
 - **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks and Bitcoin.
 - **Swaps:** swap coins and tokens on one network or across networks, through decentralized exchanges and keyless cross-network services. Every route is ranked by what you really receive, with the exact cost shown, and you can pick any of them. No app fee.
@@ -92,7 +92,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Some memos aren't shown:** on received Tron token transfers, and TON's encrypted comments.
 - **Speed up and cancel are EVM and Bitcoin only.** Tron, TON and Solana can't replace a sent transaction.
 - **Expected waits are estimates:** from the servers' fee estimates on Bitcoin, from typical block times elsewhere.
-- **Bitcoin:** Native SegWit and Taproot only (not older 1… and 3… wallets), no test network yet, and coins on the way count before their first block.
+- **Bitcoin:** one address type per wallet at a time, no test network yet, and coins on the way count before their first block.
 - **Small Taproot coins stay put:** Bitcoin coins of 10,000 sats or less on Taproot addresses are never spent, because they often carry Ordinals or Runes.
 - **Solana Token-2022 tokens** can't be added yet, only classic Solana tokens.
 - **EVM memos only go with coins** sent to a plain address. With tokens and contracts, they would break the call.
