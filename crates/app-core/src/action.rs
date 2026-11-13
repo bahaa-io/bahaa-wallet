@@ -194,6 +194,9 @@ pub enum Marking {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AddressType {
+    Legacy,
+    NestedSegwit,
     NativeSegwit,
     Taproot,
+    LegacyUncompressed,
 }

@@ -1,4 +1,6 @@
-use bahaa_engine::{BitcoinType, SolanaPath, TonContract, WalletId, WalletInfo, WalletKind};
+use bahaa_engine::{
+    BitcoinType, ChainFamily, SolanaPath, TonContract, WalletId, WalletInfo, WalletKind,
+};
 
 use super::{
     Screen, button, cell, choice, counted_toggle, group, hidden, input, line, wallet_kind,
@@ -55,8 +57,11 @@ impl Screen for Wallet {
             }
             Action::Pick(Pick::AddressType(kind)) => {
                 let kind = match kind {
+                    AddressType::Legacy => BitcoinType::Legacy,
+                    AddressType::NestedSegwit => BitcoinType::NestedSegwit,
                     AddressType::NativeSegwit => BitcoinType::NativeSegwit,
                     AddressType::Taproot => BitcoinType::Taproot,
+                    AddressType::LegacyUncompressed => BitcoinType::LegacyUncompressed,
                 };
                 return Reply::call(Call::SetBitcoinType(self.id, kind));
             }
@@ -311,16 +316,16 @@ impl Screen for Remove {
 }
 
 fn choices(wallet: &WalletInfo) -> Vec<Item> {
-    let pair = |label: &str, options: [(&str, Pick, bool); 2]| -> Item {
+    fn row<'a>(label: &str, options: impl IntoIterator<Item = (&'a str, Pick, bool)>) -> Item {
         let choices = options
             .into_iter()
             .map(|(text, pick, on)| choice(text, Action::Pick(pick), on))
             .collect();
         group(label, choices).into()
-    };
+    }
     let mut items = Vec::new();
     if let Some(contract) = wallet.ton {
-        items.push(pair(
+        items.push(row(
             text::TON_CONTRACT,
             [
                 (
@@ -337,7 +342,7 @@ fn choices(wallet: &WalletInfo) -> Vec<Item> {
         ));
     }
     if let Some(path) = wallet.solana {
-        items.push(pair(
+        items.push(row(
             text::SOLANA_PATH,
             [
                 (
@@ -354,23 +359,32 @@ fn choices(wallet: &WalletInfo) -> Vec<Item> {
         ));
     }
     if let Some(kind) = wallet.bitcoin {
-        items.push(pair(
+        let offered: &[BitcoinType] = if wallet.kind == WalletKind::Key(ChainFamily::Bitcoin) {
+            &BitcoinType::FOR_KEYS
+        } else {
+            &BitcoinType::FOR_PHRASES
+        };
+        items.push(row(
             text::BITCOIN_TYPE,
-            [
-                (
-                    text::NATIVE_SEGWIT,
-                    Pick::AddressType(AddressType::NativeSegwit),
-                    kind == BitcoinType::NativeSegwit,
-                ),
-                (
-                    text::TAPROOT,
-                    Pick::AddressType(AddressType::Taproot),
-                    kind == BitcoinType::Taproot,
-                ),
-            ],
+            offered.iter().map(|offer| {
+                let (label, pick) = address_type(*offer);
+                (label, Pick::AddressType(pick), kind == *offer)
+            }),
         ));
     }
     items
+}
+
+fn address_type(kind: BitcoinType) -> (&'static str, AddressType) {
+    match kind {
+        BitcoinType::Legacy => (text::LEGACY, AddressType::Legacy),
+        BitcoinType::NestedSegwit => (text::NESTED_SEGWIT, AddressType::NestedSegwit),
+        BitcoinType::NativeSegwit => (text::NATIVE_SEGWIT, AddressType::NativeSegwit),
+        BitcoinType::Taproot => (text::TAPROOT, AddressType::Taproot),
+        BitcoinType::LegacyUncompressed => {
+            (text::LEGACY_UNCOMPRESSED, AddressType::LegacyUncompressed)
+        }
+    }
 }
 
 fn reveal_label(kind: WalletKind) -> Option<&'static str> {
