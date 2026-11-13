@@ -118,6 +118,11 @@ async fn names_resolve_to_the_record_of_the_asked_network() {
         resolve("shop.travel", "ethereum").await.unwrap().service,
         NameService::Ens
     );
+    let bitcoin_elsewhere = resolve("matt@mattcorallo.com", "base").await.unwrap_err();
+    assert!(
+        bitcoin_elsewhere.to_string().contains("Bitcoin name"),
+        "{bitcoin_elsewhere}"
+    );
     let paused = resolve("bonfida.sol", "solana").await.unwrap_err();
     assert!(paused.to_string().contains(".sns"), "{paused}");
     assert!(matches!(

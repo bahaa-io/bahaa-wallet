@@ -1,7 +1,7 @@
 use bahaa_types::hex;
 use serde_json::Value;
 
-use crate::{chain, electrum, esplora, header, proof, script, source, tx};
+use crate::{chain, electrum, esplora, header, names, proof, script, source, tx};
 
 pub fn raw(bytes: &[u8]) {
     tx::fuzz(bytes);
@@ -9,6 +9,7 @@ pub fn raw(bytes: &[u8]) {
     let _ = tx::read_signature(bytes);
     script::fuzz(bytes);
     chain::fuzz(bytes);
+    names::fuzz(bytes);
 }
 
 pub fn json(bytes: &[u8]) {

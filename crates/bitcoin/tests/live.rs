@@ -154,3 +154,33 @@ async fn old_address_types_read_the_same_on_every_server_and_sign_locally() {
         assert_eq!(seen[0], seen[1]);
     }
 }
+
+#[tokio::test]
+#[ignore = "talks to real DNS-over-HTTPS servers"]
+async fn live_bip353_names_resolve_through_checked_dnssec() {
+    let chain = bahaa_bitcoin::BitcoinChain::new(
+        bahaa_config::Registry::builtin()
+            .unwrap()
+            .get(&"bitcoin".parse().unwrap())
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        chain
+            .bip353_address("\u{20bf}matt@mattcorallo.com")
+            .await
+            .unwrap()
+            .map(|address| address.to_string())
+            .as_deref(),
+        Some("bc1qztwy6xen3zdtt7z0vrgapmjtfz8acjkfp5fp7l")
+    );
+    assert_eq!(
+        chain
+            .bip353_address("nobody-here-zz@mattcorallo.com")
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(chain.bip353_address("test@github.com").await.is_err());
+}

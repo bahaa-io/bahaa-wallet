@@ -345,6 +345,15 @@ impl AnyChain {
         }
     }
 
+    pub(crate) async fn bip353_address(&self, name: &str) -> Result<Option<Address>, ChainError> {
+        match self {
+            Self::Bitcoin(chain) => shielded(chain.bip353_address(name)).await,
+            Self::Evm(_) | Self::Tron(_) | Self::Ton(_) | Self::Solana(_) => {
+                Err(ChainError::Unsupported("Bitcoin names outside Bitcoin"))
+            }
+        }
+    }
+
     pub(crate) async fn sns_address(&self, name: &str) -> Result<Option<Address>, ChainError> {
         match self {
             Self::Solana(chain) => shielded(chain.sns_address(name)).await,

@@ -33,6 +33,7 @@ pub enum NameService {
     Sns,
     SpaceId,
     Unstoppable,
+    Bip353,
 }
 
 enum Lookup {
@@ -48,6 +49,9 @@ enum Lookup {
     },
     SpaceId {
         chain: usize,
+    },
+    Bip353 {
+        bitcoin: usize,
     },
     Unstoppable {
         readers: Vec<usize>,
@@ -80,6 +84,11 @@ impl Worker {
                     name,
                     NameService::Sns,
                 ),
+                Lookup::Bip353 { bitcoin } => native(
+                    chains[bitcoin].bip353_address(&name).await,
+                    name,
+                    NameService::Bip353,
+                ),
                 Lookup::SpaceId { chain } => native(
                     chains[chain].space_id_address(&name).await,
                     name,
@@ -109,6 +118,16 @@ impl Worker {
                 "SNS has paused .sol names for now, use the .sns name",
             )
             .into());
+        }
+        if lower.contains('@') {
+            if family != ChainFamily::Bitcoin || target.testnet {
+                return Err(ChainError::Invalid(
+                    "this is a Bitcoin name, it only points to Bitcoin addresses",
+                )
+                .into());
+            }
+            let name = bahaa_bitcoin::bip353_normalize(name)?;
+            return Ok((Lookup::Bip353 { bitcoin: index }, target, name));
         }
         if TON_ENDINGS.iter().any(|ending| lower.ends_with(ending)) {
             if family != ChainFamily::Ton {

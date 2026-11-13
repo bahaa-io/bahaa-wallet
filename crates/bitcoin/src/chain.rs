@@ -6,7 +6,7 @@ use bahaa_chain::{
     Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Speed, Transfer, TxId,
     TxStatus, amount, on_network,
 };
-use bahaa_config::{ChainKind, Coin, Network};
+use bahaa_config::{ChainKind, Coin, Network, Protocol};
 use bahaa_crypto::{
     DerivationPath, SecretKey, Seed, SeedKind, compressed, secp256k1, secp256k1_extended,
 };
@@ -23,6 +23,7 @@ mod send;
 pub use calls::BitcoinCall;
 pub use send::BitcoinPlan;
 
+use crate::names::Resolver;
 use crate::proof::{ambiguous, unproven};
 use crate::script::{key_address, read};
 use crate::source::Sources;
@@ -34,6 +35,7 @@ use proven::Trusted;
 pub struct BitcoinChain {
     network: Network,
     sources: Sources,
+    names: Resolver,
     book: Mutex<Book>,
     trusted: Mutex<Trusted>,
     syncing: tokio::sync::Mutex<()>,
@@ -46,11 +48,26 @@ impl BitcoinChain {
         };
         Ok(Self {
             sources: Sources::new(&network, &genesis)?,
+            names: Resolver::new(
+                network
+                    .endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.protocol == Protocol::DnsOverHttps)
+                    .cloned()
+                    .collect(),
+            )?,
             network,
             book: Mutex::default(),
             trusted: Mutex::default(),
             syncing: tokio::sync::Mutex::new(()),
         })
+    }
+
+    pub async fn bip353_address(&self, name: &str) -> Result<Option<Address>, ChainError> {
+        if self.network.testnet {
+            return Err(ChainError::Unsupported("Bitcoin names"));
+        }
+        self.names.address(name, bahaa_chain::now()).await
     }
 
     pub fn forget(&self) {

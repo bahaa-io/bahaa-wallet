@@ -48,6 +48,7 @@ pub enum Protocol {
     SolanaRpc,
     Electrum,
     Esplora,
+    DnsOverHttps,
 }
 
 impl Protocol {
@@ -57,7 +58,7 @@ impl Protocol {
             Self::TronHttp => ChainFamily::Tron,
             Self::TonLiteservers | Self::TonCenter | Self::TonApi => ChainFamily::Ton,
             Self::SolanaRpc => ChainFamily::Solana,
-            Self::Electrum | Self::Esplora => ChainFamily::Bitcoin,
+            Self::Electrum | Self::Esplora | Self::DnsOverHttps => ChainFamily::Bitcoin,
         }
     }
 
@@ -836,7 +837,10 @@ mod tests {
                 Protocol::Electrum,
                 Protocol::Electrum,
                 Protocol::Esplora,
-                Protocol::Esplora
+                Protocol::Esplora,
+                Protocol::DnsOverHttps,
+                Protocol::DnsOverHttps,
+                Protocol::DnsOverHttps
             ]
         );
         let broken = |edit: &dyn Fn(&mut Value)| edited("bitcoin", edit).is_err();

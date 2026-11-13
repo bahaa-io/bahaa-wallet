@@ -933,6 +933,18 @@
           "history"
         ],
         "min_gap_ms": 5200
+      },
+      {
+        "protocol": "dns-over-https",
+        "url": "https://cloudflare-dns.com/dns-query"
+      },
+      {
+        "protocol": "dns-over-https",
+        "url": "https://dns.google/dns-query"
+      },
+      {
+        "protocol": "dns-over-https",
+        "url": "https://dns.quad9.net/dns-query"
       }
     ],
     "explorer": {
