@@ -70,6 +70,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Solana tokens:** classic and Token-2022, with amounts shown as the token defines them and any token fee shown before you send.
 - **Bitcoin:** every address type (Legacy 1…, Nested SegWit 3…, Native SegWit and Taproot) and old uncompressed keys, found from your wallet's history, with a fresh address for every payment.
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
+- **Names:** send to a name instead of an address: ENS (`name.eth` and DNS names), TON DNS (`name.ton`, `name.t.me`), SNS (`name.sns`), SPACE ID (`name.bnb`, `name.arb`), Unstoppable Domains (`name.crypto` and more) and `₿user@domain` on Bitcoin. The address is shown next to the name and looked up again right before you sign.
 - **Fee speeds:** on Bitcoin, EVM networks and Solana, pick Slow, Normal or Fast and see what each costs and how long it should take.
 - **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks and Bitcoin.
 - **Swaps:** swap coins and tokens on one network or across networks, through decentralized exchanges and keyless cross-network services. Every route is ranked by what you really receive, with the exact cost shown, and you can pick any of them. No app fee.
@@ -99,6 +100,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Small Taproot coins stay put:** Bitcoin coins of 10,000 sats or less on Taproot addresses are never spent, because they often carry Ordinals or Runes.
 - **Solana Token-2022:** tokens that run their own program on every transfer can't be sent yet, and private (confidential) balances aren't shown.
 - **EVM memos only go with coins** sent to a plain address. With tokens and contracts, they would break the call.
+- **Names point only to the network you send on:** a name with just an Ethereum address doesn't work on BNB Chain. `.sol` names wait until SNS switches them on (use `.sns`), Avvy (`.avax`) isn't supported, and the DNS server sees which `₿` name you look up.
 - **Only listed networks** for now, and values only for assets Bahaa prices.
 - **Public servers:** if a network's servers are down, that network pauses until they're back.
 - **Swaps across networks go through a provider:** it holds your coins for seconds to minutes and refunds you if it fails.
