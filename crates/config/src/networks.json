@@ -723,9 +723,9 @@
     "global_id": -239,
     "zero_state": "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321fb05569",
     "checkpoint": {
-      "seqno": 105065670,
-      "root_hash": "6fdb718f45f0a7d4ec136dbc6cf2b5b82432b590a12b713db760614095506444",
-      "file_hash": "854a7a217fffb5fe288de7d6f065d14029a6020f2282d5889171b5dec9443324"
+      "seqno": 105205336,
+      "root_hash": "7b1197be982c1151c9fb490e4557d8c4d35ba1a77a8b499229ab9ec5021fe215",
+      "file_hash": "4dd891fe07d94abc573a53b9f917bcd2e7d91270461c01ccc031774f4aa59c30"
     },
     "testnet": false,
     "native": {
@@ -1007,9 +1007,9 @@
     "global_id": -3,
     "zero_state": "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879e95a128",
     "checkpoint": {
-      "seqno": 97699574,
-      "root_hash": "cd4733b7c99d85e540b032979d7d4b36edde8e45bfe26036e3e53681d0743f6f",
-      "file_hash": "bf97d33c64025213f0acbfc859724a1e4da102ef56b2658e183faa9f5c4efa5b"
+      "seqno": 97708587,
+      "root_hash": "f92a4d48df0579d527b3b60328bdbaadfab2448eb119cc978ea09640e875fd05",
+      "file_hash": "d8bfca1aeacf14f42b6005e0bf9e49cf2b965ff43f54204122b953e42df716e3"
     },
     "testnet": true,
     "native": {
