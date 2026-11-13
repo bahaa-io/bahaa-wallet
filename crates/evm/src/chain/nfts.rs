@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use bahaa_chain::{
-    ChainError, Failure, FeeQuote, Found, NftMove, Pool, Transfer, abi_string, abi_text, amount,
-    enough, http, nft_transfer_data,
+    ChainError, Failure, FeeQuote, Found, NftMove, Pool, Speed, Transfer, abi_string, abi_text,
+    amount, enough, http, nft_transfer_data,
 };
 use bahaa_config::{Endpoint, Feature, Protocol};
 use bahaa_types::{
@@ -308,6 +308,7 @@ impl EvmChain {
     pub(super) async fn prepare_nft(
         &self,
         transfer: &Transfer,
+        speed: Speed,
     ) -> Result<(EvmPlan, FeeQuote), ChainError> {
         let nft = transfer.check_nft(&self.network.id)?;
         if transfer.memo.is_some() {
@@ -356,16 +357,16 @@ impl EvmChain {
             token: None,
             decimals: 0,
         };
-        let (tx, fees) = self
-            .priced_tx(&from, nonce, &route)
-            .await
-            .map_err(|err| match err {
-                ChainError::Rejected(_) => ChainError::Rejected(
-                    "the NFT contract refuses this transfer, the recipient may not accept NFTs"
-                        .to_owned(),
-                ),
-                other => other,
-            })?;
+        let (tx, fees) =
+            self.priced_tx(&from, nonce, &route, speed)
+                .await
+                .map_err(|err| match err {
+                    ChainError::Rejected(_) => ChainError::Rejected(
+                        "the NFT contract refuses this transfer, the recipient may not accept NFTs"
+                            .to_owned(),
+                    ),
+                    other => other,
+                })?;
         enough(
             &self.network.native.symbol,
             fees.max,

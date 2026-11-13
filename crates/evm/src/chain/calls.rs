@@ -130,13 +130,14 @@ impl EvmChain {
                 _ => Ok(U256::ZERO),
             }
         };
-        let (held, nonce, allowance, (base, tip)) = Box::pin(try_join4(
+        let (held, nonce, allowance, market) = Box::pin(try_join4(
             self.held(&from, token.as_ref()),
             self.nonce(&from),
             allowance,
             self.fees(),
         ))
         .await?;
+        let (base, tip) = market.normal();
         let pricing = Pricing::new(base, tip)?;
         let units = swap.amount.units();
         let native = (&self.network.native.symbol, self.network.native.decimals);
@@ -232,7 +233,7 @@ impl EvmChain {
                 "the approval this swap relied on is gone, get a new quote",
             ));
         }
-        let (base, _) = self.fees().await?;
+        let base = self.fees().await?.base;
         let first = plans.first().ok_or_else(ChainError::overflow)?;
         let pricing = Pricing {
             base,
@@ -455,7 +456,8 @@ impl EvmChain {
             let nothing = self.native(U256::ZERO)?;
             return Ok((Vec::new(), FeeQuote::new(nothing, nothing, Vec::new())?));
         }
-        let (gas, (base, tip)) = try_join(self.approval_gas(&from, &steps), self.fees()).await?;
+        let (gas, market) = try_join(self.approval_gas(&from, &steps), self.fees()).await?;
+        let (base, tip) = market.normal();
         let (plans, fees) = self
             .finish(steps, &gas, nonce, true, &Pricing::new(base, tip)?)
             .await?;

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use bahaa_chain::{ChainError, FeeItem, FeeLine, FeeQuote, Replace, Replaced, Signed, Transfer};
+use bahaa_chain::{
+    ChainError, FeeItem, FeeLine, FeeQuote, Replace, Replaced, Signed, Speed, Transfer,
+};
 use bahaa_types::{Address, AssetId};
 
 use super::account::{Coin, script};
@@ -42,7 +44,7 @@ impl BitcoinChain {
         let old_rate = old_fee.saturating_mul(1_000) / old.vsize().max(1);
         let estimates = self.sources.estimates().await?;
         let rate = estimates
-            .rate()
+            .rate(Speed::Fast)?
             .max(old_rate.saturating_mul(BUMP.0) / BUMP.1)
             .max(old_rate.saturating_add(STEP_PER_KVB));
         let bump = Bump {

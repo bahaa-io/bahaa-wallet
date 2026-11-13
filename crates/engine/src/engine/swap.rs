@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bahaa_chain::{ChainError, ContractSwap, FeeQuote, MAX_MEMO, Step, Transfer};
+use bahaa_chain::{ChainError, ContractSwap, FeeQuote, MAX_MEMO, Speed, Step, Transfer};
 use bahaa_store::{SentStatus, SentTx, SwapRecord, SwapStatus};
 use bahaa_swap::{
     Across, Chainflip, Charged, Circle, Comment, Cost, CostKind, Cow, Jupiter, KyberSwap, OneClick,
@@ -26,6 +26,7 @@ const STAND_IN: [u8; 32] = [
     0x72, 0x8b, 0xc5, 0xc0, 0x15, 0xcd, 0x52, 0xd2, 0xea, 0xa5, 0xe5, 0x26, 0xd2, 0xb1, 0x09, 0x35,
 ];
 const DEPOSIT_WINDOW: u64 = 30 * 60;
+const DEPOSIT_SPEED: Speed = Speed::Fast;
 const CALMER_AFTER: u64 = 10 * 60;
 const SLOWER_AFTER: u64 = 60 * 60;
 const GIVE_UP_AFTER: u64 = 24 * 60 * 60;
@@ -479,13 +480,13 @@ async fn most(
         max: true,
         memo,
     };
-    let (_, planned, _) = chain.prepare(&everything).await?;
+    let (_, planned, _) = chain.prepare(&everything, DEPOSIT_SPEED).await?;
     let exact = Transfer {
         amount: planned.amount,
         max: false,
         ..everything
     };
-    match chain.prepare(&exact).await {
+    match chain.prepare(&exact, DEPOSIT_SPEED).await {
         Ok(_) => Ok(planned.amount),
         Err(ChainError::Insufficient {
             needed, available, ..
@@ -494,10 +495,13 @@ async fn most(
         {
             let smaller = lowered(planned.amount, needed, available)?;
             chain
-                .prepare(&Transfer {
-                    amount: smaller,
-                    ..exact
-                })
+                .prepare(
+                    &Transfer {
+                        amount: smaller,
+                        ..exact
+                    },
+                    DEPOSIT_SPEED,
+                )
                 .await?;
             Ok(smaller)
         }
@@ -688,7 +692,7 @@ impl Worker {
                     memo: None,
                 };
                 let fee = chains[chain]
-                    .prepare(&estimate)
+                    .prepare(&estimate, DEPOSIT_SPEED)
                     .await
                     .ok()
                     .map(|(_, _, fee)| fee);
@@ -862,7 +866,7 @@ impl Worker {
                     max: false,
                     memo: memo(&order)?,
                 };
-                let (plan, transfer, fee) = chain.prepare(&transfer).await?;
+                let (plan, transfer, fee) = chain.prepare(&transfer, DEPOSIT_SPEED).await?;
                 Ok::<_, EngineError>(Ordered {
                     route,
                     order,

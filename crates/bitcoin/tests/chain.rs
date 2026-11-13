@@ -5,7 +5,9 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use bahaa_bitcoin::BitcoinChain;
-use bahaa_chain::{Chain, ChainError, RateUnit, Transfer, TxStatus, Wait, check_signed};
+use bahaa_chain::{
+    Chain, ChainError, FeeRate, RateUnit, Speed, Transfer, TxStatus, Wait, check_signed,
+};
 use bahaa_crypto::{Seed, secp256k1_seed};
 use bahaa_testkit::electrum::{Ledger, Log, called};
 use bahaa_types::{Amount, BitcoinType, hex};
@@ -392,4 +394,68 @@ async fn a_server_that_cannot_estimate_slow_targets_still_quotes() {
         .await
         .unwrap_err();
     assert!(failed.to_string().contains("cannot estimate"), "{failed}");
+}
+
+#[tokio::test]
+async fn each_speed_is_quoted_with_its_own_fee_and_wait() {
+    let mut ledger = funded();
+    for (target, rate) in [
+        (6, "3e-06"),
+        (12, "3e-06"),
+        (24, "3e-06"),
+        (72, "1.2e-06"),
+        (144, "1.2e-06"),
+        (504, "1.2e-06"),
+    ] {
+        ledger.rates.insert(target, rate.to_owned());
+    }
+    let (chain, _, _) = started(ledger).await;
+    chain.derive(&seed(), 0).unwrap();
+    let sent = transfer("0.00025", false);
+    let (plan, fee) = chain.prepare(&sent).await.unwrap();
+    assert_eq!(fee.expected().to_string(), "0.00000043");
+    let offered: Vec<(Speed, String, Option<Wait>)> = fee
+        .options()
+        .iter()
+        .map(|option| (option.speed, option.fee.to_string(), option.pace.wait))
+        .collect();
+    assert_eq!(
+        offered,
+        [
+            (
+                Speed::Slow,
+                "0.00000017".to_owned(),
+                Some(Wait::About(43_200))
+            ),
+            (
+                Speed::Normal,
+                "0.00000043".to_owned(),
+                Some(Wait::About(3_600))
+            ),
+            (
+                Speed::Fast,
+                "0.00000282".to_owned(),
+                Some(Wait::About(1_200))
+            ),
+        ]
+    );
+    check_signed(
+        &sent,
+        &chain.decode(&chain.sign(&plan, &seed()).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let (_, fast) = chain.prepare_with(&sent, Speed::Fast).await.unwrap();
+    assert_eq!(fast.expected().to_string(), "0.00000282");
+    let custom = |text: &str| {
+        Speed::Custom(FeeRate {
+            amount: Amount::parse(text, 1).unwrap(),
+            unit: RateUnit::SatPerVbyte,
+        })
+    };
+    let (_, chosen) = chain.prepare_with(&sent, custom("5")).await.unwrap();
+    assert_eq!(chosen.expected().to_string(), "0.00000705");
+    assert!(matches!(
+        chain.prepare_with(&sent, custom("0.0")).await,
+        Err(ChainError::Invalid(_))
+    ));
 }

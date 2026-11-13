@@ -3,8 +3,8 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decimals, Decoded, FeeQuote, Replace, Signed, Transfer, TxId,
-    TxStatus, amount, now, on_network,
+    Balance, Chain, ChainError, Decimals, Decoded, FeeQuote, Replace, Signed, Speed, Transfer,
+    TxId, TxStatus, amount, now, on_network,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
@@ -240,8 +240,12 @@ impl Chain for SolanaChain {
             .collect()
     }
 
-    async fn prepare(&self, transfer: &Transfer) -> Result<(SolanaPlan, FeeQuote), ChainError> {
-        Box::pin(self.plan(transfer)).await
+    async fn prepare_with(
+        &self,
+        transfer: &Transfer,
+        speed: Speed,
+    ) -> Result<(SolanaPlan, FeeQuote), ChainError> {
+        Box::pin(self.plan(transfer, speed)).await
     }
 
     fn planned<'a>(&self, plan: &'a SolanaPlan) -> &'a Transfer {

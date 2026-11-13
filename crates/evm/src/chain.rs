@@ -1,9 +1,9 @@
 use alloy_consensus::TxEip1559;
 use alloy_primitives::TxKind;
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decimals, Decoded, Failure, FeeItem, FeeLine, FeeQuote, FeeRate,
-    MAX_MEMO, Pace, RateUnit, Replace, Signed, Transfer, TxId, TxStatus, Wait, abi_text, amount,
-    enough, on_network, parse_nft_transfer, parse_transfer, transfer_data,
+    Balance, Chain, ChainError, Decimals, Decoded, Failure, FeeItem, FeeLine, FeeOption, FeeQuote,
+    FeeRate, MAX_MEMO, Pace, RateUnit, Replace, Signed, Speed, Transfer, TxId, TxStatus, Wait,
+    abi_text, amount, enough, on_network, parse_nft_transfer, parse_transfer, transfer_data,
 };
 use bahaa_config::{ChainKind, Coin, Feature, Network, Protocol};
 use bahaa_crypto::{DerivationPath, Seed, secp256k1_address};
@@ -30,6 +30,8 @@ const SYMBOL: &str = "95d89b41";
 const NAME: &str = "06fdde03";
 const PLAIN_GAS: u64 = 21_000;
 const GWEI_DECIMALS: u8 = 9;
+const HISTORY_BLOCKS: u64 = 20;
+const PERCENTILES: [u8; 3] = [10, 50, 90];
 
 #[derive(Debug)]
 pub struct EvmChain {
@@ -148,10 +150,12 @@ impl EvmChain {
             .await
     }
 
-    async fn fees(&self) -> Result<(U256, U256), ChainError> {
-        let (history, tip) = try_join(
-            self.rpc
-                .call("eth_feeHistory", json!(["0x1", "latest", []])),
+    async fn fees(&self) -> Result<Market, ChainError> {
+        let (history, suggested) = try_join(
+            self.rpc.call(
+                "eth_feeHistory",
+                json!([format!("{HISTORY_BLOCKS:#x}"), "latest", PERCENTILES]),
+            ),
             self.rpc.call("eth_maxPriorityFeePerGas", json!([])),
         )
         .await?;
@@ -159,7 +163,7 @@ impl EvmChain {
             .as_array()
             .and_then(|fees| fees.last())
             .ok_or(ChainError::Unsupported("networks without EIP-1559 fees"))?;
-        Ok((quantity(next)?, quantity(&tip)?))
+        Market::read(quantity(next)?, quantity(&suggested)?, &history["reward"])
     }
 }
 
@@ -315,6 +319,7 @@ impl EvmChain {
         from: &[u8; 20],
         nonce: u64,
         route: &Route,
+        speed: Speed,
     ) -> Result<(TxEip1559, Fees), ChainError> {
         let estimate = self.estimate(from, route).await?;
         let gas_limit = if route.data.is_empty() && estimate == PLAIN_GAS {
@@ -322,7 +327,8 @@ impl EvmChain {
         } else {
             estimate.saturating_add(estimate / 5)
         };
-        let mut fees = self.quote(estimate, gas_limit).await?;
+        let market = self.fees().await?;
+        let mut fees = self.priced_at(&market, speed, (estimate, gas_limit))?;
         let tx = TxEip1559 {
             chain_id: self.chain_id,
             nonce,
@@ -335,19 +341,43 @@ impl EvmChain {
             input: route.data.clone().into(),
             ..TxEip1559::default()
         };
+        let gas = fees.expected;
         if self.is_rollup() {
             self.add_rollup_fees(&tx, estimate, &mut fees).await?;
         }
+        let extra = fees.expected.saturating_sub(gas);
+        fees.options = Speed::CHOICES
+            .into_iter()
+            .filter_map(|choice| {
+                let option = self
+                    .priced_at(&market, choice, (estimate, gas_limit))
+                    .ok()?;
+                Some((
+                    choice,
+                    option.expected.checked_add(extra)?,
+                    option.wait,
+                    option.tip,
+                ))
+            })
+            .collect();
         Ok((tx, fees))
     }
 
-    async fn quote(&self, estimate: u64, gas_limit: u64) -> Result<Fees, ChainError> {
-        let (base, tip) = self.fees().await?;
-        let max_fee = base
+    fn priced_at(
+        &self,
+        market: &Market,
+        speed: Speed,
+        gas: (u64, u64),
+    ) -> Result<Fees, ChainError> {
+        let tip = market.tip(speed)?;
+        let max_fee = market
+            .base
             .checked_mul(U256::from(2u8))
             .and_then(|fee| fee.checked_add(tip))
             .ok_or_else(ChainError::overflow)?;
-        self.priced((estimate, gas_limit), base, tip, max_fee)
+        let mut fees = self.priced(gas, market.base, tip, max_fee)?;
+        fees.wait = Some(market.wait(tip, self.network.block_ms));
+        Ok(fees)
     }
 
     fn priced(
@@ -372,6 +402,8 @@ impl EvmChain {
             tip,
             max,
             expected,
+            wait: None,
+            options: Vec::new(),
             lines: vec![(
                 FeeItem::Gas {
                     units: estimate,
@@ -393,13 +425,28 @@ impl EvmChain {
                 })
             })
             .collect::<Result<Vec<_>, ChainError>>()?;
+        let block = Wait::blocks(1, self.network.block_ms);
+        let options = fees
+            .options
+            .into_iter()
+            .map(|(speed, expected, wait, tip)| {
+                Ok(FeeOption {
+                    speed,
+                    fee: self.native(expected)?,
+                    pace: Pace {
+                        rate: gwei(tip),
+                        wait: wait.or(Some(block)),
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, ChainError>>()?;
         Ok(
-            FeeQuote::new(self.native(fees.max)?, self.native(fees.expected)?, lines)?.paced(
-                Pace {
+            FeeQuote::new(self.native(fees.max)?, self.native(fees.expected)?, lines)?
+                .paced(Pace {
                     rate: gwei(fees.max_fee),
-                    wait: Some(Wait::blocks(1, self.network.block_ms)),
-                },
-            ),
+                    wait: fees.wait.or(Some(block)),
+                })
+                .offering(options),
         )
     }
 
@@ -447,7 +494,78 @@ struct Fees {
     tip: U256,
     max: U256,
     expected: U256,
+    wait: Option<Wait>,
+    options: Vec<(Speed, U256, Option<Wait>, U256)>,
     lines: Vec<(FeeItem, U256)>,
+}
+
+pub(crate) struct Market {
+    pub base: U256,
+    tips: [U256; 3],
+    levels: Vec<u64>,
+}
+
+impl Market {
+    fn read(base: U256, suggested: U256, reward: &Value) -> Result<Self, ChainError> {
+        let rows: Vec<Vec<U256>> = match reward {
+            Value::Null => Vec::new(),
+            Value::Array(rows) => rows
+                .iter()
+                .map(|row| {
+                    row.as_array()
+                        .filter(|row| row.len() == PERCENTILES.len())
+                        .ok_or_else(ChainError::malformed)?
+                        .iter()
+                        .map(quantity)
+                        .collect()
+                })
+                .collect::<Result<_, ChainError>>()?,
+            _ => return Err(ChainError::malformed()),
+        };
+        let median = |column: usize| {
+            let mut values: Vec<U256> = rows.iter().map(|row| row[column]).collect();
+            values.sort_unstable();
+            values.get(values.len() / 2).copied().unwrap_or(suggested)
+        };
+        let normal = median(1).max(suggested);
+        Ok(Self {
+            base,
+            tips: [median(0).min(normal), normal, median(2).max(normal)],
+            levels: rows
+                .iter()
+                .map(|row| u64::try_from(row[0]).unwrap_or(u64::MAX))
+                .collect(),
+        })
+    }
+
+    pub(crate) fn normal(&self) -> (U256, U256) {
+        (self.base, self.tips[1])
+    }
+
+    fn tip(&self, speed: Speed) -> Result<U256, ChainError> {
+        Ok(match speed {
+            Speed::Slow => self.tips[0],
+            Speed::Normal => self.tips[1],
+            Speed::Fast => self.tips[2],
+            Speed::Custom(rate) => {
+                let places = rate.amount.decimals();
+                if rate.unit != RateUnit::Gwei || places > GWEI_DECIMALS {
+                    return Err(ChainError::Invalid(
+                        "an EVM priority fee is in gwei with at most 9 decimals",
+                    ));
+                }
+                rate.amount
+                    .units()
+                    .checked_mul(U256::from(10u8).pow(U256::from(GWEI_DECIMALS - places)))
+                    .ok_or_else(ChainError::overflow)?
+            }
+        })
+    }
+
+    fn wait(&self, tip: U256, block_ms: u32) -> Wait {
+        let tip = u64::try_from(tip).unwrap_or(u64::MAX);
+        Wait::fitting(&self.levels, tip, 0, block_ms).unwrap_or_else(|| Wait::blocks(1, block_ms))
+    }
 }
 
 impl Fees {
@@ -502,9 +620,13 @@ impl Chain for EvmChain {
         .await
     }
 
-    async fn prepare(&self, transfer: &Transfer) -> Result<(EvmPlan, FeeQuote), ChainError> {
+    async fn prepare_with(
+        &self,
+        transfer: &Transfer,
+        speed: Speed,
+    ) -> Result<(EvmPlan, FeeQuote), ChainError> {
         if transfer.asset.is_nft() {
-            return self.prepare_nft(transfer).await;
+            return self.prepare_nft(transfer, speed).await;
         }
         let from = bytes(&transfer.from)?;
         transfer.check(&self.network.id)?;
@@ -514,7 +636,7 @@ impl Chain for EvmChain {
         let mut transfer = self.resolve(&held, transfer).await?;
         let route = self.route(&transfer).await?;
         self.funds(&held, &transfer, &route, U256::ZERO)?;
-        let (mut tx, fees) = self.priced_tx(&from, nonce, &route).await?;
+        let (mut tx, fees) = self.priced_tx(&from, nonce, &route, speed).await?;
         if transfer.max && route.token.is_none() {
             self.leave_fees(&mut transfer, &mut tx, fees.max)?;
         }
@@ -727,6 +849,13 @@ pub(crate) fn fuzz(value: &Value) {
     rollup::fuzz(value);
     watch::fuzz(value);
     let _ = already_known(value["message"].as_str().unwrap_or_default());
+    if let Ok(market) = Market::read(U256::from(7u8), U256::from(3u8), &value["reward"]) {
+        for speed in Speed::CHOICES {
+            if let Ok(tip) = market.tip(speed) {
+                let _ = market.wait(tip, 12_000);
+            }
+        }
+    }
 }
 
 #[cfg(fuzzing)]
@@ -903,5 +1032,54 @@ mod tests {
             bsc.sign(&plan(&bsc, [9; 20], U256::from(1u8), Vec::new()), &stranger),
             Err(ChainError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn three_tips_come_from_what_recent_blocks_paid() {
+        let gwei = |value: u64| U256::from(value) * U256::from(1_000_000_000u64);
+        let rows: Vec<Value> = [(64, 121, 161), (60, 118, 170), (70, 125, 150), (0, 0, 0)]
+            .iter()
+            .map(|(low, middle, high)| {
+                json!([
+                    format!("{:#x}", gwei(*low)),
+                    format!("{:#x}", gwei(*middle)),
+                    format!("{:#x}", gwei(*high))
+                ])
+            })
+            .collect();
+        let market = Market::read(gwei(245), gwei(27), &Value::Array(rows)).unwrap();
+        assert_eq!(market.normal(), (gwei(245), gwei(121)));
+        assert_eq!(
+            Speed::CHOICES.map(|speed| market.tip(speed).unwrap()),
+            [gwei(64), gwei(121), gwei(161)]
+        );
+        let block_ms = 2_000;
+        assert_eq!(market.wait(gwei(161), block_ms), Wait::blocks(1, block_ms));
+        assert_eq!(market.wait(gwei(64), block_ms), Wait::blocks(2, block_ms));
+        assert_eq!(market.wait(U256::ZERO, block_ms), Wait::blocks(4, block_ms));
+        let quiet = Market::read(gwei(1), gwei(2), &Value::Null).unwrap();
+        assert_eq!(
+            Speed::CHOICES.map(|speed| quiet.tip(speed).unwrap()),
+            [gwei(2); 3]
+        );
+        assert_eq!(quiet.wait(gwei(2), block_ms), Wait::blocks(1, block_ms));
+        let custom = |text: &str, unit| {
+            Speed::Custom(FeeRate {
+                amount: Amount::parse(text, 1).unwrap(),
+                unit,
+            })
+        };
+        assert_eq!(
+            market.tip(custom("0.5", RateUnit::Gwei)).unwrap(),
+            U256::from(500_000_000u64)
+        );
+        assert!(market.tip(custom("0.5", RateUnit::SatPerVbyte)).is_err());
+        for bad in [
+            json!([["0x1", "0x2"]]),
+            json!({"0": 1}),
+            json!([["0x1", "0x2", "x"]]),
+        ] {
+            assert!(Market::read(gwei(1), gwei(1), &bad).is_err(), "{bad}");
+        }
     }
 }

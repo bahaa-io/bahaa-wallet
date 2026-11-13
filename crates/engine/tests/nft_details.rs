@@ -377,6 +377,7 @@ async fn new_nfts_are_noted_once_and_sent_ones_keep_their_name() {
             to: Address::parse(ChainFamily::Evm, HARDHAT_1).unwrap(),
             amount: Spend::Exact(Amount::parse("1", 0).unwrap()),
             memo: None,
+            speed: bahaa_engine::Speed::Normal,
         })
         .await
         .unwrap();

@@ -30,6 +30,7 @@ pub enum Field {
     Address,
     Contract,
     Search,
+    FeeRate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +90,7 @@ pub enum Pick {
     Source(usize),
     Buy(usize),
     Route(usize),
+    Speed(usize),
     Requote,
     Contact(usize),
     Network(usize),

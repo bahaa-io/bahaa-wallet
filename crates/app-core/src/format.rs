@@ -129,16 +129,19 @@ pub(crate) fn percent(bps: u32) -> String {
     }
 }
 
-pub(crate) fn short_wait(wait: Option<Wait>) -> String {
-    let span = |seconds: u64| match seconds {
+pub(crate) fn short_span(seconds: u64) -> String {
+    match seconds {
         0..MINUTE => format!("{seconds} s"),
         MINUTE..HOUR => format!("{} min", seconds / MINUTE),
         HOUR..DAY => format!("{} h", seconds / HOUR),
         _ => format!("{} d", seconds / DAY),
-    };
+    }
+}
+
+pub(crate) fn short_wait(wait: Option<Wait>) -> String {
     match wait {
-        Some(Wait::About(seconds)) => format!("~{}", span(seconds)),
-        Some(Wait::Over(seconds)) => format!("> {}", span(seconds)),
+        Some(Wait::About(seconds)) => format!("~{}", short_span(seconds)),
+        Some(Wait::Over(seconds)) => format!("> {}", short_span(seconds)),
         Some(Wait::Slow) => text::SLOW_SHORT.to_owned(),
         Some(Wait::Stuck) => text::STUCK_SHORT.to_owned(),
         None => text::NO_VALUE.to_owned(),

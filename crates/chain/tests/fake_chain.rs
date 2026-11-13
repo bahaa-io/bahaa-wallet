@@ -6,8 +6,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeItem, FeeLine, FeeQuote, PoolError, Signed, Transfer,
-    TxId, TxStatus, check_signed, on_network,
+    Balance, Chain, ChainError, Decoded, FeeItem, FeeLine, FeeQuote, PoolError, Signed, Speed,
+    Transfer, TxId, TxStatus, check_signed, on_network,
 };
 use bahaa_config::{Coin, Network, Registry};
 use bahaa_crypto::{Mnemonic, Seed};
@@ -85,7 +85,11 @@ impl Chain for FakeChain {
             .collect())
     }
 
-    async fn prepare(&self, transfer: &Transfer) -> Result<(Plan, FeeQuote), ChainError> {
+    async fn prepare_with(
+        &self,
+        transfer: &Transfer,
+        _speed: Speed,
+    ) -> Result<(Plan, FeeQuote), ChainError> {
         if transfer.asset.contract().is_some() {
             return Err(ChainError::Unsupported("tokens"));
         }

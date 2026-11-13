@@ -27,7 +27,7 @@ pub(crate) enum Call {
     Reveal(WalletId, SecretString),
     ChangePassword(SecretString, SecretString),
     SetSettings(Settings),
-    Prepare(SendRequest),
+    Prepare(Box<SendRequest>),
     Replace(NetworkId, String, Replace),
     Confirm(DraftId, SecretString),
     ConfirmOrder(DraftId, SecretString),
@@ -127,7 +127,7 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
         Call::Reveal(wallet, password) => Outcome::Revealed(engine.reveal(wallet, password).await),
         Call::ChangePassword(old, new) => done(engine.change_password(old, new).await),
         Call::SetSettings(settings) => done(engine.set_settings(settings).await),
-        Call::Prepare(request) => Outcome::Drafted(engine.prepare_send(request).await),
+        Call::Prepare(request) => Outcome::Drafted(engine.prepare_send(*request).await),
         Call::Replace(network, id, how) => Outcome::Drafted(engine.replace(network, id, how).await),
         Call::Confirm(draft, password) => Outcome::Sent(engine.confirm_send(draft, password).await),
         Call::ConfirmOrder(draft, password) => {

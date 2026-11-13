@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use bahaa_chain::{
-    ChainError, Decoded, FeeItem, FeeLine, FeeQuote, FeeRate, Pace, RateUnit, Signed, Transfer,
-    TxId, TxStatus,
+    ChainError, Decoded, FeeItem, FeeLine, FeeOption, FeeQuote, FeeRate, Pace, RateUnit, Signed,
+    Speed, Transfer, TxId, TxStatus,
 };
 use bahaa_crypto::{
     SecretKey, Seed, compressed, secp256k1_sign, secp256k1_verify, taproot_output, taproot_sign,
@@ -48,6 +48,7 @@ impl BitcoinChain {
     pub(super) async fn plan(
         &self,
         transfer: &Transfer,
+        speed: Speed,
     ) -> Result<(BitcoinPlan, FeeQuote), ChainError> {
         transfer.check(&self.network.id)?;
         self.native(std::slice::from_ref(&transfer.asset))?;
@@ -58,7 +59,7 @@ impl BitcoinChain {
         let units = u64::try_from(transfer.amount.units()).map_err(|_| ChainError::overflow())?;
         let (funds, estimates) =
             try_join(self.funds(&transfer.from), self.sources.estimates()).await?;
-        let rate = estimates.rate();
+        let rate = estimates.rate(speed)?;
         if self.takes_change(&transfer.from, &transfer.to) {
             return Err(ChainError::Invalid(
                 "send to another address, this one takes this wallet's change",
@@ -99,6 +100,18 @@ impl BitcoinChain {
                 .checked_add(picked.leftover)
                 .ok_or_else(ChainError::overflow)?,
         )?;
+        let options = Speed::CHOICES
+            .into_iter()
+            .filter_map(|choice| {
+                let rate = estimates.rate(choice).ok()?;
+                let other = pick(&funds, &to, &change, units, transfer.max, rate).ok()?;
+                Some(FeeOption {
+                    speed: choice,
+                    fee: self.sats(other.paid.checked_add(other.leftover)?).ok()?,
+                    pace: self.pace(&estimates, rate),
+                })
+            })
+            .collect();
         let mut planned = transfer.clone();
         planned.amount = self.sats(picked.sent)?;
         let (spent, tx) = unsigned(&picked.coins, picked.outputs);
@@ -109,7 +122,9 @@ impl BitcoinChain {
         };
         Ok((
             plan,
-            FeeQuote::new(fee, fee, lines)?.paced(self.pace(&estimates, rate)),
+            FeeQuote::new(fee, fee, lines)?
+                .paced(self.pace(&estimates, rate))
+                .offering(options),
         ))
     }
 

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decimals, Decoded, FeeQuote, Replace, Signed, Transfer, TxId,
-    TxStatus, amount, on_network,
+    Balance, Chain, ChainError, Decimals, Decoded, FeeQuote, Replace, Signed, Speed, Transfer,
+    TxId, TxStatus, amount, on_network,
 };
 use bahaa_config::{ChainKind, Checkpoint, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
@@ -267,7 +267,16 @@ impl Chain for TonChain {
         Ok(balances)
     }
 
-    async fn prepare(&self, transfer: &Transfer) -> Result<(TonPlan, FeeQuote), ChainError> {
+    async fn prepare_with(
+        &self,
+        transfer: &Transfer,
+        speed: Speed,
+    ) -> Result<(TonPlan, FeeQuote), ChainError> {
+        if speed != Speed::Normal {
+            return Err(ChainError::Unsupported(
+                "fee choices on TON, the network sets its own prices",
+            ));
+        }
         self.plan(transfer).await
     }
 

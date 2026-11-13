@@ -1,12 +1,12 @@
 use bahaa_engine::{
     Address, Amount, AssetId, Caution, ChainFamily, Contact, Draft, EngineError, FeeQuote, Holding,
-    MAX_MEMO, NetworkId, Replace, SendRequest, Spend, WalletId, is_plain_text,
+    MAX_MEMO, NetworkId, Replace, SendRequest, Speed, Spend, WalletId, is_plain_text,
 };
 
 use super::activity::Transfer;
 use super::{
-    Screen, button, choice, group, hidden, input, kept_aside, line, network_line, note,
-    status_tone, toned_line,
+    Screen, button, choice, group, hidden, input, kept_aside, line, native_worth, network_line,
+    note, speed, status_tone, toned_line,
 };
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
 use crate::call::{Call, Outcome};
@@ -26,6 +26,10 @@ enum Step {
     Choose,
     Compose,
     Review {
+        draft: Draft,
+        at: u64,
+    },
+    Custom {
         draft: Draft,
         at: u64,
     },
@@ -51,6 +55,8 @@ pub(crate) struct Send {
     max: bool,
     memo: String,
     replacing: Option<(NetworkId, String, Replace)>,
+    speed: Speed,
+    custom: String,
     step: Step,
     error: Option<String>,
     search: String,
@@ -75,6 +81,8 @@ impl Send {
             max: false,
             memo: String::new(),
             replacing: None,
+            speed: Speed::Normal,
+            custom: String::new(),
             step,
             error: None,
             search: String::new(),
@@ -241,13 +249,16 @@ impl Send {
             to,
             amount,
             memo,
+            speed: self.speed,
         })
     }
 
     fn quote(&self, ctx: &Ctx<'_>) -> Result<Call, String> {
         match &self.replacing {
             Some((network, id, how)) => Ok(Call::Replace(network.clone(), id.clone(), *how)),
-            None => self.request(ctx).map(Call::Prepare),
+            None => self
+                .request(ctx)
+                .map(|request| Call::Prepare(Box::new(request))),
         }
     }
 
@@ -261,6 +272,29 @@ impl Send {
                 self.error = Some(problem);
                 Reply::default()
             }
+        }
+    }
+
+    fn pick_speed(&mut self, position: usize, ctx: &Ctx<'_>) -> Reply {
+        if self.replacing.is_some() {
+            return Reply::default();
+        }
+        if position == speed::CUSTOM {
+            if let Step::Review { draft, at } = &self.step {
+                self.step = Step::Custom {
+                    draft: draft.clone(),
+                    at: *at,
+                };
+                self.error = None;
+            }
+            return Reply::default();
+        }
+        match speed::chosen(position) {
+            Some(chosen) if chosen != self.speed => {
+                self.speed = chosen;
+                self.requote(ctx)
+            }
+            _ => Reply::default(),
         }
     }
 
@@ -470,6 +504,11 @@ impl Send {
             }
         }
         lines.extend(fee_lines(&draft.fee, network, ctx));
+        let speeds = if how.is_none() {
+            speed::table(&draft.fee, self.speed, network, ctx)
+        } else {
+            None
+        };
         let left = remaining(draft, at, ctx.now);
         if ctx.data.settings.developer_mode {
             let from = format::short(&ctx.shown(&transfer.from, network));
@@ -500,6 +539,8 @@ impl Send {
         if let Some(how) = how {
             notes.push(note(Level::Info, text::replace_note(how)));
             notes.push(note(Level::Info, text::ESTIMATE_NOTE));
+        } else {
+            notes.extend(speed::notes(&draft.fee, self.speed, network, ctx));
         }
         if left == 0 {
             notes.push(note(Level::Info, text::QUOTE_GONE));
@@ -509,6 +550,7 @@ impl Send {
             title: how.map_or(text::REVIEW, text::replace_title).to_owned(),
             headline: Some(headline),
             lines,
+            table: speeds,
             notes,
             error: self.error.clone(),
             buttons: vec![button(
@@ -541,6 +583,20 @@ impl Send {
                     password: Secret::default(),
                 };
                 Reply::default()
+            }
+            Step::Custom { draft, at } => {
+                let picked = speed::custom_speed(&draft.fee, &self.custom);
+                self.step = Step::Custom { draft, at };
+                match picked {
+                    Ok(chosen) => {
+                        self.speed = chosen;
+                        self.requote(ctx)
+                    }
+                    Err(problem) => {
+                        self.error = Some(problem);
+                        Reply::default()
+                    }
+                }
             }
             Step::Confirm {
                 draft,
@@ -575,12 +631,9 @@ pub(crate) fn source_of(holding: &Holding) -> Source {
 fn fee_lines(fee: &FeeQuote, network: &NetworkId, ctx: &Ctx<'_>) -> Vec<Line> {
     let symbol = ctx.native_symbol(network);
     let valued = |amount: Amount| {
-        let value = ctx
-            .price(&AssetId::Native(network.clone()))
-            .and_then(|price| price.value_of(amount, ctx.fiat().places()).ok());
         text::with_value(
             &format::exact(amount, &symbol),
-            &format::fiat(value, ctx.fiat()),
+            &format::fiat(native_worth(ctx, network, amount), ctx.fiat()),
         )
     };
     let (pace, expected) = (fee.pace(), fee.expected());
@@ -633,6 +686,13 @@ impl Screen for Send {
             (Step::Choose, Action::Pick(Pick::Source(position))) => self.choose(*position, ctx),
             (Step::Choose, Action::Type(Field::Search, value)) => {
                 self.search.clone_from(value);
+                Reply::default()
+            }
+            (Step::Review { .. }, Action::Pick(Pick::Speed(position))) => {
+                self.pick_speed(*position, ctx)
+            }
+            (Step::Custom { .. }, Action::Type(Field::FeeRate, value)) => {
+                self.custom.clone_from(value);
                 Reply::default()
             }
             (_, Action::Submit) => self.submit(ctx),
@@ -691,7 +751,7 @@ impl Screen for Send {
                 self.step = Step::Compose;
                 Some(Reply::default())
             }
-            Step::Confirm { draft, at, .. } => {
+            Step::Confirm { draft, at, .. } | Step::Custom { draft, at } => {
                 self.step = Step::Review {
                     draft: draft.clone(),
                     at: *at,
@@ -707,6 +767,9 @@ impl Screen for Send {
             Step::Choose => self.choose_page(ctx),
             Step::Compose => self.compose_page(ctx),
             Step::Review { draft, at } => self.review_page(draft, *at, ctx),
+            Step::Custom { draft, .. } => {
+                speed::custom_page(&draft.fee, &self.custom, self.error.clone())
+            }
             Step::Confirm { password, .. } => Page {
                 id: PageId::Confirm,
                 title: text::CONFIRM_TITLE.to_owned(),

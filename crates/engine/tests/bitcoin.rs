@@ -64,6 +64,7 @@ async fn a_phrase_holds_bitcoin_across_its_addresses_and_sends_it() {
         to: address(FRIEND),
         amount: Spend::Exact(Amount::parse("0.0002", 8).unwrap()),
         memo: None,
+        speed: bahaa_engine::Speed::Normal,
     };
     let draft = engine.prepare_send(request).await.unwrap();
     assert_eq!(draft.fee.expected().to_string(), "0.00000282");
@@ -279,6 +280,7 @@ async fn a_speed_up_replaces_the_pending_send_and_retires_it_once_confirmed() {
         to: address(FRIEND),
         amount: Spend::Exact(Amount::parse("0.0002", 8).unwrap()),
         memo: None,
+        speed: bahaa_engine::Speed::Normal,
     };
     let draft = engine.prepare_send(request).await.unwrap();
     let first = engine

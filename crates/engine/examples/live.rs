@@ -600,6 +600,7 @@ impl Live {
                 to,
                 amount,
                 memo: memo.map(str::to_owned),
+                speed: bahaa_engine::Speed::Normal,
             })
             .await?;
         println!("quoted in {:.1?}", started.elapsed());

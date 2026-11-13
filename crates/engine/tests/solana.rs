@@ -135,6 +135,7 @@ async fn a_recovery_phrase_holds_sol_and_sends_it_within_the_quote_life() {
         to: Address::parse(ChainFamily::Solana, FRIEND).unwrap(),
         amount: Spend::Exact(Amount::parse("0.1", 9).unwrap()),
         memo: Some("dinner".to_owned()),
+        speed: bahaa_engine::Speed::Normal,
     };
     let draft = engine.prepare_send(request).await.unwrap();
     assert_eq!(draft.valid_for, bahaa_solana::QUOTE_LIFE);

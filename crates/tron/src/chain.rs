@@ -2,8 +2,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decimals, Decoded, FeeQuote, Replace, Signed, Transfer, TxId,
-    TxStatus, abi_text, amount, now_ms, on_network,
+    Balance, Chain, ChainError, Decimals, Decoded, FeeQuote, Replace, Signed, Speed, Transfer,
+    TxId, TxStatus, abi_text, amount, now_ms, on_network,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{DerivationPath, Seed};
@@ -198,7 +198,16 @@ impl Chain for TronChain {
         .await
     }
 
-    async fn prepare(&self, transfer: &Transfer) -> Result<(TronPlan, FeeQuote), ChainError> {
+    async fn prepare_with(
+        &self,
+        transfer: &Transfer,
+        speed: Speed,
+    ) -> Result<(TronPlan, FeeQuote), ChainError> {
+        if speed != Speed::Normal {
+            return Err(ChainError::Unsupported(
+                "fee choices on Tron, the network sets its own prices",
+            ));
+        }
         self.plan(transfer).await
     }
 

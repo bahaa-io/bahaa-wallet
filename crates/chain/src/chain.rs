@@ -2,7 +2,9 @@ use bahaa_config::{Coin, Network};
 use bahaa_crypto::Seed;
 use bahaa_types::{Address, AssetId};
 
-use crate::{Balance, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus};
+use crate::{
+    Balance, ChainError, Decoded, FeeQuote, Replace, Signed, Speed, Transfer, TxId, TxStatus,
+};
 
 pub trait Chain: Send + Sync {
     type Plan: Send + Sync;
@@ -20,6 +22,14 @@ pub trait Chain: Send + Sync {
     fn prepare(
         &self,
         transfer: &Transfer,
+    ) -> impl Future<Output = Result<(Self::Plan, FeeQuote), ChainError>> + Send {
+        self.prepare_with(transfer, Speed::default())
+    }
+
+    fn prepare_with(
+        &self,
+        transfer: &Transfer,
+        speed: Speed,
     ) -> impl Future<Output = Result<(Self::Plan, FeeQuote), ChainError>> + Send;
 
     fn planned<'a>(&self, plan: &'a Self::Plan) -> &'a Transfer;

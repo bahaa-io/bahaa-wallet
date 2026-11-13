@@ -5,7 +5,8 @@ use std::time::Duration;
 use bahaa_bitcoin::{BitcoinCall, BitcoinChain, BitcoinPlan};
 use bahaa_chain::{
     Approval, Balance, Chain, ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, Found,
-    Movement, PlannedCall, Replace, ScanCursor, Scanned, Signed, Transfer, TxId, TxStatus, Watch,
+    Movement, PlannedCall, Replace, ScanCursor, Scanned, Signed, Speed, Transfer, TxId, TxStatus,
+    Watch,
 };
 use bahaa_config::{Coin, Feature, Network, Registry};
 use bahaa_crypto::Seed;
@@ -400,30 +401,33 @@ impl AnyChain {
     pub(crate) async fn prepare(
         &self,
         transfer: &Transfer,
+        speed: Speed,
     ) -> Result<(AnyPlan, Transfer, FeeQuote), ChainError> {
         shielded(async {
             match self {
-                Self::Evm(chain) => {
-                    Ok(planned(chain, chain.prepare(transfer).await?, AnyPlan::Evm))
-                }
+                Self::Evm(chain) => Ok(planned(
+                    chain,
+                    chain.prepare_with(transfer, speed).await?,
+                    AnyPlan::Evm,
+                )),
                 Self::Tron(chain) => Ok(planned(
                     chain,
-                    chain.prepare(transfer).await?,
+                    chain.prepare_with(transfer, speed).await?,
                     AnyPlan::Tron,
                 )),
                 Self::Ton(chain) => Ok(planned(
                     &**chain,
-                    chain.prepare(transfer).await?,
+                    chain.prepare_with(transfer, speed).await?,
                     AnyPlan::Ton,
                 )),
                 Self::Solana(chain) => Ok(planned(
                     chain,
-                    chain.prepare(transfer).await?,
+                    chain.prepare_with(transfer, speed).await?,
                     AnyPlan::Solana,
                 )),
                 Self::Bitcoin(chain) => Ok(planned(
                     &**chain,
-                    chain.prepare(transfer).await?,
+                    chain.prepare_with(transfer, speed).await?,
                     AnyPlan::Bitcoin,
                 )),
             }

@@ -23,9 +23,9 @@ pub use details::{Fetcher, Gateways, MAX_DETAILS_FILE, read_details};
 pub use history::{WalkEnd, covered};
 pub use model::{
     Approval, Balance, Call, ChainError, ContractSwap, Decoded, DecodedCall, FeeItem, FeeLine,
-    FeeQuote, FeeRate, Found, Incoming, MAX_MEMO, Movement, Outgoing, Pace, PlannedCall, RateUnit,
-    Replace, Replaced, ScanCursor, Scanned, Signed, Step, Transfer, TxId, TxStatus, Wait, Watch,
-    amount, check_call, check_signed, enough, memo_text, on_network,
+    FeeOption, FeeQuote, FeeRate, Found, Incoming, MAX_MEMO, Movement, Outgoing, Pace, PlannedCall,
+    RateUnit, Replace, Replaced, ScanCursor, Scanned, Signed, Speed, Step, Transfer, TxId,
+    TxStatus, Wait, Watch, amount, check_call, check_signed, enough, memo_text, on_network,
 };
 pub use picture::{MAX_PICTURE_FILE, read_picture};
 pub use pool::{Failure, Pool, PoolError};

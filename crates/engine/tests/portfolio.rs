@@ -385,6 +385,7 @@ async fn a_watched_address_is_valued_and_left_out_of_the_total_on_request() {
         to: mine,
         amount: Spend::Max,
         memo: None,
+        speed: bahaa_engine::Speed::Normal,
     };
     assert!(matches!(
         engine.prepare_send(request).await,
@@ -568,6 +569,7 @@ async fn tron_holdings_join_the_portfolio_under_the_wallets_tron_account() {
         to: Address::parse(ChainFamily::Tron, TRON_0).unwrap(),
         amount: Spend::Exact(Amount::parse("1", 6).unwrap()),
         memo: None,
+        speed: bahaa_engine::Speed::Normal,
     };
     assert_eq!(
         engine.prepare_send(request).await,

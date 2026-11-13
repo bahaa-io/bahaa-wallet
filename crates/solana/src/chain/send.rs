@@ -2,8 +2,8 @@ use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 
 use bahaa_chain::{
-    ChainError, Failure, FeeItem, FeeLine, FeeQuote, Pace, Signed, Transfer, TxId, TxStatus,
-    amount, enough,
+    ChainError, Failure, FeeItem, FeeLine, FeeOption, FeeQuote, FeeRate, Pace, RateUnit, Signed,
+    Speed, Transfer, TxId, TxStatus, Wait, amount, enough,
 };
 use bahaa_types::{Amount, to_plain_text};
 use base64::Engine;
@@ -28,6 +28,9 @@ const COMPRESSED_FEE: u64 = 6_000;
 const RENT_FOR: Duration = Duration::from_secs(600);
 const MAX_REASON: usize = 200;
 const CONFIRM_SLOTS: u64 = 4;
+const SLOW_SHARE: usize = 50;
+const NORMAL_SHARE: usize = 75;
+const FAST_SHARE: usize = 95;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SolanaPlan {
@@ -78,6 +81,7 @@ impl SolanaChain {
     pub(super) async fn plan(
         &self,
         transfer: &Transfer,
+        speed: Speed,
     ) -> Result<(SolanaPlan, FeeQuote), ChainError> {
         self.sendable(transfer)?;
         let (from, to) = (bytes(&transfer.from)?, bytes(&transfer.to)?);
@@ -87,7 +91,7 @@ impl SolanaChain {
         let token_accounts = touched(&moved, mint.as_ref(), &from, &to)?;
         let program = program_fee(&moved);
         let size = token.as_ref().map_or(TOKEN_ACCOUNT, |found| found.opening);
-        let ((wallets, tokens, rent, blockhash, price), epoch) = try_join(
+        let ((wallets, tokens, rent, blockhash, market), epoch) = try_join(
             self.read(from, to, &token_accounts, &locked(&moved), size),
             async {
                 match token.as_ref().and_then(|found| found.fee) {
@@ -147,6 +151,7 @@ impl SolanaChain {
             .and_then(|limit| u32::try_from(limit).ok())
             .ok_or_else(ChainError::overflow)?
             .min(SIMULATION_LIMIT);
+        let price = market.price(speed)?;
         shape.price = price;
         let priority = u64::try_from((u128::from(shape.limit) * u128::from(price)).div_ceil(MICRO))
             .map_err(|_| ChainError::overflow())?;
@@ -166,7 +171,7 @@ impl SolanaChain {
         let sent = if coin { shape.units } else { 0 };
         state.spend(&[fee, opening.paid, sent, program], opening.refund)?;
         let message = tx::compile(from, blockhash, &shape.instructions()?)?;
-        let mut fee = self.fee_quote(shape.limit, priority, opening.net(), program)?;
+        let mut fee = self.fee_quote(&market, (shape.limit, price), opening.net(), program)?;
         if let Some(withheld) = withheld {
             fee = fee.withholding(withheld);
         }
@@ -231,7 +236,16 @@ impl SolanaChain {
         token_accounts: &[Key],
         locked: &[Key],
         size: u64,
-    ) -> Result<(Vec<Option<Account>>, Vec<Option<Account>>, Rent, Key, u64), ChainError> {
+    ) -> Result<
+        (
+            Vec<Option<Account>>,
+            Vec<Option<Account>>,
+            Rent,
+            Key,
+            Priority,
+        ),
+        ChainError,
+    > {
         let mut writable = vec![from];
         if token_accounts.is_empty() {
             writable.push(to);
@@ -256,12 +270,41 @@ impl SolanaChain {
 
     fn fee_quote(
         &self,
-        limit: u32,
-        priority: u64,
+        market: &Priority,
+        (limit, price): (u32, u64),
         opening: u64,
         program: u64,
     ) -> Result<FeeQuote, ChainError> {
         let native = |lamports: u64| amount(U256::from(lamports), self.network.native.decimals);
+        let paying = |price: u64| {
+            u64::try_from((u128::from(limit) * u128::from(price)).div_ceil(MICRO)).ok()
+        };
+        let total_at = |price: u64| {
+            [SIGNATURE_FEE, paying(price)?, opening, program]
+                .into_iter()
+                .try_fold(0u64, u64::checked_add)
+        };
+        let pace = |price: u64| Pace {
+            rate: Amount::new(U256::from(price), 0)
+                .ok()
+                .map(|amount| FeeRate {
+                    amount,
+                    unit: RateUnit::MicroLamports,
+                }),
+            wait: Some(market.wait(price, self.network.block_ms)),
+        };
+        let options = Speed::CHOICES
+            .into_iter()
+            .filter_map(|choice| {
+                let price = market.price(choice).ok()?;
+                Some(FeeOption {
+                    speed: choice,
+                    fee: native(total_at(price)?).ok()?,
+                    pace: pace(price),
+                })
+            })
+            .collect();
+        let priority = paying(price).ok_or_else(ChainError::overflow)?;
         let mut lines = vec![
             FeeLine {
                 item: FeeItem::Signature,
@@ -286,12 +329,10 @@ impl SolanaChain {
                 amount: native(program)?,
             });
         }
-        let total = [SIGNATURE_FEE, priority, opening, program]
-            .into_iter()
-            .try_fold(0u64, u64::checked_add)
-            .ok_or_else(ChainError::overflow)?;
+        let total = total_at(price).ok_or_else(ChainError::overflow)?;
         Ok(FeeQuote::new(native(total)?, native(total)?, lines)?
-            .paced(Pace::blocks(CONFIRM_SLOTS, self.network.block_ms)))
+            .paced(pace(price))
+            .offering(options))
     }
 
     async fn moved(
@@ -406,13 +447,13 @@ impl SolanaChain {
         key(&reply["value"]["blockhash"])
     }
 
-    async fn price(&self, writable: &[Key]) -> Result<u64, ChainError> {
+    async fn price(&self, writable: &[Key]) -> Result<Priority, ChainError> {
         let keys: Vec<String> = writable.iter().map(text).collect();
         let reply = self
             .rpc
             .call("getRecentPrioritizationFees", json!([keys]))
             .await?;
-        Ok(price(&reply)?.min(MAX_PRICE))
+        Priority::read(&reply)
     }
 
     async fn simulate(&self, shape: &Shape, blockhash: Key) -> Result<u64, ChainError> {
@@ -662,15 +703,51 @@ fn units_of(transfer: &Transfer) -> Result<u64, ChainError> {
         .map_err(|_| ChainError::Invalid("the amount is too large"))
 }
 
-fn price(reply: &Value) -> Result<u64, ChainError> {
-    let mut fees = reply
-        .as_array()
-        .ok_or_else(ChainError::malformed)?
-        .iter()
-        .map(|entry| count(&entry["prioritizationFee"]))
-        .collect::<Result<Vec<u64>, _>>()?;
-    fees.sort_unstable();
-    Ok(fees.get(fees.len() * 3 / 4).copied().unwrap_or(0))
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Priority(Vec<u64>);
+
+impl Priority {
+    fn read(reply: &Value) -> Result<Self, ChainError> {
+        let mut fees = reply
+            .as_array()
+            .ok_or_else(ChainError::malformed)?
+            .iter()
+            .map(|entry| count(&entry["prioritizationFee"]))
+            .collect::<Result<Vec<u64>, _>>()?;
+        fees.sort_unstable();
+        Ok(Self(fees))
+    }
+
+    fn price(&self, speed: Speed) -> Result<u64, ChainError> {
+        let share = |percent: usize| {
+            self.0
+                .get(self.0.len() * percent / 100)
+                .copied()
+                .unwrap_or(0)
+                .min(MAX_PRICE)
+        };
+        Ok(match speed {
+            Speed::Slow => share(SLOW_SHARE),
+            Speed::Normal => share(NORMAL_SHARE),
+            Speed::Fast => share(FAST_SHARE),
+            Speed::Custom(rate) => {
+                if rate.unit != RateUnit::MicroLamports || rate.amount.decimals() != 0 {
+                    return Err(ChainError::Invalid(
+                        "a Solana priority price is in whole micro-lamports per compute unit",
+                    ));
+                }
+                u64::try_from(rate.amount.units())
+                    .ok()
+                    .filter(|price| *price <= MAX_PRICE)
+                    .ok_or(ChainError::Invalid("this priority price is far too high"))?
+            }
+        })
+    }
+
+    fn wait(&self, price: u64, block_ms: u32) -> Wait {
+        Wait::fitting(&self.0, price, CONFIRM_SLOTS - 1, block_ms)
+            .unwrap_or_else(|| Wait::blocks(CONFIRM_SLOTS, block_ms))
+    }
 }
 
 fn accepted(
@@ -691,7 +768,10 @@ fn failure(err: &Value) -> String {
 
 #[cfg(fuzzing)]
 pub(super) fn fuzz(value: &Value) {
-    let _ = price(value);
+    if let Ok(priority) = Priority::read(value) {
+        let _ = priority.price(Speed::Fast);
+        let _ = priority.wait(u64::MAX, 400);
+    }
     let _ = failure(&value["err"]);
     if let Some(Ok(id)) = value["result"].as_str().map(TxId::new) {
         let _ = accepted(Ok(value["result"].clone()), &id);
@@ -757,19 +837,63 @@ mod tests {
     }
 
     #[test]
-    fn the_priority_price_is_the_upper_quarter_of_recent_slots() {
+    fn each_speed_takes_its_share_of_recent_slots() {
         let reply = |fees: &[u64]| -> Value {
             fees.iter()
                 .enumerate()
                 .map(|(slot, fee)| json!({"slot": slot, "prioritizationFee": fee}))
                 .collect()
         };
-        assert_eq!(price(&reply(&[])).unwrap(), 0);
-        assert_eq!(price(&reply(&[0, 0, 0, 195_096])).unwrap(), 195_096);
-        assert_eq!(price(&reply(&[9, 0, 0, 0, 0, 0, 0, 0])).unwrap(), 0);
-        assert_eq!(price(&reply(&[1, 2, 3, 4, 5, 6, 7, 8])).unwrap(), 7);
-        assert!(price(&json!([{"prioritizationFee": -1}])).is_err());
-        assert!(price(&json!({})).is_err());
+        let normal = |fees: &[u64]| {
+            Priority::read(&reply(fees))
+                .unwrap()
+                .price(Speed::Normal)
+                .unwrap()
+        };
+        assert_eq!(normal(&[]), 0);
+        assert_eq!(normal(&[0, 0, 0, 195_096]), 195_096);
+        assert_eq!(normal(&[9, 0, 0, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(normal(&[1, 2, 3, 4, 5, 6, 7, 8]), 7);
+        assert!(Priority::read(&json!([{"prioritizationFee": -1}])).is_err());
+        assert!(Priority::read(&json!({})).is_err());
+        let busy: Vec<u64> = (1..=20).map(|step| step * 1_000).collect();
+        let market = Priority::read(&reply(&busy)).unwrap();
+        assert_eq!(
+            Speed::CHOICES.map(|speed| market.price(speed).unwrap()),
+            [11_000, 16_000, 20_000]
+        );
+        assert_eq!(market.wait(20_000, 400), Wait::blocks(4, 400));
+        assert_eq!(market.wait(11_000, 400), Wait::blocks(5, 400));
+        assert_eq!(market.wait(500, 400), Wait::Slow);
+        let quiet = Priority::read(&reply(&[0; 150])).unwrap();
+        assert_eq!(
+            Speed::CHOICES.map(|speed| quiet.price(speed).unwrap()),
+            [0, 0, 0]
+        );
+        assert_eq!(quiet.wait(0, 400), Wait::blocks(4, 400));
+        assert_eq!(
+            Priority::read(&reply(&[u64::MAX; 4]))
+                .unwrap()
+                .price(Speed::Fast)
+                .unwrap(),
+            MAX_PRICE
+        );
+        let custom = |units: u64, unit| {
+            Speed::Custom(FeeRate {
+                amount: Amount::new(U256::from(units), 0).unwrap(),
+                unit,
+            })
+        };
+        assert_eq!(
+            market.price(custom(42, RateUnit::MicroLamports)).unwrap(),
+            42
+        );
+        assert!(
+            market
+                .price(custom(MAX_PRICE + 1, RateUnit::MicroLamports))
+                .is_err()
+        );
+        assert!(market.price(custom(42, RateUnit::Gwei)).is_err());
     }
 
     #[test]

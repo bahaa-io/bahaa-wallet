@@ -251,6 +251,7 @@ async fn an_nft_is_never_sent_to_its_own_address() {
             to: item,
             amount: Spend::Exact(Amount::parse("1", 0).unwrap()),
             memo: None,
+            speed: bahaa_engine::Speed::Normal,
         })
         .await;
     assert!(

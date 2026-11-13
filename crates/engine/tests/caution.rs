@@ -121,6 +121,7 @@ fn bnb(wallet: WalletId, to: &str) -> SendRequest {
         to: Address::parse(ChainFamily::Evm, to).unwrap(),
         amount: Spend::Exact(Amount::parse("0.1", 18).unwrap()),
         memo: None,
+        speed: bahaa_engine::Speed::Normal,
     }
 }
 

@@ -226,6 +226,18 @@ impl Wait {
         Self::About(seconds(count, block_ms))
     }
 
+    pub fn fitting(levels: &[u64], price: u64, extra: u64, block_ms: u32) -> Option<Self> {
+        if levels.is_empty() {
+            return None;
+        }
+        let fits = levels.iter().filter(|level| **level <= price).count();
+        if fits == 0 {
+            return Some(Self::Slow);
+        }
+        let tries = u64::try_from(levels.len().div_ceil(fits)).unwrap_or(u64::MAX);
+        Some(Self::blocks(tries.saturating_add(extra), block_ms))
+    }
+
     pub fn over_blocks(count: u64, block_ms: u32) -> Self {
         Self::Over(seconds(count, block_ms))
     }
@@ -239,6 +251,7 @@ fn seconds(blocks: u64, block_ms: u32) -> u64 {
 pub enum RateUnit {
     SatPerVbyte,
     Gwei,
+    MicroLamports,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,6 +275,26 @@ impl Pace {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Speed {
+    Slow,
+    #[default]
+    Normal,
+    Fast,
+    Custom(FeeRate),
+}
+
+impl Speed {
+    pub const CHOICES: [Self; 3] = [Self::Slow, Self::Normal, Self::Fast];
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeeOption {
+    pub speed: Speed,
+    pub fee: Amount,
+    pub pace: Pace,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Replaced {
     pub fee: Amount,
@@ -276,6 +309,7 @@ pub struct FeeQuote {
     pace: Pace,
     replaced: Option<Replaced>,
     withheld: Option<Amount>,
+    options: Vec<FeeOption>,
 }
 
 impl FeeQuote {
@@ -305,6 +339,7 @@ impl FeeQuote {
             pace: Pace::default(),
             replaced: None,
             withheld: None,
+            options: Vec::new(),
         })
     }
 
@@ -332,6 +367,16 @@ impl FeeQuote {
 
     pub fn withheld(&self) -> Option<Amount> {
         self.withheld
+    }
+
+    #[must_use]
+    pub fn offering(mut self, options: Vec<FeeOption>) -> Self {
+        self.options = options;
+        self
+    }
+
+    pub fn options(&self) -> &[FeeOption] {
+        &self.options
     }
 
     pub fn replaced(&self) -> Option<Replaced> {

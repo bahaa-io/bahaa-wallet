@@ -78,7 +78,7 @@ impl EvmChain {
                 )
             }
         };
-        let (base, market_tip) = self.fees().await?;
+        let (base, market_tip) = self.fees().await?.normal();
         let before = self.before(&old.tx, used, base, market_tip)?;
         let tip = market_tip.max(bumped(old.tx.max_priority_fee_per_gas)?);
         let max_fee = base

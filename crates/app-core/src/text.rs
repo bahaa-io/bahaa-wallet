@@ -152,6 +152,23 @@ pub(crate) const FEE: &str = "Fee";
 pub(crate) const MOST_FEE: &str = "Most it can cost";
 pub(crate) const MEMO: &str = "Memo";
 pub(crate) const TOKEN_FEE: &str = "Token fee";
+pub(crate) const SPEED: &str = "Speed";
+pub(crate) const WAIT: &str = "Wait";
+pub(crate) const COMPARED: &str = "Compared with your pick";
+pub(crate) const SLOW_SPEED: &str = "Slow";
+pub(crate) const NORMAL_SPEED: &str = "Normal";
+pub(crate) const FAST_SPEED: &str = "Fast";
+pub(crate) const CUSTOM_SPEED: &str = "Custom";
+pub(crate) const SET_YOUR_OWN: &str = "set your own fee";
+pub(crate) const SAME_PRICE: &str = "same price";
+pub(crate) const NO_FASTER: &str = "no faster now";
+pub(crate) const JUST_AS_FAST: &str = "just as fast";
+pub(crate) const SAME_FEES: &str = "Every speed costs the same right now.";
+pub(crate) const SLOW_HELP: &str = "If it waits too long, you can speed it up from Activity.";
+pub(crate) const CUSTOM_FEE: &str = "Custom fee";
+pub(crate) const USE_THIS_FEE: &str = "Use this fee";
+pub(crate) const CUSTOM_RISK: &str = "Developer setting. You set the price yourself: too low and the transfer can wait for hours or days, or never go through; too high and the extra is simply lost. Once sent, it can't be undone.";
+pub(crate) const ENTER_FEE: &str = "Type a fee first";
 pub(crate) const ARRIVES: &str = "They receive";
 pub(crate) const WITHHELD_NOTE: &str =
     "This token keeps a fee from every transfer, so the recipient gets less than you send.";
@@ -495,7 +512,7 @@ pub(crate) fn more_than(span: &str) -> String {
 
 pub(crate) fn rate_label(unit: RateUnit) -> &'static str {
     match unit {
-        RateUnit::SatPerVbyte => "Fee rate",
+        RateUnit::SatPerVbyte | RateUnit::MicroLamports => "Fee rate",
         RateUnit::Gwei => "Fee limit",
     }
 }
@@ -504,6 +521,7 @@ pub(crate) fn rate_unit(unit: RateUnit) -> &'static str {
     match unit {
         RateUnit::SatPerVbyte => "sat/vB",
         RateUnit::Gwei => "gwei",
+        RateUnit::MicroLamports => "micro-lamports/CU",
     }
 }
 
@@ -1067,4 +1085,61 @@ pub(crate) fn caution(caution: &Caution, ctx: &Ctx<'_>) -> String {
             "This address sent you a tiny amount before. It may be a scam look-alike.".to_owned()
         }
     }
+}
+
+pub(crate) fn picked(speed: &str) -> String {
+    format!("{speed} ✓")
+}
+
+pub(crate) fn under(amount: &str) -> String {
+    format!("<{amount}")
+}
+
+pub(crate) fn more(amount: &str) -> String {
+    format!("{amount} more")
+}
+
+pub(crate) fn less(amount: &str) -> String {
+    format!("{amount} less")
+}
+
+pub(crate) fn sooner(span: &str) -> String {
+    format!("{span} sooner")
+}
+
+pub(crate) fn later(span: &str) -> String {
+    format!("{span} later")
+}
+
+pub(crate) fn tradeoff(cost: &str, time: Option<&str>) -> String {
+    match time {
+        Some(time) => format!("{cost} · {time}"),
+        None => cost.to_owned(),
+    }
+}
+
+pub(crate) fn custom_about(unit: RateUnit) -> &'static str {
+    match unit {
+        RateUnit::SatPerVbyte => {
+            "Set the fee rate yourself, in sat/vB. Bitcoin miners take the transfers that pay the most per byte first."
+        }
+        RateUnit::Gwei => {
+            "Set the priority fee yourself, in gwei. The network's base fee is added on top; this tip decides how soon you're picked."
+        }
+        RateUnit::MicroLamports => {
+            "Set the priority price yourself, in micro-lamports per compute unit. It only matters when Solana is busy."
+        }
+    }
+}
+
+pub(crate) fn today(slow: &str, normal: &str, fast: &str, unit: &str) -> String {
+    format!("Today: slow {slow} · normal {normal} · fast {fast} {unit}")
+}
+
+pub(crate) fn below_slow(slow: &str, unit: &str) -> String {
+    format!("Below today's slow price of {slow} {unit}")
+}
+
+pub(crate) fn times_fast(times: &str, fast: &str, unit: &str) -> String {
+    format!("{times}× today's fast price of {fast} {unit}")
 }

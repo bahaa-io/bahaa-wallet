@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bahaa_chain::{
-    ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, MAX_MEMO, Replace, Signed,
+    ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, MAX_MEMO, Replace, Signed, Speed,
     Step as CallStep, Transfer, TxId, TxStatus, check_call, check_signed,
 };
 use bahaa_crypto::{DeriveError, ExposeSecret, SecretString};
@@ -39,6 +39,7 @@ pub struct SendRequest {
     pub to: Address,
     pub amount: Spend,
     pub memo: Option<String>,
+    pub speed: Speed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,8 +128,9 @@ impl Worker {
         let notices = self.notices_tx.clone();
         let session = self.session;
         let wallet = request.wallet;
+        let speed = request.speed;
         tokio::spawn(async move {
-            let result = chains[chain].prepare(&transfer).await;
+            let result = chains[chain].prepare(&transfer, speed).await;
             let quoted = Quoted {
                 session,
                 wallet,

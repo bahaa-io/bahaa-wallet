@@ -71,6 +71,7 @@ pub enum PageId {
     SendFrom,
     Compose,
     Review,
+    CustomFee,
     Confirm,
     Sent,
     SwapFrom,

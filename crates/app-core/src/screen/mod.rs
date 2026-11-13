@@ -7,6 +7,7 @@ mod portfolio;
 mod receive;
 mod send;
 mod settings;
+mod speed;
 mod swap;
 mod tokens;
 mod unlock;
@@ -19,8 +20,8 @@ use std::cmp::Ordering;
 
 use bahaa_engine::swap::{Provider, SwapRecord, SwapStatus};
 use bahaa_engine::{
-    Address, AssetId, BitcoinScript, ChainFamily, Holding, NetworkId, SecretString, SentStatus,
-    Settings, TonContract, Updates, WalletId, WalletInfo, WalletKind, WordCount,
+    Address, Amount, AssetId, BitcoinScript, ChainFamily, Holding, NetworkId, SecretString,
+    SentStatus, Settings, TonContract, Updates, WalletId, WalletInfo, WalletKind, WordCount,
 };
 
 use crate::action::{Action, Field, Go, Pick, Tab, Toggle};
@@ -184,6 +185,16 @@ pub(crate) fn swap_details(ctx: &Ctx<'_>, swap: &SwapRecord) -> Vec<Line> {
             ),
         )])
         .collect()
+}
+
+pub(crate) fn replaceable(ctx: &Ctx<'_>, network: &NetworkId) -> bool {
+    ctx.network(network)
+        .is_some_and(|network| matches!(network.family(), ChainFamily::Evm | ChainFamily::Bitcoin))
+}
+
+pub(crate) fn native_worth(ctx: &Ctx<'_>, network: &NetworkId, amount: Amount) -> Option<Amount> {
+    ctx.price(&AssetId::Native(network.clone()))
+        .and_then(|price| price.value_of(amount, ctx.fiat().places()).ok())
 }
 
 pub(crate) fn kept_aside(from: &Address) -> Option<Note> {

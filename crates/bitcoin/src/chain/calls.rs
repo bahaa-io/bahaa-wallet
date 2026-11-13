@@ -1,6 +1,6 @@
 use bahaa_chain::{
     Call, ChainError, ContractSwap, DecodedCall, FeeItem, FeeLine, FeeQuote, PlannedCall, Signed,
-    Step, Transfer,
+    Speed, Step, Transfer,
 };
 use bahaa_crypto::Seed;
 use bahaa_types::Amount;
@@ -61,7 +61,7 @@ impl BitcoinChain {
                 "a swap deposit can't go to this wallet's own address",
             ));
         }
-        let rate = estimates.rate();
+        let rate = estimates.rate(Speed::Fast)?;
         let refund_script = locking(script(&funds.change)?);
         let mut shape = vec![
             Output {

@@ -1,4 +1,4 @@
-use bahaa_chain::{ChainError, TxId, Wait};
+use bahaa_chain::{ChainError, FeeRate, RateUnit, Speed, TxId, Wait};
 use bahaa_config::{Network, Protocol};
 use bahaa_types::{Amount, Price};
 use ruint::aliases::U256;
@@ -31,6 +31,10 @@ pub(crate) const TARGETS: [u32; 8] = [2, 3, 6, 12, 24, 72, 144, 504];
 
 const FLOOR_RATE: u64 = 1_000;
 const MAX_RATE: u64 = 5_000_000;
+const FAST: u32 = 2;
+const NORMAL: u32 = 6;
+const SLOW: u32 = 144;
+const RATE_PLACES: u8 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Estimates {
@@ -39,14 +43,53 @@ pub(crate) struct Estimates {
 }
 
 impl Estimates {
-    pub(crate) fn rate(&self) -> u64 {
+    pub(crate) fn rate(&self, speed: Speed) -> Result<u64, ChainError> {
+        let fast = self.at(FAST);
+        let normal = self.at(NORMAL).min(fast);
+        Ok(match speed {
+            Speed::Fast => fast,
+            Speed::Normal => normal,
+            Speed::Slow => self.at(SLOW).min(normal),
+            Speed::Custom(rate) => self.custom(rate)?,
+        })
+    }
+
+    fn floor(&self) -> u64 {
+        self.relay.unwrap_or(FLOOR_RATE)
+    }
+
+    fn at(&self, target: u32) -> u64 {
         self.targets
-            .first()
-            .map(|(_, rate)| *rate)
-            .into_iter()
-            .chain(self.relay)
-            .fold(FLOOR_RATE, u64::max)
+            .iter()
+            .find(|(blocks, _)| *blocks >= target)
+            .or_else(|| self.targets.last())
+            .map_or(0, |(_, rate)| *rate)
+            .max(self.floor())
             .min(MAX_RATE)
+    }
+
+    fn custom(&self, rate: FeeRate) -> Result<u64, ChainError> {
+        let places = rate.amount.decimals();
+        if rate.unit != RateUnit::SatPerVbyte || places > RATE_PLACES {
+            return Err(ChainError::Invalid(
+                "a Bitcoin fee rate is in sat/vB with at most 3 decimals",
+            ));
+        }
+        let scaled = rate
+            .amount
+            .units()
+            .checked_mul(U256::from(10u8).pow(U256::from(RATE_PLACES - places)))
+            .and_then(|units| u64::try_from(units).ok())
+            .ok_or(ChainError::Invalid("this fee rate is far too high"))?;
+        if scaled < self.floor() {
+            return Err(ChainError::Invalid(
+                "this fee rate is below what Bitcoin servers relay",
+            ));
+        }
+        if scaled > MAX_RATE {
+            return Err(ChainError::Invalid("this fee rate is far too high"));
+        }
+        Ok(scaled)
     }
 
     pub(crate) fn wait(&self, rate: u64, block_ms: u32) -> Option<Wait> {
@@ -214,6 +257,62 @@ pub(crate) fn already(message: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn custom(text: &str, unit: RateUnit) -> Speed {
+        let places = text.split('.').nth(1).map_or(0, str::len);
+        Speed::Custom(FeeRate {
+            amount: Amount::parse(text, u8::try_from(places).unwrap()).unwrap(),
+            unit,
+        })
+    }
+
+    #[test]
+    fn each_speed_takes_its_own_target_never_below_what_servers_relay() {
+        let estimates = Estimates {
+            relay: Some(100),
+            targets: vec![
+                (2, 1_070),
+                (3, 1_070),
+                (6, 130),
+                (12, 120),
+                (24, 120),
+                (144, 110),
+                (504, 110),
+            ],
+        };
+        let rate = |speed| estimates.rate(speed).unwrap();
+        assert_eq!(
+            [Speed::Fast, Speed::Normal, Speed::Slow].map(rate),
+            [1_070, 130, 110]
+        );
+        let wait = |speed| estimates.wait(rate(speed), 600_000);
+        assert_eq!(wait(Speed::Fast), Some(Wait::About(1_200)));
+        assert_eq!(wait(Speed::Normal), Some(Wait::About(3_600)));
+        assert_eq!(wait(Speed::Slow), Some(Wait::About(86_400)));
+        let refused_slow = Estimates {
+            relay: Some(100),
+            targets: vec![(2, 3_000), (3, 2_500)],
+        };
+        assert_eq!(refused_slow.rate(Speed::Normal).unwrap(), 2_500);
+        let odd = Estimates {
+            relay: None,
+            targets: vec![(2, 500), (6, 900), (144, 2_000)],
+        };
+        assert_eq!(
+            [Speed::Fast, Speed::Normal, Speed::Slow].map(|speed| odd.rate(speed).unwrap()),
+            [1_000, 1_000, 1_000]
+        );
+        assert_eq!(rate(custom("0.25", RateUnit::SatPerVbyte)), 250);
+        assert_eq!(rate(custom("12", RateUnit::SatPerVbyte)), 12_000);
+        for bad in [
+            custom("0.05", RateUnit::SatPerVbyte),
+            custom("0.0005", RateUnit::SatPerVbyte),
+            custom("6000", RateUnit::SatPerVbyte),
+            custom("2", RateUnit::Gwei),
+        ] {
+            assert!(estimates.rate(bad).is_err(), "{bad:?}");
+        }
+    }
+
     #[test]
     fn estimates_give_the_send_rate_and_the_blocks_any_rate_waits() {
         let estimates = Estimates {
@@ -221,19 +320,19 @@ mod tests {
             targets: vec![(2, 3_000), (6, 2_000), (24, 1_200), (504, 500)],
         };
         let wait = |rate| estimates.wait(rate, 600_000);
-        assert_eq!(estimates.rate(), 3_000);
+        assert_eq!(estimates.rate(Speed::Fast).unwrap(), 3_000);
         assert_eq!(wait(3_500), Some(Wait::About(1_200)));
         assert_eq!(wait(2_000), Some(Wait::About(3_600)));
         assert_eq!(wait(1_000), Some(Wait::About(302_400)));
         assert_eq!(wait(300), Some(Wait::Over(302_400)));
         assert_eq!(wait(50), Some(Wait::Stuck));
-        assert_eq!(Estimates::default().rate(), FLOOR_RATE);
+        assert_eq!(Estimates::default().rate(Speed::Fast).unwrap(), FLOOR_RATE);
         assert_eq!(Estimates::default().wait(2_000, 600_000), None);
         let quiet = Estimates {
             relay: Some(100),
             targets: vec![(2, 120)],
         };
-        assert_eq!(quiet.rate(), FLOOR_RATE);
+        assert_eq!(quiet.rate(Speed::Fast).unwrap(), 120);
     }
 
     #[test]

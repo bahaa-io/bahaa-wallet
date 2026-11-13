@@ -1,6 +1,6 @@
 use bahaa_engine::{
-    Activity, ActivityKind, Address, Amount, AssetId, ChainFamily, Movement, NetworkId, NftArrival,
-    Replace, SentKind, SentTx, WalletId,
+    Activity, ActivityKind, Address, Amount, AssetId, Movement, NetworkId, NftArrival, Replace,
+    SentKind, SentTx, WalletId,
 };
 use ruint::aliases::U256;
 
@@ -8,8 +8,8 @@ use super::nfts::Detail;
 use super::send::Send;
 use super::{
     Screen, button, cell, choice, group, line, network_cell, network_line, note, picked_wallet,
-    search_box, search_empty, silence, status_tone, swap_details, swap_tone, toned_line,
-    wallet_group,
+    replaceable, search_box, search_empty, silence, status_tone, swap_details, swap_tone,
+    toned_line, wallet_group,
 };
 use crate::action::{Action, Direction, Field, Go, Pick, Toggle};
 use crate::core::{Ctx, Nav, Reply};
@@ -474,11 +474,8 @@ fn sent_page(
     buttons: &mut Vec<Button>,
 ) -> (&'static str, String, Vec<Line>, Vec<Note>) {
     let approval = tx.kind == SentKind::Approval;
-    let replaceable = tx.status.is_open()
-        && tx.kind == SentKind::Transfer
-        && ctx.network(&tx.network).is_some_and(|network| {
-            matches!(network.family(), ChainFamily::Evm | ChainFamily::Bitcoin)
-        });
+    let replaceable =
+        tx.status.is_open() && tx.kind == SentKind::Transfer && replaceable(ctx, &tx.network);
     if replaceable {
         buttons.push(button(text::SPEED_UP, Action::Pick(Pick::SpeedUp)));
         buttons.push(button(text::CANCEL_SEND, Action::Pick(Pick::Cancel)));

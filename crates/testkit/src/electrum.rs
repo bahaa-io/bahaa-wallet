@@ -118,6 +118,7 @@ pub struct Ledger {
     pub broadcast: Vec<String>,
     pub refusal: Option<String>,
     pub unestimated: Vec<u64>,
+    pub rates: HashMap<u64, String>,
     pub forge_proofs: bool,
     blocks: HashMap<String, u64>,
     headers: HashMap<u64, [u8; 80]>,
@@ -189,11 +190,14 @@ impl Ledger {
             "blockchain.estimatefee" if self.unestimated.contains(&params[0].as_u64().unwrap()) => {
                 return Err(format!("cannot estimate fee for {} blocks", params[0]));
             }
-            "blockchain.estimatefee" => match params[0].as_u64().unwrap() {
-                0..=2 => serde_json::from_str("2e-05").unwrap(),
-                3..=6 => serde_json::from_str("1.2e-05").unwrap(),
-                _ => serde_json::from_str("5e-06").unwrap(),
-            },
+            "blockchain.estimatefee" => {
+                let target = params[0].as_u64().unwrap();
+                let rate = self
+                    .rates
+                    .get(&target)
+                    .map_or(if target <= 6 { "2e-05" } else { "5e-06" }, String::as_str);
+                serde_json::from_str(rate).unwrap()
+            }
             "blockchain.relayfee" => serde_json::from_str("1e-06").unwrap(),
             "blockchain.transaction.broadcast" => json!(self.accept(&key)?),
             "blockchain.transaction.get" => match self.transactions.get(&key) {

@@ -6,8 +6,8 @@ mod payload;
 mod portfolio;
 
 pub use bahaa_chain::{
-    ChainError, FeeItem, FeeLine, FeeQuote, FeeRate, Gateways, MAX_MEMO, Pace, RateUnit, Replace,
-    Replaced, Transfer, Wait, now,
+    ChainError, FeeItem, FeeLine, FeeOption, FeeQuote, FeeRate, Gateways, MAX_MEMO, Pace, RateUnit,
+    Replace, Replaced, Speed, Transfer, Wait, now,
 };
 pub use bahaa_config::{
     ChainKind, Coin, Color, ConfigError, Explorer, Fiat, Network, Registry, Settings, Token,

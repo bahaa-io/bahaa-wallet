@@ -3,8 +3,8 @@ use std::str::FromStr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use bahaa_chain::{
-    Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Transfer, TxId, TxStatus,
-    amount, on_network,
+    Balance, Chain, ChainError, Decoded, FeeQuote, Replace, Signed, Speed, Transfer, TxId,
+    TxStatus, amount, on_network,
 };
 use bahaa_config::{ChainKind, Coin, Network};
 use bahaa_crypto::{
@@ -230,8 +230,12 @@ impl Chain for BitcoinChain {
             .collect())
     }
 
-    async fn prepare(&self, transfer: &Transfer) -> Result<(BitcoinPlan, FeeQuote), ChainError> {
-        Box::pin(self.plan(transfer)).await
+    async fn prepare_with(
+        &self,
+        transfer: &Transfer,
+        speed: Speed,
+    ) -> Result<(BitcoinPlan, FeeQuote), ChainError> {
+        Box::pin(self.plan(transfer, speed)).await
     }
 
     fn planned<'a>(&self, plan: &'a BitcoinPlan) -> &'a Transfer {
