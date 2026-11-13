@@ -1,6 +1,6 @@
 use bahaa_engine::{
     Address, Amount, AssetId, Caution, ChainFamily, Contact, Draft, EngineError, FeeQuote, Holding,
-    MAX_MEMO, NetworkId, Replace, SendRequest, Speed, Spend, WalletId, is_plain_text,
+    MAX_MEMO, NetworkId, Replace, Resolved, SendRequest, Speed, Spend, WalletId, is_plain_text,
 };
 
 use super::activity::Transfer;
@@ -50,6 +50,8 @@ pub(crate) struct Send {
     to_text: String,
     to: Option<Address>,
     to_problem: Option<String>,
+    name: Option<Resolved>,
+    looking: bool,
     cautions: Vec<Caution>,
     amount_text: String,
     max: bool,
@@ -76,6 +78,8 @@ impl Send {
             to_text: String::new(),
             to: None,
             to_problem: None,
+            name: None,
+            looking: false,
             cautions: Vec::new(),
             amount_text: if one { "1".to_owned() } else { String::new() },
             max: false,
@@ -141,6 +145,8 @@ impl Send {
     fn set_to(&mut self, ctx: &Ctx<'_>) -> Reply {
         self.to = None;
         self.to_problem = None;
+        self.name = None;
+        self.looking = false;
         self.cautions.clear();
         self.error = None;
         if self.to_text.trim().is_empty() {
@@ -160,12 +166,51 @@ impl Send {
         let Some(family) = self.family(ctx) else {
             return Reply::default();
         };
-        match parse::address(&self.to_text, family) {
-            Ok(address) => self.recipient(address, ctx),
-            Err(problem) => {
+        match (parse::address(&self.to_text, family), &self.source) {
+            (Ok(address), _) => self.recipient(address, ctx),
+            (Err(_), Some(source)) if parse::looks_like_name(&self.to_text) => {
+                self.looking = true;
+                let network = source.asset.network().clone();
+                Reply::call(Call::ResolveName(self.to_text.trim().to_owned(), network))
+            }
+            (Err(problem), _) => {
                 self.to_problem = Some(problem);
                 Reply::default()
             }
+        }
+    }
+
+    fn resolved(&mut self, result: Result<Resolved, EngineError>) -> Reply {
+        self.looking = false;
+        match (&mut self.step, result) {
+            (
+                Step::Confirm {
+                    draft, password, ..
+                },
+                Ok(found),
+            ) if found.address == draft.transfer.to => {
+                Reply::call(Call::Confirm(draft.id, super::secret(password)))
+            }
+            (Step::Confirm { password, .. }, Ok(_)) => {
+                *password = Secret::default();
+                self.error = Some(text::NAME_MOVED.to_owned());
+                Reply::default()
+            }
+            (Step::Confirm { .. }, Err(err)) => {
+                self.error = Some(text::error(&err));
+                Reply::default()
+            }
+            (Step::Compose, Ok(found)) => {
+                let address = found.address;
+                self.to = Some(address);
+                self.name = Some(found);
+                Reply::call(Call::Cautions(address))
+            }
+            (Step::Compose, Err(err)) => {
+                self.to_problem = Some(text::error(&err));
+                Reply::default()
+            }
+            _ => Reply::default(),
         }
     }
 
@@ -217,6 +262,8 @@ impl Send {
         let source = self.source.as_ref().ok_or(text::PICK_SOURCE)?;
         let to = match (self.to, self.family(ctx)) {
             (Some(to), _) => to,
+            (None, _) if self.looking => return Err(text::STILL_LOOKING.to_owned()),
+            (None, _) if let Some(problem) = &self.to_problem => return Err(problem.clone()),
             (None, _) if self.to_text.trim().is_empty() => {
                 return Err(text::ENTER_RECIPIENT.to_owned());
             }
@@ -312,7 +359,22 @@ impl Send {
         if let Some(problem) = &self.to_problem {
             return Some(note(Level::Error, problem.clone()));
         }
-        let (to, network) = (self.to?, self.source.as_ref()?.asset.network());
+        if self.looking {
+            return Some(note(Level::Info, text::LOOKING_UP));
+        }
+        let network = self.source.as_ref()?.asset.network();
+        if self.to_text.trim().is_empty() {
+            let mainnet = ctx.network(network).filter(|network| !network.testnet)?;
+            return Some(note(Level::Info, text::to_help(mainnet.family())));
+        }
+        let to = self.to?;
+        if let Some(found) = &self.name {
+            let shown = format::short(&ctx.shown(&to, network));
+            return Some(note(
+                Level::Success,
+                text::name_points(found.service, &shown),
+            ));
+        }
         let known = match (ctx.contact(network, &to), ctx.owner(&to)) {
             (Some(contact), _) => text::known_address(&contact.name),
             (None, Some(wallet)) => text::own_address(&ctx.owner_label(wallet, &to)),
@@ -491,6 +553,9 @@ impl Send {
                 vec![line(text::TO, named(&transfer.to))],
             ),
         };
+        if let Some(found) = self.name.as_ref().filter(|_| how.is_none()) {
+            lines.push(line(text::NAME, text::name_via(&found.name, found.service)));
+        }
         lines.push(network_line(ctx, network));
         if let Some(memo) = &transfer.memo {
             lines.push(line(text::MEMO, memo.clone()));
@@ -603,7 +668,14 @@ impl Send {
                 at,
                 password,
             } => {
-                let call = Call::Confirm(draft.id, super::secret(&password));
+                let call = match &self.name {
+                    Some(found) => {
+                        self.looking = true;
+                        let network = draft.transfer.asset.network().clone();
+                        Call::ResolveName(found.name.clone(), network)
+                    }
+                    None => Call::Confirm(draft.id, super::secret(&password)),
+                };
                 self.step = Step::Confirm {
                     draft,
                     at,
@@ -708,6 +780,7 @@ impl Screen for Send {
     fn done(&mut self, outcome: Outcome, ctx: &Ctx<'_>) -> Reply {
         match outcome {
             Outcome::Cautions(Ok(cautions)) => self.cautions = cautions,
+            Outcome::Resolved(result) => return self.resolved(result),
             Outcome::Drafted(Ok(draft)) => {
                 self.error = None;
                 self.step = Step::Review { draft, at: ctx.now };

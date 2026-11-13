@@ -2,8 +2,8 @@ use bahaa_engine::swap::{
     self, Charged, CostKind, Custody, Method, Provider, Refusal, SwapRecord, SwapStatus,
 };
 use bahaa_engine::{
-    Caution, ChainFamily, EngineError, Fake, FeeItem, Lock, NftKind, RateUnit, Replace, SentStatus,
-    Status, TonContract,
+    Caution, ChainFamily, EngineError, Fake, FeeItem, Lock, NameService, NftKind, RateUnit,
+    Replace, SentStatus, Status, TonContract,
 };
 
 use crate::action::{Channel, Direction, Tab};
@@ -269,6 +269,10 @@ pub(crate) const PICK_SOURCE: &str = "Choose what to send";
 pub(crate) const NOTHING_TO_SEND: &str =
     "Nothing to send yet. Receive coins first, then send them from here.";
 pub(crate) const ENTER_RECIPIENT: &str = "Enter who to send to";
+pub(crate) const LOOKING_UP: &str = "Looking up this name…";
+pub(crate) const STILL_LOOKING: &str = "Wait until the name is looked up";
+pub(crate) const NAME_MOVED: &str =
+    "This name now points to another address. Go back and review the transfer again.";
 pub(crate) const UNKNOWN_ACCOUNT: &str = "This account is not in the wallet anymore";
 pub(crate) const UNKNOWN_ASSET: &str = "This asset is not known to the wallet";
 pub(crate) const MEMO_NOT_HERE: &str = "This network takes no memo for this asset";
@@ -543,6 +547,35 @@ pub(crate) fn receive_title(network: &str) -> String {
 
 pub(crate) fn valid_address(network: &str) -> String {
     format!("A valid {network} address")
+}
+
+pub(crate) fn to_help(family: ChainFamily) -> String {
+    let example = match family {
+        ChainFamily::Ton => "name.ton",
+        ChainFamily::Solana => "name.sns",
+        ChainFamily::Bitcoin => "₿name@domain.com",
+        ChainFamily::Evm | ChainFamily::Tron => "name.eth",
+    };
+    format!("An address, or a name like {example}")
+}
+
+fn name_service(service: NameService) -> &'static str {
+    match service {
+        NameService::Ens => "ENS",
+        NameService::TonDns => "TON DNS",
+        NameService::Sns => "SNS",
+        NameService::SpaceId => "SPACE ID",
+        NameService::Unstoppable => "Unstoppable Domains",
+        NameService::Bip353 => "BIP 353",
+    }
+}
+
+pub(crate) fn name_points(service: NameService, address: &str) -> String {
+    format!("{} name for {address}", name_service(service))
+}
+
+pub(crate) fn name_via(name: &str, service: NameService) -> String {
+    format!("{name} via {}", name_service(service))
 }
 
 pub(crate) fn known_address(name: &str) -> String {

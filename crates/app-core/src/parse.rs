@@ -24,6 +24,11 @@ pub(crate) fn address(text: &str, family: ChainFamily) -> Result<Address, String
     Address::parse(family, text.trim()).map_err(|err| text::sentence(&err.to_string()))
 }
 
+pub(crate) fn looks_like_name(text: &str) -> bool {
+    let text = text.trim();
+    (text.contains('.') || text.contains('@')) && !text.contains(char::is_whitespace)
+}
+
 pub(crate) fn any_address(text: &str, families: &[ChainFamily]) -> Result<Address, String> {
     let tries: Vec<Result<Address, AddressError>> = families
         .iter()

@@ -1,6 +1,6 @@
 use bahaa_engine::{
     Account, Activity, Address, AssetId, BitcoinType, Caution, ChainFamily, Contact, CustomToken,
-    Draft, DraftId, Engine, EngineError, Mark, NetworkId, NewPhrase, PhraseKind, Replace,
+    Draft, DraftId, Engine, EngineError, Mark, NetworkId, NewPhrase, PhraseKind, Replace, Resolved,
     SecretString, SendRequest, SentTx, Settings, SolanaPath, SwapDraft, SwapId, SwapRequest,
     SwapReview, TonContract, WalletId, WalletInfo, swap::SwapRecord,
 };
@@ -34,6 +34,7 @@ pub(crate) enum Call {
     PrepareSwap(SwapRequest),
     ChooseSwap(SwapId, usize),
     Cautions(Address),
+    ResolveName(String, NetworkId),
     SaveContact(Contact),
     RemoveContact(NetworkId, Address),
     AddToken(AssetId),
@@ -51,6 +52,7 @@ pub(crate) enum Outcome {
     Sent(Result<SentTx, EngineError>),
     Ordered(Result<SwapRecord, EngineError>),
     Cautions(Result<Vec<Caution>, EngineError>),
+    Resolved(Result<Resolved, EngineError>),
     Token(Result<CustomToken, EngineError>),
     Receiving(Result<Address, EngineError>),
     Routes(Result<SwapDraft, EngineError>),
@@ -138,6 +140,9 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
             Outcome::Reviewed(engine.choose_swap(id, route).await.map(Box::new))
         }
         Call::Cautions(address) => Outcome::Cautions(engine.cautions(address).await),
+        Call::ResolveName(name, network) => {
+            Outcome::Resolved(engine.resolve_name(name, network).await)
+        }
         Call::SaveContact(contact) => done(engine.save_contact(contact).await),
         Call::RemoveContact(network, address) => {
             done(engine.remove_contact(network, address).await)

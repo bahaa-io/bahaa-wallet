@@ -1555,3 +1555,116 @@ async fn a_new_nft_is_announced_and_listed_in_activity_and_spam_stays_hidden() {
     assert_eq!(hidden[4], "Hidden NFT");
     app.shutdown().await.unwrap();
 }
+
+async fn ens_node(stored: Arc<std::sync::Mutex<String>>) -> String {
+    let word = |value: usize| format!("{value:064x}");
+    let url = bahaa_testkit::serve(move |request| {
+        let result = match request.json()["method"].as_str() {
+            Some("eth_chainId") => json!("0x1"),
+            Some("eth_call") => {
+                let address = stored
+                    .lock()
+                    .unwrap()
+                    .trim_start_matches("0x")
+                    .to_lowercase();
+                let inner = format!("{}{}{address}{}", word(32), word(20), "0".repeat(24));
+                json!(format!(
+                    "0x{}{}{}{inner}",
+                    word(64),
+                    word(0x4976),
+                    word(inner.len() / 2)
+                ))
+            }
+            _ => Json::Null,
+        };
+        Reply::json(200, &json!({"jsonrpc": "2.0", "id": 1, "result": result}))
+    })
+    .await;
+    url.to_string()
+}
+
+#[tokio::test]
+async fn a_name_is_looked_up_shown_on_the_review_and_checked_again_before_sending() {
+    let scratch = Scratch::new();
+    let stored = Arc::new(std::sync::Mutex::new(FRIEND.to_owned()));
+    let ens = ens_node(Arc::clone(&stored)).await;
+    let networks: Vec<_> = bsc_registry(&spending_node().await)
+        .networks()
+        .cloned()
+        .map(|mut network| {
+            if network.id.as_str() == "ethereum" {
+                network.endpoints.truncate(1);
+                network.endpoints[0].url = ens.parse().unwrap();
+            }
+            network
+        })
+        .collect();
+    let registry = Registry::with_networks(networks).unwrap();
+    let (app, _requests, mut view) = imported_on(&scratch, registry, false).await;
+    app.act(Action::Go(Go::Tab(Tab::Send)));
+    let list = until(&mut view, |current| {
+        current.page.id == PageId::SendFrom
+            && current.page.table.as_ref().is_some_and(|table| {
+                table
+                    .rows
+                    .iter()
+                    .any(|row| cells(row)[1] == "BNB Smart Chain")
+            })
+    })
+    .await;
+    let row = list
+        .page
+        .table
+        .as_ref()
+        .unwrap()
+        .rows
+        .iter()
+        .find(|row| cells(row)[1] == "BNB Smart Chain")
+        .unwrap()
+        .clone();
+    app.act(row.open.unwrap());
+    let compose = at(&mut view, PageId::Compose).await;
+    assert_eq!(
+        hint(&compose, Field::To),
+        Some((
+            Level::Info,
+            "An address, or a name like name.eth".to_owned()
+        ))
+    );
+    app.act(Action::Type(Field::To, "Friend.ETH".to_owned()));
+    until(&mut view, |current| {
+        hint(current, Field::To).is_some_and(|(level, text)| {
+            level == Level::Success && text.starts_with("ENS name for 0x3C44")
+        })
+    })
+    .await;
+    app.act(Action::Type(Field::Amount, "1".to_owned()));
+    app.act(Action::Submit);
+    let review = at(&mut view, PageId::Review).await;
+    assert!(
+        review
+            .page
+            .lines
+            .iter()
+            .any(|line| line.label == "Name" && line.value == "friend.eth via ENS"),
+        "{:?}",
+        review.page.lines
+    );
+    *stored.lock().unwrap() = HARDHAT_0.to_owned();
+    app.act(Action::Submit);
+    at(&mut view, PageId::Confirm).await;
+    app.act(Action::Type(Field::Password, PASSWORD.to_owned()));
+    app.act(Action::Submit);
+    until(&mut view, |current| {
+        current.page.error.as_deref()
+            == Some(
+                "This name now points to another address. Go back and review the transfer again.",
+            )
+    })
+    .await;
+    *stored.lock().unwrap() = FRIEND.to_owned();
+    app.act(Action::Type(Field::Password, PASSWORD.to_owned()));
+    app.act(Action::Submit);
+    at(&mut view, PageId::Sent).await;
+    app.shutdown().await.unwrap();
+}
