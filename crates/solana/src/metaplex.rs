@@ -76,7 +76,7 @@ impl<'a> Reader<'a> {
         usize::try_from(u32::from_le_bytes(self.take(4)?.try_into().ok()?)).ok()
     }
 
-    fn text(&mut self) -> Option<String> {
+    pub(crate) fn text(&mut self) -> Option<String> {
         let len = self.count().filter(|len| *len <= MAX_STRING)?;
         let raw = self.take(len)?;
         Some(

@@ -11,10 +11,11 @@ use futures_util::future::try_join;
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
-use super::{SolanaChain, bytes, held};
+use super::{SolanaChain, bytes};
 use crate::metaplex;
 use crate::programs::{Moved, TOKEN, metadata_account, token_account, token_record};
 use crate::rpc::{self, Account};
+use crate::token::held;
 use crate::tx::Key;
 
 mod compressed;
@@ -68,7 +69,7 @@ impl SolanaChain {
 
     pub(super) async fn nft_move(&self, owner: &Key, id: &Key) -> Result<Moved, ChainError> {
         let not_held = ChainError::Invalid("this wallet doesn't hold that NFT");
-        let source = token_account(owner, id)?;
+        let source = token_account(owner, &TOKEN, id)?;
         let found = self
             .accounts(
                 &[
@@ -95,7 +96,7 @@ impl SolanaChain {
                 collection: core.collection,
             });
         }
-        if !one_of_one(item.as_ref()) || held(account.as_ref(), owner, id)? != 1 {
+        if !one_of_one(item.as_ref()) || held(account.as_ref(), &TOKEN, owner, id)? != 1 {
             return Err(not_held);
         }
         let record = metaplex::metadata(record.as_ref(), id)
@@ -128,6 +129,8 @@ impl SolanaChain {
         Ok(Moved::Token {
             mint: *id,
             decimals: 0,
+            program: TOKEN,
+            fee: None,
         })
     }
 
@@ -204,7 +207,11 @@ impl SolanaChain {
     async fn token_nfts(&self, owner: &Key, mints: &[Key]) -> Result<Vec<Nft>, ChainError> {
         let mut keys = Vec::with_capacity(mints.len() * 3);
         for mint in mints {
-            keys.extend([*mint, token_account(owner, mint)?, metadata_account(mint)?]);
+            keys.extend([
+                *mint,
+                token_account(owner, &TOKEN, mint)?,
+                metadata_account(mint)?,
+            ]);
         }
         let found = self.all_accounts(&keys).await?;
         let mut held_nfts = Vec::new();
@@ -212,7 +219,9 @@ impl SolanaChain {
             let [mint_account, account, record] = accounts else {
                 return Err(ChainError::malformed());
             };
-            if !one_of_one(mint_account.as_ref()) || held(account.as_ref(), owner, mint)? != 1 {
+            if !one_of_one(mint_account.as_ref())
+                || held(account.as_ref(), &TOKEN, owner, mint)? != 1
+            {
                 continue;
             }
             let Some(record) = metaplex::metadata(record.as_ref(), mint) else {
@@ -243,7 +252,7 @@ impl SolanaChain {
             .iter()
             .map(|index| {
                 let mint = &held_nfts[*index].0;
-                token_record(mint, &token_account(owner, mint)?)
+                token_record(mint, &token_account(owner, &TOKEN, mint)?)
             })
             .collect::<Result<Vec<_>, _>>()?;
         let (named, states) =

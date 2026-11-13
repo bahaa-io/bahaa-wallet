@@ -5,16 +5,17 @@ use bahaa_chain::{
     ChainError, Failure, FeeItem, FeeLine, FeeQuote, Pace, Signed, Transfer, TxId, TxStatus,
     amount, enough,
 };
-use bahaa_types::to_plain_text;
+use bahaa_types::{Amount, to_plain_text};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use futures_util::future::{try_join3, try_join5};
+use futures_util::future::{try_join, try_join3, try_join5};
 use ruint::aliases::U256;
 use serde_json::{Value, json};
 
-use super::{SolanaChain, TOKEN_READ, bytes, held};
+use super::{SolanaChain, bytes};
 use crate::programs::{Moved, Shape, TOKEN, TOKEN_2022, token_account, token_record};
 use crate::rpc::{self, Account, count, key, text};
+use crate::token::{Blocked, Mint, Scale, frozen, held, needs_memo};
 use crate::tx::{self, Key};
 
 const SIMULATION_LIMIT: u32 = 1_400_000;
@@ -39,6 +40,7 @@ pub(super) struct Rent {
     account: u64,
     token: u64,
     record: u64,
+    size: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -79,14 +81,22 @@ impl SolanaChain {
     ) -> Result<(SolanaPlan, FeeQuote), ChainError> {
         self.sendable(transfer)?;
         let (from, to) = (bytes(&transfer.from)?, bytes(&transfer.to)?);
-        let moved = self.moved(transfer, &from).await?;
+        let (moved, token) = self.moved(transfer, &from).await?;
         let (mint, decimals) = self.units_of_move(&moved, transfer)?;
         let coin = moved == Moved::Coin;
         let token_accounts = touched(&moved, mint.as_ref(), &from, &to)?;
         let program = program_fee(&moved);
-        let (wallets, tokens, rent, blockhash, price) = self
-            .read(from, to, &token_accounts, &locked(&moved))
-            .await?;
+        let size = token.as_ref().map_or(TOKEN_ACCOUNT, |found| found.opening);
+        let ((wallets, tokens, rent, blockhash, price), epoch) = try_join(
+            self.read(from, to, &token_accounts, &locked(&moved), size),
+            async {
+                match token.as_ref().and_then(|found| found.fee) {
+                    Some(_) => self.epoch().await.map(Some),
+                    None => Ok(None),
+                }
+            },
+        )
+        .await?;
         let state = State {
             sol: Funds {
                 symbol: self.network.native.symbol.clone(),
@@ -106,31 +116,21 @@ impl SolanaChain {
             limit: SIMULATION_LIMIT,
             price: 0,
         };
-        let opening = if let Some(mint) = &mint {
-            held(tokens[1].as_ref(), &to, mint)?;
-            let source = held(tokens[0].as_ref(), &from, mint)?;
-            if transfer.max {
-                transfer.take_all(amount(U256::from(source), decimals)?)?;
-            }
-            shape.units = units_of(&transfer)?;
-            Funds {
-                symbol: self.symbol(mint),
-                decimals,
-                held: source,
-            }
-            .cover(shape.units)?;
+        let (withheld, opening) = if mint.is_some() {
+            let withheld =
+                self.token_units(&mut shape, &mut transfer, token.as_ref(), &tokens, epoch)?;
             let opening = Opening::of(&tokens, rent);
             state
                 .sol
                 .cover(SIGNATURE_FEE.saturating_add(opening.paid))?;
-            opening
+            (withheld, opening)
         } else if !coin {
             if transfer.max {
                 transfer.take_all(amount(U256::from(1u8), 0)?)?;
             }
             shape.units = 1;
             state.sol.cover(SIGNATURE_FEE.saturating_add(program))?;
-            Opening::default()
+            (None, Opening::default())
         } else {
             shape.units = if transfer.max {
                 state.sol.held.saturating_sub(SIGNATURE_FEE)
@@ -139,7 +139,7 @@ impl SolanaChain {
             };
             state.sol.cover(shape.units.saturating_add(SIGNATURE_FEE))?;
             state.first_deposit(shape.units)?;
-            Opening::default()
+            (None, Opening::default())
         };
         let consumed = self.simulate(&shape, blockhash).await?;
         shape.limit = consumed
@@ -166,8 +166,62 @@ impl SolanaChain {
         let sent = if coin { shape.units } else { 0 };
         state.spend(&[fee, opening.paid, sent, program], opening.refund)?;
         let message = tx::compile(from, blockhash, &shape.instructions()?)?;
-        let fee = self.fee_quote(shape.limit, priority, opening.net(), program)?;
+        let mut fee = self.fee_quote(shape.limit, priority, opening.net(), program)?;
+        if let Some(withheld) = withheld {
+            fee = fee.withholding(withheld);
+        }
         Ok((SolanaPlan { transfer, message }, fee))
+    }
+
+    fn token_units(
+        &self,
+        shape: &mut Shape,
+        transfer: &mut Transfer,
+        token: Option<&Mint>,
+        tokens: &[Option<Account>],
+        epoch: Option<u64>,
+    ) -> Result<Option<Amount>, ChainError> {
+        let (mint, decimals) = match &shape.moved {
+            Moved::Token { mint, decimals, .. } => (*mint, *decimals),
+            Moved::Programmable { mint, .. } => (*mint, 0),
+            _ => return Err(ChainError::malformed()),
+        };
+        let (owner, scale) =
+            token.map_or((TOKEN, Scale::PLAIN), |found| (found.program, found.scale));
+        held(tokens[1].as_ref(), &owner, &shape.to, &mint)?;
+        let source = held(tokens[0].as_ref(), &owner, &shape.from, &mint)?;
+        if let Some(found) = token {
+            sendable_token(found, tokens, shape.memo.is_some())?;
+        }
+        if transfer.max {
+            shape.units = source;
+            transfer.take_all(amount(scale.shown(source)?, decimals)?)?;
+        } else {
+            shape.units = scale.raw(transfer.amount.units())?;
+            if shape.units == 0 {
+                return Err(ChainError::Invalid(
+                    "the amount is too small for this token",
+                ));
+            }
+            transfer.amount = amount(scale.shown(shape.units)?, decimals)?;
+        }
+        enough(
+            &self.symbol(&mint),
+            scale.shown(shape.units)?,
+            scale.shown(source)?,
+            decimals,
+        )?;
+        let (Some(config), Moved::Token { fee, .. }) =
+            (token.and_then(|found| found.fee), &mut shape.moved)
+        else {
+            return Ok(None);
+        };
+        let charged = config.fee(epoch.ok_or_else(ChainError::malformed)?, shape.units);
+        *fee = Some(charged);
+        if charged == 0 {
+            return Ok(None);
+        }
+        Ok(Some(amount(scale.shown(charged)?, decimals)?))
     }
 
     async fn read(
@@ -176,6 +230,7 @@ impl SolanaChain {
         to: Key,
         token_accounts: &[Key],
         locked: &[Key],
+        size: u64,
     ) -> Result<(Vec<Option<Account>>, Vec<Option<Account>>, Rent, Key, u64), ChainError> {
         let mut writable = vec![from];
         if token_accounts.is_empty() {
@@ -189,10 +244,10 @@ impl SolanaChain {
                 if token_accounts.is_empty() {
                     Ok(Vec::new())
                 } else {
-                    self.accounts(token_accounts, Some(TOKEN_READ)).await
+                    self.accounts(token_accounts, None).await
                 }
             },
-            self.rent(),
+            self.rent(size),
             self.blockhash(),
             self.price(&writable),
         )
@@ -239,16 +294,32 @@ impl SolanaChain {
             .paced(Pace::blocks(CONFIRM_SLOTS, self.network.block_ms)))
     }
 
-    async fn moved(&self, transfer: &Transfer, from: &Key) -> Result<Moved, ChainError> {
+    async fn moved(
+        &self,
+        transfer: &Transfer,
+        from: &Key,
+    ) -> Result<(Moved, Option<Mint>), ChainError> {
         let Some(nft) = transfer.asset.nft() else {
             return Ok(match transfer.asset.contract() {
-                None => Moved::Coin,
+                None => (Moved::Coin, None),
                 Some(mint) => {
                     let mint = bytes(mint)?;
-                    Moved::Token {
-                        mint,
-                        decimals: self.token_decimals(&mint).await?,
-                    }
+                    let found = self
+                        .mints(&[mint], true)
+                        .await?
+                        .into_iter()
+                        .next()
+                        .ok_or_else(ChainError::malformed)?;
+                    self.quote_mint(&found, mint);
+                    (
+                        Moved::Token {
+                            mint,
+                            decimals: found.decimals,
+                            program: found.program,
+                            fee: None,
+                        },
+                        Some(found),
+                    )
                 }
             });
         };
@@ -257,7 +328,7 @@ impl SolanaChain {
                 "a Solana NFT is one of a kind, send just 1",
             ));
         }
-        self.nft_move(from, &bytes(nft.address())?).await
+        Ok((self.nft_move(from, &bytes(nft.address())?).await?, None))
     }
 
     fn units_of_move(
@@ -267,7 +338,7 @@ impl SolanaChain {
     ) -> Result<(Option<Key>, u8), ChainError> {
         let (mint, decimals) = match moved {
             Moved::Coin => (None, self.network.native.decimals),
-            Moved::Token { mint, decimals } => (Some(*mint), *decimals),
+            Moved::Token { mint, decimals, .. } => (Some(*mint), *decimals),
             Moved::Core { .. } | Moved::Compressed(_) => (None, 0),
             Moved::Programmable { mint, .. } => (Some(*mint), 0),
         };
@@ -291,10 +362,11 @@ impl SolanaChain {
         Ok(())
     }
 
-    async fn rent(&self) -> Result<Rent, ChainError> {
+    async fn rent(&self, size: u64) -> Result<Rent, ChainError> {
         let cached = *self.rent.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((at, rent)) = cached
             && at.elapsed() < RENT_FOR
+            && rent.size == size
         {
             return Ok(rent);
         }
@@ -307,14 +379,23 @@ impl SolanaChain {
             )
         };
         let (account, token, record) =
-            try_join3(minimum(0), minimum(TOKEN_ACCOUNT), minimum(TOKEN_RECORD)).await?;
+            try_join3(minimum(0), minimum(size), minimum(TOKEN_RECORD)).await?;
         let rent = Rent {
             account,
             token,
             record,
+            size,
         };
         *self.rent.lock().unwrap_or_else(PoisonError::into_inner) = Some((Instant::now(), rent));
         Ok(rent)
+    }
+
+    async fn epoch(&self) -> Result<u64, ChainError> {
+        let reply = self
+            .rpc
+            .call("getEpochInfo", json!([{"commitment": "confirmed"}]))
+            .await?;
+        count(&reply["epoch"])
     }
 
     async fn blockhash(&self) -> Result<Key, ChainError> {
@@ -493,6 +574,49 @@ fn locked(moved: &Moved) -> Vec<Key> {
     }
 }
 
+fn sendable_token(mint: &Mint, tokens: &[Option<Account>], memo: bool) -> Result<(), ChainError> {
+    match mint.blocked {
+        Some(Blocked::Bound) => {
+            return Err(ChainError::Invalid(
+                "this token is bound to its holder and can't be sent",
+            ));
+        }
+        Some(Blocked::Paused) => {
+            return Err(ChainError::Invalid(
+                "the token's issuer has paused its transfers",
+            ));
+        }
+        Some(Blocked::Hooked) => {
+            return Err(ChainError::Unsupported(
+                "tokens that run their own program on every transfer",
+            ));
+        }
+        None => {}
+    }
+    let [source, destination] = [&tokens[0], &tokens[1]].map(|account| {
+        account
+            .as_ref()
+            .filter(|account| account.owner == mint.program)
+    });
+    if source.is_some_and(frozen) {
+        return Err(ChainError::Invalid(
+            "the token's issuer froze this wallet's token account",
+        ));
+    }
+    match destination {
+        Some(account) if frozen(account) => Err(ChainError::Invalid(
+            "the token's issuer froze the recipient's token account",
+        )),
+        Some(account) if !memo && needs_memo(account)? => Err(ChainError::Invalid(
+            "the recipient's token account takes only transfers with a memo",
+        )),
+        None if mint.starts_frozen => Err(ChainError::Invalid(
+            "new accounts of this token start frozen, the recipient must open one through its issuer",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn touched(
     moved: &Moved,
     mint: Option<&Key>,
@@ -502,7 +626,14 @@ fn touched(
     let Some(mint) = mint else {
         return Ok(Vec::new());
     };
-    let mut keys = vec![token_account(from, mint)?, token_account(to, mint)?];
+    let program = match moved {
+        Moved::Token { program, .. } => *program,
+        _ => TOKEN,
+    };
+    let mut keys = vec![
+        token_account(from, &program, mint)?,
+        token_account(to, &program, mint)?,
+    ];
     if matches!(moved, Moved::Programmable { .. }) {
         keys.extend([token_record(mint, &keys[0])?, token_record(mint, &keys[1])?]);
     }

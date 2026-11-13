@@ -3,12 +3,12 @@ use bahaa_chain::{
 };
 use bahaa_config::Feature;
 use bahaa_types::{Address, AssetId};
-use ruint::aliases::U256;
 use serde_json::{Value, json};
 
 use super::{SolanaChain, bytes};
 use crate::programs::{MEMO, MEMO_V1, token_account};
 use crate::rpc::{self, count, key};
+use crate::token::Scale;
 use crate::tx::{self, Key};
 
 const PAGE: usize = 50;
@@ -18,6 +18,7 @@ struct History {
     address: Key,
     asset: AssetId,
     decimals: u8,
+    scale: Scale,
     mint: Option<Key>,
 }
 
@@ -59,26 +60,34 @@ impl SolanaChain {
         cursor: Option<ScanCursor>,
     ) -> Result<Option<Scanned>, ChainError> {
         let owner = bytes(owner)?;
-        let mut histories = Vec::new();
-        for asset in assets
+        let ours: Vec<&AssetId> = assets
             .iter()
             .filter(|asset| asset.network() == &self.network.id)
-        {
-            histories.push(match asset.contract() {
-                None => History {
+            .collect();
+        let mints = ours
+            .iter()
+            .filter_map(|asset| asset.contract())
+            .map(bytes)
+            .collect::<Result<Vec<Key>, _>>()?;
+        let mut details = mints.iter().zip(self.mints(&mints, false).await?);
+        let mut histories = Vec::new();
+        for asset in ours {
+            histories.push(if asset.contract().is_none() {
+                History {
                     address: owner,
                     asset: asset.clone(),
                     decimals: self.network.native.decimals,
+                    scale: Scale::PLAIN,
                     mint: None,
-                },
-                Some(contract) => {
-                    let mint = bytes(contract)?;
-                    History {
-                        address: token_account(&owner, &mint)?,
-                        asset: asset.clone(),
-                        decimals: self.token_decimals(&mint).await?,
-                        mint: Some(mint),
-                    }
+                }
+            } else {
+                let (mint, found) = details.next().ok_or_else(ChainError::malformed)?;
+                History {
+                    address: token_account(&owner, &found.program, mint)?,
+                    asset: asset.clone(),
+                    decimals: found.decimals,
+                    scale: found.scale,
+                    mint: Some(*mint),
                 }
             });
         }
@@ -293,7 +302,7 @@ fn movement(
             from: Address::Solana(from),
             to: Address::Solana(to),
             asset: history.asset.clone(),
-            amount: amount(U256::from(units), history.decimals)?,
+            amount: amount(history.scale.shown(units)?, history.decimals)?,
             block: count(&found["slot"])?,
             time: count(&found["blockTime"])?,
             memo,
@@ -405,6 +414,7 @@ pub(super) fn fuzz(value: &Value) {
             address: [0; 32],
             asset: asset.clone(),
             decimals: 9,
+            scale: Scale::PLAIN,
             mint,
         };
         let _ = movement(value, &[0; 32], &history, &id);
@@ -433,6 +443,7 @@ mod tests {
                 Some(mint) => format!("solana/{mint}").parse().unwrap(),
             },
             decimals: if mint.is_some() { 6 } else { 9 },
+            scale: Scale::PLAIN,
             mint: mint.map(solana),
         }
     }

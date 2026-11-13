@@ -21,9 +21,13 @@ pub const OWNER: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
 pub const FRIEND: &str = "2bUBiBNZyD29gP1oV6de7nxowMLoDBtopMMTGgMvjG5m";
 pub const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 pub const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+pub const TOKEN_2022: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+pub const AAPLX: &str = "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp";
+pub const BERN: &str = "CKfatsPMUf8SkiURsDXs7eK6GWb4Jsd6UDbs7twMCWxo";
 const SYSTEM: &str = "11111111111111111111111111111111";
 const BLOCKHASH: &str = "Aiyo4Fg2XByNaEhKv3LtX5h9Q8Y2kzhhCZhsnV5fBsrw";
-const RENT: u64 = 650_240;
+const RENT_PER_BYTE: u64 = 5_080;
+const RENT_OVERHEAD: u64 = 128;
 pub const TOKEN_RENT: u64 = 1_488_440;
 pub const RECORD_RENT: u64 = 1_056_640;
 
@@ -71,12 +75,59 @@ pub fn wallet(lamports: u64) -> Value {
 }
 
 pub fn token_account(owner: &str, mint: &str, units: u64) -> Value {
+    token_account_with(TOKEN, owner, mint, units, &[])
+}
+
+pub fn token_account_with(
+    program: &str,
+    owner: &str,
+    mint: &str,
+    units: u64,
+    extensions: &[(u16, &[u8])],
+) -> Value {
     let mut data = key(mint).to_vec();
     data.extend_from_slice(&key(owner));
     data.extend_from_slice(&units.to_le_bytes());
     data.resize(165, 0);
     data[108] = 1;
-    json!({"lamports": TOKEN_RENT, "owner": TOKEN, "executable": false, "data": [STANDARD.encode(data), "base64"], "space": 165})
+    if program == TOKEN_2022 {
+        data.push(2);
+        for (kind, value) in extensions {
+            data.extend_from_slice(&kind.to_le_bytes());
+            data.extend_from_slice(&u16::try_from(value.len()).unwrap().to_le_bytes());
+            data.extend_from_slice(value);
+        }
+    }
+    let space = data.len();
+    json!({"lamports": TOKEN_RENT, "owner": program, "executable": false, "data": [STANDARD.encode(data), "base64"], "space": space})
+}
+
+pub fn recorded_mint(name: &str) -> Value {
+    let all: Value = serde_json::from_str(include_str!("../fixtures/token2022.json")).unwrap();
+    all["mints"][name]["account"].clone()
+}
+
+pub fn edited_mint(name: &str, edit: impl FnOnce(&mut Vec<u8>)) -> Value {
+    let mut account = recorded_mint(name);
+    let mut data = STANDARD
+        .decode(account["data"][0].as_str().unwrap())
+        .unwrap();
+    edit(&mut data);
+    account["data"] = json!([STANDARD.encode(&data), "base64"]);
+    account["space"] = json!(data.len());
+    account
+}
+
+fn known_mint(key: &str) -> Option<Value> {
+    match key {
+        USDC => {
+            let all: Value = serde_json::from_str(include_str!("../fixtures/usdc.json")).unwrap();
+            Some(all["mint"].clone())
+        }
+        AAPLX => Some(recorded_mint("AAPLx")),
+        BERN => Some(recorded_mint("BERN")),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Default)]
@@ -84,6 +135,7 @@ pub struct Ledger {
     pub accounts: HashMap<String, Value>,
     pub fees: Vec<u64>,
     pub units: u64,
+    pub epoch: u64,
     pub simulation_error: Option<Value>,
     pub sent: Option<Value>,
     pub status: Value,
@@ -105,20 +157,20 @@ impl Ledger {
                     .unwrap()
                     .iter()
                     .map(|key| {
+                        let key = key.as_str().unwrap();
                         self.accounts
-                            .get(key.as_str().unwrap())
+                            .get(key)
                             .cloned()
+                            .or_else(|| known_mint(key))
                             .unwrap_or(Value::Null)
                     })
                     .collect();
                 json!({"context": {"slot": 1}, "value": listed})
             }
-            "getMinimumBalanceForRentExemption" => match params[0].as_u64().unwrap() {
-                0 => json!(RENT),
-                165 => json!(TOKEN_RENT),
-                80 => json!(RECORD_RENT),
-                other => panic!("rent for {other} bytes"),
-            },
+            "getMinimumBalanceForRentExemption" => {
+                json!((RENT_OVERHEAD + params[0].as_u64().unwrap()) * RENT_PER_BYTE)
+            }
+            "getEpochInfo" => json!({"epoch": self.epoch, "slotIndex": 1, "slotsInEpoch": 432_000}),
             "getLatestBlockhash" => {
                 json!({"context": {"slot": 1}, "value": {"blockhash": BLOCKHASH, "lastValidBlockHeight": 9}})
             }

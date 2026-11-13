@@ -72,7 +72,10 @@ impl Jupiter {
             return Err(SwapError::Unsupported);
         }
         let (sold, bought) = (mint(&request.sell), mint(&request.buy));
-        let units = u64::try_from(request.amount.units()).map_err(|_| SwapError::Unsupported)?;
+        let units = chain
+            .raw_units(&request.sell, &request.amount)
+            .await
+            .map_err(|_| SwapError::Unsupported)?;
         let mut url = self.base.join("quote").map_err(|_| unreadable())?;
         url.query_pairs_mut()
             .append_pair("inputMint", &sold)
@@ -122,11 +125,7 @@ impl Jupiter {
                 "the route pays someone else or less than it shows",
             ));
         }
-        let guaranteed =
-            u128::from(out) * u128::from(WHOLE_BPS - terms.slippage) / u128::from(WHOLE_BPS);
-        let amount =
-            |units: U256| Amount::new(units, request.buy_decimals).map_err(|_| unreadable());
-        let (expected, minimum) = (amount(U256::from(out))?, amount(U256::from(guaranteed))?);
+        let (expected, minimum) = received(chain, request, out, terms.slippage).await?;
         let route = Route {
             provider: Provider::Jupiter.name(),
             method: Method::Aggregator,
@@ -163,6 +162,26 @@ impl Jupiter {
         };
         Ok((route, order))
     }
+}
+
+async fn received(
+    chain: &SolanaChain,
+    request: &Request,
+    out: u64,
+    slippage: u16,
+) -> Result<(Amount, Amount), SwapError> {
+    let guaranteed = u128::from(out) * u128::from(WHOLE_BPS - slippage) / u128::from(WHOLE_BPS);
+    let guaranteed = u64::try_from(guaranteed).map_err(|_| unreadable())?;
+    let (expected, minimum) = futures_util::future::try_join(
+        chain.shown_amount(&request.buy, out),
+        chain.shown_amount(&request.buy, guaranteed),
+    )
+    .await
+    .map_err(|_| unreadable())?;
+    if expected.decimals() != request.buy_decimals {
+        return Err(SwapError::Untrusted("the token's decimals changed"));
+    }
+    Ok((expected, minimum))
 }
 
 fn mint(asset: &AssetId) -> String {

@@ -6,7 +6,7 @@ use bahaa_chain::{Chain, FeeItem, Transfer};
 use bahaa_config::Registry;
 use bahaa_solana::SolanaChain;
 use bahaa_types::Amount;
-use common::{FRIEND, address, native, usdc};
+use common::{AAPLX, BERN, FRIEND, address, native, usdc};
 
 const RICH: &str = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 
@@ -122,5 +122,53 @@ async fn live_nft_transfers_of_every_kind_pass_a_real_simulation() {
         let (plan, fee) = chain.prepare(&transfer).await.unwrap();
         assert_eq!(chain.planned(&plan).asset, transfer.asset);
         assert!(fee.expected().units() > ruint::aliases::U256::ZERO);
+    }
+}
+
+#[tokio::test]
+#[ignore = "talks to the real Solana mainnet"]
+async fn live_token_2022_transfers_pass_a_real_simulation() {
+    let chain = mainnet();
+    for (holder, mint, amount, decimals, fee) in [
+        (
+            "fr6yQkDmWy6R6pecbUsxXaw6EvRJznZ2HsK5frQgud8",
+            "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "1",
+            6,
+            false,
+        ),
+        (
+            "AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY",
+            AAPLX,
+            "0.01",
+            8,
+            false,
+        ),
+        (
+            "CbJ7xF4nZeAnhERehC4fqDtDn5EzMMZJtB9QYJotKdjB",
+            BERN,
+            "0.01",
+            5,
+            true,
+        ),
+    ] {
+        let asset: bahaa_types::AssetId = format!("solana/{mint}").parse().unwrap();
+        let held = chain
+            .balances(&address(holder), std::slice::from_ref(&asset))
+            .await
+            .unwrap();
+        assert!(!held[0].amount.is_zero(), "{mint}");
+        let transfer = Transfer {
+            account: 0,
+            from: address(holder),
+            to: address(FRIEND),
+            asset,
+            amount: Amount::parse(amount, decimals).unwrap(),
+            max: false,
+            memo: None,
+        };
+        let (plan, quote) = chain.prepare(&transfer).await.unwrap();
+        assert_eq!(chain.planned(&plan).amount, transfer.amount, "{mint}");
+        assert_eq!(quote.withheld().is_some(), fee, "{mint}");
     }
 }

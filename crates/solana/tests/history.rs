@@ -8,10 +8,14 @@ use bahaa_chain::ScanCursor;
 use bahaa_solana::SolanaChain;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use common::{Ledger, address, called, native, node, serve, solana_on, usdc};
+use common::{
+    AAPLX, Ledger, TOKEN_2022, address, called, native, node, serve, solana_on, token_account_with,
+    usdc,
+};
 use serde_json::{Value, json};
 
 const BINANCE: &str = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+const BINANCE_AAPLX: &str = "DK2ZeJzewxjESATTTwQwh7GNx3QxhWbbLpqcgPVGryot";
 
 fn recorded() -> Value {
     serde_json::from_str(include_str!("fixtures/history.json")).unwrap()
@@ -162,4 +166,25 @@ async fn token_histories_are_read_only_for_opened_token_accounts() {
         .map(|params| params[0].clone())
         .collect();
     assert_eq!(listings, [json!(BINANCE)]);
+}
+
+#[tokio::test]
+async fn token_2022_histories_are_read_from_the_token_2022_account() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut ledger = Ledger::default();
+    ledger.accounts.insert(
+        BINANCE_AAPLX.to_owned(),
+        token_account_with(TOKEN_2022, BINANCE, AAPLX, 5, &[(7, &[])]),
+    );
+    let chain = SolanaChain::new(solana_on(&[node(Arc::clone(&log), ledger).await])).unwrap();
+    let aaplx = format!("solana/{AAPLX}").parse().unwrap();
+    chain
+        .scan(&address(BINANCE), &[native(), aaplx], None)
+        .await
+        .unwrap();
+    let listings: Vec<Value> = called(&log, "getSignaturesForAddress")
+        .into_iter()
+        .map(|params| params[0].clone())
+        .collect();
+    assert_eq!(listings, [json!(BINANCE), json!(BINANCE_AAPLX)]);
 }

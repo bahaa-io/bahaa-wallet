@@ -32,6 +32,8 @@ const COMPRESSED_TRANSFER_V2: [u8; 8] = [119, 40, 6, 235, 234, 221, 248, 49];
 const V1_ACCOUNTS: usize = 8;
 const V2_ACCOUNTS: usize = 11;
 const TRANSFER_CHECKED: u8 = 12;
+const TRANSFER_FEE: u8 = 26;
+const WITH_FEE: u8 = 1;
 const CREATE_IDEMPOTENT: u8 = 1;
 const UNIT_LIMIT: u8 = 2;
 const UNIT_PRICE: u8 = 3;
@@ -43,9 +45,20 @@ const fn id(text: &str) -> Key {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Moved {
     Coin,
-    Token { mint: Key, decimals: u8 },
-    Core { asset: Key, collection: Option<Key> },
-    Programmable { mint: Key, rules: Option<Key> },
+    Token {
+        mint: Key,
+        decimals: u8,
+        program: Key,
+        fee: Option<u64>,
+    },
+    Core {
+        asset: Key,
+        collection: Option<Key>,
+    },
+    Programmable {
+        mint: Key,
+        rules: Option<Key>,
+    },
     Compressed(Box<Compressed>),
 }
 
@@ -82,9 +95,14 @@ impl Shape {
                     data,
                 });
             }
-            Moved::Token { mint, decimals } => {
-                let source = token_account(&self.from, mint)?;
-                let destination = token_account(&self.to, mint)?;
+            Moved::Token {
+                mint,
+                decimals,
+                program,
+                fee,
+            } => {
+                let source = token_account(&self.from, program, mint)?;
+                let destination = token_account(&self.to, program, mint)?;
                 list.push(Instruction {
                     program: ASSOCIATED,
                     accounts: vec![
@@ -93,16 +111,22 @@ impl Shape {
                         meta(self.to, false, false),
                         meta(*mint, false, false),
                         meta(SYSTEM, false, false),
-                        meta(TOKEN, false, false),
+                        meta(*program, false, false),
                     ],
                     data: vec![CREATE_IDEMPOTENT],
                 });
                 list.extend(memo);
-                let mut data = vec![TRANSFER_CHECKED];
+                let mut data = match fee {
+                    None => vec![TRANSFER_CHECKED],
+                    Some(_) => vec![TRANSFER_FEE, WITH_FEE],
+                };
                 data.extend_from_slice(&self.units.to_le_bytes());
                 data.push(*decimals);
+                if let Some(fee) = fee {
+                    data.extend_from_slice(&fee.to_le_bytes());
+                }
                 list.push(Instruction {
-                    program: TOKEN,
+                    program: *program,
                     accounts: vec![
                         meta(source, false, true),
                         meta(*mint, false, false),
@@ -195,8 +219,8 @@ impl Shape {
     }
 
     fn programmable(&self, mint: Key, rules: Option<Key>) -> Result<Instruction, ChainError> {
-        let source = token_account(&self.from, &mint)?;
-        let destination = token_account(&self.to, &mint)?;
+        let source = token_account(&self.from, &TOKEN, &mint)?;
+        let destination = token_account(&self.to, &TOKEN, &mint)?;
         let mut data = PROGRAMMABLE_TRANSFER.to_vec();
         data.extend_from_slice(&self.units.to_le_bytes());
         data.push(0);
@@ -277,21 +301,7 @@ impl Shape {
                 let (to, moving) = read_compressed(last).ok_or_else(unknown)?;
                 (to, Moved::Compressed(Box::new(moving)), 1)
             }
-            TOKEN => {
-                let owner = instructions
-                    .iter()
-                    .find(|instruction| instruction.program == ASSOCIATED)
-                    .and_then(|create| create.accounts.get(2))
-                    .ok_or_else(unknown)?
-                    .key;
-                let mint = account(1)?;
-                let decimals = *last.data.get(9).ok_or_else(unknown)?;
-                (
-                    owner,
-                    Moved::Token { mint, decimals },
-                    units(last.data.get(1..9))?,
-                )
-            }
+            TOKEN | TOKEN_2022 => read_token(instructions, last).ok_or_else(unknown)?,
             _ => return Err(unknown()),
         };
         let memo = match instructions
@@ -323,8 +333,8 @@ impl Shape {
     }
 }
 
-pub(crate) fn token_account(owner: &Key, mint: &Key) -> Result<Key, ChainError> {
-    derived(&[owner, &TOKEN, mint], &ASSOCIATED)
+pub(crate) fn token_account(owner: &Key, program: &Key, mint: &Key) -> Result<Key, ChainError> {
+    derived(&[owner, program, mint], &ASSOCIATED)
 }
 
 pub(crate) fn metadata_account(mint: &Key) -> Result<Key, ChainError> {
@@ -367,6 +377,33 @@ fn derived(seeds: &[&[u8]], program: &Key) -> Result<Key, ChainError> {
         .ok_or(ChainError::Invalid(
             "no account address exists for this token",
         ))
+}
+
+fn read_token(instructions: &[Instruction], last: &Instruction) -> Option<(Key, Moved, u64)> {
+    let owner = instructions
+        .iter()
+        .find(|instruction| instruction.program == ASSOCIATED)?
+        .accounts
+        .get(2)?
+        .key;
+    let word = |bytes: Option<&[u8]>| Some(u64::from_le_bytes(bytes?.try_into().ok()?));
+    let (rest, fee) = match last.data.as_slice() {
+        [TRANSFER_CHECKED, rest @ ..] => (rest, None),
+        [TRANSFER_FEE, WITH_FEE, rest @ ..] if last.program == TOKEN_2022 => {
+            (rest, Some(word(rest.get(9..17))?))
+        }
+        _ => return None,
+    };
+    Some((
+        owner,
+        Moved::Token {
+            mint: last.accounts.get(1)?.key,
+            decimals: *rest.get(8)?,
+            program: last.program,
+            fee,
+        },
+        word(rest.get(..8))?,
+    ))
 }
 
 fn read_compressed(instruction: &Instruction) -> Option<(Key, Compressed)> {
@@ -455,13 +492,13 @@ mod tests {
         let owner = key("B1iGmDJdvmxyUiYM8UEo2Uw2D58EmUrw4KyLYMmrhf8V");
         let mint = key("SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt");
         assert_eq!(
-            token_account(&owner, &mint).unwrap(),
+            token_account(&owner, &TOKEN, &mint).unwrap(),
             key("EDNd1ycsydWYwVmrYZvqYazFqwk1QjBgAUKFjBoz1jKP")
         );
         let owner = key("68dzdXkni9BrAwU1asAwurMEdQhXUJq6MNY8niDAny8t");
         let mint = key("7atgF8KQo4wJrD5ATGX7t1V2zVvykPJbFfNeVf1icFv1");
         assert_eq!(
-            derived(&[&owner, &TOKEN_2022, &mint], &ASSOCIATED).unwrap(),
+            token_account(&owner, &TOKEN_2022, &mint).unwrap(),
             key("3PaFQnebQMHBgthRScup2B932cMxA1GBP7m9roCkomHq")
         );
     }
@@ -488,6 +525,22 @@ mod tests {
     const TOKEN_MOVE: Moved = Moved::Token {
         mint: [7; 32],
         decimals: 6,
+        program: TOKEN,
+        fee: None,
+    };
+
+    const TOKEN_2022_MOVE: Moved = Moved::Token {
+        mint: [7; 32],
+        decimals: 6,
+        program: TOKEN_2022,
+        fee: None,
+    };
+
+    const FEE_MOVE: Moved = Moved::Token {
+        mint: [7; 32],
+        decimals: 6,
+        program: TOKEN_2022,
+        fee: Some(40_350),
     };
 
     fn core(collection: Option<Key>) -> Moved {
@@ -548,6 +601,8 @@ mod tests {
             shape(Moved::Coin, Some("deposit 4417 🙂")),
             shape(TOKEN_MOVE, None),
             shape(TOKEN_MOVE, Some("invoice 12")),
+            shape(TOKEN_2022_MOVE, None),
+            shape(FEE_MOVE, Some("invoice 13")),
             Shape {
                 units: 1,
                 ..shape(core(None), None)

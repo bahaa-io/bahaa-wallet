@@ -10,12 +10,16 @@ use bahaa_types::{Amount, AssetId};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use common::{
-    FRIEND, Ledger, Log, OWNER, TOKEN, USDC, address, called, native, node, seed, solana_on,
-    token_account, usdc, wallet,
+    AAPLX, BERN, FRIEND, Ledger, Log, OWNER, TOKEN, TOKEN_2022, USDC, address, called, edited_mint,
+    native, node, seed, solana_on, token_account, token_account_with, usdc, wallet,
 };
 use serde_json::{Value, json};
 
 const OWNER_USDC: &str = "5N3f1tj9v1vc5TUZ8S7mCAnVmjVKrfnzXWhxLaxyZAgt";
+const OWNER_AAPLX: &str = "3s4MfAv21S88M2Lsq9bwKHgd6TnA2FcXk13vRD7FvLEj";
+const FRIEND_AAPLX: &str = "7S4gcRsorTTSv94qX3vLwRwKKGiRMhp6cR8EyJa6Xdy7";
+const OWNER_BERN: &str = "29g64q6UDASAkMchmVW688eM2oRkm5sXb7JmgVPNQR4k";
+const IMMUTABLE: (u16, &[u8]) = (7, &[]);
 
 fn ledger(owner: u64) -> Ledger {
     let mut ledger = Ledger {
@@ -236,4 +240,170 @@ async fn a_sent_transfer_is_followed_until_it_is_confirmed() {
     other.sent = Some(json!("1111"));
     let (chain, _) = connect(other).await;
     assert!(chain.broadcast(&signed).await.is_err());
+}
+
+fn token(mint: &str) -> AssetId {
+    format!("solana/{mint}").parse().unwrap()
+}
+
+fn holds(signed: &[u8], data: &[u8]) -> bool {
+    signed.windows(data.len()).any(|window| window == data)
+}
+
+fn instruction(head: &[u8], units: u64, decimals: u8, fee: Option<u64>) -> Vec<u8> {
+    let mut data = head.to_vec();
+    data.extend_from_slice(&units.to_le_bytes());
+    data.push(decimals);
+    if let Some(fee) = fee {
+        data.extend_from_slice(&fee.to_le_bytes());
+    }
+    data
+}
+
+fn with_bern(units: u64) -> Ledger {
+    let mut tokens = ledger(1_000_000_000);
+    tokens.units = 30_000;
+    tokens.epoch = 900;
+    tokens.accounts.insert(
+        OWNER_BERN.to_owned(),
+        token_account_with(TOKEN_2022, OWNER, BERN, units, &[IMMUTABLE, (2, &[0; 8])]),
+    );
+    tokens
+}
+
+fn with_aaplx(units: u64) -> Ledger {
+    let mut tokens = ledger(1_000_000_000);
+    tokens.units = 30_000;
+    tokens.accounts.insert(
+        OWNER_AAPLX.to_owned(),
+        token_account_with(TOKEN_2022, OWNER, AAPLX, units, &[IMMUTABLE]),
+    );
+    tokens
+}
+
+fn extension(data: &[u8], kind: u16) -> usize {
+    let mut at = 166;
+    loop {
+        let found = u16::from_le_bytes([data[at], data[at + 1]]);
+        let len = usize::from(u16::from_le_bytes([data[at + 2], data[at + 3]]));
+        if found == kind {
+            return at + 4;
+        }
+        at += 4 + len;
+    }
+}
+
+#[tokio::test]
+async fn a_token_2022_fee_is_named_signed_and_kept_from_what_arrives() {
+    let (chain, log) = connect(with_bern(5_000_000)).await;
+    let sent = transfer(token(BERN), "10", 5);
+    let (plan, fee) = chain.prepare(&sent).await.unwrap();
+    assert_eq!(
+        lines(&fee),
+        [
+            (FeeItem::Signature, "0.000005".to_owned()),
+            (
+                FeeItem::Priority { units: 36_000 },
+                "0.000000036".to_owned()
+            ),
+            (FeeItem::Activation, "0.0015748".to_owned()),
+        ]
+    );
+    assert_eq!(fee.withheld().unwrap().to_string(), "0.269");
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    assert!(holds(
+        &signed.bytes,
+        &instruction(&[26, 1], 1_000_000, 5, Some(26_900))
+    ));
+    let decoded = chain.decode(&signed).unwrap();
+    check_signed(&sent, &decoded).unwrap();
+    assert_eq!(decoded.asset, token(BERN));
+    assert_eq!(called(&log, "getEpochInfo").len(), 1);
+    let mut all = transfer(token(BERN), "0", 5);
+    all.max = true;
+    let (plan, fee) = chain.prepare(&all).await.unwrap();
+    assert_eq!(chain.planned(&plan).amount.to_string(), "50");
+    assert_eq!(fee.withheld().unwrap().to_string(), "1.345");
+}
+
+#[tokio::test]
+async fn scaled_tokens_send_the_raw_amount_that_shows_as_typed() {
+    let (chain, log) = connect(with_aaplx(187_360)).await;
+    let sent = transfer(token(AAPLX), "0.001", 8);
+    let (plan, fee) = chain.prepare(&sent).await.unwrap();
+    assert_eq!(fee.withheld(), None);
+    assert_eq!(fee.lines().last().unwrap().amount.to_string(), "0.00155956");
+    let signed = chain.sign(&plan, &seed()).unwrap();
+    assert!(holds(&signed.bytes, &instruction(&[12], 99_622, 8, None)));
+    let decoded = chain.decode(&signed).unwrap();
+    check_signed(&sent, &decoded).unwrap();
+    assert_eq!(decoded.amount.to_string(), "0.001");
+    assert_eq!(called(&log, "getEpochInfo"), Vec::<Value>::new());
+    let mut all = transfer(token(AAPLX), "0", 8);
+    all.max = true;
+    let (plan, _) = chain.prepare(&all).await.unwrap();
+    assert_eq!(chain.planned(&plan).amount.to_string(), "0.00188072");
+    let too_much = chain
+        .prepare(&transfer(token(AAPLX), "0.002", 8))
+        .await
+        .unwrap_err();
+    let ChainError::Insufficient {
+        needed, available, ..
+    } = too_much
+    else {
+        panic!("{too_much}");
+    };
+    assert_eq!(
+        (needed.to_string(), available.to_string()),
+        ("0.002".to_owned(), "0.00188072".to_owned())
+    );
+}
+
+async fn refused(ledger: Ledger, memo: Option<&str>) -> Option<String> {
+    let (chain, log) = connect(ledger).await;
+    let mut sent = transfer(token(AAPLX), "0.001", 8);
+    sent.memo = memo.map(str::to_owned);
+    let outcome = chain.prepare(&sent).await;
+    if outcome.is_err() {
+        assert_eq!(called(&log, "simulateTransaction"), Vec::<Value>::new());
+    }
+    outcome.err().map(|err| err.to_string())
+}
+
+#[tokio::test]
+async fn token_2022_transfers_that_would_fail_are_refused_with_the_reason() {
+    let mut hooked = with_aaplx(187_360);
+    hooked.accounts.insert(
+        AAPLX.to_owned(),
+        edited_mint("AAPLx", |data| {
+            let at = extension(data, 14);
+            data[at + 32..at + 64].copy_from_slice(&[9; 32]);
+        }),
+    );
+    assert!(refused(hooked, None).await.unwrap().contains("own program"));
+    let mut paused = with_aaplx(187_360);
+    paused.accounts.insert(
+        AAPLX.to_owned(),
+        edited_mint("AAPLx", |data| {
+            let at = extension(data, 26);
+            data[at + 32] = 1;
+        }),
+    );
+    assert!(refused(paused, None).await.unwrap().contains("paused"));
+    let mut frozen = with_aaplx(187_360);
+    let mut account = token_account_with(TOKEN_2022, OWNER, AAPLX, 187_360, &[IMMUTABLE]);
+    let mut data = STANDARD
+        .decode(account["data"][0].as_str().unwrap())
+        .unwrap();
+    data[108] = 2;
+    account["data"] = json!([STANDARD.encode(&data), "base64"]);
+    frozen.accounts.insert(OWNER_AAPLX.to_owned(), account);
+    assert!(refused(frozen, None).await.unwrap().contains("froze"));
+    let mut picky = with_aaplx(187_360);
+    picky.accounts.insert(
+        FRIEND_AAPLX.to_owned(),
+        token_account_with(TOKEN_2022, FRIEND, AAPLX, 0, &[IMMUTABLE, (8, &[1])]),
+    );
+    assert!(refused(picky.clone(), None).await.unwrap().contains("memo"));
+    assert_eq!(refused(picky, Some("order 7")).await, None);
 }

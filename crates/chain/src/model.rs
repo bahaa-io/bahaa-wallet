@@ -275,6 +275,7 @@ pub struct FeeQuote {
     lines: Vec<FeeLine>,
     pace: Pace,
     replaced: Option<Replaced>,
+    withheld: Option<Amount>,
 }
 
 impl FeeQuote {
@@ -303,6 +304,7 @@ impl FeeQuote {
             lines,
             pace: Pace::default(),
             replaced: None,
+            withheld: None,
         })
     }
 
@@ -318,8 +320,18 @@ impl FeeQuote {
         self
     }
 
+    #[must_use]
+    pub fn withholding(mut self, withheld: Amount) -> Self {
+        self.withheld = Some(withheld);
+        self
+    }
+
     pub fn pace(&self) -> Pace {
         self.pace
+    }
+
+    pub fn withheld(&self) -> Option<Amount> {
+        self.withheld
     }
 
     pub fn replaced(&self) -> Option<Replaced> {

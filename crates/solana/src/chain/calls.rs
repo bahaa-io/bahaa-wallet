@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use super::{SolanaChain, bytes, signer};
 use crate::programs::{ASSOCIATED, BUDGET, MEMO, MEMO_V1, SYSTEM, TOKEN, TOKEN_2022, WRAPPED};
 use crate::rpc::{count, key, text};
+use crate::token::Scale;
 use crate::tx::{self, Key, MAX_TX, Wire};
 
 const SIGNATURE_FEE: u64 = 5_000;
@@ -185,8 +186,18 @@ impl SolanaChain {
             "commitment": "confirmed",
             "accounts": {"addresses": [text(&from)], "encoding": "base64"},
         }]);
-        let reply = self.rpc.call("simulateTransaction", params).await?;
-        judge(&wire, &from, swap, &reply["value"])
+        let (reply, sold, bought) = futures_util::future::try_join3(
+            self.rpc.call("simulateTransaction", params),
+            self.scale_of(&swap.sell, false),
+            async {
+                match &swap.buy {
+                    Some((asset, _)) => self.scale_of(asset, false).await.map(|(scale, _)| scale),
+                    None => Ok(Scale::PLAIN),
+                }
+            },
+        )
+        .await?;
+        judge(&wire, &from, swap, &reply["value"], [sold.0, bought])
     }
 }
 
@@ -214,6 +225,7 @@ fn judge(
     owner: &Key,
     swap: &ContractSwap,
     value: &Value,
+    scales: [Scale; 2],
 ) -> Result<Outcome, ChainError> {
     if !value["err"].is_null() {
         return Err(ChainError::Rejected(to_plain_text(
@@ -267,7 +279,7 @@ fn judge(
         .filter(|index| **index != 0 && pre[**index] == 0)
         .map(|index| post[*index])
         .sum();
-    check_moves(&moved, swap)?;
+    check_moves(&moved, swap, scales)?;
     check_authority(wire, value, &keys, owner)?;
     let wallet = &value["accounts"][0];
     if wallet["owner"].as_str() != Some(&text(&SYSTEM)) || wallet["data"][0] != "" {
@@ -333,26 +345,30 @@ fn mint_of(asset: &AssetId) -> Result<Option<Key>, ChainError> {
     asset.contract().map(bytes).transpose()
 }
 
-fn check_moves(moved: &BTreeMap<Option<Key>, i128>, swap: &ContractSwap) -> Result<(), ChainError> {
-    let units =
-        |amount: &Amount| i128::try_from(amount.units()).map_err(|_| ChainError::overflow());
+fn check_moves(
+    moved: &BTreeMap<Option<Key>, i128>,
+    swap: &ContractSwap,
+    [sold_scale, bought_scale]: [Scale; 2],
+) -> Result<(), ChainError> {
     let sold = mint_of(&swap.sell)?;
     let bought = swap
         .buy
         .as_ref()
-        .map(|(asset, minimum)| Ok::<_, ChainError>((mint_of(asset)?, units(minimum)?)))
+        .map(|(asset, minimum)| Ok::<_, ChainError>((mint_of(asset)?, minimum.units())))
         .transpose()?;
-    if moved.get(&sold).copied().unwrap_or(0) != -units(&swap.amount)? {
+    let taken = i128::from(sold_scale.raw(swap.amount.units())?);
+    if moved.get(&sold).copied().unwrap_or(0) != -taken {
         return Err(ChainError::Invalid(
             "the swap would take another amount than the one shown",
         ));
     }
-    if let Some((mint, minimum)) = bought
-        && moved.get(&mint).copied().unwrap_or(0) < minimum
-    {
-        return Err(ChainError::Invalid(
-            "the swap would pay less than its minimum",
-        ));
+    if let Some((mint, minimum)) = bought {
+        let received = u64::try_from(moved.get(&mint).copied().unwrap_or(0)).unwrap_or(0);
+        if bought_scale.shown(received)? < minimum {
+            return Err(ChainError::Invalid(
+                "the swap would pay less than its minimum",
+            ));
+        }
     }
     let others = moved.iter().any(|(mint, change)| {
         *mint != sold && bought.is_none_or(|(bought, _)| bought != *mint) && *change < 0
@@ -481,12 +497,14 @@ pub(crate) fn fuzz(data: &[u8]) {
         ours: false,
         spent: None,
     };
-    let _ = judge(&wire, &[1; 32], &swap, &value);
+    let _ = judge(&wire, &[1; 32], &swap, &value, [Scale::PLAIN, Scale::PLAIN]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PLAIN_PAIR: [Scale; 2] = [Scale::PLAIN, Scale::PLAIN];
 
     fn fixture() -> Value {
         serde_json::from_str(include_str!("../../tests/fixtures/jupiter.json")).unwrap()
@@ -529,7 +547,13 @@ mod tests {
     fn judged(minimum: &str, sold: &str) -> Result<Outcome, ChainError> {
         let (data, swap) = swap(minimum, sold);
         let wire = tx::read(&data).unwrap();
-        judge(&wire, &whale(), &swap, &fixture()["simulation"]["value"])
+        judge(
+            &wire,
+            &whale(),
+            &swap,
+            &fixture()["simulation"]["value"],
+            PLAIN_PAIR,
+        )
     }
 
     #[test]
@@ -558,7 +582,7 @@ mod tests {
         let mut value = fixture()["simulation"]["value"].clone();
         value["err"] = json!({"InstructionError": [4, {"Custom": 6001}]});
         assert!(matches!(
-            judge(&wire, &whale(), &swap, &value),
+            judge(&wire, &whale(), &swap, &value, PLAIN_PAIR),
             Err(ChainError::Rejected(_))
         ));
         let refused =
@@ -569,12 +593,52 @@ mod tests {
             "accounts": [text(&[9; 32]), text(&[8; 32]), text(&whale())],
             "data": bs58::encode([APPROVE, 1, 0, 0, 0, 0, 0, 0, 0]).into_string(),
         });
-        assert_eq!(judge(&wire, &whale(), &swap, &value).unwrap_err(), refused);
+        assert_eq!(
+            judge(&wire, &whale(), &swap, &value, PLAIN_PAIR).unwrap_err(),
+            refused
+        );
         let mut value = fixture()["simulation"]["value"].clone();
         value["innerInstructions"][0]["instructions"][1]["parsed"] = json!({
             "type": "setAuthority",
             "info": {"authority": text(&whale()), "account": text(&[9; 32])},
         });
-        assert_eq!(judge(&wire, &whale(), &swap, &value).unwrap_err(), refused);
+        assert_eq!(
+            judge(&wire, &whale(), &swap, &value, PLAIN_PAIR).unwrap_err(),
+            refused
+        );
+    }
+
+    #[test]
+    fn scaled_tokens_are_checked_in_the_units_they_really_move() {
+        let all: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/token2022.json")).unwrap();
+        let recorded = &all["mints"]["AAPLx"];
+        let mint = key(&recorded["key"]).unwrap();
+        let scale = crate::token::Mint::read(
+            crate::rpc::account(&recorded["account"]).unwrap().as_ref(),
+            &mint,
+            all["recorded"].as_u64().unwrap(),
+        )
+        .unwrap()
+        .scale;
+        let (_, mut swap) = swap("0.5", "0");
+        swap.sell = format!("solana/{}", text(&mint)).parse().unwrap();
+        swap.amount = Amount::parse("0.001", 8).unwrap();
+        swap.buy = Some(("solana".parse().unwrap(), Amount::parse("0.5", 9).unwrap()));
+        let moved = |sold: i128, bought: i128| BTreeMap::from([(Some(mint), sold), (None, bought)]);
+        let scales = [scale, Scale::PLAIN];
+        assert!(check_moves(&moved(-99_622, 500_000_000), &swap, scales).is_ok());
+        assert!(check_moves(&moved(-100_000, 500_000_000), &swap, scales).is_err());
+        assert!(check_moves(&moved(-99_622, 499_999_999), &swap, scales).is_err());
+        swap.sell = "solana".parse().unwrap();
+        swap.amount = Amount::parse("1", 9).unwrap();
+        swap.buy = Some((
+            format!("solana/{}", text(&mint)).parse().unwrap(),
+            Amount::parse("0.001", 8).unwrap(),
+        ));
+        let bought = |units: i128| BTreeMap::from([(None, -1_000_000_000), (Some(mint), units)]);
+        let scales = [Scale::PLAIN, scale];
+        assert!(check_moves(&bought(99_622), &swap, scales).is_ok());
+        assert!(check_moves(&bought(99_621), &swap, scales).is_err());
     }
 }
