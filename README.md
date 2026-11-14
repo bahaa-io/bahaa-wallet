@@ -67,6 +67,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 
 - **Wallets:** create or import 12- and 24-word phrases, TON's own phrases, or a single private key for any network, with several wallets and accounts.
 - **Balances:** coins and tokens on every network, valued in USD, EUR or IRT.
+- **Price charts:** each coin's page shows its price over a day, a week, a month, a year or all time, and how much it moved. Point at the chart, or use the arrow keys, to read the price at any moment (times in UTC).
 - **Solana tokens:** classic and Token-2022, with amounts shown as the token defines them and any token fee shown before you send.
 - **Bitcoin:** every address type (Legacy 1…, Nested SegWit 3…, Native SegWit and Taproot) and old uncompressed keys, found from your wallet's history, with a fresh address for every payment.
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
@@ -101,7 +102,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Solana Token-2022:** tokens that run their own program on every transfer can't be sent yet, and private (confidential) balances aren't shown.
 - **EVM memos only go with coins** sent to a plain address. With tokens and contracts, they would break the call.
 - **Names point only to the network you send on:** a name with just an Ethereum address doesn't work on BNB Chain. `.sol` names wait until SNS switches them on (use `.sns`), Avvy (`.avax`) isn't supported, and the DNS server sees which `₿` name you look up.
-- **Only listed networks** for now, and values only for assets Bahaa prices.
+- **Only listed networks** for now, and values and charts only for assets Bahaa prices.
 - **Public servers:** if a network's servers are down, that network pauses until they're back.
 - **Swaps across networks go through a provider:** it holds your coins for seconds to minutes and refunds you if it fails.
 - **Avalanche swaps aren't simulated before signing:** its public servers can't.
