@@ -7,6 +7,7 @@ use reqwest::header::{CONTENT_TYPE, ETAG, IF_NONE_MATCH, RETRY_AFTER};
 use thiserror::Error;
 use url::Url;
 
+use crate::history::{self, Point, Span};
 use crate::protocol::{self, Quotes};
 
 pub const MAX_REPLY: usize = 1024 * 1024;
@@ -42,7 +43,14 @@ pub enum Fetch {
 #[derive(Clone, Debug)]
 pub struct RestClient {
     http: reqwest::Client,
+    api: Url,
     rates: Url,
+}
+
+struct Answer {
+    status: StatusCode,
+    etag: Option<String>,
+    body: Vec<u8>,
 }
 
 impl RestClient {
@@ -55,7 +63,11 @@ impl RestClient {
             .timeout(TIMEOUT)
             .build()
             .map_err(|err| MarketError::Network(err.to_string()))?;
-        Ok(Self { http, rates })
+        Ok(Self {
+            http,
+            api: api.clone(),
+            rates,
+        })
     }
 
     pub async fn fetch(
@@ -83,14 +95,60 @@ impl RestClient {
         if let Some(etag) = etag {
             request = request.header(IF_NONE_MATCH, etag);
         }
+        let answer = self.send(request).await?;
+        if answer.status == StatusCode::NOT_MODIFIED {
+            return Ok(Fetch::NotModified);
+        }
+        let items = protocol::read_envelope(&answer.body);
+        if !answer.status.is_success() {
+            return Err(items
+                .err()
+                .unwrap_or(MarketError::Http(answer.status.as_u16())));
+        }
+        Ok(Fetch::Fresh {
+            quotes: protocol::quotes(items?, base, wanted),
+            etag: answer.etag,
+        })
+    }
+
+    pub async fn history(
+        &self,
+        id: &PriceId,
+        base: &str,
+        span: Span,
+        now: u64,
+    ) -> Result<Vec<Point>, MarketError> {
+        if !protocol::is_base(base) {
+            return Err(MarketError::Invalid(
+                "a price base is 3 to 5 capital letters",
+            ));
+        }
+        let mut url = self.api.clone();
+        url.path_segments_mut()
+            .map_err(|()| MarketError::Invalid("not a usable price service address"))?
+            .pop_if_empty()
+            .extend(["v1", "history", id.category(), id.symbol()]);
+        let (resolution, from) = span.query(now);
+        url.query_pairs_mut()
+            .append_pair("res", resolution)
+            .append_pair("from", &from.to_string())
+            .append_pair("base", base);
+        let answer = self.send(self.http.get(url)).await?;
+        let points = history::read(&answer.body);
+        if !answer.status.is_success() {
+            return Err(points
+                .err()
+                .unwrap_or(MarketError::Http(answer.status.as_u16())));
+        }
+        points
+    }
+
+    async fn send(&self, request: reqwest::RequestBuilder) -> Result<Answer, MarketError> {
         let mut response = request
             .send()
             .await
             .map_err(|err| MarketError::Network(err.without_url().to_string()))?;
         let status = response.status();
-        if status == StatusCode::NOT_MODIFIED {
-            return Ok(Fetch::NotModified);
-        }
         if status == StatusCode::TOO_MANY_REQUESTS {
             let wait = response
                 .headers()
@@ -123,13 +181,6 @@ impl RestClient {
             }
             body.extend_from_slice(&chunk);
         }
-        let items = protocol::read_envelope(&body);
-        if !status.is_success() {
-            return Err(items.err().unwrap_or(MarketError::Http(status.as_u16())));
-        }
-        Ok(Fetch::Fresh {
-            quotes: protocol::quotes(items?, base, wanted),
-            etag,
-        })
+        Ok(Answer { status, etag, body })
     }
 }

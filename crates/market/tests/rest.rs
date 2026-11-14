@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bahaa_market::{Fetch, MarketError, RestClient};
+use bahaa_market::{Fetch, MarketError, RestClient, Span};
 use bahaa_testkit::Reply;
 use bahaa_types::PriceId;
 use url::Url;
@@ -138,6 +138,46 @@ async fn needs_no_request_for_nothing_and_checks_the_base() {
 }
 
 #[tokio::test]
+async fn reads_a_price_history_for_the_asked_span_and_base() {
+    let history = r#"{"ok": true, "meta": {"columns": ["t", "o", "h", "l", "c", "v"]},
+        "result": [[1794441600, 1, 1, 1, 1.25, null], [1794528000, 1, 1, 1, 1.5, null]]}"#;
+    let (url, server) = serve(vec![
+        ok(history, "W/\"1\""),
+        plain(
+            404,
+            &[],
+            r#"{"ok": false, "code": "NOT_FOUND", "description": "unknown asset"}"#,
+        ),
+    ])
+    .await;
+    let client = RestClient::new(&url).unwrap();
+    let gram: PriceId = "crypto/GRAM".parse().unwrap();
+    let points = client
+        .history(&gram, "EUR", Span::Week, 1_794_600_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        points
+            .iter()
+            .map(|point| point.price.to_string())
+            .collect::<Vec<_>>(),
+        ["1.25", "1.5"]
+    );
+    assert!(
+        server.lock().unwrap()[0]
+            .starts_with("GET /v1/history/crypto/GRAM?res=1h&from=1793995200&base=EUR ")
+    );
+    assert!(matches!(
+        client.history(&gram, "EUR", Span::Day, 1_794_600_000).await,
+        Err(MarketError::Api { .. })
+    ));
+    assert!(matches!(
+        client.history(&gram, "eur", Span::Day, 1_794_600_000).await,
+        Err(MarketError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
 #[ignore = "talks to api.bahaa.io"]
 async fn live_bahaa_api() {
     let client = RestClient::new(&Url::parse("https://api.bahaa.io/").unwrap()).unwrap();
@@ -155,4 +195,13 @@ async fn live_bahaa_api() {
         .await
         .unwrap();
     assert!(matches!(again, Fetch::NotModified | Fetch::Fresh { .. }));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let gram: PriceId = "crypto/GRAM".parse().unwrap();
+    for span in Span::ALL {
+        let points = client.history(&gram, "USDT", span, now).await.unwrap();
+        assert!(points.len() > 20, "{span:?} gave {}", points.len());
+    }
 }

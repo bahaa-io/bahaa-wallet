@@ -1,8 +1,10 @@
 use std::collections::BTreeSet;
 
+use crate::history;
 use crate::protocol::{self, Frame, Item};
 
 pub fn frames(data: &[u8]) {
+    let _ = history::read(data);
     if let Ok(items) = protocol::read_envelope(data) {
         quote_all(items);
     }

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bahaa_types::{Price, PriceId};
 use serde::Deserialize;
+use serde::de::{DeserializeOwned, IgnoredAny};
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
@@ -18,14 +19,12 @@ pub struct Quote {
 pub type Quotes = BTreeMap<PriceId, Quote>;
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct Envelope {
+struct Envelope<T, M> {
     ok: bool,
-    #[serde(default)]
     code: Option<String>,
-    #[serde(default)]
     description: Option<String>,
-    #[serde(default)]
-    result: Option<Vec<Item>>,
+    meta: Option<M>,
+    result: Option<T>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,8 +115,10 @@ pub fn query(wanted: &BTreeSet<PriceId>, base: &str) -> Value {
     })
 }
 
-pub(crate) fn read_envelope(body: &[u8]) -> Result<Vec<Item>, MarketError> {
-    let envelope: Envelope =
+pub(crate) fn open<T: DeserializeOwned, M: DeserializeOwned>(
+    body: &[u8],
+) -> Result<(T, Option<M>), MarketError> {
+    let envelope: Envelope<T, M> =
         serde_json::from_slice(body).map_err(|err| MarketError::Format(err.to_string()))?;
     if !envelope.ok {
         return Err(MarketError::Api {
@@ -125,9 +126,14 @@ pub(crate) fn read_envelope(body: &[u8]) -> Result<Vec<Item>, MarketError> {
             description: envelope.description.unwrap_or_default(),
         });
     }
-    envelope
+    let result = envelope
         .result
-        .ok_or_else(|| MarketError::Format("reply without a result".to_owned()))
+        .ok_or_else(|| MarketError::Format("reply without a result".to_owned()))?;
+    Ok((result, envelope.meta))
+}
+
+pub(crate) fn read_envelope(body: &[u8]) -> Result<Vec<Item>, MarketError> {
+    open::<_, IgnoredAny>(body).map(|(items, _)| items)
 }
 
 pub(crate) fn quotes(items: Vec<Item>, base: &str, wanted: &BTreeSet<PriceId>) -> Quotes {

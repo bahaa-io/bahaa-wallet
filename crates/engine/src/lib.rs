@@ -16,7 +16,7 @@ pub use bahaa_config::{
 pub use bahaa_crypto::{
     ExposeSecret, MnemonicError, SecretString, TonPhraseError, WordCount, english_words,
 };
-pub use bahaa_market::{MarketConfig, MarketError, Quote, Snapshot, Status};
+pub use bahaa_market::{MarketConfig, MarketError, Point, Quote, Snapshot, Span, Status};
 pub use bahaa_store::{
     Contact, CustomToken, Mark, Movement, NftArrival, Outgoing, Received, Scan, SentKind,
     SentStatus, SentTx, StoreError,

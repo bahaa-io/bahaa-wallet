@@ -1,10 +1,12 @@
 use std::time::Duration;
 
-use bahaa_market::{Quote, Snapshot};
+use bahaa_market::{MarketError, Point, Quote, Snapshot, Span};
 use bahaa_store::{MAX_QUOTES, SavedPrices, SavedQuote, Store};
+use bahaa_types::AssetId;
 use tokio::time::Instant;
 
-use super::Worker;
+use super::{Reply, Worker};
+use crate::portfolio;
 
 const SAVE_EVERY: Duration = Duration::from_mins(1);
 
@@ -42,6 +44,25 @@ pub(super) fn saved(store: &Store, base: &str) -> Snapshot {
 }
 
 impl Worker {
+    pub(super) fn price_history(&self, asset: &AssetId, span: Span, reply: Reply<Vec<Point>>) {
+        let Some(market) = &self.market else {
+            let _ = reply.send(Err(MarketError::Invalid("prices are turned off").into()));
+            return;
+        };
+        let Some(id) = portfolio::coin(&self.registry, &self.custom, asset)
+            .and_then(|coin| coin.price.clone())
+        else {
+            let _ = reply.send(Err(MarketError::Invalid("this coin has no price").into()));
+            return;
+        };
+        let client = market.client();
+        let base = self.settings.fiat.price_base().to_owned();
+        tokio::spawn(async move {
+            let found = client.history(&id, &base, span, bahaa_chain::now()).await;
+            let _ = reply.send(found.map_err(Into::into));
+        });
+    }
+
     pub(super) fn quotes(&self) -> Snapshot {
         let live = self.prices.borrow().clone();
         let base = self.settings.fiat.price_base();

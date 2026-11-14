@@ -13,8 +13,8 @@ use bahaa_engine::{
     Engine, EngineError, KeyringError, NetworkHealth, NewPhrase, Portfolio, SendRequest, Spend,
     WalletKind,
 };
-use bahaa_market::{MarketConfig, Status};
-use bahaa_types::{Address, Amount, ChainFamily};
+use bahaa_market::{MarketConfig, Span, Status};
+use bahaa_types::{Address, Amount, AssetId, ChainFamily};
 use common::{
     HARDHAT, HARDHAT_0, HARDHAT_1, Scratch, TRON_0, TRON_0_HEX, TRON_GENESIS, USDT, config, until,
 };
@@ -258,6 +258,47 @@ async fn market(record: Arc<Mutex<Vec<Value>>>) -> MarketConfig {
         silence_limit: Duration::from_secs(5),
         connect_timeout: Duration::from_secs(2),
     }
+}
+
+#[tokio::test]
+async fn price_history_is_asked_for_the_coin_in_the_chosen_fiat() {
+    let scratch = Scratch::new();
+    let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let log = Arc::clone(&asked);
+    let api = bahaa_testkit::serve(move |request| {
+        log.lock().unwrap().push(request.path().to_owned());
+        let history =
+            json!({"ok": true, "meta": {"columns": ["t", "c"]}, "result": [[1, 690], [2, 700.5]]});
+        bahaa_testkit::Reply::json(200, &history)
+    })
+    .await;
+    let market = MarketConfig {
+        api,
+        ..market(Arc::default()).await
+    };
+    let engine = Engine::start(config(
+        &scratch,
+        registry(node(Arc::default(), Duration::ZERO).await),
+        Some(market),
+    ))
+    .unwrap();
+    let bnb: AssetId = "bsc".parse().unwrap();
+    let points = engine.price_history(bnb, Span::Year).await.unwrap();
+    let prices: Vec<String> = points.iter().map(|point| point.price.to_string()).collect();
+    assert_eq!(prices, ["690", "700.5"]);
+    let path = asked.lock().unwrap()[0].clone();
+    assert!(
+        path.starts_with("/v1/history/crypto/BNB?res=1d&from="),
+        "{path}"
+    );
+    assert!(path.ends_with("&base=USDT"), "{path}");
+    let unpriced: AssetId = "bsc/0x0000000000000000000000000000000000000001"
+        .parse()
+        .unwrap();
+    assert!(matches!(
+        engine.price_history(unpriced, Span::Day).await,
+        Err(EngineError::Market(_))
+    ));
 }
 
 #[tokio::test]

@@ -68,6 +68,7 @@ pub struct Snapshot {
 }
 
 pub struct Market {
+    rest: RestClient,
     want: watch::Sender<Request>,
     snapshot: watch::Receiver<Snapshot>,
     task: JoinHandle<()>,
@@ -84,7 +85,7 @@ impl Market {
         let (publish, snapshot) = watch::channel(Snapshot::default());
         let worker = Worker {
             config,
-            rest,
+            rest: rest.clone(),
             tls,
             wanted,
             publish,
@@ -93,10 +94,15 @@ impl Market {
         };
         let task = tokio::spawn(worker.run());
         Ok(Self {
+            rest,
             want,
             snapshot,
             task,
         })
+    }
+
+    pub fn client(&self) -> RestClient {
+        self.rest.clone()
     }
 
     pub fn want(&self, request: Request) {

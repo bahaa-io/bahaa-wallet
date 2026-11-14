@@ -18,7 +18,7 @@ use std::time::Duration;
 use bahaa_chain::{ChainError, Gateways, Replace};
 use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_crypto::{ExposeSecret, SecretString, SeedKind};
-use bahaa_market::{Market, MarketConfig, MarketError, Request, Snapshot};
+use bahaa_market::{Market, MarketConfig, MarketError, Point, Request, Snapshot, Span};
 use bahaa_store::{
     Contact, CustomToken, Fetched, Mark, NftArrival, Outgoing, Pictured, Received, Scan, SentTx,
     Store, StoreError, StoreKey, SwapRecord, TrustedBlock,
@@ -165,6 +165,7 @@ enum Command {
     Choose(WalletId, Choice, Reply<()>),
     ReceiveAddress(NetworkId, Address, Reply<Address>),
     ResolveName(String, NetworkId, Reply<Resolved>),
+    PriceHistory(AssetId, Span, Reply<Vec<Point>>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
     ChangePassword(SecretString, SecretString, Reply<()>),
     CheckPassword(SecretString, Reply<()>),
@@ -249,6 +250,7 @@ impl Command {
                 | Self::Tokens(_)
                 | Self::ReceiveAddress(..)
                 | Self::ResolveName(..)
+                | Self::PriceHistory(..)
                 | Self::Shutdown(_)
         )
     }
@@ -537,6 +539,15 @@ impl Engine {
         network: NetworkId,
     ) -> Result<Resolved, EngineError> {
         self.ask(|reply| Command::ResolveName(name, network, reply))
+            .await
+    }
+
+    pub async fn price_history(
+        &self,
+        asset: AssetId,
+        span: Span,
+    ) -> Result<Vec<Point>, EngineError> {
+        self.ask(|reply| Command::PriceHistory(asset, span, reply))
             .await
     }
 
@@ -891,6 +902,9 @@ impl Worker {
             }
             Command::ResolveName(name, network, reply) => {
                 self.resolve_name(&name, &network, reply);
+            }
+            Command::PriceHistory(asset, span, reply) => {
+                self.price_history(&asset, span, reply);
             }
             Command::Touch | Command::Shutdown(_) => {}
             command @ (Command::Wallets(_)
