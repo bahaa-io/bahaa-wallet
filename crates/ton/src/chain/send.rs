@@ -234,17 +234,8 @@ impl TonChain {
         deploy: bool,
         unsigned: &tonlib_core::cell::Cell,
     ) -> Result<Signed, ChainError> {
-        let key = key(seed, account)?;
+        let key = self.owned_key(seed, (account, from), envelope)?;
         let public = key.verifying_key().to_bytes();
-        let contract = envelope.contract;
-        if wallet::address(contract, &public, self.subwallet(contract))? != *from
-            || envelope.wallet != *from
-            || envelope.wallet_id != self.subwallet(contract)
-        {
-            return Err(ChainError::Invalid(
-                "this seed does not own the sending account",
-            ));
-        }
         let digest = unsigned.cell_hash();
         let signature = key.sign(digest.as_slice());
         key.verifying_key()
@@ -266,6 +257,26 @@ impl TonChain {
             id: TxId::new(id)?,
             bytes,
         })
+    }
+
+    pub(super) fn owned_key(
+        &self,
+        seed: &Seed,
+        (account, from): (u32, &Address),
+        envelope: &Envelope,
+    ) -> Result<ed25519_dalek::SigningKey, ChainError> {
+        let key = key(seed, account)?;
+        let public = key.verifying_key().to_bytes();
+        let contract = envelope.contract;
+        if wallet::address(contract, &public, self.subwallet(contract))? != *from
+            || envelope.wallet != *from
+            || envelope.wallet_id != self.subwallet(contract)
+        {
+            return Err(ChainError::Invalid(
+                "this seed does not own the sending account",
+            ));
+        }
+        Ok(key)
     }
 
     pub(super) fn verified(

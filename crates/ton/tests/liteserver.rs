@@ -1720,3 +1720,122 @@ async fn a_requested_batch_is_rehearsed_on_the_proven_wallet_and_read() {
         Err(ChainError::Rejected(_) | ChainError::Insufficient { .. })
     ));
 }
+
+#[tokio::test]
+async fn requested_token_items_are_built_by_the_wallet_and_read_back() {
+    use bahaa_ton::{Body, Handover, Meaning, Requested, Wanted};
+    use ruint::aliases::U256;
+    let chain = tracking_chain(GOOD).await;
+    let from = ton(SENDER);
+    let usdt = *assets()[1].contract().unwrap();
+    let hello = Body::default()
+        .uint(32, 0)
+        .unwrap()
+        .uint(16, 0x6869)
+        .unwrap()
+        .boc()
+        .unwrap();
+    let handover = Handover {
+        contract: usdt,
+        to: ton(OWNER),
+        units: U256::from(1_500_000u64),
+        attach: None,
+        query_id: None,
+        response: None,
+        custom: None,
+        forward: Some(U256::from(10_000_000u64)),
+        payload: Some(hello),
+    };
+    let built = chain
+        .build_items(0, &from, &[Wanted::Token(handover.clone())])
+        .await
+        .unwrap();
+    let ours = chain.jetton_wallet_of(&from, &usdt).await.unwrap();
+    assert_eq!(built.len(), 1);
+    assert_eq!(built[0].to, ours);
+    assert!(built[0].bounce);
+    assert!(
+        built[0].nano > U256::from(10_000_000u64),
+        "{}",
+        built[0].nano
+    );
+    let requested = Requested {
+        account: 0,
+        from,
+        messages: built,
+        valid_until: None,
+    };
+    let (plan, _) = chain.prepare_batch(&requested).await.unwrap();
+    assert_eq!(
+        plan.readings()[0].meaning,
+        Meaning::Token {
+            master: usdt,
+            amount: bahaa_types::Amount::parse("1.5", 6).unwrap(),
+            to: ton(OWNER),
+        }
+    );
+    let fixed = Handover {
+        attach: Some(U256::from(77_000_000u64)),
+        query_id: Some(9),
+        ..handover.clone()
+    };
+    let built = chain
+        .build_items(0, &from, &[Wanted::Token(fixed)])
+        .await
+        .unwrap();
+    assert_eq!(built[0].nano, U256::from(77_000_000u64));
+    let too_much = Handover {
+        units: U256::from(10_000_000_000_000u64),
+        ..handover
+    };
+    assert!(matches!(
+        chain
+            .build_items(0, &from, &[Wanted::Token(too_much)])
+            .await,
+        Err(ChainError::Insufficient { .. })
+    ));
+}
+
+#[tokio::test]
+async fn requested_nft_items_go_to_the_held_item() {
+    use bahaa_ton::{Handover, Wanted};
+    use ruint::aliases::U256;
+    let chain = nft_chain(listing(COLLECTOR)).await;
+    let collector: Address = bahaa_types::Address::parse(ChainFamily::Ton, COLLECTOR).unwrap();
+    let username: Address = bahaa_types::Address::parse(
+        ChainFamily::Ton,
+        "0:94fad2068ebd5c3a83fae144413b39e9036cf658d1e30ece3e4db9dd26b8052e",
+    )
+    .unwrap();
+    let handover = Handover {
+        contract: username,
+        to: ton(OWNER),
+        units: U256::from(1u8),
+        attach: None,
+        query_id: None,
+        response: None,
+        custom: None,
+        forward: None,
+        payload: None,
+    };
+    let built = chain
+        .build_items(0, &collector, &[Wanted::Nft(handover.clone())])
+        .await
+        .unwrap();
+    assert_eq!(built[0].to, username);
+    assert!(
+        built[0].nano > U256::from(1_000_000u64),
+        "{}",
+        built[0].nano
+    );
+    let elsewhere = Handover {
+        contract: ton(OWNER),
+        ..handover
+    };
+    assert!(
+        chain
+            .build_items(0, &collector, &[Wanted::Nft(elsewhere)])
+            .await
+            .is_err()
+    );
+}

@@ -20,7 +20,7 @@ mod send;
 mod tokens;
 mod track;
 
-pub use batch::{DecodedBatch, Meaning, Reading, Requested, TonBatch};
+pub use batch::{DecodedBatch, Handover, Meaning, Reading, Requested, TonBatch, Wanted};
 pub use calls::TonCall;
 pub use dns::normalize as dns_normalize;
 pub use send::TonPlan;

@@ -67,6 +67,16 @@ pub fn boc(data: &[u8]) {
     let _ = wallet::parse(data);
     let _ = wallet::parse_call(data);
     let _ = batch::parse(data);
+    let _ = batch::cell_data_hash(
+        1,
+        1,
+        &Address::Ton {
+            workchain: 0,
+            hash: [1; 32],
+        },
+        "app.example",
+        data,
+    );
     crate::chain::fuzz_batch(data);
     let _ = body::read_jetton_amount(data);
     let _ = wallet::read_address(data);

@@ -10,6 +10,8 @@ use tonlib_core::tlb_types::tlb::TLB;
 use crate::wallet::{self, Envelope, SEND_MODE, Seal};
 
 const W5_MESSAGES: usize = 255;
+const SIGN_DATA: u32 = 0x7556_9022;
+const SNAKE_BYTES: usize = 127;
 const V4R2_MESSAGES: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,6 +33,55 @@ pub(crate) struct Batch {
 pub(crate) struct ParsedBatch {
     pub batch: Batch,
     pub seal: Seal,
+}
+
+pub fn cell_data_hash(
+    schema_crc: u32,
+    timestamp: u64,
+    address: &Address,
+    domain: &str,
+    cell: &[u8],
+) -> Option<[u8; 32]> {
+    let labels: Vec<u8> = domain
+        .split('.')
+        .rev()
+        .flat_map(|label| label.bytes().chain([0]))
+        .collect();
+    cell_message_hash(schema_crc, timestamp, address, &labels, cell)
+}
+
+fn cell_message_hash(
+    schema_crc: u32,
+    timestamp: u64,
+    address: &Address,
+    domain: &[u8],
+    cell: &[u8],
+) -> Option<[u8; 32]> {
+    let payload = crate::cells::root(cell)?;
+    let mut message = CellBuilder::new();
+    message.store_u32(32, SIGN_DATA).ok()?;
+    message.store_u32(32, schema_crc).ok()?;
+    message.store_u64(64, timestamp).ok()?;
+    message.store_address(&wallet::to_ton(address).ok()?).ok()?;
+    message.store_reference(&snake(domain)?.to_arc()).ok()?;
+    message.store_reference(&payload).ok()?;
+    message.build().ok()?.cell_hash().as_slice().try_into().ok()
+}
+
+fn snake(bytes: &[u8]) -> Option<Cell> {
+    let mut tail: Option<Cell> = None;
+    for chunk in bytes.chunks(SNAKE_BYTES).rev() {
+        let mut builder = CellBuilder::new();
+        builder.store_slice(chunk).ok()?;
+        if let Some(next) = tail {
+            builder.store_reference(&next.to_arc()).ok()?;
+        }
+        tail = Some(builder.build().ok()?);
+    }
+    match tail {
+        Some(cell) => Some(cell),
+        None => CellBuilder::new().build().ok(),
+    }
 }
 
 pub fn max_messages(contract: TonContract) -> usize {
@@ -158,4 +209,79 @@ fn outbound(cell: &ArcCell) -> Option<Outbound> {
         body,
         init,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use bahaa_types::hex;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use ed25519_dalek::{Signature, VerifyingKey};
+
+    use super::*;
+
+    #[test]
+    fn a_real_cell_signature_from_the_demo_app_verifies() {
+        let (address, _) = Address::parse_ton(
+            "0:f4809e5ffac9dc42a6b1d94c5e74ad5fd86378de675c805f2274d0055cbc9378",
+        )
+        .unwrap();
+        let cell = STANDARD
+            .decode("te6cckEBAQEAEQAAHgAAAABIZWxsbywgVE9OIb7WCx4=")
+            .unwrap();
+        let hash = cell_message_hash(
+            0x2ecc_d0c1,
+            1_747_772_412,
+            &address,
+            b"ton-connect.github.io",
+            &cell,
+        )
+        .unwrap();
+        let key = VerifyingKey::from_bytes(
+            &hex::decode_array::<32>(
+                "22e795a07e832fc9084ca35a488a711f1dbedef637d4e886a6997d93ee2c2e37",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let signature = Signature::from_slice(&hex::decode("6ad083855374c201c2acb14aa4e7eef44603c8d356624c8fd3b6be3babd84bd8bc7390f0ed4484ab58a535b3088681e0006839eb07136470985b3a33bfa17c05").unwrap()).unwrap();
+        assert!(key.verify_strict(&hash, &signature).is_ok());
+        let current = cell_data_hash(
+            0x2ecc_d0c1,
+            1_747_772_412,
+            &address,
+            "ton-connect.github.io",
+            &cell,
+        )
+        .unwrap();
+        assert!(key.verify_strict(&current, &signature).is_err());
+        assert_eq!(
+            Some(current),
+            cell_message_hash(
+                0x2ecc_d0c1,
+                1_747_772_412,
+                &address,
+                b"io\0github\0ton-connect\0",
+                &cell
+            )
+        );
+        let other = cell_message_hash(
+            0x2ecc_d0c1,
+            1_747_772_412,
+            &address,
+            b"ton-connect.github.com",
+            &cell,
+        )
+        .unwrap();
+        assert!(key.verify_strict(&other, &signature).is_err());
+        assert_eq!(cell_data_hash(1, 1, &address, "a.b", b"not a cell"), None);
+    }
+
+    #[test]
+    fn long_domains_continue_in_the_next_cell() {
+        let long = snake(&[b'a'; 300]).unwrap();
+        assert_eq!(long.bit_len(), 127 * 8);
+        assert_eq!(long.references()[0].bit_len(), 127 * 8);
+        assert_eq!(long.references()[0].references()[0].bit_len(), 46 * 8);
+    }
 }

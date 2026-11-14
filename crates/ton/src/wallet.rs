@@ -27,6 +27,8 @@ pub(crate) const FORWARD_NANO: u8 = 1;
 pub(crate) const V4R2_WALLET_ID: i32 = 0x29a9_a317;
 const V4R2_GAS: u64 = 3_308;
 const MAX_REFS: usize = 4;
+const EXTERNAL_SIGNED: u32 = 0x7369_676e;
+const INTERNAL_SIGNED: u32 = 0x7369_6e74;
 const INIT_REFS: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -221,6 +223,42 @@ pub(crate) fn signed_body(
     .map_err(broken)
 }
 
+pub(crate) fn internal_signed(unsigned: &Cell) -> Result<Cell, ChainError> {
+    let broken = |_| ChainError::Invalid("cannot build the signed message");
+    let mut parser = unsigned.parser();
+    if parser.load_u32(32).map_err(broken)? != EXTERNAL_SIGNED {
+        return Err(ChainError::Invalid(
+            "only W5 wallets sign messages for relayers",
+        ));
+    }
+    let remaining = parser.remaining_bits();
+    let bits = parser.load_bits(remaining).map_err(broken)?;
+    let mut builder = CellBuilder::new();
+    builder.store_u32(32, INTERNAL_SIGNED).map_err(broken)?;
+    builder.store_bits(remaining, &bits).map_err(broken)?;
+    for reference in unsigned.references() {
+        builder.store_reference(reference).map_err(broken)?;
+    }
+    builder.build().map_err(broken)
+}
+
+pub(crate) fn deployment(
+    contract: TonContract,
+    public: &[u8; 32],
+    wallet_id: i32,
+) -> Result<StateInit, ChainError> {
+    let broken = |_| ChainError::Invalid("cannot build the wallet message");
+    let keys = KeyPair {
+        public_key: public.to_vec(),
+        secret_key: Vec::new(),
+    };
+    let code = VersionHelper::get_code(version(contract))
+        .map_err(broken)?
+        .clone();
+    let data = VersionHelper::get_data(version(contract), &keys, wallet_id).map_err(broken)?;
+    Ok(StateInit::new(code, data.to_arc()))
+}
+
 pub(crate) fn delivered(order: &Order) -> Result<Vec<u8>, ChainError> {
     BagOfCells::from_root(outgoing(order, Some(&order.wallet))?)
         .serialize(false)
@@ -310,6 +348,57 @@ fn item_body(order: &Order, item: &Item) -> Result<Cell, ChainError> {
     body.store_u32(32, NFT_TRANSFER).map_err(broken)?;
     body.store_u64(64, item.query_id).map_err(broken)?;
     forwarded(body, order)
+}
+
+pub(crate) struct Forwarding<'a> {
+    pub query_id: u64,
+    pub to: &'a Address,
+    pub response: &'a Address,
+    pub custom: Option<Cell>,
+    pub forward: U256,
+    pub payload: Option<Cell>,
+}
+
+pub(crate) fn jetton_body(units: U256, forwarding: Forwarding<'_>) -> Result<Cell, ChainError> {
+    let broken = |_| ChainError::Invalid("cannot build the token transfer");
+    let mut body = CellBuilder::new();
+    body.store_u32(32, TOKEN_TRANSFER).map_err(broken)?;
+    body.store_u64(64, forwarding.query_id).map_err(broken)?;
+    body.store_coins(&BigUint::from_bytes_be(&units.to_be_bytes::<32>()))
+        .map_err(broken)?;
+    requested_tail(body, forwarding)
+}
+
+pub(crate) fn nft_body(forwarding: Forwarding<'_>) -> Result<Cell, ChainError> {
+    let broken = |_| ChainError::Invalid("cannot build the NFT transfer");
+    let mut body = CellBuilder::new();
+    body.store_u32(32, NFT_TRANSFER).map_err(broken)?;
+    body.store_u64(64, forwarding.query_id).map_err(broken)?;
+    requested_tail(body, forwarding)
+}
+
+fn requested_tail(mut body: CellBuilder, forwarding: Forwarding<'_>) -> Result<Cell, ChainError> {
+    let broken = |_| ChainError::Invalid("cannot build the transfer");
+    body.store_address(&to_ton(forwarding.to)?)
+        .map_err(broken)?;
+    body.store_address(&to_ton(forwarding.response)?)
+        .map_err(broken)?;
+    optional_reference(&mut body, forwarding.custom)?;
+    body.store_coins(&BigUint::from_bytes_be(
+        &forwarding.forward.to_be_bytes::<32>(),
+    ))
+    .map_err(broken)?;
+    optional_reference(&mut body, forwarding.payload)?;
+    body.build().map_err(broken)
+}
+
+fn optional_reference(body: &mut CellBuilder, cell: Option<Cell>) -> Result<(), ChainError> {
+    let broken = |_| ChainError::Invalid("cannot build the transfer");
+    body.store_bit(cell.is_some()).map_err(broken)?;
+    if let Some(cell) = cell {
+        body.store_reference(&cell.to_arc()).map_err(broken)?;
+    }
+    Ok(())
 }
 
 fn forwarded(mut body: CellBuilder, order: &Order) -> Result<Cell, ChainError> {
@@ -405,16 +494,7 @@ pub(crate) fn wrapped(
         body.to_arc(),
     );
     if let Some(key) = deploy_key {
-        let keys = KeyPair {
-            public_key: key.to_vec(),
-            secret_key: Vec::new(),
-        };
-        let code = VersionHelper::get_code(version(envelope.contract))
-            .map_err(broken)?
-            .clone();
-        let data = VersionHelper::get_data(version(envelope.contract), &keys, envelope.wallet_id)
-            .map_err(broken)?;
-        message.with_state_init(StateInit::new(code, data.to_arc()));
+        message.with_state_init(deployment(envelope.contract, key, envelope.wallet_id)?);
         if unsigned.references().len() + INIT_REFS > MAX_REFS {
             message.body.layout = EitherRefLayout::ToRef;
         }

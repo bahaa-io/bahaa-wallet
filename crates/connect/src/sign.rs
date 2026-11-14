@@ -7,6 +7,7 @@ const PROOF_PREFIX: &[u8] = b"ton-proof-item-v2/";
 const CONNECT_PREFIX: &[u8] = b"ton-connect";
 const DATA_PREFIX: &[u8] = b"ton-connect/sign-data/";
 const MARK: [u8; 2] = [0xff, 0xff];
+const CRC_POLYNOMIAL: u32 = 0xedb8_8320;
 
 pub fn proof_hash(
     address: &Address,
@@ -35,6 +36,21 @@ pub fn proof_hash(
             .finalize()
             .into(),
     )
+}
+
+pub fn schema_crc(schema: &str) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in schema.bytes() {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ CRC_POLYNOMIAL
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
 }
 
 pub fn data_hash(
@@ -81,6 +97,19 @@ mod tests {
         let key = VerifyingKey::from_bytes(&hex::decode_array::<32>(public).unwrap()).unwrap();
         let signature = Signature::from_slice(signature).unwrap();
         key.verify_strict(&hash, &signature).is_ok()
+    }
+
+    #[test]
+    fn schemas_are_named_by_the_standard_crc32() {
+        assert_eq!(
+            schema_crc("message#_ len:uint7 {len <= 127} text:(bits len * 8) = Message;"),
+            0x3fec_5b79
+        );
+        assert_eq!(
+            schema_crc("message#_ text:SnakeData = Message;"),
+            0xbf65_6560
+        );
+        assert_eq!(schema_crc(""), 0);
     }
 
     #[test]

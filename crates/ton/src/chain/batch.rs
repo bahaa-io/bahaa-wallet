@@ -1,6 +1,6 @@
-use bahaa_chain::{ChainError, FeeItem, FeeLine, FeeQuote, Pace, Signed, enough};
+use bahaa_chain::{ChainError, FeeItem, FeeLine, FeeQuote, Pace, Signed, Transfer, enough};
 use bahaa_crypto::Seed;
-use bahaa_types::{Address, Amount, TonContract, Trust};
+use bahaa_types::{Address, Amount, AssetId, NftId, TonContract, Trust};
 use ed25519_dalek::{Signer, SigningKey};
 use ruint::aliases::U256;
 use tonlib_core::TonHash;
@@ -20,6 +20,7 @@ use tycho_types::models::{
 use tycho_types::num::{Tokens, VarUint56};
 
 use super::send::{CONFIRM_BLOCKS, LIFETIME, prices};
+use super::tokens::Contracts;
 use super::{TonChain, amount};
 use crate::batch::{self, Batch, Outbound, max_messages};
 use crate::cells::{Account, Status};
@@ -27,7 +28,9 @@ use crate::comment;
 use crate::emulate::{Emulated, Emulator, Hop};
 use crate::fees::Settings;
 use crate::http::{Item, Listed};
-use crate::wallet::{self, Envelope, NFT_TRANSFER, TOKEN_TRANSFER, read_address};
+use crate::wallet::{
+    self, Envelope, Forwarding, NFT_TRANSFER, Order, TOKEN_TRANSFER, read_address,
+};
 
 const REHEARSAL_KEY: [u8; 32] = [7; 32];
 
@@ -58,6 +61,26 @@ pub enum Meaning {
     Call {
         op: Option<u32>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Wanted {
+    Coins(Outbound),
+    Token(Handover),
+    Nft(Handover),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Handover {
+    pub contract: Address,
+    pub to: Address,
+    pub units: U256,
+    pub attach: Option<U256>,
+    pub query_id: Option<u64>,
+    pub response: Option<Address>,
+    pub custom: Option<Vec<u8>>,
+    pub forward: Option<U256>,
+    pub payload: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,6 +220,136 @@ impl TonChain {
         ))
     }
 
+    pub async fn build_items(
+        &self,
+        account: u32,
+        from: &Address,
+        wanted: &[Wanted],
+    ) -> Result<Vec<Outbound>, ChainError> {
+        let wallet = self.http.account(from).await?;
+        let (seqno, _, contract) = self.sequence(&wallet, from)?;
+        let now = bahaa_chain::now();
+        let clock =
+            u32::try_from(now).map_err(|_| ChainError::Invalid("the clock is out of range"))?;
+        let config = self.http.config().await?;
+        let (settings, _) = prices(&config)?;
+        let contracts = Contracts {
+            config: &config,
+            settings,
+            now: clock,
+        };
+        let base = Order {
+            wallet: *from,
+            contract,
+            wallet_id: self.subwallet(contract),
+            seqno,
+            valid_until: u32::try_from(now + LIFETIME)
+                .map_err(|_| ChainError::Invalid("the clock is out of range"))?,
+            to: *from,
+            nano: U256::ZERO,
+            everything: false,
+            bounce: true,
+            token: None,
+            item: None,
+            memo: None,
+            call: None,
+        };
+        let mut built = Vec::with_capacity(wanted.len());
+        for want in wanted {
+            built.push(match want {
+                Wanted::Coins(message) => message.clone(),
+                Wanted::Token(handover) => {
+                    self.handed(account, handover, true, &base, &wallet, contracts)
+                        .await?
+                }
+                Wanted::Nft(handover) => {
+                    self.handed(account, handover, false, &base, &wallet, contracts)
+                        .await?
+                }
+            });
+        }
+        Ok(built)
+    }
+
+    async fn handed(
+        &self,
+        account: u32,
+        handover: &Handover,
+        token: bool,
+        base: &Order,
+        wallet: &Account,
+        contracts: Contracts<'_>,
+    ) -> Result<Outbound, ChainError> {
+        let from = base.wallet;
+        let mut order = Order {
+            to: handover.to,
+            ..base.clone()
+        };
+        let network = self.network.id.clone();
+        let (asset, units) = if token {
+            let decimals = self.token_decimals(&handover.contract).await?;
+            (
+                AssetId::Token(network, handover.contract),
+                amount(handover.units, decimals)?,
+            )
+        } else {
+            let item = NftId::new(handover.contract, None)
+                .map_err(|_| ChainError::Invalid("not a TON NFT"))?;
+            (
+                AssetId::Nft(network, Box::new(item)),
+                amount(U256::from(1u8), 0)?,
+            )
+        };
+        let transfer = Transfer {
+            account,
+            from,
+            to: handover.to,
+            asset,
+            amount: units,
+            max: false,
+            memo: None,
+        };
+        let (destination, query_id) = if token {
+            self.token_order(&transfer, &handover.contract, &mut order, wallet, contracts)
+                .await?;
+            let moved = order.token.ok_or_else(ChainError::malformed)?;
+            (moved.wallet, moved.query_id)
+        } else {
+            self.item_order(&transfer, &handover.contract, &mut order, wallet, contracts)
+                .await?;
+            let moved = order.item.ok_or_else(ChainError::malformed)?;
+            (moved.address, moved.query_id)
+        };
+        let forward = handover.forward.unwrap_or(U256::from(1u8));
+        let attach = match handover.attach {
+            Some(attach) => attach,
+            None => order
+                .nano
+                .checked_add(forward)
+                .ok_or_else(ChainError::overflow)?,
+        };
+        let forwarding = Forwarding {
+            query_id: handover.query_id.unwrap_or(query_id),
+            to: &handover.to,
+            response: handover.response.as_ref().unwrap_or(&from),
+            custom: handover.custom.as_deref().map(cell).transpose()?,
+            forward,
+            payload: handover.payload.as_deref().map(cell).transpose()?,
+        };
+        let body = if token {
+            wallet::jetton_body(handover.units, forwarding)?
+        } else {
+            wallet::nft_body(forwarding)?
+        };
+        Ok(Outbound {
+            to: destination,
+            bounce: true,
+            nano: attach,
+            body: Some(wallet::serialized(&body)?),
+            init: None,
+        })
+    }
+
     pub fn sign_batch(&self, plan: &TonBatch, seed: &Seed) -> Result<Signed, ChainError> {
         let envelope = &plan.batch.envelope;
         self.sign_envelope(
@@ -206,6 +359,35 @@ impl TonChain {
             plan.deploy,
             &batch::unsigned(&plan.batch)?,
         )
+    }
+
+    pub fn sign_internal(&self, plan: &TonBatch, seed: &Seed) -> Result<Vec<u8>, ChainError> {
+        let envelope = &plan.batch.envelope;
+        if envelope.contract != TonContract::W5 {
+            return Err(ChainError::Unsupported(
+                "signed messages for relayers on wallets other than W5",
+            ));
+        }
+        let key = self.owned_key(seed, (plan.account, &envelope.wallet), envelope)?;
+        let public = key.verifying_key().to_bytes();
+        let unsigned = wallet::internal_signed(&batch::unsigned(&plan.batch)?)?;
+        let digest = unsigned.cell_hash();
+        let signature = key.sign(digest.as_slice());
+        key.verifying_key()
+            .verify_strict(digest.as_slice(), &signature)
+            .map_err(|_| ChainError::Invalid("signing failed"))?;
+        let body = VersionHelper::sign_msg(
+            wallet::version(envelope.contract),
+            &unsigned,
+            &signature.to_bytes(),
+        )
+        .map_err(|_| ChainError::Invalid("cannot build the signed message"))?;
+        let init = plan
+            .deploy
+            .then(|| wallet::deployment(envelope.contract, &public, envelope.wallet_id))
+            .transpose()?;
+        let message = wallet::internal(&envelope.wallet, true, U256::ZERO, body, init, None)?;
+        wallet::serialized(&message)
     }
 
     pub fn decode_batch(&self, signed: &Signed) -> Result<DecodedBatch, ChainError> {
@@ -335,6 +517,14 @@ pub(super) fn fuzz(data: &[u8]) {
         init: Some(data.to_vec()),
     };
     let _ = message.canonical();
+}
+
+fn cell(boc: &[u8]) -> Result<Cell, ChainError> {
+    crate::cells::root(boc)
+        .map(|root| (*root).clone())
+        .ok_or(ChainError::Invalid(
+            "a payload in the request isn't one cell",
+        ))
 }
 
 fn token_transfer(root: &ArcCell) -> Option<(U256, Address)> {
@@ -716,5 +906,46 @@ mod tests {
             .boc()
             .unwrap();
         assert_eq!(token_transfer(&crate::cells::root(&short).unwrap()), None);
+    }
+
+    #[test]
+    fn a_relayer_can_deliver_a_signed_w5_request() {
+        use num_bigint::BigUint;
+        use tonlib_core::tlb_types::block::coins::CurrencyCollection as Coins;
+        use tonlib_core::tlb_types::block::message::{CommonMsgInfo, Message};
+        let ton = chain("ton");
+        let emulator = emulate::tests::emulator();
+        let relayer = party(0x55);
+        for deploy in [false, true] {
+            let plan = plan(&ton, TonContract::W5, (deploy, 0), messages());
+            let signed = ton.sign_internal(&plan, &seed()).unwrap();
+            let root = crate::cells::root(&signed).unwrap();
+            let mut message = Message::from_cell(&root).unwrap();
+            assert_eq!(message.init.is_some(), deploy);
+            let CommonMsgInfo::Int(info) = &mut message.info else {
+                panic!("a signed request is an internal message");
+            };
+            assert_eq!(
+                crate::cells::from_ton(
+                    &tonlib_core::TonAddress::from_msg_address(info.dest.clone()).unwrap()
+                ),
+                Some(*plan.from())
+            );
+            info.src = wallet::to_ton(&relayer)
+                .unwrap()
+                .to_msg_address_int()
+                .into();
+            info.value = Coins::new(BigUint::from(500_000_000u64));
+            let delivered = serialized(&message.to_cell().unwrap()).unwrap();
+            let state = stored(&ton, plan.from(), TonContract::W5, deploy);
+            let hop = done(emulator.run(plan.from(), &state, &delivered).unwrap());
+            assert!(hop.success, "deploy {deploy}: {hop:?}");
+            assert_eq!(hop.out.len(), 3, "deploy {deploy}");
+        }
+        let v4 = plan(&ton, TonContract::V4R2, (false, 0), messages());
+        assert!(matches!(
+            ton.sign_internal(&v4, &seed()),
+            Err(ChainError::Unsupported(_))
+        ));
     }
 }

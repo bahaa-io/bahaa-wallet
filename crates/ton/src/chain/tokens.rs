@@ -17,6 +17,7 @@ struct Flow {
     refund_fees: u64,
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct Contracts<'a> {
     pub config: &'a Config,
     pub settings: Settings,

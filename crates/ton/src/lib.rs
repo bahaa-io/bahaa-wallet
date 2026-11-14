@@ -18,9 +18,10 @@ mod transaction;
 mod vm;
 mod wallet;
 
-pub use batch::{Outbound, max_messages};
+pub use batch::{Outbound, cell_data_hash, max_messages};
 pub use body::Body;
 pub use chain::{
-    DecodedBatch, Meaning, Reading, Requested, TonBatch, TonCall, TonChain, TonPlan, dns_normalize,
+    DecodedBatch, Handover, Meaning, Reading, Requested, TonBatch, TonCall, TonChain, TonPlan,
+    Wanted, dns_normalize,
 };
 pub use comment::read_comment;

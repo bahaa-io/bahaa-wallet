@@ -24,7 +24,7 @@ pub use request::{
     NftItem, Outgoing, SignData, Transaction, TransferItem, read_request,
 };
 pub use session::SessionKey;
-pub use sign::{data_hash, proof_hash};
+pub use sign::{data_hash, proof_hash, schema_crc};
 pub use wallets::{Bridges, bridge_for, read_wallets};
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
