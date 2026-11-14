@@ -1,3 +1,5 @@
+use bahaa_engine::Span;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     Type(Field, String),
@@ -110,6 +112,7 @@ pub enum Pick {
     Delete,
     Showing(Showing),
     Mark(Marking),
+    Span(Span),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

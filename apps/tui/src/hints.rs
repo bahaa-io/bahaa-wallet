@@ -78,6 +78,8 @@ pub(crate) const RUN: Hint = ("Enter", "run");
 pub(crate) const PICK: Hint = ("Space", "pick");
 pub(crate) const MOVE: Hint = ("↑↓", "move");
 pub(crate) const CHOOSE: Hint = ("←→", "choose");
+pub(crate) const MOMENT: Hint = ("←→", "moment");
+pub(crate) const RANGE: Hint = ("↑↓", "range");
 pub(crate) const NEXT: Hint = ("Tab", "next");
 pub(crate) const COMPLETE: Hint = ("Tab", "complete");
 pub(crate) const BACK: Hint = ("Esc", "back");
@@ -144,6 +146,7 @@ pub(crate) const KEY_GROUPS: [(&str, &[Hint]); 4] = [
         "Mouse",
         &[
             ("Click", "select, open or press"),
+            ("Point", "read the chart"),
             ("Right click", "command menu"),
             ("Wheel", "scroll"),
         ],

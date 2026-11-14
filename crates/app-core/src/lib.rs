@@ -16,10 +16,11 @@ pub use action::{
 };
 pub use app::{App, AppConfig};
 pub use bahaa_engine::{
-    ChainFamily, Color, EngineConfig, EngineError, KdfParams, Picture, Registry, to_plain_text,
+    ChainFamily, Color, EngineConfig, EngineError, KdfParams, Picture, Registry, Span,
+    to_plain_text,
 };
 pub use screen::completions;
 pub use view::{
-    Banner, Button, Cell, Choice, Group, Input, Item, Level, Line, Note, Page, PageId, Request,
-    Row, Secret, Share, Table, Toast, Tone, Value, View,
+    Banner, Button, CHART_LEVELS, Cell, Chart, ChartPoint, Choice, Glance, Group, Input, Item,
+    Level, Line, Note, Page, PageId, Request, Row, Secret, Share, Table, Toast, Tone, Value, View,
 };

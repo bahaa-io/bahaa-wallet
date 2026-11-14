@@ -14,6 +14,7 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthChar;
 use zeroize::Zeroizing;
 
+use super::chart;
 use crate::editor::Editor;
 use crate::hints;
 use crate::theme::{self, Pill};
@@ -52,6 +53,7 @@ pub(crate) enum Part {
     Secret,
     Lines,
     Item(usize),
+    Chart,
     Table,
     Notes,
     Error,
@@ -132,6 +134,7 @@ pub(crate) fn list(page: &Page, titled: bool) -> Vec<Part> {
     ])
     .chain((0..page.form.len()).map(Part::Item))
     .chain(shown(vec![
+        (page.chart.is_some(), Part::Chart),
         (page.table.is_some(), Part::Table),
         (!page.notes.is_empty(), Part::Notes),
         (page.error.is_some(), Part::Error),
@@ -169,6 +172,7 @@ pub(crate) fn height(part: Part, page: &Page, ui: &Ui, sizes: &Sizes) -> u16 {
             }
         },
         Part::Title => 1,
+        Part::Chart => chart::HEIGHT,
         Part::Table => page
             .table
             .as_ref()
@@ -203,6 +207,16 @@ pub(crate) fn draw(
             Item::Group(group) => self::group(buffer, area, group, index, ui, sizes, sink),
             Item::Input(input) => self::input(buffer, area, input, ui, sink),
         },
+        Part::Chart => {
+            if let Some(shown) = &page.chart {
+                let width = page
+                    .table
+                    .as_ref()
+                    .map_or(INPUT_WIDTH, |table| table_width(table, area.width))
+                    .min(area.width);
+                chart::draw(buffer, Rect { width, ..area }, shown, ui, sink);
+            }
+        }
         Part::Table => table(buffer, area, page, ui, sink),
         Part::Notes => {
             let mut y = area.y;
@@ -551,13 +565,8 @@ fn table(buffer: &mut Buffer, area: Rect, page: &Page, ui: &mut Ui, sink: &mut S
     };
     let focused = ui.focus == Some(Target::Table);
     let gutter = wrap::width(HIGHLIGHT);
-    let natural = widths(table, u16::MAX);
-    let wanted = natural.iter().sum::<u16>()
-        + COLUMN_GAP * cells(natural.len().saturating_sub(1))
-        + gutter
-        + 2;
     let area = Rect {
-        width: wanted.max(INPUT_WIDTH).min(area.width),
+        width: table_width(table, area.width),
         ..area
     };
     let block = Block::bordered()
@@ -621,6 +630,15 @@ fn table(buffer: &mut Buffer, area: Rect, page: &Page, ui: &mut Ui, sink: &mut S
     if focused {
         sink.focus = Some(area);
     }
+}
+
+fn table_width(table: &app::Table, room: u16) -> u16 {
+    let natural = widths(table, u16::MAX);
+    let wanted = natural.iter().sum::<u16>()
+        + COLUMN_GAP * cells(natural.len().saturating_sub(1))
+        + wrap::width(HIGHLIGHT)
+        + 2;
+    wanted.max(INPUT_WIDTH).min(room)
 }
 
 fn body<'a>(

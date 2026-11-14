@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use bahaa_engine::{Amount, AssetId, Holding, WalletId};
 use ruint::aliases::U256;
 
+use super::chart::History;
 use super::nfts::{self, Detail};
 use super::receive::Receive;
 use super::send::{Send, Source};
@@ -11,6 +12,7 @@ use super::{
     picked_wallet, wallet_group,
 };
 use crate::action::{Action, Go, Pick, Showing, Toggle};
+use crate::call::Outcome;
 use crate::core::{Ctx, Nav, Reply};
 use crate::view::{Item, Level, Note, Page, PageId, Row, Share, Table, Tone};
 use crate::{format, text};
@@ -97,10 +99,20 @@ impl Screen for Portfolio {
             }
             Action::Go(Go::Asset(row)) => {
                 if let Some(summary) = self.summaries(ctx).into_iter().nth(*row) {
-                    return Reply::nav(Nav::Push(Box::new(Asset {
-                        asset: summary.asset,
-                        filter: self.filter,
-                    })));
+                    let priced = ctx
+                        .coin(&summary.asset)
+                        .is_some_and(|coin| coin.price.is_some());
+                    let (history, call) =
+                        priced.then(|| History::open(summary.asset.clone())).unzip();
+                    return Reply {
+                        nav: Some(Nav::Push(Box::new(AssetPage {
+                            asset: summary.asset,
+                            filter: self.filter,
+                            history,
+                        }))),
+                        call,
+                        ..Reply::default()
+                    };
                 }
             }
             _ => {}
@@ -168,12 +180,13 @@ impl Screen for Portfolio {
     }
 }
 
-struct Asset {
+struct AssetPage {
     asset: AssetId,
     filter: Option<WalletId>,
+    history: Option<History>,
 }
 
-impl Asset {
+impl AssetPage {
     fn holdings<'a>(&self, ctx: &'a Ctx<'_>) -> Vec<&'a Holding> {
         held(ctx, self.filter)
             .filter(|holding| holding.asset == self.asset)
@@ -188,7 +201,7 @@ impl Asset {
     }
 }
 
-impl Screen for Asset {
+impl Screen for AssetPage {
     fn act(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
         match action {
             Action::Go(Go::SendAsset) => {
@@ -205,8 +218,20 @@ impl Screen for Asset {
             Action::Go(Go::ReceiveAsset) => {
                 largest(self.holdings(ctx)).map_or_else(Reply::default, Receive::for_holding)
             }
+            Action::Pick(Pick::Span(span)) => self
+                .history
+                .as_mut()
+                .and_then(|history| history.pick(*span))
+                .map_or_else(Reply::default, Reply::call),
             _ => Reply::default(),
         }
+    }
+
+    fn done(&mut self, outcome: Outcome, _ctx: &Ctx<'_>) -> Reply {
+        if let (Outcome::History(span, found), Some(history)) = (outcome, self.history.as_mut()) {
+            history.arrived(span, found);
+        }
+        Reply::default()
     }
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
@@ -256,10 +281,13 @@ impl Screen for Asset {
                 |coin| text::coin_title(&coin.name, &coin.symbol),
             ),
             headline: total.map(|total| ctx.exact(total, &symbol)),
-            lines: vec![
-                network_line(ctx, self.asset.network()),
-                line(text::PRICE, price),
-            ],
+            lines: std::iter::once(network_line(ctx, self.asset.network()))
+                .chain(self.history.is_none().then(|| line(text::PRICE, price)))
+                .collect(),
+            chart: self
+                .history
+                .as_ref()
+                .map(|history| history.chart(ctx.price(&self.asset), ctx.fiat(), ctx.now)),
             table: Some(Table {
                 columns: text::HOLDING_COLUMNS.map(str::to_owned).to_vec(),
                 rows,

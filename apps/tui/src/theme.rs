@@ -20,6 +20,7 @@ const GOOD: Rgb = [0x5f, 0xd3, 0x8d];
 const WARNING: Rgb = [0xf2, 0xb8, 0x4b];
 const BAD: Rgb = [0xf2, 0x6d, 0x78];
 const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
+const PERMILLE: u32 = 1000;
 
 pub(crate) const QR_DARK: Color = Color::Indexed(16);
 pub(crate) const QR_LIGHT: Color = Color::Indexed(231);
@@ -151,7 +152,30 @@ pub(crate) fn pill(pill: Pill) -> Style {
 }
 
 pub(crate) fn tone(tone: Tone) -> Style {
-    Style::new().fg(paint(match tone {
+    Style::new().fg(paint(tone_rgb(tone)))
+}
+
+pub(crate) fn line(tone: Tone, lit: bool) -> Color {
+    paint(if lit { TEXT } else { tone_rgb(tone) })
+}
+
+pub(crate) fn fill(tone: Tone, permille: u32) -> Color {
+    let permille = permille.min(PERMILLE);
+    let color = tone_rgb(tone);
+    paint(std::array::from_fn(|channel| {
+        let mixed = (u32::from(BASE[channel]) * (PERMILLE - permille)
+            + u32::from(color[channel]) * permille)
+            / PERMILLE;
+        u8::try_from(mixed).unwrap_or(u8::MAX)
+    }))
+}
+
+pub(crate) fn empty() -> Color {
+    paint(BASE)
+}
+
+fn tone_rgb(tone: Tone) -> Rgb {
+    match tone {
         Tone::Plain => TEXT,
         Tone::Muted => SOFT,
         Tone::Good => GOOD,
@@ -159,7 +183,7 @@ pub(crate) fn tone(tone: Tone) -> Style {
         Tone::Warning => WARNING,
         Tone::Bad => BAD,
         Tone::Brand(color) => brand(color),
-    }))
+    }
 }
 
 fn brand(color: Brand) -> Rgb {

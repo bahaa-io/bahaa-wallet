@@ -83,7 +83,10 @@ fn page_entries(view: &View, list: &mut Vec<Entry>) {
             Command::Act(button.action.clone()),
         );
     }
-    for group in page.groups() {
+    for group in page
+        .groups()
+        .chain(page.chart.iter().map(|chart| &chart.spans))
+    {
         for choice in &group.choices {
             let label = if group.label.is_empty() {
                 choice.label.clone()

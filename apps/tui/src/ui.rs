@@ -21,6 +21,7 @@ const SCROLL: u16 = 10;
 pub(crate) enum Target {
     Group(usize),
     Input(Field),
+    Chart,
     Table,
     Button(usize),
 }
@@ -70,6 +71,9 @@ pub(crate) struct Ui {
     pub(crate) notice: Option<&'static str>,
     pub(crate) tooltip: Option<String>,
     pub(crate) spinner: usize,
+    pub(crate) point: Option<u16>,
+    pub(crate) pointing: Option<u16>,
+    pub(crate) plot: u16,
     hover: Option<Hit>,
     pointer: Option<Position>,
     page: Option<PageId>,
@@ -92,6 +96,12 @@ impl Ui {
 
     pub(crate) fn begin(&mut self) {
         self.hover = self.pointer.and_then(|at| self.hit_at(at));
+        self.pointing = self.pointer.and_then(|at| {
+            self.hits
+                .iter()
+                .find(|(area, hit)| *hit == Hit::Focus(Target::Chart) && area.contains(at))
+                .map(|(area, _)| at.x - area.x)
+        });
         self.hits.clear();
         self.table = None;
         self.tooltip = None;
@@ -322,6 +332,7 @@ impl Ui {
             }
             Some(Target::Group(_)) => vec![hints::CHOOSE, hints::PICK, hints::NEXT],
             Some(Target::Table) => vec![hints::MOVE, hints::OPEN, hints::NEXT],
+            Some(Target::Chart) => vec![hints::MOMENT, hints::RANGE, hints::NEXT],
             Some(Target::Button(_)) => vec![hints::PRESS, hints::NEXT],
             None => Vec::new(),
         };
@@ -393,6 +404,10 @@ impl Ui {
             KeyCode::Char('k') if control => self.open_menu(),
             KeyCode::F(1) => self.open_keys(),
             KeyCode::Esc if self.focus == Some(Target::Input(Field::Search)) => self.clear_search(),
+            KeyCode::Esc if self.focus == Some(Target::Chart) && self.point.is_some() => {
+                self.point = None;
+                Vec::new()
+            }
             KeyCode::Esc => vec![Action::Back],
             KeyCode::Tab => self
                 .complete()
@@ -402,6 +417,7 @@ impl Ui {
                 Some(Target::Input(field)) => self.typing(field, key, view),
                 Some(Target::Group(group)) => self.choosing(group, key, view),
                 Some(Target::Table) => self.browsing(key, view),
+                Some(Target::Chart) => self.charting(key, view),
                 Some(Target::Button(button)) => self.pressing(button, key, view),
                 None => self.command(key, view),
             },
@@ -589,6 +605,39 @@ impl Ui {
             _ => return self.command(key, view),
         };
         self.rows.select(Some(moved));
+        Vec::new()
+    }
+
+    fn charting(&mut self, key: KeyEvent, view: &View) -> Vec<Action> {
+        let Some(chart) = &view.page.chart else {
+            return Vec::new();
+        };
+        let last = self.plot.saturating_sub(1);
+        match (key.code, self.point) {
+            (KeyCode::Left, None) => self.point = Some(last),
+            (KeyCode::Right, None) => self.point = Some(0),
+            (KeyCode::Left, Some(point)) => self.point = Some(point.saturating_sub(1)),
+            (KeyCode::Right, Some(point)) => self.point = Some((point + 1).min(last)),
+            (KeyCode::Up | KeyCode::Down, _) => {
+                let choices = &chart.spans.choices;
+                let current = choices
+                    .iter()
+                    .position(|choice| choice.selected)
+                    .unwrap_or(0);
+                let next = if key.code == KeyCode::Down {
+                    (current + 1).min(choices.len().saturating_sub(1))
+                } else {
+                    current.saturating_sub(1)
+                };
+                self.point = None;
+                return choices
+                    .get(next)
+                    .filter(|_| next != current)
+                    .map(|choice| vec![choice.action.clone()])
+                    .unwrap_or_default();
+            }
+            _ => return self.command(key, view),
+        }
         Vec::new()
     }
 
@@ -828,6 +877,7 @@ fn targets(page: &Page) -> Vec<Target> {
             Item::Group(_) => Target::Group(index),
             Item::Input(input) => Target::Input(input.field),
         })
+        .chain(page.chart.is_some().then_some(Target::Chart))
         .chain(has_rows(page).then_some(Target::Table))
         .chain((0..page.buttons.len()).map(Target::Button))
         .collect()

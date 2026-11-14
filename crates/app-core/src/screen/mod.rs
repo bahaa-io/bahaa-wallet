@@ -1,4 +1,5 @@
 mod activity;
+mod chart;
 mod contacts;
 mod networks;
 mod nfts;

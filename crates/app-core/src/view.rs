@@ -32,6 +32,7 @@ pub struct Page {
     pub qr: Option<String>,
     pub picture: Option<Picture>,
     pub secret: Option<Secret>,
+    pub chart: Option<Chart>,
 }
 
 impl Page {
@@ -104,6 +105,34 @@ pub enum Tone {
     Warning,
     Bad,
     Brand(Color),
+}
+
+pub const CHART_LEVELS: u16 = 10_000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chart {
+    pub glance: Glance,
+    pub points: Vec<ChartPoint>,
+    pub high: usize,
+    pub low: usize,
+    pub spans: Group,
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChartPoint {
+    pub level: u16,
+    pub mark: String,
+    pub glance: Glance,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Glance {
+    pub price: String,
+    pub change: String,
+    pub moved: String,
+    pub when: String,
+    pub tone: Tone,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

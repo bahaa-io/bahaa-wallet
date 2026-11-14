@@ -3,7 +3,7 @@ use bahaa_engine::swap::{
 };
 use bahaa_engine::{
     Caution, ChainFamily, EngineError, Fake, FeeItem, Lock, NameService, NftKind, RateUnit,
-    Replace, SentStatus, Status, TonContract,
+    Replace, SentStatus, Span, Status, TonContract,
 };
 
 use crate::action::{Channel, Direction, Tab};
@@ -113,6 +113,35 @@ pub(crate) const FLAGGED: &str = "Flagged";
 pub(crate) const UNKNOWN_COLLECTION: &str = "Unknown collection";
 pub(crate) const NETWORK: &str = "Network";
 pub(crate) const PRICE: &str = "Price";
+pub(crate) const CHART: &str = "Chart";
+pub(crate) const CHART_NOW: &str = "now";
+pub(crate) const CHART_LOADING: &str = "Loading the price history…";
+pub(crate) const CHART_FAILED: &str =
+    "Can't load the price history now. Pick the range to try again.";
+pub(crate) const CHART_EMPTY: &str = "There's no price history for this range yet.";
+pub(crate) const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+pub(crate) fn span_label(span: Span) -> &'static str {
+    match span {
+        Span::Day => "1D",
+        Span::Week => "1W",
+        Span::Month => "1M",
+        Span::Year => "1Y",
+        Span::All => "All",
+    }
+}
+
+pub(crate) fn span_period(span: Span) -> &'static str {
+    match span {
+        Span::Day => "past day",
+        Span::Week => "past week",
+        Span::Month => "past month",
+        Span::Year => "past year",
+        Span::All => "all time",
+    }
+}
 pub(crate) const ASSET: &str = "Asset";
 pub(crate) const PRICES_OFFLINE: &str = "Prices offline";
 pub(crate) const OTHER: &str = "Other";

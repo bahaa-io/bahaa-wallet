@@ -1,3 +1,4 @@
+mod chart;
 mod overlay;
 mod page;
 mod parts;

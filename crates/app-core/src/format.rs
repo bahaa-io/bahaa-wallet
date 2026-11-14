@@ -1,4 +1,4 @@
-use bahaa_engine::{Address, Amount, FeeRate, Fiat, Network, Price, TonForm, Utc, Wait};
+use bahaa_engine::{Address, Amount, FeeRate, Fiat, Network, Price, Span, TonForm, Utc, Wait};
 
 use crate::text;
 
@@ -43,8 +43,58 @@ pub(crate) fn price(price: Option<Price>, fiat: Fiat) -> String {
     let Some(price) = price else {
         return text::NO_VALUE.to_owned();
     };
-    let text = price.to_string();
-    let (whole, fraction) = split(&text);
+    price_text(&price.to_string(), fiat)
+}
+
+pub(crate) fn moved(up: bool, difference: Amount, fiat: Fiat) -> String {
+    let sign = if up { "+" } else { "−" };
+    format!("{sign}{}", price_text(&difference.to_string(), fiat))
+}
+
+pub(crate) fn change(up: Option<bool>, hundredths: u128) -> String {
+    let number = format!(
+        "{}.{:02}%",
+        group(&(hundredths / 100).to_string()),
+        hundredths % 100
+    );
+    match up {
+        Some(true) => format!("▲ {number}"),
+        Some(false) => format!("▼ {number}"),
+        None => number,
+    }
+}
+
+pub(crate) fn chart_time(time: u64, span: Span) -> String {
+    let at = Utc::at(time);
+    let month = month(at.month);
+    match span {
+        Span::Day | Span::Week | Span::Month => {
+            format!("{month} {}, {:02}:{:02}", at.day, at.hour, at.minute)
+        }
+        Span::Year | Span::All => format!("{month} {}, {}", at.day, at.year),
+    }
+}
+
+pub(crate) fn chart_mark(time: u64, span: Span) -> String {
+    let at = Utc::at(time);
+    match span {
+        Span::Day => format!("{:02}:{:02}", at.hour, at.minute),
+        Span::Week | Span::Month => format!("{} {}", month(at.month), at.day),
+        Span::Year => format!("{} {}", month(at.month), at.year),
+        Span::All => at.year.to_string(),
+    }
+}
+
+fn month(number: u64) -> &'static str {
+    usize::try_from(number.saturating_sub(1))
+        .ok()
+        .and_then(|index| text::MONTHS.get(index))
+        .copied()
+        .unwrap_or_default()
+}
+
+fn price_text(text: &str, fiat: Fiat) -> String {
+    let (whole, fraction) = split(text);
     let kept = if whole == "0" {
         let zeros = fraction.len() - fraction.trim_start_matches('0').len();
         &fraction[..fraction.len().min(zeros + PRICE_DIGITS)]
@@ -288,6 +338,24 @@ mod tests {
         );
         assert_eq!(price(Some(parsed("0.999")), Fiat::Usd), "$0.999");
         assert_eq!(price(Some(parsed("3")), Fiat::Irt), "3 IRT");
+        let units = |text| Amount::parse(text, 24).unwrap();
+        assert_eq!(moved(false, units("3294.5321"), Fiat::Usd), "−$3,294.53");
+        assert_eq!(moved(true, units("0.000012345"), Fiat::Eur), "+€0.00001234");
+        assert_eq!(change(Some(true), 479), "▲ 4.79%");
+        assert_eq!(change(Some(false), 5), "▼ 0.05%");
+        assert_eq!(change(None, 0), "0.00%");
+        assert_eq!(change(Some(true), 681_200_000_000), "▲ 6,812,000,000.00%");
+    }
+
+    #[test]
+    fn chart_times_fit_the_span() {
+        let time = 1_794_588_509;
+        assert_eq!(chart_time(time, Span::Day), "Nov 13, 16:48");
+        assert_eq!(chart_time(time, Span::Year), "Nov 13, 2026");
+        assert_eq!(chart_mark(time, Span::Day), "16:48");
+        assert_eq!(chart_mark(time, Span::Month), "Nov 13");
+        assert_eq!(chart_mark(time, Span::Year), "Nov 2026");
+        assert_eq!(chart_mark(time, Span::All), "2026");
     }
 
     #[test]
