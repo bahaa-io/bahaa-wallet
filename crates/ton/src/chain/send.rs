@@ -11,7 +11,7 @@ use super::tokens::Contracts;
 use super::{TonChain, amount, hex, key};
 use crate::cells::{Account, Status};
 use crate::fees::{Config, Settings, Storage, size_without_root};
-use crate::wallet::{self, Order, Parsed};
+use crate::wallet::{self, Envelope, Order, Seal};
 
 pub(super) const CONFIRM_BLOCKS: u64 = 40;
 
@@ -217,26 +217,44 @@ impl TonChain {
     }
 
     pub(super) fn sign_plan(&self, plan: &TonPlan, seed: &Seed) -> Result<Signed, ChainError> {
-        let key = key(seed, plan.transfer.account)?;
+        self.sign_envelope(
+            seed,
+            (plan.transfer.account, &plan.transfer.from),
+            &plan.order.envelope(),
+            plan.deploy,
+            &wallet::unsigned(&plan.order)?,
+        )
+    }
+
+    pub(super) fn sign_envelope(
+        &self,
+        seed: &Seed,
+        (account, from): (u32, &Address),
+        envelope: &Envelope,
+        deploy: bool,
+        unsigned: &tonlib_core::cell::Cell,
+    ) -> Result<Signed, ChainError> {
+        let key = key(seed, account)?;
         let public = key.verifying_key().to_bytes();
-        let contract = plan.order.contract;
-        if wallet::address(contract, &public, self.subwallet(contract))? != plan.transfer.from
-            || plan.order.wallet != plan.transfer.from
-            || plan.order.wallet_id != self.subwallet(contract)
+        let contract = envelope.contract;
+        if wallet::address(contract, &public, self.subwallet(contract))? != *from
+            || envelope.wallet != *from
+            || envelope.wallet_id != self.subwallet(contract)
         {
             return Err(ChainError::Invalid(
                 "this seed does not own the sending account",
             ));
         }
-        let digest = wallet::unsigned(&plan.order)?.cell_hash();
+        let digest = unsigned.cell_hash();
         let signature = key.sign(digest.as_slice());
         key.verifying_key()
             .verify_strict(digest.as_slice(), &signature)
             .map_err(|_| ChainError::Invalid("signing failed"))?;
-        let message = wallet::external(
-            &plan.order,
+        let message = wallet::wrapped(
+            envelope,
+            unsigned,
             &signature.to_bytes(),
-            plan.deploy.then_some(&public),
+            deploy.then_some(&public),
         )?;
         let id = wallet::normalized(&message)
             .map(|id| hex::encode(&id))
@@ -250,21 +268,25 @@ impl TonChain {
         })
     }
 
-    pub(super) fn verified(&self, parsed: &Parsed, signed: &Signed) -> Result<(), ChainError> {
-        if hex::encode(&parsed.id) != signed.id.as_str() {
+    pub(super) fn verified(
+        &self,
+        envelope: &Envelope,
+        seal: &Seal,
+        signed: &Signed,
+    ) -> Result<(), ChainError> {
+        if hex::encode(&seal.id) != signed.id.as_str() {
             return Err(ChainError::Mismatch("the transaction id"));
         }
-        let contract = parsed.order.contract;
-        if parsed.order.wallet_id != self.subwallet(contract) {
+        let contract = envelope.contract;
+        if envelope.wallet_id != self.subwallet(contract) {
             return Err(ChainError::Mismatch("the network"));
         }
-        if let Some(public) = parsed.public_key {
+        if let Some(public) = seal.public_key {
             let key = ed25519_dalek::VerifyingKey::from_bytes(&public)
                 .map_err(|_| ChainError::Invalid("the deployment has an unusable key"))?;
-            key.verify_strict(&parsed.unsigned, &Signature::from_bytes(&parsed.signature))
+            key.verify_strict(&seal.unsigned, &Signature::from_bytes(&seal.signature))
                 .map_err(|_| ChainError::Invalid("the signature does not match the wallet"))?;
-            if wallet::address(contract, &public, self.subwallet(contract))? != parsed.order.wallet
-            {
+            if wallet::address(contract, &public, self.subwallet(contract))? != envelope.wallet {
                 return Err(ChainError::Invalid("the deployment is for another wallet"));
             }
         }
@@ -273,7 +295,7 @@ impl TonChain {
 
     pub(super) fn decode_signed(&self, signed: &Signed) -> Result<Decoded, ChainError> {
         let parsed = wallet::parse(&signed.bytes)?;
-        self.verified(&parsed, signed)?;
+        self.verified(&parsed.order.envelope(), &parsed.seal(), signed)?;
         let (asset, value) = match (&parsed.order.token, &parsed.order.item) {
             (None, None) => (
                 AssetId::Native(self.network.id.clone()),
@@ -408,7 +430,7 @@ pub(super) fn prices(config: &Config) -> Result<(Settings, Storage), ChainError>
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use bahaa_chain::Chain;
     use bahaa_config::Registry;
     use bahaa_crypto::Mnemonic;
@@ -428,12 +450,12 @@ mod tests {
     use super::*;
     use crate::emulate::{self, tests::NOW, tests::done};
 
-    fn chain(id: &str) -> TonChain {
+    pub(in crate::chain) fn chain(id: &str) -> TonChain {
         let registry = Registry::builtin().unwrap();
         TonChain::new(registry.get(&id.parse().unwrap()).unwrap().clone()).unwrap()
     }
 
-    fn seed() -> Seed {
+    pub(in crate::chain) fn seed() -> Seed {
         Mnemonic::parse("test test test test test test test test test test test junk")
             .unwrap()
             .to_seed("")
@@ -704,7 +726,12 @@ mod tests {
         assert!(matches!(ton.decode(&signed), Err(ChainError::Invalid(_))));
     }
 
-    fn stored(ton: &TonChain, owner: &Address, contract: TonContract, deploy: bool) -> Vec<u8> {
+    pub(in crate::chain) fn stored(
+        ton: &TonChain,
+        owner: &Address,
+        contract: TonContract,
+        deploy: bool,
+    ) -> Vec<u8> {
         use tycho_types::boc::Boc;
         use tycho_types::cell::HashBytes;
         use tycho_types::dict::Dict;
@@ -764,7 +791,7 @@ mod tests {
         )
     }
 
-    fn carried(message: &[u8]) -> (u128, u128) {
+    pub(in crate::chain) fn carried(message: &[u8]) -> (u128, u128) {
         let parsed = tycho_types::boc::Boc::decode(message)
             .unwrap()
             .parse::<tycho_types::models::OwnedMessage>()

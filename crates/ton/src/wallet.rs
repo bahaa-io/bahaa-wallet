@@ -7,6 +7,7 @@ use tonlib_core::tlb_types::block::coins::{CurrencyCollection, Grams};
 use tonlib_core::tlb_types::block::message::{CommonMsgInfo, ExtInMsgInfo, IntMsgInfo, Message};
 use tonlib_core::tlb_types::block::msg_address::{MsgAddrNone, MsgAddressExt};
 use tonlib_core::tlb_types::block::state_init::StateInit;
+use tonlib_core::tlb_types::primitives::either::{EitherRef, EitherRefLayout};
 use tonlib_core::tlb_types::tlb::TLB;
 use tonlib_core::wallet::mnemonic::KeyPair;
 use tonlib_core::wallet::ton_wallet::TonWallet;
@@ -25,6 +26,8 @@ pub(crate) const NFT_TRANSFER: u32 = 0x5fcc_3d14;
 pub(crate) const FORWARD_NANO: u8 = 1;
 pub(crate) const V4R2_WALLET_ID: i32 = 0x29a9_a317;
 const V4R2_GAS: u64 = 3_308;
+const MAX_REFS: usize = 4;
+const INIT_REFS: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Item {
@@ -69,7 +72,7 @@ pub(crate) fn wallet_id(global_id: i32) -> i32 {
     global_id ^ i32::MIN
 }
 
-fn version(contract: TonContract) -> WalletVersion {
+pub(crate) fn version(contract: TonContract) -> WalletVersion {
     match contract {
         TonContract::W5 => WalletVersion::V5R1,
         TonContract::V4R2 => WalletVersion::V4R2,
@@ -142,25 +145,76 @@ fn mode(order: &Order) -> u8 {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Envelope {
+    pub wallet: Address,
+    pub contract: TonContract,
+    pub wallet_id: i32,
+    pub seqno: u32,
+    pub valid_until: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Seal {
+    pub id: [u8; 32],
+    pub unsigned: [u8; 32],
+    pub signature: [u8; 64],
+    pub public_key: Option<[u8; 32]>,
+}
+
+impl Order {
+    pub(crate) fn envelope(&self) -> Envelope {
+        Envelope {
+            wallet: self.wallet,
+            contract: self.contract,
+            wallet_id: self.wallet_id,
+            seqno: self.seqno,
+            valid_until: self.valid_until,
+        }
+    }
+}
+
+impl Parsed {
+    pub(crate) fn seal(&self) -> Seal {
+        Seal {
+            id: self.id,
+            unsigned: self.unsigned,
+            signature: self.signature,
+            public_key: self.public_key,
+        }
+    }
+}
+
 pub(crate) fn unsigned(order: &Order) -> Result<Cell, ChainError> {
+    signed_body(
+        &order.envelope(),
+        vec![mode(order)],
+        vec![outgoing(order, None)?.to_arc()],
+    )
+}
+
+pub(crate) fn signed_body(
+    envelope: &Envelope,
+    modes: Vec<u8>,
+    msgs: Vec<ArcCell>,
+) -> Result<Cell, ChainError> {
     let broken = |_| ChainError::Invalid("cannot build the wallet message");
-    let transfer = outgoing(order, None)?.to_arc();
-    match order.contract {
+    match envelope.contract {
         TonContract::W5 => WalletExtMsgBodyV5 {
-            wallet_id: order.wallet_id,
-            valid_until: order.valid_until,
-            msg_seqno: order.seqno,
-            msgs_modes: vec![mode(order)],
-            msgs: vec![transfer],
+            wallet_id: envelope.wallet_id,
+            valid_until: envelope.valid_until,
+            msg_seqno: envelope.seqno,
+            msgs_modes: modes,
+            msgs,
         }
         .to_cell(),
         TonContract::V4R2 => WalletExtMsgBodyV4 {
-            subwallet_id: order.wallet_id,
-            valid_until: order.valid_until,
-            msg_seqno: order.seqno,
+            subwallet_id: envelope.wallet_id,
+            valid_until: envelope.valid_until,
+            msg_seqno: envelope.seqno,
             opcode: 0,
-            msgs_modes: vec![mode(order)],
-            msgs: vec![transfer],
+            msgs_modes: modes,
+            msgs,
         }
         .to_cell(),
     }
@@ -195,27 +249,49 @@ fn outgoing(order: &Order, source: Option<&Address>) -> Result<Cell, ChainError>
             },
         ),
     };
+    internal(&destination, bounce, order.nano, body, None, source)
+}
+
+pub(crate) fn internal(
+    destination: &Address,
+    bounce: bool,
+    nano: U256,
+    body: Cell,
+    init: Option<StateInit>,
+    source: Option<&Address>,
+) -> Result<Cell, ChainError> {
     let src = match source {
         None => MsgAddrNone {}.into(),
         Some(address) => to_ton(address)?.to_msg_address_int().into(),
     };
-    Message::new(
+    let body_refs = body.references().len();
+    let mut message = Message::new(
         CommonMsgInfo::Int(IntMsgInfo {
             ihr_disabled: true,
             bounce,
             bounced: false,
             src,
-            dest: to_ton(&destination)?.to_msg_address_int().into(),
-            value: CurrencyCollection::new(BigUint::from_bytes_be(&order.nano.to_be_bytes::<32>())),
+            dest: to_ton(destination)?.to_msg_address_int().into(),
+            value: CurrencyCollection::new(BigUint::from_bytes_be(&nano.to_be_bytes::<32>())),
             ihr_fee: Grams::new(BigUint::default()),
             fwd_fee: Grams::new(BigUint::default()),
             created_lt: 0,
             created_at: 0,
         }),
         body.to_arc(),
-    )
-    .to_cell()
-    .map_err(broken)
+    );
+    if let Some(init) = init {
+        message.init = Some(EitherRef {
+            value: init,
+            layout: EitherRefLayout::ToRef,
+        });
+        if body_refs >= MAX_REFS {
+            message.body.layout = EitherRefLayout::ToRef;
+        }
+    }
+    message
+        .to_cell()
+        .map_err(|_| ChainError::Invalid("cannot build the wallet message"))
 }
 
 fn token_body(order: &Order, token: &Token) -> Result<Cell, ChainError> {
@@ -308,13 +384,22 @@ pub(crate) fn external(
     signature: &[u8; 64],
     deploy_key: Option<&[u8; 32]>,
 ) -> Result<Cell, ChainError> {
+    wrapped(&order.envelope(), &unsigned(order)?, signature, deploy_key)
+}
+
+pub(crate) fn wrapped(
+    envelope: &Envelope,
+    unsigned: &Cell,
+    signature: &[u8; 64],
+    deploy_key: Option<&[u8; 32]>,
+) -> Result<Cell, ChainError> {
     let broken = |_| ChainError::Invalid("cannot build the wallet message");
-    let body = VersionHelper::sign_msg(version(order.contract), &unsigned(order)?, signature)
-        .map_err(broken)?;
+    let body =
+        VersionHelper::sign_msg(version(envelope.contract), unsigned, signature).map_err(broken)?;
     let mut message = Message::new(
         CommonMsgInfo::ExtIn(ExtInMsgInfo {
             src: MsgAddressExt::None(MsgAddrNone {}),
-            dest: to_ton(&order.wallet)?.to_msg_address_int(),
+            dest: to_ton(&envelope.wallet)?.to_msg_address_int(),
             import_fee: Grams::new(BigUint::default()),
         }),
         body.to_arc(),
@@ -324,12 +409,15 @@ pub(crate) fn external(
             public_key: key.to_vec(),
             secret_key: Vec::new(),
         };
-        let code = VersionHelper::get_code(version(order.contract))
+        let code = VersionHelper::get_code(version(envelope.contract))
             .map_err(broken)?
             .clone();
-        let data = VersionHelper::get_data(version(order.contract), &keys, order.wallet_id)
+        let data = VersionHelper::get_data(version(envelope.contract), &keys, envelope.wallet_id)
             .map_err(broken)?;
         message.with_state_init(StateInit::new(code, data.to_arc()));
+        if unsigned.references().len() + INIT_REFS > MAX_REFS {
+            message.body.layout = EitherRefLayout::ToRef;
+        }
     }
     message
         .to_cell()
@@ -350,7 +438,14 @@ pub(crate) fn serialized(cell: &Cell) -> Result<Vec<u8>, ChainError> {
         .map_err(|_| ChainError::Invalid("cannot encode the cell"))
 }
 
-fn read(boc: &[u8], call: bool) -> Result<Parsed, ChainError> {
+pub(crate) struct Opened {
+    pub root: ArcCell,
+    pub message: Message,
+    pub wallet: Address,
+    pub request: Request,
+}
+
+pub(crate) fn open(boc: &[u8]) -> Result<Opened, ChainError> {
     let invalid = || ChainError::Invalid("not a signed wallet transfer");
     let root = crate::cells::bag(boc)
         .ok_or_else(invalid)?
@@ -375,6 +470,45 @@ fn read(boc: &[u8], call: bool) -> Result<Parsed, ChainError> {
     ) else {
         return Err(invalid());
     };
+    Ok(Opened {
+        root,
+        message,
+        wallet,
+        request,
+    })
+}
+
+pub(crate) fn resealed(
+    opened: &Opened,
+    envelope: &Envelope,
+    unsigned: &Cell,
+) -> Result<Seal, ChainError> {
+    let invalid = || ChainError::Invalid("not a signed wallet transfer");
+    let resigned = VersionHelper::sign_msg(
+        version(envelope.contract),
+        unsigned,
+        &opened.request.signature,
+    )
+    .map_err(|_| invalid())?;
+    if resigned.cell_hash() != Cell::cell_hash(&opened.message.body.value) {
+        return Err(invalid());
+    }
+    let public_key = match &opened.message.init {
+        None => None,
+        Some(init) => Some(deployed_key(&init.value, envelope)?),
+    };
+    Ok(Seal {
+        id: normalized(&opened.root).ok_or_else(invalid)?,
+        unsigned: hash_of(&unsigned.clone().to_arc())?,
+        signature: opened.request.signature,
+        public_key,
+    })
+}
+
+fn read(boc: &[u8], call: bool) -> Result<Parsed, ChainError> {
+    let invalid = || ChainError::Invalid("not a signed wallet transfer");
+    let opened = open(boc)?;
+    let (wallet, request) = (opened.wallet, &opened.request);
     let ([transfer], [mode @ (SEND_MODE | SEND_ALL)]) =
         (request.msgs.as_slice(), request.modes.as_slice())
     else {
@@ -432,34 +566,24 @@ fn read(boc: &[u8], call: bool) -> Result<Parsed, ChainError> {
             None
         },
     };
-    let unsigned_cell = unsigned(&order)?;
-    let resigned =
-        VersionHelper::sign_msg(version(order.contract), &unsigned_cell, &request.signature)
-            .map_err(|_| invalid())?;
-    if resigned.cell_hash() != Cell::cell_hash(body) {
-        return Err(invalid());
-    }
-    let public_key = match &message.init {
-        None => None,
-        Some(init) => Some(deployed_key(&init.value, &order)?),
-    };
+    let seal = resealed(&opened, &order.envelope(), &unsigned(&order)?)?;
     Ok(Parsed {
         order,
-        id: normalized(&root).ok_or_else(invalid)?,
-        unsigned: hash_of(&unsigned_cell.to_arc())?,
-        signature: request.signature,
-        public_key,
+        id: seal.id,
+        unsigned: seal.unsigned,
+        signature: seal.signature,
+        public_key: seal.public_key,
     })
 }
 
-struct Request {
-    contract: TonContract,
-    wallet_id: i32,
-    seqno: u32,
-    valid_until: u32,
-    modes: Vec<u8>,
-    msgs: Vec<ArcCell>,
-    signature: [u8; 64],
+pub(crate) struct Request {
+    pub contract: TonContract,
+    pub wallet_id: i32,
+    pub seqno: u32,
+    pub valid_until: u32,
+    pub modes: Vec<u8>,
+    pub msgs: Vec<ArcCell>,
+    pub signature: [u8; 64],
 }
 
 fn request(body: &ArcCell, contract: TonContract) -> Option<Request> {
@@ -517,7 +641,7 @@ pub(crate) fn normalized(message: &Cell) -> Option<[u8; 32]> {
     hash_of(&cell.build().ok()?.to_arc()).ok()
 }
 
-fn deployed_key(init: &StateInit, order: &Order) -> Result<[u8; 32], ChainError> {
+fn deployed_key(init: &StateInit, order: &Envelope) -> Result<[u8; 32], ChainError> {
     let invalid = || ChainError::Invalid("the deployment is not this wallet's contract");
     let code = init.code.as_ref().ok_or_else(invalid)?;
     let data = init.data.as_ref().ok_or_else(invalid)?;

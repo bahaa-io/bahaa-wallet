@@ -121,6 +121,15 @@ impl Settings {
         self.flat_gas_price.checked_add(extra)
     }
 
+    pub(crate) fn gas_for(&self, fee: u64) -> u64 {
+        if fee <= self.flat_gas_price || self.gas_price == 0 {
+            return self.flat_gas_limit;
+        }
+        let extra = u128::from(fee - self.flat_gas_price) * SHIFT / u128::from(self.gas_price);
+        self.flat_gas_limit
+            .saturating_add(u64::try_from(extra).unwrap_or(u64::MAX))
+    }
+
     pub(crate) fn forward_fee(&self, (bits, cells): (u64, u64)) -> Option<u64> {
         let size = u128::from(bits) * u128::from(self.bit_price)
             + u128::from(cells) * u128::from(self.cell_price);

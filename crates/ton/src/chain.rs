@@ -11,6 +11,7 @@ use bahaa_types::{Address, AssetId, TonContract, hex};
 use ed25519_dalek::SigningKey;
 use ruint::aliases::U256;
 
+mod batch;
 mod calls;
 mod dns;
 mod incoming;
@@ -19,6 +20,7 @@ mod send;
 mod tokens;
 mod track;
 
+pub use batch::{DecodedBatch, Meaning, Reading, Requested, TonBatch};
 pub use calls::TonCall;
 pub use dns::normalize as dns_normalize;
 pub use send::TonPlan;
@@ -328,7 +330,7 @@ impl Chain for TonChain {
     }
 }
 
-fn key(seed: &Seed, account: u32) -> Result<SigningKey, ChainError> {
+pub(crate) fn key(seed: &Seed, account: u32) -> Result<SigningKey, ChainError> {
     let path: DerivationPath = format!("m/44'/607'/{account}'")
         .parse()
         .map_err(|_| ChainError::Invalid("account index out of range"))?;
@@ -343,6 +345,11 @@ pub(crate) fn block(checkpoint: &Checkpoint) -> BlockId {
         root_hash: checkpoint.root_hash,
         file_hash: checkpoint.file_hash,
     }
+}
+
+#[cfg(fuzzing)]
+pub(crate) fn fuzz_batch(data: &[u8]) {
+    batch::fuzz(data);
 }
 
 #[cfg(fuzzing)]

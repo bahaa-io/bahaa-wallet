@@ -131,7 +131,7 @@ impl TonChain {
 
     pub fn decode_call(&self, signed: &Signed) -> Result<DecodedCall, ChainError> {
         let parsed = wallet::parse_call(&signed.bytes)?;
-        self.verified(&parsed, signed)?;
+        self.verified(&parsed.order.envelope(), &parsed.seal(), signed)?;
         let order = parsed.order;
         Ok(DecodedCall {
             from: order.wallet,

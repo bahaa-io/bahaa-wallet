@@ -1,3 +1,4 @@
+mod batch;
 mod blocks;
 mod body;
 mod cells;
@@ -17,6 +18,9 @@ mod transaction;
 mod vm;
 mod wallet;
 
+pub use batch::{Outbound, max_messages};
 pub use body::Body;
-pub use chain::{TonCall, TonChain, TonPlan, dns_normalize};
+pub use chain::{
+    DecodedBatch, Meaning, Reading, Requested, TonBatch, TonCall, TonChain, TonPlan, dns_normalize,
+};
 pub use comment::read_comment;

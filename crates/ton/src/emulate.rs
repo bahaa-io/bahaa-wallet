@@ -114,7 +114,6 @@ impl Emulator {
         self.run_from(address, state, message, (true, false))
     }
 
-    #[cfg(test)]
     pub(crate) fn run_external(
         &self,
         address: &Address,

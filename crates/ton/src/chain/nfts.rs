@@ -16,7 +16,7 @@ use crate::wallet::{self, Order, read_address, read_optional_address};
 
 const AT_ONCE: usize = 8;
 
-struct Held {
+pub(super) struct Held {
     listed: Listed,
     state: Account,
     index: U256,
@@ -61,7 +61,11 @@ impl TonChain {
         Ok(Found { items, capped })
     }
 
-    async fn held(&self, owner: &Address, listed: Listed) -> Result<Option<Held>, ChainError> {
+    pub(super) async fn held(
+        &self,
+        owner: &Address,
+        listed: Listed,
+    ) -> Result<Option<Held>, ChainError> {
         let state = self.http.account(&listed.address).await?;
         let Some(stack) = refusal_as_none(self.http.run_on(&state, "get_nft_data", &[]).await)?
         else {

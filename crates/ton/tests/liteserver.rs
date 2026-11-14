@@ -1620,3 +1620,103 @@ async fn only_a_held_transferable_nft_is_sent_and_only_one_at_a_time() {
         Err(ChainError::Invalid("this wallet doesn't hold that NFT"))
     ));
 }
+
+#[tokio::test]
+async fn a_requested_batch_is_rehearsed_on_the_proven_wallet_and_read() {
+    use bahaa_ton::{Body, Meaning, Outbound, Requested};
+    use ruint::aliases::U256;
+    let chain = tracking_chain(GOOD).await;
+    let from = ton(SENDER);
+    let usdt = *assets()[1].contract().unwrap();
+    let ours = chain.jetton_wallet_of(&from, &usdt).await.unwrap();
+    let comment = Body::default()
+        .uint(32, 0)
+        .unwrap()
+        .uint(16, 0x6869)
+        .unwrap()
+        .boc()
+        .unwrap();
+    let token = Body::default()
+        .uint(32, 0x0f8a_7ea5)
+        .unwrap()
+        .uint(64, 3)
+        .unwrap()
+        .coins(U256::from(1_500_000u64))
+        .unwrap()
+        .address(Some(&ton(OWNER)))
+        .unwrap()
+        .address(Some(&from))
+        .unwrap()
+        .bit(false)
+        .unwrap()
+        .coins(U256::from(1u64))
+        .unwrap()
+        .bit(false)
+        .unwrap()
+        .boc()
+        .unwrap();
+    let call = Body::default()
+        .uint(32, 0x1234_5678)
+        .unwrap()
+        .boc()
+        .unwrap();
+    let message = |to: Address, nano: u64, body: Vec<u8>| Outbound {
+        to,
+        bounce: true,
+        nano: U256::from(nano),
+        body: Some(body),
+        init: None,
+    };
+    let requested = Requested {
+        account: 0,
+        from,
+        messages: vec![
+            message(ton(OWNER), 10_000_000, comment),
+            message(ours, 50_000_000, token),
+            message(ton(OWNER), 1, call),
+        ],
+        valid_until: None,
+    };
+    let (plan, quote) = chain.prepare_batch(&requested).await.unwrap();
+    let meanings: Vec<Meaning> = plan
+        .readings()
+        .iter()
+        .map(|reading| reading.meaning.clone())
+        .collect();
+    assert_eq!(
+        meanings,
+        [
+            Meaning::Coins {
+                comment: Some("hi".to_owned())
+            },
+            Meaning::Token {
+                master: usdt,
+                amount: bahaa_types::Amount::parse("1.5", 6).unwrap(),
+                to: ton(OWNER),
+            },
+            Meaning::Call {
+                op: Some(0x1234_5678)
+            },
+        ]
+    );
+    let fee = quote.expected().units();
+    assert!(
+        fee > U256::from(500_000u64) && fee < U256::from(5_000_000u64),
+        "{fee}"
+    );
+    assert_eq!(quote.max().units(), fee * U256::from(2u8));
+    let expired = Requested {
+        valid_until: Some(1),
+        ..requested.clone()
+    };
+    assert_eq!(
+        chain.prepare_batch(&expired).await.map(|_| ()),
+        Err(ChainError::Invalid("the app's request has expired"))
+    );
+    let mut greedy = requested;
+    greedy.messages[0].nano = U256::from(10_000_000_000_000_000u64);
+    assert!(matches!(
+        chain.prepare_batch(&greedy).await,
+        Err(ChainError::Rejected(_) | ChainError::Insufficient { .. })
+    ));
+}
