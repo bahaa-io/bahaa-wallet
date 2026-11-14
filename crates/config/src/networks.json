@@ -723,9 +723,9 @@
     "global_id": -239,
     "zero_state": "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321fb05569",
     "checkpoint": {
-      "seqno": 105225166,
-      "root_hash": "d970fbe61c3cb08248135303fdad147209afc0da4ff7e0a3bc9a87830cd12330",
-      "file_hash": "1a3a35aa1da6c4680bc7b6058cc67ff8352f42ec5fa6d7eece16990f881cfea7"
+      "seqno": 105383870,
+      "root_hash": "0bd749d29371db42f663160c31606b9b3359f10a93ff094085a46e3022cbe512",
+      "file_hash": "f0f842a21829001d1a2a5729b646b85f70b21dae56c8bfa78e3bca9933bc0d57"
     },
     "testnet": false,
     "native": {
@@ -891,8 +891,8 @@
     "family": "bitcoin",
     "genesis": "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
     "checkpoint": {
-      "height": 971712,
-      "hash": "00000000000000000000c185f0906690a08d62d6fe842682a888d5560217e467"
+      "height": 973728,
+      "hash": "0000000000000000000104150b08ff89bbb2d11bab42c245c82b8165ab2e2c11"
     },
     "pow_limit": "1d00ffff",
     "testnet": false,
@@ -1019,9 +1019,9 @@
     "global_id": -3,
     "zero_state": "823f81f306ff02694f935cf5021548e3ce2b86b529812af6a12148879e95a128",
     "checkpoint": {
-      "seqno": 97726611,
-      "root_hash": "960581088a85acbfb8af54f5da93e75f31696dd949eb198602066462506009f9",
-      "file_hash": "a2ba089543c62d4e0d4d7322ec597d7e073dd8d454a136d75c699da124f1e0d6"
+      "seqno": 97978912,
+      "root_hash": "f4acd5c522f486ede8395742e293a9c2f54ec282bbd2e10f40a42fd5c4a455ea",
+      "file_hash": "65fbdba91f5b3fd8b1965cfd41e72bf1615771f215df7f93caaf617ae1fdb80f"
     },
     "testnet": true,
     "native": {
