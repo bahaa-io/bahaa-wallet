@@ -21,6 +21,7 @@ bahaa-app-core = { path = "crates/app-core" }
 bahaa-chain = { path = "crates/chain" }
 bahaa-bitcoin = { path = "crates/bitcoin" }
 bahaa-config = { path = "crates/config" }
+bahaa-connect = { path = "crates/connect" }
 bahaa-crypto = { path = "crates/crypto" }
 bahaa-engine = { path = "crates/engine" }
 bahaa-evm = { path = "crates/evm" }
@@ -40,6 +41,7 @@ bytes = "1.12.1"
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 clap = { version = "4.6.7", features = ["derive"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
+crypto_box = { version = "0.9.1", default-features = false, features = ["alloc", "salsa20"] }
 directories = "6.0.0"
 dnssec-prover = { version = "0.6.10", default-features = false, features = ["validation"] }
 ed25519-dalek = "3.0.0"
