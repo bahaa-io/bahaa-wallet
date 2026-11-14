@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-bitcoin"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "bahaa-chain",
  "bahaa-config",
@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-chain"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "bahaa-config",
  "bahaa-crypto",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-config"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "bahaa-types",
  "serde",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-crypto"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "bahaa-types",
  "bs58",
@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-evm"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-market"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "bahaa-types",
  "futures-util",
@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-solana"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "bahaa-chain",
  "bahaa-config",
@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-swap"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "bahaa-chain",
  "bahaa-evm",
@@ -772,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-ton"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "adnl",
  "bahaa-chain",
@@ -799,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-tron"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "bahaa-chain",
  "bahaa-config",
@@ -817,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "bahaa-types"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "base64 0.23.1",
  "bech32",
