@@ -13,7 +13,7 @@ use bahaa_crypto::Seed;
 use bahaa_evm::{EvmCall, EvmChain, EvmPlan};
 use bahaa_solana::{SolanaCall, SolanaChain, SolanaPlan};
 use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock, Watched};
-use bahaa_ton::{TonCall, TonChain, TonPlan};
+use bahaa_ton::{Link, Linking, NameRecord, TonCall, TonChain, TonPlan};
 use bahaa_tron::{TronCall, TronChain, TronPlan};
 use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, TonContract};
 
@@ -329,6 +329,30 @@ impl AnyChain {
             Self::Ton(chain) => shielded(chain.dns_names(owner)).await,
             Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
                 Err(ChainError::Unsupported("TON names outside TON"))
+            }
+        }
+    }
+
+    pub(crate) async fn name_record(&self, item: &Address) -> Result<NameRecord, ChainError> {
+        match self {
+            Self::Ton(chain) => shielded(chain.name_record(item)).await,
+            Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("linking names outside TON yet"))
+            }
+        }
+    }
+
+    pub(crate) async fn prepare_link(
+        &self,
+        account: u32,
+        from: &Address,
+        item: &Address,
+        link: Link,
+    ) -> Result<Linking, ChainError> {
+        match self {
+            Self::Ton(chain) => shielded(chain.prepare_link(account, from, item, link)).await,
+            Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("linking names outside TON yet"))
             }
         }
     }

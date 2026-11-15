@@ -736,3 +736,50 @@ async fn live_ton_names_resolve_through_proven_dns() {
             .contains(&"gosal.t.me".to_owned())
     );
 }
+
+#[tokio::test]
+#[ignore = "talks to the real TON network, run with --test-threads=1"]
+async fn live_a_ton_name_points_elsewhere_while_its_nft_stays() {
+    let registry = Registry::builtin().unwrap();
+    let chain = TonChain::new(registry.get(&"ton".parse().unwrap()).unwrap().clone()).unwrap();
+    let ton = |raw: &str| Address::parse_ton(raw).unwrap().0;
+    let item = ton("0:69a8d522863bfe1c6224cb5dfe6f22dab01e983aea55287ee8fea4ef45d2367f");
+    let owner = ton("0:4bab343ae759aa67cfe7a0af4ab3d2258484fd593142c57e9cad3c064039f4dd");
+    let record = chain.name_record(&item).await.unwrap();
+    assert_eq!(record.name, "gosal.t.me");
+    assert_eq!(record.owner, owner);
+    assert_eq!(record.wallet, Some(owner));
+    assert_eq!(record.expires_at, None);
+    let foundation = chain
+        .name_record(&ton(
+            "0:78dfe54299fd7b3bb60c779d5f02f3a370c902c38e8dff724c0a87a01ff643a3",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(foundation.name, "foundation.ton");
+    assert!(foundation.expires_at.is_some());
+    let elsewhere = ton("0:83dfd552e63729b472fcbcc8c45ebcc6691702558b68ec7527e1ba403a0f31a8");
+    let linking = chain
+        .prepare_link(0, &owner, &item, bahaa_ton::Link::To(elsewhere))
+        .await
+        .unwrap();
+    assert!(linking.returned);
+    assert!(matches!(
+        linking.batch.readings()[0].meaning,
+        bahaa_ton::Meaning::Record { wallet: Some(to) } if to == elsewhere
+    ));
+    let cleared = chain
+        .prepare_link(0, &owner, &item, bahaa_ton::Link::Clear)
+        .await
+        .unwrap();
+    assert!(matches!(
+        cleared.batch.readings()[0].meaning,
+        bahaa_ton::Meaning::Record { wallet: None }
+    ));
+    assert!(
+        chain
+            .prepare_link(0, &elsewhere, &item, bahaa_ton::Link::Clear)
+            .await
+            .is_err()
+    );
+}

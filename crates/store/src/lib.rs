@@ -151,6 +151,7 @@ pub enum SentKind {
     Approval,
     Swap,
     App,
+    Name,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -581,7 +582,8 @@ impl Store {
             return Err(StoreError::Invalid("a memo must be short plain text"));
         }
         if tx.name.as_ref().is_some_and(|name| {
-            !(tx.asset.is_nft() || tx.kind == SentKind::App) || !is_plain_text(name, MAX_NFT_TEXT)
+            !(tx.asset.is_nft() || matches!(tx.kind, SentKind::App | SentKind::Name))
+                || !is_plain_text(name, MAX_NFT_TEXT)
         }) {
             return Err(StoreError::Invalid(
                 "only an NFT or an app's send has a name, as short plain text",

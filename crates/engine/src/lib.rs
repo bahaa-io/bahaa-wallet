@@ -31,10 +31,14 @@ pub use caution::{Arrival, Caution};
 pub use engine::{
     Activity, ActivityKind, AppAccount, AppAsk, AppId, AppInfo, Approved, AskId, AskKind,
     AskReview, Collectible, Collectibles, ConnectedApp, Connections, DataReview, Draft, DraftId,
-    Engine, EngineConfig, EngineError, Event, Fake, IncomingHistory, Invite, InviteId, NameService,
-    NftHealth, Resolved, SendRequest, Spend, State, SwapDraft, SwapId, SwapRequest, SwapReview,
-    TxReview, Unavailable,
+    Engine, EngineConfig, EngineError, Event, Fake, IncomingHistory, Invite, InviteId, LinkDraft,
+    LinkId, LinkRequest, NameService, NftHealth, Resolved, SendRequest, Spend, State, SwapDraft,
+    SwapId, SwapRequest, SwapReview, TxReview, Unavailable,
 };
+
+pub mod naming {
+    pub use bahaa_ton::{Link, NameRecord};
+}
 
 pub mod connect {
     pub use bahaa_connect::{Bridges, ConnectError, Content};

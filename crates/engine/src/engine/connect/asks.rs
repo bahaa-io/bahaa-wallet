@@ -12,7 +12,9 @@ use bahaa_store::{Connection, SentKind, SentStatus, SentTx};
 use bahaa_ton::{
     DecodedBatch, Handover, Meaning, Outbound, Reading, Requested, TonBatch, Wanted, cell_data_hash,
 };
-use bahaa_types::{Address, Amount, AssetId, ChainFamily, NftId, TonContract, hex, is_plain_text};
+use bahaa_types::{
+    Address, Amount, AssetId, ChainFamily, NetworkId, NftId, TonContract, hex, is_plain_text,
+};
 use ruint::aliases::U256;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
@@ -346,7 +348,10 @@ impl Worker {
             .as_ref()
             .and_then(|plan| Some((plan.batch.readings(), plan.fee.as_ref()?.max())))
             .ok_or(EngineError::NotReviewed)
-            .and_then(|(readings, fee_max)| app_sent(record, readings, fee_max, &signed, decoded));
+            .and_then(|(readings, fee_max)| {
+                let by = (SentKind::App, record.name.clone());
+                batch_sent(&record.network, by, readings, fee_max, (&signed, decoded))
+            });
         let tx = match built {
             Ok(tx) if self.reused(&tx.network, &tx.from, tx.sequence) => {
                 Err(EngineError::StillSending)
@@ -453,11 +458,7 @@ impl Worker {
                     }
                     Work::Relayed(batch) => Ok(Done::Internal(ton.sign_internal(&batch, seed)?)),
                     Work::Send(batch) => {
-                        let signed = ton.sign_batch(&batch, seed)?;
-                        let decoded = ton.decode_batch(&signed)?;
-                        if decoded.from != *batch.from() || decoded.messages != batch.messages() {
-                            return Err(ChainError::Mismatch("the signed request").into());
-                        }
+                        let (signed, decoded) = signed_batch(ton, &batch, seed)?;
                         Ok(Done::Sent(signed, decoded))
                     }
                 }
@@ -612,14 +613,27 @@ fn wanted(item: &TransferItem) -> Wanted {
     }
 }
 
-fn app_sent(
-    record: &Connection,
+pub(in crate::engine) fn signed_batch(
+    ton: &bahaa_ton::TonChain,
+    batch: &TonBatch,
+    seed: &bahaa_crypto::Seed,
+) -> Result<(Signed, DecodedBatch), EngineError> {
+    let signed = ton.sign_batch(batch, seed)?;
+    let decoded = ton.decode_batch(&signed)?;
+    if decoded.from != *batch.from() || decoded.messages != batch.messages() {
+        return Err(ChainError::Mismatch("the signed request").into());
+    }
+    Ok((signed, decoded))
+}
+
+pub(in crate::engine) fn batch_sent(
+    network: &NetworkId,
+    (kind, name): (SentKind, String),
     readings: &[Reading],
     fee_max: Amount,
-    signed: &Signed,
-    decoded: &DecodedBatch,
+    (signed, decoded): (&Signed, &DecodedBatch),
 ) -> Result<SentTx, EngineError> {
-    let network = record.network.clone();
+    let network = network.clone();
     let total = readings
         .iter()
         .try_fold(None::<Amount>, |sum, reading| match sum {
@@ -681,9 +695,9 @@ fn app_sent(
         transaction: None,
         memo,
         replaces: None,
-        kind: SentKind::App,
+        kind,
         private: false,
-        name: Some(record.name.clone()),
+        name: Some(name),
     })
 }
 
@@ -741,7 +755,14 @@ mod tests {
             expires_at: 1_800_000_000,
         };
         let fee = Amount::parse("0.002", 9).unwrap();
-        app_sent(&record(), readings, fee, &signed, &decoded).unwrap()
+        batch_sent(
+            &record().network,
+            (SentKind::App, record().name),
+            readings,
+            fee,
+            (&signed, &decoded),
+        )
+        .unwrap()
     }
 
     #[test]

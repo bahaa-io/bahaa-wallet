@@ -1,6 +1,6 @@
 use bahaa_engine::{
     Activity, ActivityKind, Address, Amount, AssetId, Movement, NetworkId, NftArrival, Replace,
-    SentKind, SentTx, WalletId,
+    Resolved, SentKind, SentTx, WalletId,
 };
 use ruint::aliases::U256;
 
@@ -12,6 +12,7 @@ use super::{
     toned_line, wallet_group,
 };
 use crate::action::{Action, Direction, Field, Go, Pick, Toggle};
+use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::search::{Facts, Query};
 use crate::view::{Button, Item, Level, Line, Note, Page, PageId, Request, Row, Table, Tone};
@@ -70,9 +71,7 @@ impl Screen for List {
                 .data
                 .activity
                 .get(*row)
-                .map_or_else(Reply::default, |activity| {
-                    Reply::nav(Nav::Push(Box::new(Transfer { key: key(activity) })))
-                }),
+                .map_or_else(Reply::default, Transfer::open),
             _ => Reply::default(),
         }
     }
@@ -181,7 +180,7 @@ fn facts(ctx: &Ctx<'_>, activity: &Activity) -> Facts {
             if let Some(swap) = ctx.swap(&tx.network, &tx.id) {
                 facts.asset(ctx, &swap.buy).word(&text::swap_status(swap));
             }
-            if tx.kind == SentKind::App {
+            if matches!(tx.kind, SentKind::App | SentKind::Name) {
                 facts.word(tx.name.as_deref().unwrap_or_default());
             }
         }
@@ -221,6 +220,13 @@ fn facts(ctx: &Ctx<'_>, activity: &Activity) -> Facts {
     facts
 }
 
+fn on_behalf(tx: &SentTx) -> String {
+    match (tx.kind, tx.name.as_deref()) {
+        (SentKind::Name, name) => text::name_change(name.unwrap_or_default()),
+        (_, name) => text::via_app(name.unwrap_or(text::AN_APP)),
+    }
+}
+
 fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
     let (sign, moved, party, status, warn) = match &activity.kind {
         ActivityKind::Sent(tx) if tx.kind == SentKind::Approval => (
@@ -230,10 +236,10 @@ fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
             cell(text::status(&tx.status), status_tone(&tx.status)),
             false,
         ),
-        ActivityKind::Sent(tx) if tx.kind == SentKind::App => (
+        ActivityKind::Sent(tx) if matches!(tx.kind, SentKind::App | SentKind::Name) => (
             "−",
             (tx.amount, &tx.asset),
-            text::via_app(tx.name.as_deref().unwrap_or(text::AN_APP)),
+            on_behalf(tx),
             cell(text::status(&tx.status), status_tone(&tx.status)),
             false,
         ),
@@ -354,19 +360,58 @@ fn key(activity: &Activity) -> Key {
 
 pub(crate) struct Transfer {
     key: Key,
+    name: Option<Resolved>,
 }
 
 impl Transfer {
     pub(crate) fn sent(network: NetworkId, id: String) -> Self {
         Self {
             key: Key::Sent(network, id),
+            name: None,
         }
     }
 
     pub(crate) fn order(network: NetworkId, id: String) -> Self {
         Self {
             key: Key::Order(network, id),
+            name: None,
         }
+    }
+
+    fn open(activity: &Activity) -> Reply {
+        let screen = Self {
+            key: key(activity),
+            name: None,
+        };
+        let party = match &activity.kind {
+            ActivityKind::Sent(tx) if tx.kind != SentKind::Approval => {
+                Some((tx.network.clone(), tx.to))
+            }
+            ActivityKind::SentElsewhere(moved) => Some((moved.network.clone(), moved.to)),
+            ActivityKind::Received(arrival) => {
+                Some((arrival.received.network.clone(), arrival.received.from))
+            }
+            _ => None,
+        };
+        Reply {
+            call: party.map(|(network, address)| Call::NameOf(network, address)),
+            ..Reply::nav(Nav::Push(Box::new(screen)))
+        }
+    }
+
+    fn named(&self, lines: &mut Vec<Line>, received: bool) {
+        let Some(found) = &self.name else {
+            return;
+        };
+        let party = if received { text::FROM } else { text::TO };
+        let at = lines
+            .iter()
+            .position(|line| line.label == party)
+            .map_or(lines.len(), |at| at + 1);
+        lines.insert(
+            at,
+            line(text::NAME, text::name_via(&found.name, found.service)),
+        );
     }
 
     fn find<'a>(&self, ctx: &'a Ctx<'_>) -> Option<&'a Activity> {
@@ -403,6 +448,13 @@ impl Screen for Transfer {
             Action::Pick(Pick::Cancel) => replace(network, id, Replace::Cancel),
             _ => Reply::default(),
         }
+    }
+
+    fn done(&mut self, outcome: Outcome, _ctx: &Ctx<'_>) -> Reply {
+        if let Outcome::NameOf(_, found) = outcome {
+            self.name = found;
+        }
+        Reply::default()
     }
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
@@ -463,6 +515,10 @@ impl Screen for Transfer {
                     .collect(),
             ),
         };
+        self.named(
+            &mut lines,
+            matches!(activity.kind, ActivityKind::Received(_)),
+        );
         lines.push(network_line(ctx, network));
         lines.push(line(text::TIME, format::when(activity.time)));
         lines.push(line(text::TRANSACTION, id.to_owned()));
@@ -526,6 +582,9 @@ fn sent_page(
     if tx.kind == SentKind::App {
         lines.push(line(text::APP, tx.name.as_deref().unwrap_or(text::AN_APP)));
     }
+    if let (SentKind::Name, Some(name)) = (tx.kind, &tx.name) {
+        lines.push(line(text::NAME, name.clone()));
+    }
     if let Some(swap) = ctx.swap(&tx.network, &tx.id) {
         lines.push(toned_line(
             text::SWAP,
@@ -544,10 +603,10 @@ fn sent_page(
             .and_then(|swap| silence(ctx, swap)),
     );
     (
-        if approval {
-            text::APPROVAL_TITLE
-        } else {
-            text::SENT_TITLE
+        match tx.kind {
+            SentKind::Approval => text::APPROVAL_TITLE,
+            SentKind::Name => text::NAME_CHANGE_TITLE,
+            SentKind::Transfer | SentKind::Swap | SentKind::App => text::SENT_TITLE,
         },
         ctx.exact(tx.amount, &ctx.symbol(&tx.asset)),
         lines,

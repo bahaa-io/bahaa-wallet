@@ -51,6 +51,7 @@ pub(crate) struct Send {
     to: Option<Address>,
     to_problem: Option<String>,
     name: Option<Resolved>,
+    behind: Option<Resolved>,
     looking: bool,
     cautions: Vec<Caution>,
     amount_text: String,
@@ -79,6 +80,7 @@ impl Send {
             to: None,
             to_problem: None,
             name: None,
+            behind: None,
             looking: false,
             cautions: Vec::new(),
             amount_text: if one { "1".to_owned() } else { String::new() },
@@ -146,6 +148,7 @@ impl Send {
         self.to = None;
         self.to_problem = None;
         self.name = None;
+        self.behind = None;
         self.looking = false;
         self.cautions.clear();
         self.error = None;
@@ -250,12 +253,18 @@ impl Send {
         self.recipient(payment.to, ctx)
     }
 
+    fn named(&self) -> Option<&Resolved> {
+        self.name.as_ref().or(self.behind.as_ref())
+    }
+
     fn recipient(&mut self, address: Address, ctx: &Ctx<'_>) -> Reply {
-        if let Some(source) = &self.source {
-            self.to_text = ctx.shown(&address, source.asset.network());
-        }
         self.to = Some(address);
-        Reply::call(Call::Cautions(address))
+        let Some(source) = &self.source else {
+            return Reply::call(Call::Cautions(address));
+        };
+        let network = source.asset.network().clone();
+        self.to_text = ctx.shown(&address, &network);
+        Reply::call(Call::Recipient(network, address))
     }
 
     fn request(&self, ctx: &Ctx<'_>) -> Result<SendRequest, String> {
@@ -375,10 +384,11 @@ impl Send {
                 text::name_points(found.service, &shown),
             ));
         }
-        let known = match (ctx.contact(network, &to), ctx.owner(&to)) {
-            (Some(contact), _) => text::known_address(&contact.name),
-            (None, Some(wallet)) => text::own_address(&ctx.owner_label(wallet, &to)),
-            (None, None) => text::valid_address(&ctx.network_name(network)),
+        let known = match (ctx.contact(network, &to), ctx.owner(&to), &self.behind) {
+            (Some(contact), ..) => text::known_address(&contact.name),
+            (None, Some(wallet), _) => text::own_address(&ctx.owner_label(wallet, &to)),
+            (None, None, Some(found)) => text::named_address(&found.name),
+            (None, None, None) => text::valid_address(&ctx.network_name(network)),
         };
         Some(note(Level::Success, known))
     }
@@ -553,7 +563,7 @@ impl Send {
                 vec![line(text::TO, named(&transfer.to))],
             ),
         };
-        if let Some(found) = self.name.as_ref().filter(|_| how.is_none()) {
+        if let Some(found) = self.named().filter(|_| how.is_none()) {
             lines.push(line(text::NAME, text::name_via(&found.name, found.service)));
         }
         lines.push(network_line(ctx, network));
@@ -780,6 +790,10 @@ impl Screen for Send {
     fn done(&mut self, outcome: Outcome, ctx: &Ctx<'_>) -> Reply {
         match outcome {
             Outcome::Cautions(Ok(cautions)) => self.cautions = cautions,
+            Outcome::Recipient(address, cautions, behind) if self.to == Some(address) => {
+                self.cautions = cautions.unwrap_or_default();
+                self.behind = behind;
+            }
             Outcome::Resolved(result) => return self.resolved(result),
             Outcome::Drafted(Ok(draft)) => {
                 self.error = None;

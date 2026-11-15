@@ -1,4 +1,6 @@
-use bahaa_engine::{Address, AssetId, Holding, MAX_MEMO, NetworkId, WalletId, is_plain_text};
+use bahaa_engine::{
+    Address, AssetId, Holding, MAX_MEMO, NetworkId, Resolved, WalletId, is_plain_text,
+};
 
 use super::{Screen, button, cell, input, line, network_cell, network_line, note, toned_line};
 use crate::action::{Action, Field, Pick};
@@ -25,6 +27,7 @@ impl Target {
 pub(crate) struct Receive {
     target: Option<Target>,
     shown: Option<Address>,
+    name: Option<Resolved>,
     picked: bool,
     asset: Option<AssetId>,
     amount: String,
@@ -173,6 +176,12 @@ impl Receive {
                 ctx.owner_label(target.wallet, &target.address),
             ));
         }
+        if let Some(found) = &self.name {
+            lines.push(line(
+                text::YOUR_NAME,
+                text::name_via(&found.name, found.service),
+            ));
+        }
         if asset.contract().is_some() {
             lines.push(toned_line(
                 text::ASSET,
@@ -227,10 +236,20 @@ impl Screen for Receive {
     }
 
     fn done(&mut self, outcome: Outcome, _ctx: &Ctx<'_>) -> Reply {
-        if let Outcome::Receiving(Ok(address)) = outcome {
-            self.shown = Some(address);
+        let Some(target) = &self.target else {
+            return Reply::default();
+        };
+        match outcome {
+            Outcome::Receiving(found) => {
+                self.shown = found.ok();
+                Reply::call(Call::NameOf(target.network.clone(), target.address))
+            }
+            Outcome::NameOf(address, found) if address == target.address => {
+                self.name = found;
+                Reply::default()
+            }
+            _ => Reply::default(),
         }
-        Reply::default()
     }
 
     fn back(&mut self) -> Option<Reply> {

@@ -329,6 +329,23 @@ pub(crate) const ADD_CONTACT: &str = "Add contact";
 pub(crate) const NEW_CONTACT: &str = "New contact";
 pub(crate) const EDIT_CONTACT: &str = "Edit contact";
 pub(crate) const NAME: &str = "Name";
+pub(crate) const YOUR_NAME: &str = "Your name";
+pub(crate) const POINTS_TO: &str = "Points to";
+pub(crate) const NOTHING_YET: &str = "No address yet";
+pub(crate) const RENEW_BY: &str = "Renew by";
+pub(crate) const LINK_HERE: &str = "Link to this wallet";
+pub(crate) const LINK_ELSEWHERE: &str = "Link to another address";
+pub(crate) const UNLINK: &str = "Unlink";
+pub(crate) const RENEW: &str = "Renew";
+pub(crate) const LINK_TO_TEXT: &str = "The name will point to this address, so payments sent to the name go there. The NFT stays in this wallet.";
+pub(crate) const NOTHING: &str = "Nothing";
+pub(crate) const POINTS_NOW: &str = "Points to now";
+pub(crate) const WILL_POINT: &str = "Will point to";
+pub(crate) const ATTACHED: &str = "Sent to the name";
+pub(crate) const CHECKING_NAME: &str = "Checking the change with the name's own contract…";
+pub(crate) const NAME_CHANGE_TITLE: &str = "Name change";
+pub(crate) const NAMES: &str = "Names";
+pub(crate) const LOOK_UP_NAMES: &str = "Show the names behind addresses";
 pub(crate) const ADDRESS: &str = "Address";
 pub(crate) const PICK_NETWORK: &str = "Choose a network";
 pub(crate) const SAVE: &str = "Save";
@@ -489,6 +506,7 @@ pub(crate) const SCHEMA: &str = "Schema";
 pub(crate) const SIZE: &str = "Size";
 pub(crate) const SENDS_COINS: &str = "Sends coins";
 pub(crate) const CONTRACT_CALL: &str = "Contract call";
+pub(crate) const UNLINKS_NAME: &str = "Unlinks a TON name from its address";
 pub(crate) const UNKNOWN_TOKEN: &str = "Moves a token the wallet can't check";
 pub(crate) const UNKNOWN_NFT: &str = "Moves an NFT the wallet can't check";
 pub(crate) const AN_APP: &str = "an app";
@@ -657,6 +675,42 @@ pub(crate) fn name_points(service: NameService, address: &str) -> String {
 
 pub(crate) fn name_via(name: &str, service: NameService) -> String {
     format!("{name} via {}", name_service(service))
+}
+
+pub(crate) fn link_title(name: &str) -> String {
+    format!("Link {name}")
+}
+
+pub(crate) fn unlink_title(name: &str) -> String {
+    format!("Unlink {name}")
+}
+
+pub(crate) fn renew_title(name: &str) -> String {
+    format!("Renew {name}")
+}
+
+pub(crate) fn returned_note(amount: &str) -> String {
+    format!("The name's contract sends back what it doesn't use of the {amount}.")
+}
+
+pub(crate) fn stays_note(amount: &str) -> String {
+    format!("The {amount} stays on the name's contract and pays for keeping it on the network.")
+}
+
+pub(crate) fn renews_note(name: &str, until: &str) -> String {
+    format!("This also renews {name} until {until}. A .ton name must be renewed once a year.")
+}
+
+pub(crate) fn link_sent(name: &str) -> String {
+    format!("Sent. {name} changes once the network confirms it.")
+}
+
+pub(crate) fn name_change(name: &str) -> String {
+    format!("Changes {name}")
+}
+
+pub(crate) fn named_address(name: &str) -> String {
+    format!("{name} points to this address")
 }
 
 pub(crate) fn known_address(name: &str) -> String {
@@ -1334,6 +1388,10 @@ pub(crate) fn moves(what: &str, to: &str) -> String {
 
 pub(crate) fn of_token(amount: &str, master: &str) -> String {
     format!("{amount} of token {master}")
+}
+
+pub(crate) fn points_name(to: &str) -> String {
+    format!("Points a TON name to {to}")
 }
 
 pub(crate) fn call_op(op: u32) -> String {

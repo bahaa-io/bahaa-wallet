@@ -21,7 +21,7 @@ mod wallet;
 pub use batch::{Outbound, cell_data_hash, max_messages};
 pub use body::Body;
 pub use chain::{
-    DecodedBatch, Handover, Identity, Meaning, Reading, Requested, TonBatch, TonCall, TonChain,
-    TonPlan, Wanted, dns_normalize,
+    DecodedBatch, Handover, Identity, Link, Linking, Meaning, NameRecord, Reading, Requested,
+    TonBatch, TonCall, TonChain, TonPlan, Wanted, dns_normalize,
 };
 pub use comment::read_comment;

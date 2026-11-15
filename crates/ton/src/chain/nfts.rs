@@ -71,22 +71,10 @@ impl TonChain {
         else {
             return Ok(None);
         };
-        let [
-            init,
-            Item::Num(index),
-            Item::Cell(collection),
-            Item::Cell(holder),
-            Item::Cell(content),
-        ] = stack.as_slice()
-        else {
+        let Some((index, collection, holder, content)) = nft_data(&stack) else {
             return Ok(None);
         };
-        let initialized = match init {
-            Item::Negative => true,
-            Item::Num(flag) => !flag.is_zero(),
-            Item::Cell(_) | Item::Null => false,
-        };
-        if !initialized || read_address(holder) != Some(*owner) {
+        if holder != *owner {
             return Ok(None);
         }
         let Ok(collection) = read_optional_address(collection) else {
@@ -98,9 +86,9 @@ impl TonChain {
         Ok(Some(Held {
             listed,
             state,
-            index: *index,
+            index,
             collection,
-            content: content.clone(),
+            content: content.to_vec(),
             soulbound,
         }))
     }
@@ -213,7 +201,27 @@ impl TonChain {
     }
 }
 
-fn refusal_as_none(
+pub(super) fn nft_data(stack: &[Item]) -> Option<(U256, &[u8], Address, &[u8])> {
+    let [
+        init,
+        Item::Num(index),
+        Item::Cell(collection),
+        Item::Cell(holder),
+        Item::Cell(content),
+    ] = stack
+    else {
+        return None;
+    };
+    let initialized = match init {
+        Item::Negative => true,
+        Item::Num(flag) => !flag.is_zero(),
+        Item::Cell(_) | Item::Null => false,
+    };
+    let holder = read_address(holder).filter(|_| initialized)?;
+    Some((*index, collection, holder, content))
+}
+
+pub(super) fn refusal_as_none(
     ran: Result<Option<Vec<Item>>, ChainError>,
 ) -> Result<Option<Vec<Item>>, ChainError> {
     match ran {

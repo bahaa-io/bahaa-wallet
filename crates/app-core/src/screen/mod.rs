@@ -2,6 +2,7 @@ mod activity;
 mod chart;
 mod connect;
 mod contacts;
+mod linking;
 mod networks;
 mod nfts;
 mod onboarding;
@@ -202,6 +203,10 @@ pub(crate) fn swap_details(ctx: &Ctx<'_>, swap: &SwapRecord) -> Vec<Line> {
 pub(crate) fn replaceable(ctx: &Ctx<'_>, network: &NetworkId) -> bool {
     ctx.network(network)
         .is_some_and(|network| matches!(network.family(), ChainFamily::Evm | ChainFamily::Bitcoin))
+}
+
+pub(crate) fn expired(at: u64, valid_for: std::time::Duration, now: u64) -> bool {
+    at + valid_for.as_secs() <= now
 }
 
 pub(crate) fn native_worth(ctx: &Ctx<'_>, network: &NetworkId, amount: Amount) -> Option<Amount> {

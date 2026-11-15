@@ -118,6 +118,7 @@ pub enum Pick {
     Delete,
     Showing(Showing),
     Mark(Marking),
+    Link(LinkChoice),
     Span(Span),
     AppAccount(usize),
     Decline,
@@ -134,6 +135,7 @@ pub enum Toggle {
     Testnets,
     Counted,
     HiddenNfts,
+    NameLookups,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -197,6 +199,14 @@ pub enum Showing {
     #[default]
     Coins,
     Nfts,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkChoice {
+    Here,
+    Elsewhere,
+    Clear,
+    Renew,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -760,7 +760,7 @@ impl Screen for RequestPage {
 
 fn stale(review: &AskReview, at: u64, now: u64) -> bool {
     match review {
-        AskReview::Transaction(review) => at + review.valid_for.as_secs() <= now,
+        AskReview::Transaction(review) => super::expired(at, review.valid_for, now),
         AskReview::Data(_) => false,
     }
 }
@@ -829,9 +829,13 @@ fn message_row(ctx: &Ctx<'_>, network: &NetworkId, native: &str, reading: &Readi
         }
         Meaning::ForeignToken => text::UNKNOWN_TOKEN.to_owned(),
         Meaning::ForeignNft => text::UNKNOWN_NFT.to_owned(),
+        Meaning::Record { wallet: Some(to) } => text::points_name(&party(to)),
+        Meaning::Record { wallet: None } => text::UNLINKS_NAME.to_owned(),
         Meaning::Call { op } => op.map_or_else(|| text::CONTRACT_CALL.to_owned(), text::call_op),
     };
-    let warn = reading.deploys || unreadable(&reading.meaning);
+    let warn = reading.deploys
+        || unreadable(&reading.meaning)
+        || matches!(reading.meaning, Meaning::Record { .. });
     let what = if reading.deploys {
         text::and_deploys(&what)
     } else {

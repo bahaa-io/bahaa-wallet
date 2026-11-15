@@ -21,7 +21,7 @@ use tycho_types::num::{Tokens, VarUint56};
 
 use super::send::{CONFIRM_BLOCKS, LIFETIME, prices};
 use super::tokens::Contracts;
-use super::{TonChain, amount};
+use super::{TonChain, amount, naming};
 use crate::batch::{self, Batch, Outbound, max_messages};
 use crate::cells::{Account, Status};
 use crate::comment;
@@ -58,6 +58,9 @@ pub enum Meaning {
         to: Address,
     },
     ForeignNft,
+    Record {
+        wallet: Option<Address>,
+    },
     Call {
         op: Option<u32>,
     },
@@ -567,6 +570,9 @@ impl TonChain {
                     },
                     None => Meaning::ForeignNft,
                 })
+            }
+            Some(naming::CHANGE_DNS_RECORD) => {
+                Ok(naming::record_change(&root).unwrap_or(Meaning::Call { op }))
             }
             _ => Ok(Meaning::Call { op }),
         }

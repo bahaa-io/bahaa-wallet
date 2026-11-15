@@ -10,12 +10,17 @@ use super::TonChain;
 use crate::http::Item;
 use crate::vm::Arg;
 
-const WALLET: &str = "wallet";
-const SMART_CONTRACT: u16 = 0x9fd3;
+pub(super) const WALLET: &str = "wallet";
+pub(super) const SMART_CONTRACT: u16 = 0x9fd3;
 const NEXT_RESOLVER: u16 = 0xba93;
 const MAX_HOPS: usize = 6;
 const MAX_NAME: usize = 126;
 const SHORT: usize = 126;
+
+pub(super) struct Walked {
+    pub resolver: Address,
+    pub wallet: Option<Address>,
+}
 
 impl TonChain {
     pub async fn dns_names(&self, owner: &Address) -> Result<Vec<String>, ChainError> {
@@ -30,6 +35,10 @@ impl TonChain {
     }
 
     pub async fn dns_address(&self, name: &str) -> Result<Option<Address>, ChainError> {
+        Ok(self.dns_walk(name).await?.and_then(|walked| walked.wallet))
+    }
+
+    pub(super) async fn dns_walk(&self, name: &str) -> Result<Option<Walked>, ChainError> {
         let mut rest = encoded(name)?;
         let category = U256::from_be_bytes::<32>(Sha256::digest(WALLET.as_bytes()).into());
         let mut resolver = self.http.dns_root().await?;
@@ -59,12 +68,17 @@ impl TonChain {
                     "a TON name resolver split the name in a broken way",
                 ));
             }
-            let Item::Cell(boc) = record else {
-                return Ok(None);
+            let record = match record {
+                Item::Cell(boc) => Some(boc),
+                _ => None,
             };
             if bits == rest.len() * 8 {
-                return Ok(read_record(boc, SMART_CONTRACT));
+                let wallet = record.and_then(|boc| read_record(boc, SMART_CONTRACT));
+                return Ok(Some(Walked { resolver, wallet }));
             }
+            let Some(boc) = record else {
+                return Ok(None);
+            };
             resolver = read_record(boc, NEXT_RESOLVER)
                 .ok_or(ChainError::Invalid("a TON name resolver pointed nowhere"))?;
             rest.drain(..bits / 8);
@@ -102,7 +116,7 @@ fn encoded(name: &str) -> Result<Vec<u8>, ChainError> {
     Ok(raw)
 }
 
-fn read_record(boc: &[u8], tag: u16) -> Option<Address> {
+pub(super) fn read_record(boc: &[u8], tag: u16) -> Option<Address> {
     let cell = Boc::decode(boc).ok()?;
     let mut slice = cell.as_slice().ok()?;
     if slice.load_u16().ok()? != tag {

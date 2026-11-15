@@ -33,6 +33,10 @@ impl Screen for Settings {
                 hide_balances: !current.hide_balances,
                 ..current.clone()
             }),
+            Action::Toggle(Toggle::NameLookups) => save(bahaa_engine::Settings {
+                name_lookups: !current.name_lookups,
+                ..current.clone()
+            }),
             Action::Pick(Pick::Channel(channel)) => {
                 let settings = bahaa_engine::Settings {
                     updates: updates(*channel),
@@ -112,6 +116,12 @@ impl Screen for Settings {
                 text::HIDE_BALANCES,
                 Toggle::HideBalances,
                 settings.hide_balances,
+            ),
+            toggle(
+                text::NAMES,
+                text::LOOK_UP_NAMES,
+                Toggle::NameLookups,
+                settings.name_lookups,
             ),
         ];
         let mut app = Vec::new();

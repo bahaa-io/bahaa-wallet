@@ -1,9 +1,10 @@
 use bahaa_engine::{
     Account, Activity, Address, AppAccount, AppId, Approved, AskId, AskReview, AssetId,
     BitcoinType, Caution, ChainFamily, ConnectedApp, Contact, CustomToken, Draft, DraftId, Engine,
-    EngineError, Invite, InviteId, Mark, NetworkId, NewPhrase, PhraseKind, Point, Replace,
-    Resolved, SecretString, SendRequest, SentTx, Settings, SolanaPath, Span, SwapDraft, SwapId,
-    SwapRequest, SwapReview, TonContract, WalletId, WalletInfo, swap::SwapRecord,
+    EngineError, Invite, InviteId, LinkDraft, LinkId, LinkRequest, Mark, NetworkId, NewPhrase,
+    PhraseKind, Point, Replace, Resolved, SecretString, SendRequest, SentTx, Settings, SolanaPath,
+    Span, SwapDraft, SwapId, SwapRequest, SwapReview, TonContract, WalletId, WalletInfo,
+    naming::NameRecord, swap::SwapRecord,
 };
 
 pub(crate) enum Call {
@@ -32,10 +33,15 @@ pub(crate) enum Call {
     Replace(NetworkId, String, Replace),
     Confirm(DraftId, SecretString),
     ConfirmOrder(DraftId, SecretString),
+    NameRecord(AssetId),
+    PrepareLink(LinkRequest),
+    ConfirmLink(LinkId, SecretString),
     PrepareSwap(SwapRequest),
     ChooseSwap(SwapId, usize),
     Cautions(Address),
+    Recipient(NetworkId, Address),
     ResolveName(String, NetworkId),
+    NameOf(NetworkId, Address),
     PriceHistory(AssetId, Span),
     SaveContact(Contact),
     RemoveContact(NetworkId, Address),
@@ -59,9 +65,13 @@ pub(crate) enum Outcome {
     Revealed(Result<SecretString, EngineError>),
     Drafted(Result<Draft, EngineError>),
     Sent(Result<SentTx, EngineError>),
+    Named(Result<NameRecord, EngineError>),
+    LinkDrafted(Result<LinkDraft, EngineError>),
     Ordered(Result<SwapRecord, EngineError>),
     Cautions(Result<Vec<Caution>, EngineError>),
+    Recipient(Address, Result<Vec<Caution>, EngineError>, Option<Resolved>),
     Resolved(Result<Resolved, EngineError>),
+    NameOf(Address, Option<Resolved>),
     History(Span, Result<Vec<Point>, EngineError>),
     Token(Result<CustomToken, EngineError>),
     Receiving(Result<Address, EngineError>),
@@ -149,6 +159,11 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
         Call::ConfirmOrder(draft, password) => {
             Outcome::Ordered(engine.confirm_order(draft, password).await)
         }
+        Call::NameRecord(asset) => Outcome::Named(engine.name_record(asset).await),
+        Call::PrepareLink(request) => Outcome::LinkDrafted(engine.prepare_link(request).await),
+        Call::ConfirmLink(draft, password) => {
+            Outcome::Sent(engine.confirm_link(draft, password).await)
+        }
         Call::PrepareSwap(request) => Outcome::Routes(engine.prepare_swap(request).await),
         Call::ChooseSwap(id, route) => {
             Outcome::Reviewed(engine.choose_swap(id, route).await.map(Box::new))
@@ -157,9 +172,18 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
         Call::PriceHistory(asset, span) => {
             Outcome::History(span, engine.price_history(asset, span).await)
         }
+        Call::Recipient(network, address) => {
+            let (cautions, name) =
+                tokio::join!(engine.cautions(address), engine.name_of(network, address));
+            Outcome::Recipient(address, cautions, name.ok().flatten())
+        }
         Call::ResolveName(name, network) => {
             Outcome::Resolved(engine.resolve_name(name, network).await)
         }
+        Call::NameOf(network, address) => Outcome::NameOf(
+            address,
+            engine.name_of(network, address).await.ok().flatten(),
+        ),
         Call::SaveContact(contact) => done(engine.save_contact(contact).await),
         Call::RemoveContact(network, address) => {
             done(engine.remove_contact(network, address).await)

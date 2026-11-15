@@ -1562,6 +1562,21 @@ async fn ens_node(stored: Arc<std::sync::Mutex<String>>) -> String {
     let url = bahaa_testkit::serve(move |request| {
         let result = match request.json()["method"].as_str() {
             Some("eth_chainId") => json!("0x1"),
+            Some("eth_call")
+                if request.json()["params"][0]["data"]
+                    .as_str()
+                    .is_some_and(|data| data.starts_with("0x5d78a217")) =>
+            {
+                let name = "friend.eth";
+                json!(format!(
+                    "0x{}{}{}{}{}",
+                    word(96),
+                    word(0x4976),
+                    word(0x4977),
+                    word(name.len()),
+                    format!("{:0<64}", bahaa_engine::hex::encode(name.as_bytes()))
+                ))
+            }
             Some("eth_call") => {
                 let address = stored
                     .lock()
@@ -1584,11 +1599,11 @@ async fn ens_node(stored: Arc<std::sync::Mutex<String>>) -> String {
     url.to_string()
 }
 
-#[tokio::test]
-async fn a_name_is_looked_up_shown_on_the_review_and_checked_again_before_sending() {
-    let scratch = Scratch::new();
-    let stored = Arc::new(std::sync::Mutex::new(FRIEND.to_owned()));
-    let ens = ens_node(Arc::clone(&stored)).await;
+async fn sending_with_ens(
+    scratch: &Scratch,
+    stored: &Arc<std::sync::Mutex<String>>,
+) -> (App, mpsc::Receiver<Request>, watch::Receiver<Arc<View>>) {
+    let ens = ens_node(Arc::clone(stored)).await;
     let networks: Vec<_> = bsc_registry(&spending_node().await)
         .networks()
         .cloned()
@@ -1601,7 +1616,7 @@ async fn a_name_is_looked_up_shown_on_the_review_and_checked_again_before_sendin
         })
         .collect();
     let registry = Registry::with_networks(networks).unwrap();
-    let (app, _requests, mut view) = imported_on(&scratch, registry, false).await;
+    let (app, requests, mut view) = imported_on(scratch, registry, false).await;
     app.act(Action::Go(Go::Tab(Tab::Send)));
     let list = until(&mut view, |current| {
         current.page.id == PageId::SendFrom
@@ -1632,6 +1647,43 @@ async fn a_name_is_looked_up_shown_on_the_review_and_checked_again_before_sendin
             "An address, or a name like name.eth".to_owned()
         ))
     );
+    (app, requests, view)
+}
+
+#[tokio::test]
+async fn an_address_with_a_name_shows_it_while_typing_and_on_the_review() {
+    let scratch = Scratch::new();
+    let stored = Arc::new(std::sync::Mutex::new(FRIEND.to_owned()));
+    let (app, _requests, mut view) = sending_with_ens(&scratch, &stored).await;
+    app.act(Action::Type(Field::To, FRIEND.to_owned()));
+    until(&mut view, |current| {
+        hint(current, Field::To)
+            == Some((
+                Level::Success,
+                "friend.eth points to this address".to_owned(),
+            ))
+    })
+    .await;
+    app.act(Action::Type(Field::Amount, "1".to_owned()));
+    app.act(Action::Submit);
+    let review = at(&mut view, PageId::Review).await;
+    assert!(
+        review
+            .page
+            .lines
+            .iter()
+            .any(|line| line.label == "Name" && line.value == "friend.eth via ENS"),
+        "{:?}",
+        review.page.lines
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_name_is_looked_up_shown_on_the_review_and_checked_again_before_sending() {
+    let scratch = Scratch::new();
+    let stored = Arc::new(std::sync::Mutex::new(FRIEND.to_owned()));
+    let (app, _requests, mut view) = sending_with_ens(&scratch, &stored).await;
     app.act(Action::Type(Field::To, "Friend.ETH".to_owned()));
     until(&mut view, |current| {
         hint(current, Field::To).is_some_and(|(level, text)| {

@@ -15,6 +15,7 @@ mod batch;
 mod calls;
 mod dns;
 mod incoming;
+mod naming;
 mod nfts;
 mod send;
 mod tokens;
@@ -23,6 +24,7 @@ mod track;
 pub use batch::{DecodedBatch, Handover, Identity, Meaning, Reading, Requested, TonBatch, Wanted};
 pub use calls::TonCall;
 pub use dns::normalize as dns_normalize;
+pub use naming::{Link, Linking, NameRecord};
 pub use send::TonPlan;
 
 use crate::http::{Http, Item};
@@ -355,6 +357,7 @@ pub(crate) fn fuzz_batch(data: &[u8]) {
 #[cfg(fuzzing)]
 pub(crate) fn fuzz_dns(data: &[u8]) {
     dns::fuzz(data);
+    naming::fuzz(data);
 }
 
 #[cfg(test)]

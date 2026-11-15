@@ -26,6 +26,8 @@ use crate::{KeyringError, WalletId, WalletKind};
 
 mod asks;
 
+pub(super) use asks::{batch_sent, signed_batch};
+
 const MAX_APPS: usize = 32;
 const MAX_INVITES: usize = 4;
 const INVITE_LIFE: Duration = Duration::from_secs(300);

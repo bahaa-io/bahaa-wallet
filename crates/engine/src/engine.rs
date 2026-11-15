@@ -3,6 +3,7 @@ mod activity;
 mod connect;
 mod contacts;
 mod incoming;
+mod linking;
 mod names;
 mod nfts;
 mod prices;
@@ -34,6 +35,8 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
+use bahaa_ton::NameRecord;
+
 use crate::caution::{Arrival, Caution};
 use crate::chains::{self, AnyChain, NetworkBalances, NetworkHistory, NetworkNfts};
 use crate::keyring;
@@ -47,6 +50,7 @@ pub use connect::{
 };
 use connect::{Linked, Links, Met, Rehearsed};
 pub use incoming::IncomingHistory;
+pub use linking::{LinkDraft, LinkId, LinkRequest};
 pub use names::{NameService, Resolved};
 use nfts::Nfts;
 pub use nfts::{Collectible, Collectibles, Fake, NftHealth};
@@ -195,6 +199,9 @@ enum Command {
     PrepareSend(SendRequest, Reply<Draft>),
     Replace(NetworkId, String, Replace, Reply<Draft>),
     ConfirmSend(DraftId, SecretString, Reply<SentTx>),
+    NameRecord(AssetId, Reply<NameRecord>),
+    PrepareLink(LinkRequest, Reply<LinkDraft>),
+    ConfirmLink(LinkId, SecretString, Reply<SentTx>),
     ConfirmOrder(DraftId, SecretString, Reply<SwapRecord>),
     PrepareSwap(SwapRequest, Reply<SwapDraft>),
     ChooseSwap(SwapId, usize, Reply<SwapReview>),
@@ -230,6 +237,7 @@ enum Notice {
     Pictures(u64, Vec<Pictured>),
     Quoted(Box<Quoted>),
     Delivered(Box<Delivered>),
+    LinkPlanned(Box<linking::Planned>),
     Tracked(Vec<SentTx>),
     SwapQuoted(Box<SwapQuoted>),
     SwapOrdered(Box<SwapOrdered>),
@@ -282,6 +290,7 @@ impl Command {
                 | Self::ReceiveAddress(..)
                 | Self::ResolveName(..)
                 | Self::NameOf(..)
+                | Self::NameRecord(..)
                 | Self::PriceHistory(..)
                 | Self::Shutdown(_)
         )
@@ -334,6 +343,7 @@ impl Engine {
             custom: Arc::new(Vec::new()),
             settings,
             names: names::Names::default(),
+            naming: linking::Naming::default(),
             market,
             prices: market_prices(&prices),
             saved,
@@ -713,6 +723,23 @@ impl Engine {
             .await
     }
 
+    pub async fn name_record(&self, asset: AssetId) -> Result<NameRecord, EngineError> {
+        self.ask(|reply| Command::NameRecord(asset, reply)).await
+    }
+
+    pub async fn prepare_link(&self, request: LinkRequest) -> Result<LinkDraft, EngineError> {
+        self.ask(|reply| Command::PrepareLink(request, reply)).await
+    }
+
+    pub async fn confirm_link(
+        &self,
+        draft: LinkId,
+        password: SecretString,
+    ) -> Result<SentTx, EngineError> {
+        self.ask(|reply| Command::ConfirmLink(draft, password, reply))
+            .await
+    }
+
     pub async fn history(&self) -> Result<Vec<SentTx>, EngineError> {
         self.ask(Command::History).await
     }
@@ -798,6 +825,7 @@ struct Worker {
     custom: Arc<Vec<CustomToken>>,
     settings: Settings,
     names: names::Names,
+    naming: linking::Naming,
     market: Option<Market>,
     prices: watch::Receiver<Snapshot>,
     saved: Snapshot,
@@ -966,6 +994,7 @@ impl Worker {
             Command::ConfirmSend(id, password, reply) => {
                 self.confirm_send(id, password, reply).await;
             }
+
             Command::PrepareSwap(request, reply) => self.prepare_swap(&request, reply),
             Command::ChooseSwap(id, route, reply) => self.choose_swap(id, route, reply),
             Command::Swaps(reply) => answer(reply, self.swaps()),
@@ -985,12 +1014,7 @@ impl Worker {
             Command::ReceiveAddress(network, address, reply) => {
                 self.receive_address(&network, address, reply);
             }
-            Command::ResolveName(name, network, reply) => {
-                self.resolve_name(&name, &network, reply);
-            }
-            Command::NameOf(network, address, reply) => {
-                self.name_of(&network, address, reply);
-            }
+
             Command::PriceHistory(asset, span, reply) => {
                 self.price_history(&asset, span, reply);
             }
@@ -1006,6 +1030,11 @@ impl Worker {
             }
             Command::RejectAsk(ask, reply) => answer(reply, self.reject_ask(ask)),
             Command::Touch | Command::Shutdown(_) => {}
+            command @ (Command::ResolveName(..)
+            | Command::NameOf(..)
+            | Command::NameRecord(..)
+            | Command::PrepareLink(..)
+            | Command::ConfirmLink(..)) => self.handle_names(command).await,
             command @ (Command::Wallets(_)
             | Command::Accounts(_)
             | Command::Generate(..)
@@ -1023,6 +1052,21 @@ impl Worker {
             | Command::RenameWallet(..)) => self.handle_wallets(command).await,
             Command::Settings(reply) => answer(reply, Ok(self.settings.clone())),
             Command::SetSettings(settings, reply) => answer(reply, self.set_settings(settings)),
+        }
+    }
+
+    async fn handle_names(&mut self, command: Command) {
+        match command {
+            Command::ResolveName(name, network, reply) => {
+                self.resolve_name(&name, &network, reply);
+            }
+            Command::NameOf(network, address, reply) => self.name_of(&network, address, reply),
+            Command::NameRecord(asset, reply) => self.name_record(&asset, reply),
+            Command::PrepareLink(request, reply) => self.prepare_link(&request, reply),
+            Command::ConfirmLink(id, password, reply) => {
+                self.confirm_link(id, password, reply).await;
+            }
+            _ => {}
         }
     }
 
@@ -1173,6 +1217,7 @@ impl Worker {
             }
             Notice::Quoted(quoted) => self.quoted(*quoted),
             Notice::Delivered(delivered) => self.delivered(*delivered),
+            Notice::LinkPlanned(planned) => self.link_planned(*planned),
             Notice::Tracked(updates) => self.tracked(updates),
             Notice::SwapQuoted(quoted) => self.swap_quoted(*quoted),
             Notice::SwapOrdered(ordered) => self.swap_ordered(*ordered),
@@ -1789,6 +1834,7 @@ impl Worker {
         self.stop_tracking();
         self.stop_polling();
         self.drafts.clear();
+        self.naming.forget();
         self.session = self.session.wrapping_add(1);
         self.accounts.clear();
         self.uncounted.clear();

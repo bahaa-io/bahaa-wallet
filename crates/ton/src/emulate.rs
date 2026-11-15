@@ -35,6 +35,7 @@ pub(crate) struct Hop {
     pub charged_gas_fees: u64,
     pub fees: u64,
     pub out: Vec<Vec<u8>>,
+    pub state: Vec<u8>,
     #[cfg(test)]
     pub transaction: Vec<u8>,
 }
@@ -205,6 +206,7 @@ impl Emulator {
             charged_gas_fees,
             fees: u64::try_from(transaction.total_fees.tokens.into_inner()).unwrap_or(u64::MAX),
             out,
+            state: Boc::encode(output.new_state.account.inner()),
             #[cfg(test)]
             transaction: Boc::encode(output.transaction.inner()),
         }))
