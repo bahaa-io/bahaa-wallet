@@ -49,6 +49,7 @@ pub enum Updates {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Settings {
     pub fiat: Fiat,
     pub developer_mode: bool,
@@ -56,6 +57,7 @@ pub struct Settings {
     pub lock_after_minutes: u16,
     pub hide_balances: bool,
     pub updates: Updates,
+    pub name_lookups: bool,
 }
 
 impl Default for Settings {
@@ -67,6 +69,7 @@ impl Default for Settings {
             lock_after_minutes: 10,
             hide_balances: false,
             updates: Updates::Stable,
+            name_lookups: true,
         }
     }
 }
@@ -100,6 +103,7 @@ mod tests {
         assert_eq!(settings.lock_after_minutes, 10);
         assert!(!settings.hide_balances);
         assert_eq!(settings.updates, Updates::Stable);
+        assert!(settings.name_lookups);
         assert_eq!(Settings::from_json("{}").unwrap(), Settings::default());
     }
 
@@ -112,6 +116,7 @@ mod tests {
             lock_after_minutes: 30,
             hide_balances: true,
             updates: Updates::Beta,
+            name_lookups: false,
         };
         assert_eq!(
             Settings::from_json(&settings.to_json().unwrap()).unwrap(),

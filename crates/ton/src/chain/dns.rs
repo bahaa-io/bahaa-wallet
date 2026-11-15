@@ -18,6 +18,17 @@ const MAX_NAME: usize = 126;
 const SHORT: usize = 126;
 
 impl TonChain {
+    pub async fn dns_names(&self, owner: &Address) -> Result<Vec<String>, ChainError> {
+        crate::cells::parts(owner)?;
+        Ok(self
+            .http
+            .names_of(owner)
+            .await?
+            .iter()
+            .filter_map(|name| normalize(name).ok())
+            .collect())
+    }
+
     pub async fn dns_address(&self, name: &str) -> Result<Option<Address>, ChainError> {
         let mut rest = encoded(name)?;
         let category = U256::from_be_bytes::<32>(Sha256::digest(WALLET.as_bytes()).into());

@@ -17,16 +17,18 @@ pub(crate) const UNIVERSAL: [u8; 20] = [
     0xe1, 0x44, 0xee, 0xee,
 ];
 const RESOLVE: &str = "resolve(bytes,bytes)";
+const REVERSE: &str = "reverse(bytes,uint256)";
 const ADDRESS: &str = "addr(bytes32,uint256)";
 const OFFCHAIN_LOOKUP: &str = "OffchainLookup(address,string[],bytes,bytes4,bytes)";
 const BATCH_QUERY: &str = "query((address,string[],bytes)[])";
 const HTTP_ERROR: &str = "HttpError(uint16,string)";
 const ERROR: &str = "Error(string)";
-const NOT_FOUND: [&str; 4] = [
+const NOT_FOUND: [&str; 5] = [
     "ResolverNotFound(bytes)",
     "ResolverNotContract(bytes,address)",
     "UnsupportedResolverProfile(bytes4)",
     "ResolverError(bytes)",
+    "ReverseAddressMismatch(string,bytes)",
 ];
 const LOCAL_BATCH: &str = "x-batch-gateway:true";
 const ROUNDS: usize = 4;
@@ -71,6 +73,24 @@ impl EvmChain {
             .and_then(|result| abi::bytes_at(result, 0))
             .ok_or_else(ChainError::malformed)?;
         Ok((!address.is_empty()).then(|| address.to_vec()))
+    }
+
+    pub async fn ens_name(&self, address: &[u8], coin: u64) -> Result<Option<String>, ChainError> {
+        if self.chain_id != MAINNET {
+            return Err(ChainError::Unsupported("ENS names outside Ethereum"));
+        }
+        let mut call = selector(REVERSE).to_vec();
+        call.extend(abi::encode(&[
+            abi::Arg::Bytes(address),
+            abi::Arg::Uint(U256::from(coin)),
+        ]));
+        let Some(reply) = self.read_offchain(&UNIVERSAL, call).await? else {
+            return Ok(None);
+        };
+        let name = abi::abi_string(&reply, MAX_LABEL).ok_or_else(ChainError::malformed)?;
+        let usable =
+            !name.is_empty() && normalize(&name).is_ok_and(|normalized| normalized == name);
+        Ok(usable.then_some(name))
     }
 
     async fn read_offchain(

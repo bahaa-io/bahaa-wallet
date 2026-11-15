@@ -724,4 +724,15 @@ async fn live_ton_names_resolve_through_proven_dns() {
             .unwrap(),
         None
     );
+    let gosal =
+        Address::parse_ton("0:4bab343ae759aa67cfe7a0af4ab3d2258484fd593142c57e9cad3c064039f4dd")
+            .unwrap()
+            .0;
+    assert!(
+        chain
+            .dns_names(&gosal)
+            .await
+            .unwrap()
+            .contains(&"gosal.t.me".to_owned())
+    );
 }

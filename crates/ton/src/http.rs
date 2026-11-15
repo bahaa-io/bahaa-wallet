@@ -26,6 +26,7 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 const CONFIG_FOR: Duration = Duration::from_secs(600);
 const DNS_ROOT: i32 = 4;
 const MASTERCHAIN: i8 = -1;
+const MAX_NAMES: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Item {
@@ -281,6 +282,25 @@ impl Http {
             .await?)
     }
 
+    pub(crate) async fn names_of(&self, owner: &Address) -> Result<Vec<String>, ChainError> {
+        Ok(self
+            .pool
+            .call(Some(Feature::Nfts), |endpoint| async move {
+                match endpoint.protocol {
+                    Protocol::TonApi => {
+                        self.ready(&endpoint).await?;
+                        let path = format!("accounts/{owner}/dns/backresolve");
+                        match api(self.fetch(&endpoint.url, &path, None).await?)? {
+                            Some(reply) => domains(&reply).ok_or_else(malformed),
+                            None => Ok(Vec::new()),
+                        }
+                    }
+                    _ => Err(unsupported()),
+                }
+            })
+            .await?)
+    }
+
     pub(crate) async fn transactions(
         &self,
         address: &Address,
@@ -494,6 +514,15 @@ pub(crate) fn fuzz_listed(reply: &Value) {
     let _ = listed(reply);
 }
 
+fn domains(reply: &Value) -> Option<Vec<String>> {
+    reply["domains"]
+        .as_array()?
+        .iter()
+        .take(MAX_NAMES)
+        .map(|name| name.as_str().map(str::to_owned))
+        .collect()
+}
+
 fn unsupported() -> Failure<ChainError> {
     Failure::Unsupported(ChainError::Network(
         "an endpoint does not serve this request".to_owned(),
@@ -507,6 +536,18 @@ fn malformed() -> Failure<ChainError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reverse_names_are_text_and_capped() {
+        let many: Vec<String> = (0..12).map(|n| format!("name{n}.ton")).collect();
+        assert_eq!(domains(&json!({"domains": many})).unwrap().len(), MAX_NAMES);
+        assert_eq!(
+            domains(&json!({"domains": []})).unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(domains(&json!({"domains": [1]})).is_none());
+        assert!(domains(&json!({})).is_none());
+    }
 
     #[test]
     fn nft_listings_keep_tonapi_trust_and_stop_at_the_limit() {

@@ -311,6 +311,28 @@ impl AnyChain {
         }
     }
 
+    pub(crate) async fn ens_name(
+        &self,
+        address: &[u8],
+        coin: u64,
+    ) -> Result<Option<String>, ChainError> {
+        match self {
+            Self::Evm(chain) => shielded(chain.ens_name(address, coin)).await,
+            Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("ENS names outside Ethereum"))
+            }
+        }
+    }
+
+    pub(crate) async fn dns_names(&self, owner: &Address) -> Result<Vec<String>, ChainError> {
+        match self {
+            Self::Ton(chain) => shielded(chain.dns_names(owner)).await,
+            Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("TON names outside TON"))
+            }
+        }
+    }
+
     pub(crate) async fn dns_address(&self, name: &str) -> Result<Option<Address>, ChainError> {
         match self {
             Self::Ton(chain) => shielded(chain.dns_address(name)).await,

@@ -184,6 +184,7 @@ enum Command {
     Choose(WalletId, Choice, Reply<()>),
     ReceiveAddress(NetworkId, Address, Reply<Address>),
     ResolveName(String, NetworkId, Reply<Resolved>),
+    NameOf(NetworkId, Address, Reply<Option<Resolved>>),
     PriceHistory(AssetId, Span, Reply<Vec<Point>>),
     Reveal(WalletId, SecretString, Reply<SecretString>),
     ChangePassword(SecretString, SecretString, Reply<()>),
@@ -280,6 +281,7 @@ impl Command {
                 | Self::Tokens(_)
                 | Self::ReceiveAddress(..)
                 | Self::ResolveName(..)
+                | Self::NameOf(..)
                 | Self::PriceHistory(..)
                 | Self::Shutdown(_)
         )
@@ -331,6 +333,7 @@ impl Engine {
             chains,
             custom: Arc::new(Vec::new()),
             settings,
+            names: names::Names::default(),
             market,
             prices: market_prices(&prices),
             saved,
@@ -611,6 +614,15 @@ impl Engine {
             .await
     }
 
+    pub async fn name_of(
+        &self,
+        network: NetworkId,
+        address: Address,
+    ) -> Result<Option<Resolved>, EngineError> {
+        self.ask(|reply| Command::NameOf(network, address, reply))
+            .await
+    }
+
     pub async fn price_history(
         &self,
         asset: AssetId,
@@ -785,6 +797,7 @@ struct Worker {
     chains: Arc<Vec<AnyChain>>,
     custom: Arc<Vec<CustomToken>>,
     settings: Settings,
+    names: names::Names,
     market: Option<Market>,
     prices: watch::Receiver<Snapshot>,
     saved: Snapshot,
@@ -974,6 +987,9 @@ impl Worker {
             }
             Command::ResolveName(name, network, reply) => {
                 self.resolve_name(&name, &network, reply);
+            }
+            Command::NameOf(network, address, reply) => {
+                self.name_of(&network, address, reply);
             }
             Command::PriceHistory(asset, span, reply) => {
                 self.price_history(&asset, span, reply);
@@ -1784,6 +1800,7 @@ impl Worker {
         self.nft.health.clear();
         self.keep_prices();
         self.forget_links();
+        self.names.forget();
         self.forget_private();
         self.set_state(resting(self.keyring.as_ref()));
         self.refresh_prices();

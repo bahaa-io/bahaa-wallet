@@ -35,11 +35,26 @@ fn coin_of(data: &[u8]) -> u64 {
     u64::from_be_bytes(query[query.len() - 8..].try_into().unwrap())
 }
 
+const REVERSE: [u8; 4] = [0x5d, 0x78, 0xa2, 0x17];
+
+fn primary_name(data: &[u8]) -> Value {
+    let looked_up = &data[4 + 32 * 3..4 + 32 * 3 + 20];
+    let name = match looked_up[0] {
+        0xd8 | 0x11 => "vitalik.eth",
+        _ => "",
+    };
+    let head = format!("{}{}{}", word(96), word(0x4976), word(0x4977));
+    result(json!(format!("0x{head}{}", bytes(name.as_bytes()))))
+}
+
 fn answer(call: &Value) -> Value {
     match call["method"].as_str().unwrap() {
         "eth_chainId" => result(json!("0x1")),
         "eth_call" => {
             let data = unhex(call["params"][0]["data"].as_str().unwrap());
+            if data.starts_with(&REVERSE) {
+                return primary_name(&data);
+            }
             let mut segwit = vec![0x00, 0x14];
             segwit.extend([0x22; 20]);
             let stored: Vec<u8> = match coin_of(&data) {
@@ -129,4 +144,31 @@ async fn names_resolve_to_the_record_of_the_asked_network() {
         resolve("vitalik.eth", "polygon").await,
         Err(EngineError::UnknownNetwork)
     ));
+}
+
+#[tokio::test]
+async fn a_name_behind_an_address_shows_only_when_it_points_back() {
+    let scratch = Scratch::new();
+    let url = common::node(|call| (answer(call), Duration::ZERO)).await;
+    let registry = Registry::with_networks(vec![common::network("ethereum", url)]).unwrap();
+    let engine = bahaa_engine::Engine::start(config(&scratch, registry, None)).unwrap();
+    let name_of =
+        |address: [u8; 20]| engine.name_of("ethereum".parse().unwrap(), Address::Evm(address));
+    let found = name_of([0xd8; 20]).await.unwrap().unwrap();
+    assert_eq!(found.name, "vitalik.eth");
+    assert_eq!(found.service, NameService::Ens);
+    assert_eq!(name_of([0x11; 20]).await.unwrap(), None);
+    assert_eq!(name_of([0x33; 20]).await.unwrap(), None);
+    engine
+        .create(bahaa_engine::SecretString::from("pw"))
+        .await
+        .unwrap();
+    engine
+        .set_settings(bahaa_engine::Settings {
+            name_lookups: false,
+            ..bahaa_engine::Settings::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(name_of([0xd8; 20]).await.unwrap(), None);
 }

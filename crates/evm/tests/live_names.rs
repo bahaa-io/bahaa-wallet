@@ -28,6 +28,12 @@ async fn live_ens_names_resolve_on_chain_and_off_chain() {
             .unwrap(),
         None
     );
+    let vitalik = bahaa_types::hex::decode("d8da6bf26964af9d7eed9e03e53415d37aa96045").unwrap();
+    assert_eq!(
+        chain.ens_name(&vitalik, 60).await.unwrap().as_deref(),
+        Some("vitalik.eth")
+    );
+    assert_eq!(chain.ens_name(&[0xa1; 20], 60).await.unwrap(), None);
 }
 
 #[tokio::test]

@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use bahaa_chain::ChainError;
 use bahaa_config::{ChainKind, Network};
@@ -18,6 +20,8 @@ const SNS_ENDING: &str = ".sns";
 const PAUSED_ENDING: &str = ".sol";
 const NO_ADDRESS: &str = "this name has no address on this network";
 const CANT_USE: &str = "this name points to an address this network can't use";
+const REMEMBER: Duration = Duration::from_secs(600);
+const MAX_REMEMBERED: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
@@ -34,6 +38,43 @@ pub enum NameService {
     SpaceId,
     Unstoppable,
     Bip353,
+}
+
+type Key = (NetworkId, Address);
+
+#[derive(Clone)]
+struct Seen {
+    at: Instant,
+    found: Option<Resolved>,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct Names(Arc<Mutex<HashMap<Key, Seen>>>);
+
+impl Names {
+    fn known(&self, key: &Key) -> Option<Seen> {
+        let known = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        known
+            .get(key)
+            .filter(|seen| seen.at.elapsed() < REMEMBER)
+            .cloned()
+    }
+
+    fn keep(&self, key: Key, found: Option<Resolved>) {
+        let mut known = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if known.len() >= MAX_REMEMBERED {
+            known.clear();
+        }
+        let at = Instant::now();
+        known.insert(key, Seen { at, found });
+    }
+
+    pub(super) fn forget(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
 }
 
 enum Lookup {
@@ -98,6 +139,38 @@ impl Worker {
                     unstoppable(&chains, &readers, &target, codes, name).await
                 }
             };
+            let _ = reply.send(result.map_err(EngineError::from));
+        });
+    }
+
+    pub(super) fn name_of(
+        &self,
+        network: &NetworkId,
+        address: Address,
+        reply: Reply<Option<Resolved>>,
+    ) {
+        if !self.settings.name_lookups {
+            let _ = reply.send(Ok(None));
+            return;
+        }
+        let Some(index) = self.chain_index(network) else {
+            let _ = reply.send(Err(EngineError::UnknownNetwork));
+            return;
+        };
+        let key = (network.clone(), address);
+        if let Some(seen) = self.names.known(&key) {
+            let _ = reply.send(Ok(seen.found));
+            return;
+        }
+        let target = self.chains[index].network().clone();
+        let ethereum = chains::evm_chain(&self.chains, 1);
+        let chains = Arc::clone(&self.chains);
+        let names = self.names.clone();
+        tokio::spawn(async move {
+            let result = behind(&chains, index, ethereum, &target, &key.1).await;
+            if let Ok(found) = &result {
+                names.keep(key, found.clone());
+            }
             let _ = reply.send(result.map_err(EngineError::from));
         });
     }
@@ -173,6 +246,54 @@ impl Worker {
             .ok_or(ChainError::Unsupported("names without Ethereum"))?;
         let name = bahaa_evm::ens_normalize(name)?;
         Ok((Lookup::Ens { ethereum, coins }, target, name))
+    }
+}
+
+async fn behind(
+    chains: &[AnyChain],
+    index: usize,
+    ethereum: Option<usize>,
+    target: &Network,
+    address: &Address,
+) -> Result<Option<Resolved>, ChainError> {
+    if target.testnet {
+        return Ok(None);
+    }
+    match (target.family(), address) {
+        (ChainFamily::Evm, Address::Evm(bytes)) => {
+            let (Some(ethereum), Some(coins)) = (ethereum, coin_types(target)) else {
+                return Ok(None);
+            };
+            let Some(name) = chains[ethereum].ens_name(bytes, coins[0]).await? else {
+                return Ok(None);
+            };
+            confirmed(ens(&chains[ethereum], target, &coins, name).await, address)
+        }
+        (ChainFamily::Ton, Address::Ton { .. }) => {
+            for name in chains[index].dns_names(address).await? {
+                let found = native(
+                    chains[index].dns_address(&name).await,
+                    name,
+                    NameService::TonDns,
+                );
+                if let Some(resolved) = confirmed(found, address)? {
+                    return Ok(Some(resolved));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn confirmed(
+    found: Result<Resolved, ChainError>,
+    address: &Address,
+) -> Result<Option<Resolved>, ChainError> {
+    match found {
+        Ok(resolved) => Ok((resolved.address == *address).then_some(resolved)),
+        Err(ChainError::Invalid(_)) => Ok(None),
+        Err(err) => Err(err),
     }
 }
 
