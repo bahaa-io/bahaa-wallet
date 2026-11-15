@@ -1,21 +1,105 @@
 use bahaa_engine::naming::{Link, NameRecord};
 use bahaa_engine::{Address, EngineError, LinkDraft, LinkRequest, NetworkId, WalletId};
 
-use super::{Screen, button, hidden, input, line, network_line, note};
-use crate::action::{Action, Field};
+use super::{Screen, button, hidden, input, line, network_line, note, who};
+use crate::action::{Action, Field, LinkChoice, Pick};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Item, Level, Line, Note, Page, PageId, Secret};
+use crate::view::{Button, Item, Level, Line, Note, Page, PageId, Secret};
 use crate::{format, parse, text};
 
-pub(crate) struct Target {
-    pub wallet: WalletId,
-    pub account: u32,
-    pub record: NameRecord,
+pub(crate) fn mine(ctx: &Ctx<'_>, address: &Address) -> Option<(WalletId, u32)> {
+    let wallet = ctx
+        .owner(address)
+        .filter(|wallet| !ctx.watch_only(*wallet))?;
+    Some((wallet, ctx.account_index(wallet, address)?))
+}
+
+pub(crate) fn record_lines(ctx: &Ctx<'_>, record: &NameRecord, primary: bool) -> Vec<Line> {
+    let network = &record.network;
+    let mut lines = vec![line(
+        text::POINTS_TO,
+        record
+            .wallet
+            .map_or_else(|| text::NOTHING_YET.to_owned(), |to| who(ctx, &to, network)),
+    )];
+    if let (true, Some(to)) = (primary, record.wallet) {
+        lines.push(line(text::PRIMARY_OF, who(ctx, &to, network)));
+    }
+    if let Some(at) = record.expires_at {
+        let label = if record.renewable {
+            text::RENEW_BY
+        } else {
+            text::EXPIRES
+        };
+        lines.push(line(label, format::when(at)));
+    }
+    lines
+}
+
+pub(crate) fn record_notes(record: &NameRecord) -> Vec<Note> {
+    if record.elsewhere {
+        vec![note(Level::Warning, text::POINTS_ELSEWHERE)]
+    } else {
+        Vec::new()
+    }
+}
+
+pub(crate) fn record_buttons(ctx: &Ctx<'_>, record: &NameRecord, primary: bool) -> Vec<Button> {
+    let pick = |choice| Action::Pick(Pick::Link(choice));
+    let mut buttons = Vec::new();
+    if mine(ctx, &record.owner).is_some() {
+        if record.wallet != Some(record.owner) || record.elsewhere {
+            buttons.push(button(text::LINK_HERE, pick(LinkChoice::Here)));
+        }
+        buttons.push(button(text::LINK_ELSEWHERE, pick(LinkChoice::Elsewhere)));
+        if record.wallet.is_some() {
+            buttons.push(button(text::UNLINK, pick(LinkChoice::Clear)));
+        }
+        if record.renewable {
+            buttons.push(button(text::RENEW, pick(LinkChoice::Renew)));
+        }
+    }
+    let pointed = record.wallet.is_some_and(|to| mine(ctx, &to).is_some());
+    if record.reversible && pointed && !primary {
+        buttons.push(button(text::SET_PRIMARY, pick(LinkChoice::Primary)));
+    }
+    buttons
+}
+
+pub(crate) fn choose(ctx: &Ctx<'_>, record: &NameRecord, choice: LinkChoice) -> Reply {
+    let sender = match choice {
+        LinkChoice::Primary => record.wallet,
+        LinkChoice::Here | LinkChoice::Elsewhere | LinkChoice::Clear | LinkChoice::Renew => {
+            Some(record.owner)
+        }
+    };
+    let Some((wallet, account)) = sender.and_then(|sender| mine(ctx, &sender)) else {
+        return Reply::default();
+    };
+    let target = Target {
+        wallet,
+        account,
+        record: record.clone(),
+    };
+    let link = match choice {
+        LinkChoice::Elsewhere => return Reply::nav(Nav::Push(Box::new(LinkTo::new(target)))),
+        LinkChoice::Here => Link::To(record.owner),
+        LinkChoice::Clear => Link::Clear,
+        LinkChoice::Renew => Link::Renew,
+        LinkChoice::Primary => Link::Primary,
+    };
+    Review::open(target.request(link), record.clone(), false)
+}
+
+struct Target {
+    wallet: WalletId,
+    account: u32,
+    record: NameRecord,
 }
 
 impl Target {
-    pub(crate) fn request(&self, link: Link) -> LinkRequest {
+    fn request(&self, link: Link) -> LinkRequest {
         LinkRequest {
             wallet: self.wallet,
             account: self.account,
@@ -30,13 +114,13 @@ impl Target {
     }
 }
 
-pub(crate) struct LinkTo {
+struct LinkTo {
     target: Target,
     to: String,
 }
 
 impl LinkTo {
-    pub(crate) fn new(target: Target) -> Self {
+    fn new(target: Target) -> Self {
         Self {
             target,
             to: String::new(),
@@ -137,22 +221,8 @@ impl Review {
     fn review_page(&self, draft: &LinkDraft, at: u64, ctx: &Ctx<'_>) -> Page {
         let network = &draft.network;
         let native = ctx.native_symbol(network);
-        let pointed = |to: Option<&Address>| {
-            to.map_or_else(|| text::NOTHING.to_owned(), |to| ctx.party(to, network))
-        };
-        let after = match draft.link {
-            Link::To(to) => Some(to),
-            Link::Clear => None,
-            Link::Renew | Link::Primary => draft.record.wallet,
-        };
-        let mut lines: Vec<Line> = vec![
-            line(text::NAME, draft.record.name.clone()),
-            line(text::POINTS_NOW, pointed(draft.record.wallet.as_ref())),
-        ];
-        if !matches!(draft.link, Link::Renew | Link::Primary) {
-            lines.push(line(text::WILL_POINT, pointed(after.as_ref())));
-        }
-        lines.push(line(text::FROM, ctx.party(&draft.from, network)));
+        let (mut lines, mut notes) = change_lines(draft, ctx);
+        lines.push(line(text::FROM, who(ctx, &draft.from, network)));
         lines.push(network_line(ctx, network));
         lines.push(line(
             text::FEE,
@@ -164,7 +234,6 @@ impl Review {
                 ),
             ),
         ));
-        let mut notes: Vec<Note> = Vec::new();
         if let Some(attach) = draft.attach {
             let attach = format::exact(attach, &native);
             lines.push(line(text::ATTACHED, attach.clone()));
@@ -208,6 +277,32 @@ impl Review {
         self.step = Step::Checking;
         Reply::call(Call::PrepareLink(self.request.clone()))
     }
+}
+
+fn change_lines(draft: &LinkDraft, ctx: &Ctx<'_>) -> (Vec<Line>, Vec<Note>) {
+    let network = &draft.network;
+    let pointed = |to: Option<&Address>| {
+        to.map_or_else(|| text::NOTHING.to_owned(), |to| who(ctx, to, network))
+    };
+    let mut lines = vec![line(text::NAME, draft.record.name.clone())];
+    let mut notes = Vec::new();
+    if draft.link == Link::Primary {
+        notes.push(note(Level::Info, text::PRIMARY_NOTE));
+        if draft.calls > 1 {
+            notes.push(note(Level::Info, text::TWO_STEPS));
+        }
+        return (lines, notes);
+    }
+    lines.push(line(
+        text::POINTS_NOW,
+        pointed(draft.record.wallet.as_ref()),
+    ));
+    match draft.link {
+        Link::To(to) => lines.push(line(text::WILL_POINT, pointed(Some(&to)))),
+        Link::Clear => lines.push(line(text::WILL_POINT, pointed(None))),
+        Link::Renew | Link::Primary => {}
+    }
+    (lines, notes)
 }
 
 const YEAR: u64 = 365 * 24 * 3600;

@@ -3,6 +3,7 @@ mod chart;
 mod connect;
 mod contacts;
 mod linking;
+mod names;
 mod networks;
 mod nfts;
 mod onboarding;
@@ -174,6 +175,16 @@ pub(crate) fn toned_line(label: &str, value: impl Into<String>, tone: Tone) -> L
         label: label.to_owned(),
         value: value.into(),
         tone,
+    }
+}
+
+pub(crate) fn who(ctx: &Ctx<'_>, address: &Address, network: &NetworkId) -> String {
+    match ctx.owner(address) {
+        Some(wallet) => text::with_name(
+            &format::short(&ctx.shown(address, network)),
+            &ctx.owner_label(wallet, address),
+        ),
+        None => ctx.party(address, network),
     }
 }
 

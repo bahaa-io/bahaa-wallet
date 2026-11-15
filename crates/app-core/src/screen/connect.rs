@@ -227,14 +227,6 @@ fn declined(call: Call) -> Reply {
     .with_note(Level::Info, text::DECLINED)
 }
 
-fn account_label(ctx: &Ctx<'_>, address: &Address, network: &NetworkId) -> String {
-    let shown = format::short(&ctx.shown(address, network));
-    match ctx.owner(address) {
-        Some(wallet) => text::with_name(&shown, &ctx.owner_label(wallet, address)),
-        None => shown,
-    }
-}
-
 pub(crate) struct Apps;
 
 impl Screen for Apps {
@@ -262,7 +254,7 @@ impl Screen for Apps {
                 cells: vec![
                     app.app.name.clone().into(),
                     cell(app.app.domain.clone(), Tone::Muted),
-                    account_label(ctx, &app.address, &app.network).into(),
+                    super::who(ctx, &app.address, &app.network).into(),
                     cell(format::ago(app.connected_at, ctx.now), Tone::Muted),
                 ],
                 open: Some(Action::Go(Go::App(position))),
@@ -350,10 +342,7 @@ impl Screen for AppPage {
             title: app.app.name.clone(),
             lines: vec![
                 line(text::WEBSITE, app.app.domain.clone()),
-                line(
-                    text::ACCOUNT,
-                    account_label(ctx, &app.address, &app.network),
-                ),
+                line(text::ACCOUNT, super::who(ctx, &app.address, &app.network)),
                 network_line(ctx, &app.network),
                 line(text::CONNECTED_AT, format::when(app.connected_at)),
             ],
@@ -445,7 +434,7 @@ impl About {
     fn header(&self, ctx: &Ctx<'_>, from: &Address, network: &NetworkId) -> Vec<Line> {
         vec![
             line(text::WEBSITE, self.domain.clone()),
-            line(text::ACCOUNT, account_label(ctx, from, network)),
+            line(text::ACCOUNT, super::who(ctx, from, network)),
             network_line(ctx, network),
             toned_line(
                 text::TIME_LEFT,

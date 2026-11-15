@@ -166,6 +166,7 @@ impl TonChain {
             wallet: walked.wallet,
             elsewhere: false,
             renewable: expires_at.is_some(),
+            reversible: false,
             expires_at,
         })
     }

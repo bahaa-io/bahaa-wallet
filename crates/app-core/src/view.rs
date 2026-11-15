@@ -69,6 +69,8 @@ pub enum PageId {
     Nft,
     LinkTo,
     LinkReview,
+    Names,
+    Name,
     Activity,
     Transfer,
     SendFrom,

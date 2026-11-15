@@ -9,6 +9,7 @@ pub struct NameRecord {
     pub elsewhere: bool,
     pub expires_at: Option<u64>,
     pub renewable: bool,
+    pub reversible: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

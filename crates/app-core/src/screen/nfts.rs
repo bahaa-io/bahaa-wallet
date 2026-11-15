@@ -1,15 +1,15 @@
-use bahaa_engine::naming::{Link, NameRecord};
+use bahaa_engine::naming::NameRecord;
 use bahaa_engine::{
     Address, AssetId, ChainFamily, Collectible, Mark, NftId, NftKind, Trust, WalletId,
 };
 
-use super::linking::{self, LinkTo, Review};
+use super::linking;
 use super::send::{Send, Source};
 use super::{Screen, button, cell, choice, group, line, network_cell, network_line, note};
-use crate::action::{Action, Go, LinkChoice, Marking, Pick, Showing, Toggle};
+use crate::action::{Action, Go, Marking, Pick, Showing, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
-use crate::view::{Button, Cell, Item, Level, Line, Note, Page, PageId, Request, Row, Table, Tone};
+use crate::view::{Cell, Item, Level, Line, Note, Page, PageId, Request, Row, Table, Tone};
 use crate::{format, text};
 
 pub(crate) fn nft_name(item: &Collectible) -> String {
@@ -225,78 +225,6 @@ impl Detail {
             .is_some_and(|item| item.nft.lock.is_none() && !ctx.watch_only(self.wallet))
     }
 
-    fn link(&self, choice: LinkChoice, ctx: &Ctx<'_>) -> Reply {
-        let (Some(record), Some(account)) =
-            (&self.name, ctx.account_index(self.wallet, &self.address))
-        else {
-            return Reply::default();
-        };
-        if ctx.watch_only(self.wallet) || record.owner != self.address {
-            return Reply::default();
-        }
-        let target = linking::Target {
-            wallet: self.wallet,
-            account,
-            record: record.clone(),
-        };
-        let link = match choice {
-            LinkChoice::Elsewhere => return Reply::nav(Nav::Push(Box::new(LinkTo::new(target)))),
-            LinkChoice::Here => Link::To(self.address),
-            LinkChoice::Clear => Link::Clear,
-            LinkChoice::Renew => Link::Renew,
-        };
-        Review::open(target.request(link), record.clone(), false)
-    }
-
-    fn name_lines(&self, ctx: &Ctx<'_>, lines: &mut Vec<Line>) {
-        let Some(record) = &self.name else {
-            return;
-        };
-        let network = self.asset.network();
-        lines.push(line(text::NAME, record.name.clone()));
-        lines.push(line(
-            text::POINTS_TO,
-            record.wallet.map_or_else(
-                || text::NOTHING_YET.to_owned(),
-                |to| ctx.party(&to, network),
-            ),
-        ));
-        if let Some(at) = record.expires_at {
-            lines.push(line(text::RENEW_BY, format::when(at)));
-        }
-    }
-
-    fn name_buttons(&self, ctx: &Ctx<'_>, buttons: &mut Vec<Button>) {
-        let Some(record) = &self.name else {
-            return;
-        };
-        if ctx.watch_only(self.wallet) || record.owner != self.address {
-            return;
-        }
-        if record.wallet != Some(self.address) {
-            buttons.push(button(
-                text::LINK_HERE,
-                Action::Pick(Pick::Link(LinkChoice::Here)),
-            ));
-        }
-        buttons.push(button(
-            text::LINK_ELSEWHERE,
-            Action::Pick(Pick::Link(LinkChoice::Elsewhere)),
-        ));
-        if record.wallet.is_some() {
-            buttons.push(button(
-                text::UNLINK,
-                Action::Pick(Pick::Link(LinkChoice::Clear)),
-            ));
-        }
-        if record.renewable {
-            buttons.push(button(
-                text::RENEW,
-                Action::Pick(Pick::Link(LinkChoice::Renew)),
-            ));
-        }
-    }
-
     fn id_text(&self, ctx: &Ctx<'_>) -> Option<String> {
         let nft = self.asset.nft()?;
         Some(ctx.shown(nft.address(), self.asset.network()))
@@ -313,7 +241,11 @@ impl Screen for Detail {
                     asset: self.asset.clone(),
                 })))))
             }
-            Action::Pick(Pick::Link(choice)) => self.link(*choice, ctx),
+            Action::Pick(Pick::Link(choice)) => {
+                self.name.as_ref().map_or_else(Reply::default, |record| {
+                    linking::choose(ctx, record, *choice)
+                })
+            }
             Action::Pick(Pick::Mark(marking)) => {
                 self.marking = Some(*marking);
                 let mark = match marking {
@@ -399,12 +331,19 @@ impl Screen for Detail {
         if let Some(lock) = item.nft.lock {
             lines.push(line(text::SEND_LOCK, text::lock_reason(lock)));
         }
-        self.name_lines(ctx, &mut lines);
+        let mut notes = Vec::new();
+        if let Some(record) = &self.name {
+            lines.push(line(text::NAME, record.name.clone()));
+            lines.extend(linking::record_lines(ctx, record, false));
+            notes = linking::record_notes(record);
+        }
         let mut buttons = Vec::new();
         if self.sendable(ctx) {
             buttons.push(button(text::SEND, Action::Go(Go::SendAsset)));
         }
-        self.name_buttons(ctx, &mut buttons);
+        if let Some(record) = &self.name {
+            buttons.extend(linking::record_buttons(ctx, record, false));
+        }
         buttons.push(if item.shown {
             button(text::HIDE_IT, Action::Pick(Pick::Mark(Marking::Hide)))
         } else {
@@ -426,6 +365,7 @@ impl Screen for Detail {
                 .as_ref()
                 .and_then(|details| details.about.clone()),
             lines,
+            notes,
             buttons,
             picture: item.picture.clone(),
             ..Page::default()

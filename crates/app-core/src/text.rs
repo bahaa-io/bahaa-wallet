@@ -337,7 +337,22 @@ pub(crate) const LINK_HERE: &str = "Link to this wallet";
 pub(crate) const LINK_ELSEWHERE: &str = "Link to another address";
 pub(crate) const UNLINK: &str = "Unlink";
 pub(crate) const RENEW: &str = "Renew";
-pub(crate) const LINK_TO_TEXT: &str = "The name will point to this address, so payments sent to the name go there. The NFT stays in this wallet.";
+pub(crate) const LINK_TO_TEXT: &str = "The name will point to this address, so payments sent to the name go there. The name itself stays in this wallet.";
+pub(crate) const SET_PRIMARY: &str = "Set as my primary name";
+pub(crate) const PRIMARY_OF: &str = "Primary name of";
+pub(crate) const HELD_BY: &str = "Held by";
+pub(crate) const EXPIRES: &str = "Expires";
+pub(crate) const YOUR_NAMES: &str = "Your names";
+pub(crate) const NAMES_TEXT: &str = "Type a name one of your accounts holds, like alice.eth, alice.base.eth, alice.bnb or alice.ton, to see where it points and change it.";
+pub(crate) const LOOK_UP: &str = "Look it up";
+pub(crate) const FINDING_NAME: &str = "Looking up the name…";
+pub(crate) const POINTS_ELSEWHERE: &str = "On some networks this name points somewhere else or nowhere. Linking it sets every network this wallet knows.";
+pub(crate) const NOT_HELD: &str =
+    "None of your accounts holds this name, so only its holder can change where it points.";
+pub(crate) const PRIMARY_NOTE: &str =
+    "Wallets and apps that show names will show this one for the account.";
+pub(crate) const TWO_STEPS: &str =
+    "This takes two transactions: one for Ethereum and one for every other network.";
 pub(crate) const NOTHING: &str = "Nothing";
 pub(crate) const POINTS_NOW: &str = "Points to now";
 pub(crate) const WILL_POINT: &str = "Will point to";
@@ -690,7 +705,7 @@ pub(crate) fn renew_title(name: &str) -> String {
 }
 
 pub(crate) fn primary_title(name: &str) -> String {
-    format!("Make {name} your name")
+    format!("Make {name} your primary name")
 }
 
 pub(crate) fn returned_note(amount: &str) -> String {

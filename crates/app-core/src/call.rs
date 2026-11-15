@@ -34,6 +34,7 @@ pub(crate) enum Call {
     Confirm(DraftId, SecretString),
     ConfirmOrder(DraftId, SecretString),
     NameRecord(AssetId),
+    FindName(String),
     PrepareLink(LinkRequest),
     ConfirmLink(LinkId, SecretString),
     PrepareSwap(SwapRequest),
@@ -160,6 +161,7 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
             Outcome::Ordered(engine.confirm_order(draft, password).await)
         }
         Call::NameRecord(asset) => Outcome::Named(engine.name_record(asset).await),
+        Call::FindName(name) => Outcome::Named(engine.find_name(name).await),
         Call::PrepareLink(request) => Outcome::LinkDrafted(engine.prepare_link(request).await),
         Call::ConfirmLink(draft, password) => {
             Outcome::Sent(engine.confirm_link(draft, password).await)

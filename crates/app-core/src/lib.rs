@@ -11,8 +11,8 @@ mod text;
 mod view;
 
 pub use action::{
-    Action, Channel, Contract, Currency, Direction, Family, Field, Go, Kind, Marking, Pick,
-    Showing, Tab, Toggle, Words,
+    Action, Channel, Contract, Currency, Direction, Family, Field, Go, Kind, LinkChoice, Marking,
+    Pick, Showing, Tab, Toggle, Words,
 };
 pub use app::{App, AppConfig};
 pub use bahaa_engine::{

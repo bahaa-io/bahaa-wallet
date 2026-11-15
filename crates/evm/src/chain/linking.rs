@@ -273,6 +273,7 @@ impl EvmChain {
                 elsewhere,
                 expires_at,
                 renewable: false,
+                reversible: true,
             },
             keeper: Keeper::Ens(records),
         }))
@@ -374,6 +375,7 @@ impl EvmChain {
                 elsewhere: false,
                 expires_at: Some(expires_at),
                 renewable: false,
+                reversible: true,
             },
             keeper: Keeper::SpaceId {
                 registry: found.system.registry()?,
@@ -465,6 +467,7 @@ impl EvmChain {
                 elsewhere,
                 expires_at: None,
                 renewable: false,
+                reversible: true,
             },
             keeper: Keeper::Unstoppable(Entries {
                 registry,
@@ -1089,7 +1092,10 @@ mod tests {
     fn a_chain_record_wins_over_the_default_but_ethereum_reads_only_its_own() {
         let coins = [ETHEREUM_COIN, EVM_COIN, EVM_COIN | 0x38];
         let values = vec![Vec::new(), vec![0x44; 20], vec![0x55; 20]];
-        assert_eq!(effective(&coins, &values, EVM_COIN | 0x38), Some([0x55; 20]));
+        assert_eq!(
+            effective(&coins, &values, EVM_COIN | 0x38),
+            Some([0x55; 20])
+        );
         assert_eq!(
             effective(&coins, &values, EVM_COIN | BASE),
             Some([0x44; 20])

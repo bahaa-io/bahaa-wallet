@@ -83,6 +83,7 @@ pub enum Go {
     App(usize),
     Requests,
     Request(usize),
+    Names,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -207,6 +208,7 @@ pub enum LinkChoice {
     Elsewhere,
     Clear,
     Renew,
+    Primary,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

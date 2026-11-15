@@ -1,5 +1,6 @@
 use bahaa_engine::{Fiat, Updates};
 
+use super::names::Names;
 use super::onboarding::Welcome;
 use super::tokens;
 use super::wallets::Wallet;
@@ -59,6 +60,7 @@ impl Screen for Settings {
                     Reply::nav(Nav::Push(Box::new(Wallet::new(wallet.id, ctx))))
                 }),
             Action::Go(Go::AddWallet) => Reply::nav(Nav::Push(Box::new(Welcome::new(true)))),
+            Action::Go(Go::Names) => Reply::nav(Nav::Push(Box::new(Names::default()))),
             Action::Go(Go::Tokens) => Reply::nav(Nav::Push(Box::new(tokens::List))),
             Action::Go(Go::Developer) => Reply::nav(Nav::Push(Box::new(Developer))),
             Action::Go(Go::ChangePassword) => {
@@ -215,7 +217,10 @@ fn buttons(app: Vec<Button>) -> Vec<Button> {
     sections([
         (
             text::WALLETS,
-            vec![button(text::ADD_WALLET, Action::Go(Go::AddWallet))],
+            vec![
+                button(text::ADD_WALLET, Action::Go(Go::AddWallet)),
+                button(text::YOUR_NAMES, Action::Go(Go::Names)),
+            ],
         ),
         (
             text::SECURITY,

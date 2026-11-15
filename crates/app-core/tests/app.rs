@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use bahaa_app_core::{
     Action, App, AppConfig, ChainFamily, Channel, Currency, Direction, EngineConfig, Family, Field,
-    Go, KdfParams, Kind, Level, Marking, Page, PageId, Pick, Registry, Request, Showing, Tab,
-    Toggle, Tone, Value, View, Words,
+    Go, KdfParams, Kind, Level, LinkChoice, Marking, Page, PageId, Pick, Registry, Request,
+    Showing, Tab, Toggle, Tone, Value, View, Words,
 };
 use bahaa_testkit::Reply;
 use serde_json::{Value as Json, json};
@@ -1859,4 +1859,121 @@ async fn an_app_connects_gets_its_request_answered_and_is_disconnected() {
     })
     .await;
     assert_eq!(dapp.next().await["event"], "disconnect");
+}
+
+fn held_name_answer(data: &str) -> String {
+    let word = |value: usize| format!("{value:064x}");
+    let own = HARDHAT_0[2..].to_lowercase();
+    let address = |hex: &str| format!("0x{hex:0>64}");
+    match &data[2..10] {
+        "44c9af28" => format!("0x{}{}", word(1), "0".repeat(256)),
+        "02571be3" => address(&own),
+        "0178b8bf" => address(&"23".repeat(20)),
+        "9061b923" => {
+            let args = &data[10..];
+            let at = |offset: usize| {
+                usize::from_str_radix(&args[offset * 2..offset * 2 + 64], 16).unwrap()
+            };
+            let batch = at(32);
+            let count = at(batch + 32 + 4 + 32);
+            let items: Vec<String> = (0..count)
+                .map(|index| {
+                    let answer = if index == 0 {
+                        format!("{}{}{own}{}", word(32), word(20), "0".repeat(24))
+                    } else {
+                        format!("{}{}", word(32), word(0))
+                    };
+                    format!("{}{answer}", word(answer.len() / 2))
+                })
+                .collect();
+            let mut offsets = String::new();
+            let mut next = count * 32;
+            for item in &items {
+                offsets.push_str(&word(next));
+                next += item.len() / 2;
+            }
+            let result = format!("{}{}{offsets}{}", word(32), word(count), items.concat());
+            format!(
+                "0x{}{}{}{result}",
+                word(64),
+                word(0x23),
+                word(result.len() / 2)
+            )
+        }
+        "5d78a217" => format!("0x{}{}{}{}", word(96), word(0), word(0), word(0)),
+        _ => format!("0x{}", word(4_000_000_000)),
+    }
+}
+
+#[tokio::test]
+async fn a_typed_name_shows_who_holds_it_and_offers_the_holders_changes() {
+    let scratch = Scratch::new();
+    let url = bahaa_testkit::serve(|request| {
+        let call = request.json();
+        let result = match call["method"].as_str() {
+            Some("eth_chainId") => json!("0x1"),
+            Some("eth_call") => json!(held_name_answer(
+                call["params"][0]["data"].as_str().unwrap()
+            )),
+            _ => Json::Null,
+        };
+        Reply::json(200, &json!({"jsonrpc": "2.0", "id": 1, "result": result}))
+    })
+    .await;
+    let networks: Vec<_> = offline(|family| family == ChainFamily::Evm)
+        .networks()
+        .cloned()
+        .map(|mut network| {
+            if network.id.as_str() == "ethereum" {
+                network.endpoints.truncate(1);
+                network.endpoints[0].url = url.clone();
+            }
+            network
+        })
+        .collect();
+    let (app, _requests, mut view) =
+        imported_on(&scratch, Registry::with_networks(networks).unwrap(), false).await;
+    app.act(Action::Go(Go::Tab(Tab::Settings)));
+    at(&mut view, PageId::Settings).await;
+    app.act(Action::Go(Go::Names));
+    at(&mut view, PageId::Names).await;
+    app.act(Action::Type(Field::Name, "Alice.eth".to_owned()));
+    app.act(Action::Submit);
+    let page = at(&mut view, PageId::Name).await.page.clone();
+    assert_eq!(page.title, "alice.eth");
+    let value = |label: &str| {
+        page.lines
+            .iter()
+            .find(|line| line.label == label)
+            .map(|line| line.value.clone())
+    };
+    assert_eq!(value("Network").as_deref(), Some("Ethereum"));
+    assert!(value("Held by").unwrap().ends_with("(Wallet 1)"));
+    assert!(value("Points to").unwrap().ends_with("(Wallet 1)"));
+    assert!(value("Expires").is_some());
+    assert!(value("Primary name of").is_none());
+    assert_eq!(page.notes.len(), 1);
+    let labels: Vec<&str> = page
+        .buttons
+        .iter()
+        .map(|button| button.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "Link to this wallet",
+            "Link to another address",
+            "Unlink",
+            "Set as my primary name"
+        ]
+    );
+    app.act(Action::Pick(Pick::Link(LinkChoice::Elsewhere)));
+    at(&mut view, PageId::LinkTo).await;
+    app.act(Action::Type(Field::To, FRIEND.to_owned()));
+    let typed = until(&mut view, |current| hint(current, Field::To).is_some()).await;
+    assert_eq!(
+        hint(&typed, Field::To),
+        Some((Level::Success, "A valid Ethereum address".to_owned()))
+    );
+    app.shutdown().await.unwrap();
 }
