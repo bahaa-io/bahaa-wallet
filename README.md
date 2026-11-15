@@ -71,7 +71,8 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Solana tokens:** classic and Token-2022, with amounts shown as the token defines them and any token fee shown before you send.
 - **Bitcoin:** every address type (Legacy 1…, Nested SegWit 3…, Native SegWit and Taproot) and old uncompressed keys, found from your wallet's history, with a fresh address for every payment.
 - **Sending:** exact fees before you send, Max, memos, and warnings for look-alike addresses and dust.
-- **Names:** send to a name instead of an address: ENS (`name.eth` and DNS names), TON DNS (`name.ton`, `name.t.me`), SNS (`name.sns`), SPACE ID (`name.bnb`, `name.arb`), Unstoppable Domains (`name.crypto` and more) and `₿user@domain` on Bitcoin. The address is shown next to the name and looked up again right before you sign.
+- **Names:** send to a name instead of an address: ENS (`name.eth` and DNS names), TON DNS (`name.ton`, `name.t.me`), SNS (`name.sns`), SPACE ID (`name.bnb`, `name.arb`), Unstoppable Domains (`name.crypto` and more) and `₿user@domain` on Bitcoin. The address is shown next to the name and looked up again right before you sign. An address that has a name shows it too, once the name is checked to point back to it.
+- **Your TON names:** point a `.ton` name or Telegram username in your wallet to this wallet or any other address, unlink it, or renew it. The NFT stays with you.
 - **Fee speeds:** on Bitcoin, EVM networks and Solana, pick Slow, Normal or Fast and see what each costs and how long it should take.
 - **Safe signing:** what you see is what you sign, and every send is followed until it's final. Speed up or cancel on EVM networks and Bitcoin.
 - **Swaps:** swap coins and tokens on one network or across networks, through decentralized exchanges and keyless cross-network services. Every route is ranked by what you really receive, with the exact cost shown, and you can pick any of them. No app fee.
@@ -109,6 +110,7 @@ You can add any other token by its contract address. Test networks (BSC testnet,
 - **Avalanche swaps aren't simulated before signing:** its public servers can't.
 - **Only tracked tokens can be swapped.**
 - **NFTs:** on five networks only and at most 256 per account and network. SVG pictures aren't shown yet. New ones show in Activity within about 10 minutes, without the sender. Staked or listed ones, and some compressed Solana NFTs, can't be sent.
+- **Linking names is TON only for now.**
 - **App connections are TON only:** through TON Connect, with the app's link pasted in.
 - **Not supported yet:** staking actions and hardware wallets.
 
