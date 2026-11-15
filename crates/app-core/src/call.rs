@@ -1,6 +1,7 @@
 use bahaa_engine::{
-    Account, Activity, Address, AssetId, BitcoinType, Caution, ChainFamily, Contact, CustomToken,
-    Draft, DraftId, Engine, EngineError, Mark, NetworkId, NewPhrase, PhraseKind, Point, Replace,
+    Account, Activity, Address, AppAccount, AppId, Approved, AskId, AskReview, AssetId,
+    BitcoinType, Caution, ChainFamily, ConnectedApp, Contact, CustomToken, Draft, DraftId, Engine,
+    EngineError, Invite, InviteId, Mark, NetworkId, NewPhrase, PhraseKind, Point, Replace,
     Resolved, SecretString, SendRequest, SentTx, Settings, SolanaPath, Span, SwapDraft, SwapId,
     SwapRequest, SwapReview, TonContract, WalletId, WalletInfo, swap::SwapRecord,
 };
@@ -42,6 +43,13 @@ pub(crate) enum Call {
     RemoveToken(AssetId),
     MarkNft(AssetId, Option<Mark>),
     Picture(AssetId),
+    ConnectApp(String),
+    ApproveApp(InviteId, AppAccount, SecretString),
+    RejectApp(InviteId),
+    DisconnectApp(AppId),
+    ReviewRequest(AskId),
+    ApproveRequest(AskId, SecretString),
+    RejectRequest(AskId),
 }
 
 pub(crate) enum Outcome {
@@ -59,6 +67,10 @@ pub(crate) enum Outcome {
     Receiving(Result<Address, EngineError>),
     Routes(Result<SwapDraft, EngineError>),
     Reviewed(Result<Box<SwapReview>, EngineError>),
+    Invited(Result<Box<Invite>, EngineError>),
+    Connected(Result<ConnectedApp, EngineError>),
+    Asked(Result<Box<AskReview>, EngineError>),
+    Approved(Result<Approved, EngineError>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,6 +171,17 @@ pub(crate) async fn run(engine: &Engine, call: Call) -> Outcome {
             engine.want_picture(asset);
             Outcome::Done(Ok(()))
         }
+        Call::ConnectApp(link) => Outcome::Invited(engine.connect_app(link).await.map(Box::new)),
+        Call::ApproveApp(invite, account, password) => {
+            Outcome::Connected(engine.approve_app(invite, account, password).await)
+        }
+        Call::RejectApp(invite) => done(engine.reject_app(invite).await),
+        Call::DisconnectApp(app) => done(engine.disconnect_app(app).await),
+        Call::ReviewRequest(ask) => Outcome::Asked(engine.review_request(ask).await.map(Box::new)),
+        Call::ApproveRequest(ask, password) => {
+            Outcome::Approved(engine.approve_request(ask, password).await)
+        }
+        Call::RejectRequest(ask) => done(engine.reject_request(ask).await),
     }
 }
 

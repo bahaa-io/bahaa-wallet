@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use bahaa_app_core::{Action, Field, Group, Item, Page, PageId, Value, View, completions};
+use bahaa_app_core::{Action, Field, Go, Group, Item, Page, PageId, Value, View, completions};
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -340,6 +340,9 @@ impl Ui {
             if searchable(page) {
                 list.push(hints::SEARCH);
             }
+            if hints::requests_waiting(view) {
+                list.push(hints::WAITING);
+            }
             if page.secret.is_some() {
                 list.push(hints::WORDS);
             }
@@ -656,6 +659,9 @@ impl Ui {
             KeyCode::Char('y') => vec![Action::Copy],
             KeyCode::Char('o') => vec![Action::Explore],
             KeyCode::Char('r') => vec![Action::Refresh],
+            KeyCode::Char('w') if hints::requests_waiting(view) => {
+                vec![Action::Go(Go::Requests)]
+            }
             KeyCode::Char(':') => self.open_menu(),
             KeyCode::Char('?') => self.open_keys(),
             KeyCode::Char('/') if searchable(&view.page) => {

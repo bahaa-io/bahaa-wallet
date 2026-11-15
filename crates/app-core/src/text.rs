@@ -2,8 +2,8 @@ use bahaa_engine::swap::{
     self, Charged, CostKind, Custody, Method, Provider, Refusal, SwapRecord, SwapStatus,
 };
 use bahaa_engine::{
-    Caution, ChainFamily, EngineError, Fake, FeeItem, Lock, NameService, NftKind, RateUnit,
-    Replace, SentStatus, Span, Status, TonContract,
+    AskKind, Caution, ChainFamily, EngineError, Fake, FeeItem, Lock, NameService, NftKind,
+    RateUnit, Replace, SentStatus, Span, Status, TonContract,
 };
 
 use crate::action::{Channel, Direction, Tab};
@@ -440,6 +440,58 @@ pub(crate) fn tab(tab: Tab) -> &'static str {
         Tab::Settings => SETTINGS,
     }
 }
+
+pub(crate) const CONNECTIONS: &str = "Connections";
+pub(crate) const CONNECT_APP: &str = "Connect an app";
+pub(crate) const CONNECT_APP_TEXT: &str =
+    "In the app, choose TON Connect, then “Copy link”, and paste the link here.";
+pub(crate) const LINK: &str = "Link";
+pub(crate) const PASTE_LINK: &str = "Paste the app's link first";
+pub(crate) const CONNECT: &str = "Connect";
+pub(crate) const DECLINE: &str = "Decline";
+pub(crate) const DECLINED: &str = "Declined";
+pub(crate) const WEBSITE: &str = "Website";
+pub(crate) const ASKS_FOR: &str = "Asks for";
+pub(crate) const YOUR_ADDRESS: &str = "Your address";
+pub(crate) const ADDRESS_AND_PROOF: &str = "Your address and a sign-in signature";
+pub(crate) const ACCOUNT: &str = "Account";
+pub(crate) const CONNECT_NOTE: &str = "The app will see this account's address and can ask you to approve transfers and signatures. Nothing is signed without your password.";
+pub(crate) const INVITE_GONE: &str = "This request has expired. Copy a new link from the app.";
+pub(crate) const CONNECTED_APPS: &str = "Connected apps";
+pub(crate) const APP_COLUMNS: [&str; 4] = ["App", "Website", "Account", "Connected"];
+pub(crate) const NO_APPS: &str = "No apps are connected yet.";
+pub(crate) const CONNECTED_AT: &str = "Connected";
+pub(crate) const DISCONNECT: &str = "Disconnect";
+pub(crate) const OPEN_WEBSITE: &str = "Open the website";
+pub(crate) const APP_GONE: &str = "This app is no longer connected.";
+pub(crate) const REQUESTS: &str = "Waiting requests";
+pub(crate) const REQUEST_COLUMNS: [&str; 3] = ["App", "Request", "Time left"];
+pub(crate) const NO_REQUESTS: &str = "No requests are waiting.";
+pub(crate) const REQUEST_GONE: &str =
+    "This request is no longer waiting. It was answered, or it expired.";
+pub(crate) const CHECKING_REQUEST: &str = "Checking the request…";
+pub(crate) const CHECK_AGAIN: &str = "Check again";
+pub(crate) const APPROVE: &str = "Approve";
+pub(crate) const SIGN_NOW: &str = "Sign";
+pub(crate) const APPROVE_TITLE: &str = "Approve with your password";
+pub(crate) const TIME_LEFT: &str = "Time left";
+pub(crate) const MESSAGE_COLUMNS: [&str; 3] = ["To", "Amount", "What it does"];
+pub(crate) const PAID_BY_RELAYER: &str = "Paid by the app's relayer";
+pub(crate) const RELAYER_NOTE: &str = "The app's relayer sends this for you and pays the network fee. The coins and tokens listed here still leave your account.";
+pub(crate) const DEPLOYS_NOTE: &str = "A message here creates a new contract.";
+pub(crate) const CALLS_NOTE: &str = "Some messages are contract calls the wallet can't read. They can do anything the contract allows.";
+pub(crate) const SIGN_DATA_NOTE: &str = "A signature isn't a transfer, but the app can use it as your agreement to something. Sign only what you understand.";
+pub(crate) const REVIEW_OLD: &str = "These details are out of date. Check again before approving.";
+pub(crate) const TEXT_KIND: &str = "Text";
+pub(crate) const BINARY_KIND: &str = "Binary data";
+pub(crate) const CELL_KIND: &str = "TON cell";
+pub(crate) const SCHEMA: &str = "Schema";
+pub(crate) const SIZE: &str = "Size";
+pub(crate) const SENDS_COINS: &str = "Sends coins";
+pub(crate) const CONTRACT_CALL: &str = "Contract call";
+pub(crate) const UNKNOWN_TOKEN: &str = "Moves a token the wallet can't check";
+pub(crate) const UNKNOWN_NFT: &str = "Moves an NFT the wallet can't check";
+pub(crate) const AN_APP: &str = "an app";
 
 pub(crate) fn sentence(text: &str) -> String {
     let mut chars = text.chars();
@@ -1204,4 +1256,106 @@ pub(crate) fn below_slow(slow: &str, unit: &str) -> String {
 
 pub(crate) fn times_fast(times: &str, fast: &str, unit: &str) -> String {
     format!("{times}× today's fast price of {fast} {unit}")
+}
+
+pub(crate) fn connect_title(app: &str) -> String {
+    format!("Connect to {app}")
+}
+
+pub(crate) fn not_proven(domain: &str) -> String {
+    format!(
+        "The wallet can't check that this comes from {domain}. Approve only if you opened that app yourself."
+    )
+}
+
+pub(crate) fn not_offered(items: &[String]) -> String {
+    let named: Vec<String> = items.iter().map(|item| format!("“{item}”")).collect();
+    format!(
+        "It also asked for {}, which this wallet doesn't offer.",
+        named.join(", ")
+    )
+}
+
+pub(crate) fn connected_to(app: &str) -> String {
+    format!("Connected to {app}")
+}
+
+pub(crate) fn disconnected_from(app: &str) -> String {
+    format!("Disconnected from {app}")
+}
+
+pub(crate) fn request_arrived(app: &str) -> String {
+    format!("{app} sent a request")
+}
+
+pub(crate) fn waiting_one(app: &str) -> String {
+    format!("{app} is waiting for your approval")
+}
+
+pub(crate) fn waiting_many(count: usize) -> String {
+    format!("{count} requests from apps are waiting")
+}
+
+pub(crate) fn ask_kind(kind: AskKind) -> &'static str {
+    match kind {
+        AskKind::Send => "Send",
+        AskKind::SignMessage => "Sign for a relayer",
+        AskKind::SignData => "Sign data",
+    }
+}
+
+pub(crate) fn ask_title(app: &str, kind: AskKind) -> String {
+    match kind {
+        AskKind::Send => format!("{app} asks to send"),
+        AskKind::SignMessage => format!("{app} asks you to sign for a relayer"),
+        AskKind::SignData => format!("{app} asks you to sign"),
+    }
+}
+
+pub(crate) fn answered(app: &str, sent: bool) -> String {
+    if sent {
+        format!("Sent for {app}")
+    } else {
+        format!("Signed for {app}")
+    }
+}
+
+pub(crate) fn via_app(app: &str) -> String {
+    format!("via {app}")
+}
+
+pub(crate) fn comment(text: &str) -> String {
+    format!("Comment “{text}”")
+}
+
+pub(crate) fn moves(what: &str, to: &str) -> String {
+    format!("Sends {what} to {to}")
+}
+
+pub(crate) fn of_token(amount: &str, master: &str) -> String {
+    format!("{amount} of token {master}")
+}
+
+pub(crate) fn call_op(op: u32) -> String {
+    format!("Contract call 0x{op:08x}")
+}
+
+pub(crate) fn and_deploys(what: &str) -> String {
+    format!("{what}, creates a contract")
+}
+
+pub(crate) fn bytes(count: usize) -> String {
+    if count == 1 {
+        "1 byte".to_owned()
+    } else {
+        format!("{count} bytes")
+    }
+}
+
+pub(crate) fn many_messages(count: usize) -> String {
+    format!("This request sends {count} messages at once.")
+}
+
+pub(crate) fn most_balance(symbol: &str) -> String {
+    format!("This uses most of this account's {symbol}.")
 }

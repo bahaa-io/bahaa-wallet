@@ -1,4 +1,4 @@
-use bahaa_app_core::{Action, View};
+use bahaa_app_core::{Action, Go, View};
 
 use crate::editor::Editor;
 use crate::hints;
@@ -151,12 +151,18 @@ fn app_entries(view: &View, list: &mut Vec<Entry>) {
     if let Some(banner) = &view.banner {
         add(
             list,
-            hints::STATUS.to_owned(),
+            hints::banner(&banner.action).0.to_owned(),
             hints::KIND_APP,
             Command::Act(banner.action.clone()),
         );
     }
     if !view.tabs.is_empty() {
+        add(
+            list,
+            hints::CONNECT_APP.to_owned(),
+            hints::KIND_APP,
+            Command::Act(Action::Go(Go::ConnectApp)),
+        );
         add(
             list,
             hints::REFRESH.to_owned(),

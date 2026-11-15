@@ -33,6 +33,7 @@ pub enum Field {
     Contract,
     Search,
     FeeRate,
+    Link,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +78,11 @@ pub enum Go {
     Networks,
     Developer,
     Nft(usize),
+    ConnectApp,
+    Apps,
+    App(usize),
+    Requests,
+    Request(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,6 +119,9 @@ pub enum Pick {
     Showing(Showing),
     Mark(Marking),
     Span(Span),
+    AppAccount(usize),
+    Decline,
+    Disconnect,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -3,8 +3,9 @@ use std::time::Duration;
 
 use bahaa_engine::{
     Account, Activity, ActivityKind, Address, Amount, AssetId, ChainFamily, Coin, Collectible,
-    Collectibles, Contact, CustomToken, Event, Fiat, Network, NetworkId, NftArrival, Portfolio,
-    Price, Registry, SentStatus, SentTx, Settings, State, Status, WalletId, WalletInfo, WalletKind,
+    Collectibles, Connections, Contact, CustomToken, Event, Fiat, Network, NetworkId, NftArrival,
+    Portfolio, Price, Registry, SentKind, SentStatus, SentTx, Settings, State, Status, WalletId,
+    WalletInfo, WalletKind,
     swap::{SwapRecord, SwapStatus},
 };
 
@@ -24,6 +25,7 @@ pub(crate) enum Input {
     State(State),
     Portfolio(Box<Portfolio>),
     Nfts(Box<Collectibles>),
+    Connections(Box<Connections>),
     Event(Box<Event>),
     Lagged,
     Done(u64, Box<Outcome>),
@@ -50,6 +52,7 @@ pub(crate) struct Data {
     pub accounts: Vec<Account>,
     pub portfolio: Portfolio,
     pub collectibles: Collectibles,
+    pub connections: Connections,
     pub activity: Vec<Activity>,
     pub contacts: Vec<Contact>,
     pub tokens: Vec<CustomToken>,
@@ -141,7 +144,9 @@ impl Ctx<'_> {
                 .activity
                 .iter()
                 .find_map(|activity| match &activity.kind {
-                    ActivityKind::Sent(tx) if tx.asset == *asset => tx.name.clone(),
+                    ActivityKind::Sent(tx) if tx.asset == *asset && tx.kind != SentKind::App => {
+                        tx.name.clone()
+                    }
                     ActivityKind::NftArrived(arrival) if arrival.asset == *asset => {
                         arrival.name.clone()
                     }
@@ -429,6 +434,26 @@ impl Core {
                 self.data.collectibles = *collectibles;
                 Vec::new()
             }
+            Input::Connections(connections) => {
+                let fresh: Vec<String> = connections
+                    .asks
+                    .iter()
+                    .filter(|ask| {
+                        !self
+                            .data
+                            .connections
+                            .asks
+                            .iter()
+                            .any(|known| known.id == ask.id)
+                    })
+                    .map(|ask| text::request_arrived(&ask.name))
+                    .collect();
+                self.data.connections = *connections;
+                for message in fresh {
+                    self.toast(Level::Info, message);
+                }
+                Vec::new()
+            }
             Input::Event(event) => self.event(*event),
             Input::Lagged => self.reload(),
             Input::Done(ticket, outcome) => self.done(ticket, *outcome),
@@ -521,6 +546,25 @@ impl Core {
                     self.stack.push(screen::networks());
                 }
                 Vec::new()
+            }
+            Action::Go(Go::ConnectApp) if self.in_tabs() => {
+                self.stack.push(screen::connect());
+                Vec::new()
+            }
+            Action::Go(Go::Apps) if self.in_tabs() => {
+                self.stack.push(screen::apps());
+                Vec::new()
+            }
+            Action::Go(Go::Requests) if self.in_tabs() => {
+                let open = self.top().map(|top| top.page(&self.ctx()).id);
+                if matches!(
+                    open,
+                    Some(PageId::Requests | PageId::Request | PageId::Approve)
+                ) {
+                    return Vec::new();
+                }
+                let reply = screen::requests(&self.ctx());
+                self.apply(reply)
             }
             Action::Back => {
                 let reply = self
@@ -798,6 +842,17 @@ impl Core {
     fn banner(&self) -> Option<Banner> {
         if !self.in_tabs() {
             return None;
+        }
+        let asks = &self.data.connections.asks;
+        if !asks.is_empty() {
+            return Some(Banner {
+                level: Level::Warning,
+                text: match asks.as_slice() {
+                    [ask] => text::waiting_one(&ask.name),
+                    many => text::waiting_many(many.len()),
+                },
+                action: Action::Go(Go::Requests),
+            });
         }
         let ctx = self.ctx();
         let portfolio = &self.data.portfolio;

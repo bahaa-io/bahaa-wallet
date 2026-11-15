@@ -1,5 +1,6 @@
 mod activity;
 mod chart;
+mod connect;
 mod contacts;
 mod networks;
 mod nfts;
@@ -60,6 +61,16 @@ pub(crate) fn starting() -> Box<dyn Screen> {
 pub(crate) fn welcome(adding: bool) -> Box<dyn Screen> {
     Box::new(onboarding::Welcome::new(adding))
 }
+
+pub(crate) fn connect() -> Box<dyn Screen> {
+    Box::new(connect::Connect::new())
+}
+
+pub(crate) fn apps() -> Box<dyn Screen> {
+    Box::new(connect::Apps)
+}
+
+pub(crate) use connect::requests;
 
 pub(crate) fn networks() -> Box<dyn Screen> {
     Box::new(networks::Networks)

@@ -44,7 +44,7 @@ fn paint(frame: &mut Frame<'_>, view: &View, ui: &mut Ui) {
         centered_text(frame.buffer_mut(), area, hints::TOO_SMALL, theme::text());
         return;
     }
-    let [top, _, body, bottom] = Layout::vertical([
+    let [top, gap, body, bottom] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
@@ -52,6 +52,13 @@ fn paint(frame: &mut Frame<'_>, view: &View, ui: &mut Ui) {
     ])
     .areas(area);
     header(frame.buffer_mut(), top, view, ui);
+    if let Some(banner) = view
+        .banner
+        .as_ref()
+        .filter(|_| hints::requests_waiting(view))
+    {
+        waiting(frame.buffer_mut(), gap, banner, ui);
+    }
     if view.page.id == PageId::Starting {
         logo(
             frame.buffer_mut(),
@@ -164,7 +171,7 @@ fn status(buffer: &mut Buffer, area: Rect, start: u16, banner: &Banner, ui: &mut
     let width = wrap::width(&text);
     let hit = Hit::Action(banner.action.clone());
     let fill = if ui.hovered(&hit) {
-        ui.tooltip = Some(hints::OPEN_STATUS.to_owned());
+        ui.tooltip = Some(hints::banner(&banner.action).1.to_owned());
         theme::raised()
     } else {
         Style::new()
@@ -180,6 +187,26 @@ fn status(buffer: &mut Buffer, area: Rect, start: u16, banner: &Banner, ui: &mut
     ]);
     let x = area.right() - width - 1;
     buffer.set_line(x, area.y, &line, width);
+    ui.hits.push((Rect::new(x, area.y, width, 1), hit));
+}
+
+fn waiting(buffer: &mut Buffer, area: Rect, banner: &Banner, ui: &mut Ui) {
+    let text = format!(
+        " {} {} · {} ",
+        theme::icon(banner.level),
+        banner.text,
+        hints::REVIEW_HINT
+    );
+    let width = wrap::width(&text).min(area.width.saturating_sub(4));
+    let hit = Hit::Action(banner.action.clone());
+    let style = if ui.hovered(&hit) {
+        ui.tooltip = Some(hints::OPEN_REQUESTS.to_owned());
+        theme::level(banner.level).patch(theme::raised())
+    } else {
+        theme::level(banner.level)
+    };
+    let x = area.x + 2;
+    buffer.set_stringn(x, area.y, &text, usize::from(width), style);
     ui.hits.push((Rect::new(x, area.y, width, 1), hit));
 }
 

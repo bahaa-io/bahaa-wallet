@@ -1669,3 +1669,142 @@ async fn a_name_is_looked_up_shown_on_the_review_and_checked_again_before_sendin
     at(&mut view, PageId::Sent).await;
     app.shutdown().await.unwrap();
 }
+
+fn toasted(view: &View, text: &str) -> bool {
+    view.toasts.iter().any(|toast| toast.text == text)
+}
+
+async fn connect_demo(
+    app: &App,
+    view: &mut watch::Receiver<Arc<View>>,
+    dapp: &mut bahaa_testkit::bridge::Dapp,
+) {
+    let details = bahaa_testkit::bridge::manifest("Demo App").await;
+    app.act(Action::Go(Go::Tab(Tab::Settings)));
+    let settings = at(view, PageId::Settings).await;
+    assert!(
+        settings
+            .page
+            .buttons
+            .iter()
+            .any(|button| button.action == Action::Go(Go::ConnectApp))
+    );
+    app.act(Action::Go(Go::ConnectApp));
+    at(view, PageId::ConnectApp).await;
+    app.act(Action::Submit);
+    until(view, |current| current.page.error.is_some()).await;
+    app.act(Action::Type(Field::Link, dapp.link(&details, true)));
+    app.act(Action::Submit);
+    let invite = at(view, PageId::Invite).await;
+    assert_eq!(invite.page.title, "Connect to Demo App");
+    assert!(
+        invite
+            .page
+            .lines
+            .iter()
+            .any(|line| line.value == "Your address and a sign-in signature")
+    );
+    assert_eq!(invite.page.groups().next().unwrap().choices.len(), 1);
+    app.act(Action::Type(Field::Password, PASSWORD.to_owned()));
+    app.act(Action::Submit);
+    until(view, |current| {
+        current.page.id == PageId::Settings && toasted(current, "Connected to Demo App")
+    })
+    .await;
+    assert_eq!(dapp.next().await["event"], "connect");
+}
+
+#[tokio::test]
+async fn an_app_connects_gets_its_request_answered_and_is_disconnected() {
+    use bahaa_engine::connect::Bridges;
+    use bahaa_testkit::bridge::{Dapp, Relay, bridge};
+    let scratch = Scratch::new();
+    let relay = Relay::default();
+    let engine = EngineConfig {
+        connect: Some(Bridges {
+            default: bridge(relay.clone()).await,
+            list: None,
+        }),
+        ..engine_config(&scratch, offline(|_| true))
+    };
+    let (app, _requests, mut view) = imported_with(engine, false).await;
+    let mut dapp = Dapp::new(&relay);
+    connect_demo(&app, &mut view, &mut dapp).await;
+    app.act(Action::Go(Go::Apps));
+    let apps = until(&mut view, |current| {
+        current.page.id == PageId::Apps
+            && current
+                .page
+                .table
+                .as_ref()
+                .is_some_and(|table| table.rows.len() == 1)
+    })
+    .await;
+    assert_eq!(
+        apps.page.table.as_ref().unwrap().rows[0].cells[0].text,
+        "Demo App"
+    );
+
+    dapp.send(
+        "signData",
+        &json!({"type": "text", "text": "Sign in to Demo"}),
+        1,
+    );
+    until(&mut view, |current| {
+        current.banner.as_ref().is_some_and(|banner| {
+            banner.action == Action::Go(Go::Requests)
+                && banner.text == "Demo App is waiting for your approval"
+        }) && toasted(current, "Demo App sent a request")
+    })
+    .await;
+    app.act(Action::Go(Go::Requests));
+    let request = until(&mut view, |current| {
+        current.page.id == PageId::Request
+            && current.page.text.as_deref() == Some("Sign in to Demo")
+    })
+    .await;
+    assert_eq!(request.page.title, "Demo App asks you to sign");
+    app.act(Action::Submit);
+    at(&mut view, PageId::Approve).await;
+    app.act(Action::Type(Field::Password, "wrong password".to_owned()));
+    app.act(Action::Submit);
+    until(&mut view, |current| current.page.error.is_some()).await;
+    app.act(Action::Type(Field::Password, PASSWORD.to_owned()));
+    app.act(Action::Submit);
+    until(&mut view, |current| {
+        current.page.id == PageId::Apps && toasted(current, "Signed for Demo App")
+    })
+    .await;
+    let answer = dapp.next().await;
+    assert_eq!(answer["id"], "1");
+    assert!(answer["result"]["signature"].is_string());
+
+    dapp.send("signData", &json!({"type": "text", "text": "Again"}), 2);
+    until(&mut view, |current| {
+        current
+            .banner
+            .as_ref()
+            .is_some_and(|banner| banner.action == Action::Go(Go::Requests))
+    })
+    .await;
+    app.act(Action::Go(Go::Requests));
+    at(&mut view, PageId::Request).await;
+    app.act(Action::Pick(Pick::Decline));
+    until(&mut view, |current| current.page.id == PageId::Apps).await;
+    assert_eq!(dapp.next().await["error"]["code"], 300);
+
+    app.act(Action::Go(Go::App(0)));
+    let page = at(&mut view, PageId::App).await;
+    assert_eq!(page.page.title, "Demo App");
+    app.act(Action::Pick(Pick::Disconnect));
+    until(&mut view, |current| {
+        toasted(current, "Disconnected from Demo App")
+            && current
+                .page
+                .table
+                .as_ref()
+                .is_some_and(|table| table.rows.is_empty())
+    })
+    .await;
+    assert_eq!(dapp.next().await["event"], "disconnect");
+}

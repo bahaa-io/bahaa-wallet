@@ -181,6 +181,9 @@ fn facts(ctx: &Ctx<'_>, activity: &Activity) -> Facts {
             if let Some(swap) = ctx.swap(&tx.network, &tx.id) {
                 facts.asset(ctx, &swap.buy).word(&text::swap_status(swap));
             }
+            if tx.kind == SentKind::App {
+                facts.word(tx.name.as_deref().unwrap_or_default());
+            }
         }
         ActivityKind::SentElsewhere(moved) => {
             facts
@@ -224,6 +227,13 @@ fn row(ctx: &Ctx<'_>, position: usize, activity: &Activity) -> Row {
             "",
             (tx.amount, &tx.asset),
             text::approved_for(&ctx.party(&tx.to, &tx.network)),
+            cell(text::status(&tx.status), status_tone(&tx.status)),
+            false,
+        ),
+        ActivityKind::Sent(tx) if tx.kind == SentKind::App => (
+            "−",
+            (tx.amount, &tx.asset),
+            text::via_app(tx.name.as_deref().unwrap_or(text::AN_APP)),
             cell(text::status(&tx.status), status_tone(&tx.status)),
             false,
         ),
@@ -512,6 +522,9 @@ fn sent_page(
     lines.push(line(text::FEE, fee));
     if let Some(memo) = &tx.memo {
         lines.push(line(text::MEMO, memo.clone()));
+    }
+    if tx.kind == SentKind::App {
+        lines.push(line(text::APP, tx.name.as_deref().unwrap_or(text::AN_APP)));
     }
     if let Some(swap) = ctx.swap(&tx.network, &tx.id) {
         lines.push(toned_line(

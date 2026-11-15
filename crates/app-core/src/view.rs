@@ -93,6 +93,13 @@ pub enum PageId {
     ChangePassword,
     Networks,
     Developer,
+    ConnectApp,
+    Invite,
+    Apps,
+    App,
+    Requests,
+    Request,
+    Approve,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

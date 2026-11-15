@@ -11,7 +11,7 @@ use crate::action::{Action, Channel, Currency, Field, Go, Pick, Toggle};
 use crate::call::{Call, Outcome};
 use crate::core::{Ctx, Nav, Reply};
 use crate::text;
-use crate::view::{Item, Level, Page, PageId, Request, Row, Secret, Table, Tone};
+use crate::view::{Button, Item, Level, Page, PageId, Request, Row, Secret, Table, Tone};
 
 const AUTO_LOCK: [u16; 5] = [1, 5, 10, 30, 60];
 
@@ -133,27 +133,7 @@ impl Screen for Settings {
             ));
         }
         app.push(button(text::DEVELOPER, Action::Go(Go::Developer)));
-        let buttons = sections([
-            (
-                text::WALLETS,
-                vec![button(text::ADD_WALLET, Action::Go(Go::AddWallet))],
-            ),
-            (
-                text::SECURITY,
-                vec![
-                    button(text::CHANGE_PASSWORD, Action::Go(Go::ChangePassword)),
-                    button(text::LOCK_NOW, Action::Lock),
-                ],
-            ),
-            (
-                text::NETWORKS,
-                vec![
-                    button(text::NETWORK_STATUS, Action::Go(Go::Networks)),
-                    button(text::TOKENS, Action::Go(Go::Tokens)),
-                ],
-            ),
-            (text::APP, app),
-        ]);
+        let buttons = buttons(app);
         Page {
             id: PageId::Settings,
             title: text::SETTINGS.to_owned(),
@@ -219,6 +199,37 @@ impl Screen for Developer {
             ..Page::default()
         }
     }
+}
+
+fn buttons(app: Vec<Button>) -> Vec<Button> {
+    sections([
+        (
+            text::WALLETS,
+            vec![button(text::ADD_WALLET, Action::Go(Go::AddWallet))],
+        ),
+        (
+            text::SECURITY,
+            vec![
+                button(text::CHANGE_PASSWORD, Action::Go(Go::ChangePassword)),
+                button(text::LOCK_NOW, Action::Lock),
+            ],
+        ),
+        (
+            text::NETWORKS,
+            vec![
+                button(text::NETWORK_STATUS, Action::Go(Go::Networks)),
+                button(text::TOKENS, Action::Go(Go::Tokens)),
+            ],
+        ),
+        (
+            text::CONNECTIONS,
+            vec![
+                button(text::CONNECT_APP, Action::Go(Go::ConnectApp)),
+                button(text::CONNECTED_APPS, Action::Go(Go::Apps)),
+            ],
+        ),
+        (text::APP, app),
+    ])
 }
 
 fn save(settings: bahaa_engine::Settings) -> Reply {

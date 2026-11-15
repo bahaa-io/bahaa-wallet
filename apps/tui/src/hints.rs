@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use bahaa_app_core::Action;
+use bahaa_app_core::{Action, Go};
 
 pub(crate) const BRAND_MARK: &str = "◆";
 pub(crate) const BRAND_NAME: &str = "Bahaa";
@@ -40,6 +40,8 @@ pub(crate) const KIND_OPEN: &str = "open";
 pub(crate) const KIND_TAB: &str = "tab";
 pub(crate) const KIND_APP: &str = "app";
 pub(crate) const STATUS: &str = "Network status";
+pub(crate) const REQUESTS: &str = "Open the waiting requests";
+pub(crate) const CONNECT_APP: &str = "Connect an app";
 pub(crate) const SHOW_QR: &str = "Show the QR code";
 pub(crate) const SHOW_PICTURE: &str = "Show the picture";
 pub(crate) const SHOW_WORDS: &str = "Show or hide the words";
@@ -68,6 +70,22 @@ pub(crate) const UPDATE_REPLACE: &str =
 pub(crate) const CLICK_TO_TYPE: &str = "Click to type here";
 pub(crate) const DISMISS: &str = "Click to dismiss";
 pub(crate) const OPEN_STATUS: &str = "Click for network status";
+pub(crate) const OPEN_REQUESTS: &str = "Click to see the request";
+pub(crate) const REVIEW_HINT: &str = "press w to review";
+
+pub(crate) fn requests_waiting(view: &bahaa_app_core::View) -> bool {
+    view.banner
+        .as_ref()
+        .is_some_and(|banner| banner.action == Action::Go(Go::Requests))
+}
+
+pub(crate) fn banner(action: &Action) -> (&'static str, &'static str) {
+    if *action == Action::Go(Go::Requests) {
+        (REQUESTS, OPEN_REQUESTS)
+    } else {
+        (STATUS, OPEN_STATUS)
+    }
+}
 
 pub(crate) type Hint = (&'static str, &'static str);
 
@@ -99,6 +117,7 @@ pub(crate) const KEYS: Hint = ("?", "keys");
 pub(crate) const TABS: Hint = ("1-7", "tabs");
 pub(crate) const LOCK: Hint = ("Ctrl-L", "lock");
 pub(crate) const SEARCH: Hint = ("/", "search");
+pub(crate) const WAITING: Hint = ("w", "requests");
 pub(crate) const TO_LIST: Hint = ("Enter", "go to the list");
 pub(crate) const CLEAR: Hint = ("Esc", "clear");
 pub(crate) const SEARCH_KEY: &str = "/";
@@ -129,6 +148,7 @@ pub(crate) const KEY_GROUPS: [(&str, &[Hint]); 4] = [
             ("v", "QR code or picture"),
             ("s", "show or hide words"),
             ("r", "refresh balances"),
+            ("w", "waiting app requests"),
             ("Ctrl-L", "lock"),
             ("q  Ctrl-C", "quit"),
         ],
