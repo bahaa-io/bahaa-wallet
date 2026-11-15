@@ -573,14 +573,13 @@ impl Worker {
         calls: Vec<(Signed, DecodedCall, CallStep, Amount)>,
     ) -> Result<Vec<(SentTx, Signed)>, EngineError> {
         let network = self.chains[draft.chain].network().id.clone();
-        let created_at = bahaa_chain::now();
         calls
             .into_iter()
             .map(|(signed, decoded, step, fee_max)| {
                 if self.reused(&network, &decoded.from, decoded.sequence) {
                     return Err(EngineError::StillSending);
                 }
-                let (kind, to, asset, amount) = match step {
+                let moved = match step {
                     CallStep::Approve {
                         asset,
                         spender,
@@ -592,29 +591,13 @@ impl Worker {
                         draft.transfer.asset.clone(),
                         draft.transfer.amount,
                     ),
+                    CallStep::Name { .. } => {
+                        return Err(
+                            ChainError::Invalid("a name change isn't part of a send").into()
+                        );
+                    }
                 };
-                let record = SentTx {
-                    id: signed.id.to_string(),
-                    network: network.clone(),
-                    from: decoded.from,
-                    to,
-                    asset,
-                    amount,
-                    sequence: decoded.sequence,
-                    fee_max,
-                    fee_paid: None,
-                    block: None,
-                    created_at,
-                    expires_at: None,
-                    status: SentStatus::Sending,
-                    raw: Some(bahaa_types::hex::encode(&signed.bytes)),
-                    transaction: None,
-                    memo: None,
-                    replaces: None,
-                    kind,
-                    private: true,
-                    name: None,
-                };
+                let record = call_record(&network, (&signed, decoded), moved, fee_max);
                 Ok((record, signed))
             })
             .collect()
@@ -818,6 +801,36 @@ impl Worker {
         }
         let _ = self.events.send(Event::TxUpdated(Box::new(record)));
         Ok(())
+    }
+}
+
+pub(super) fn call_record(
+    network: &NetworkId,
+    (signed, decoded): (&Signed, DecodedCall),
+    (kind, to, asset, amount): (SentKind, Address, AssetId, Amount),
+    fee_max: Amount,
+) -> SentTx {
+    SentTx {
+        id: signed.id.to_string(),
+        network: network.clone(),
+        from: decoded.from,
+        to,
+        asset,
+        amount,
+        sequence: decoded.sequence,
+        fee_max,
+        fee_paid: None,
+        block: None,
+        created_at: bahaa_chain::now(),
+        expires_at: None,
+        status: SentStatus::Sending,
+        raw: Some(bahaa_types::hex::encode(&signed.bytes)),
+        transaction: None,
+        memo: None,
+        replaces: None,
+        kind,
+        private: true,
+        name: None,
     }
 }
 

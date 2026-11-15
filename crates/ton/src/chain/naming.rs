@@ -1,4 +1,4 @@
-use bahaa_chain::{ChainError, FeeQuote};
+use bahaa_chain::{ChainError, FeeQuote, Link, NameRecord};
 use bahaa_types::{Address, Amount};
 use ruint::aliases::U256;
 use sha2::{Digest, Sha256};
@@ -24,28 +24,6 @@ const YEAR: u64 = 365 * 24 * 3600;
 const TON_ENDING: &str = ".ton";
 const REFUSED: &str = "the name's contract refused this change";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NameRecord {
-    pub name: String,
-    pub item: Address,
-    pub owner: Address,
-    pub wallet: Option<Address>,
-    pub expires_at: Option<u64>,
-}
-
-impl NameRecord {
-    pub fn renews(&self) -> bool {
-        self.expires_at.is_some()
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Link {
-    To(Address),
-    Clear,
-    Renew,
-}
-
 #[derive(Clone, Debug)]
 pub struct Linking {
     pub record: NameRecord,
@@ -63,20 +41,26 @@ impl TonChain {
         self.record_at(item, &state).await
     }
 
+    pub async fn find_name(&self, name: &str) -> Result<Option<NameRecord>, ChainError> {
+        Ok(self.named(name).await?.map(|(record, _, _)| record))
+    }
+
     pub async fn prepare_link(
         &self,
         account: u32,
         from: &Address,
-        item: &Address,
+        name: &str,
         link: Link,
     ) -> Result<Linking, ChainError> {
-        cells::parts(item)?;
-        let state = self.http.account(item).await?;
-        let record = self.record_at(item, &state).await?;
+        let (record, item, state) = self
+            .named(name)
+            .await?
+            .ok_or(ChainError::Invalid("this name isn't registered"))?;
+        let item = &item;
         if record.owner != *from {
             return Err(ChainError::Invalid("this name belongs to another address"));
         }
-        let expected = match link {
+        let (expected, changes) = match link {
             Link::To(to) if record.wallet == Some(to) => {
                 return Err(ChainError::Invalid(
                     "the name already points to this address",
@@ -84,22 +68,22 @@ impl TonChain {
             }
             Link::To(to) => {
                 cells::parts(&to)?;
-                Some(to)
+                (Some(to), true)
             }
             Link::Clear if record.wallet.is_none() => {
                 return Err(ChainError::Invalid("this name isn't linked to an address"));
             }
-            Link::Clear => None,
-            Link::Renew if !record.renews() => {
+            Link::Clear => (None, true),
+            Link::Renew if !record.renewable => {
                 return Err(ChainError::Unsupported("renewing names that never expire"));
             }
-            Link::Renew => record.wallet,
+            Link::Renew => (record.wallet, false),
+            Link::Primary => return Err(ChainError::Unsupported("primary names on TON")),
         };
         let now = bahaa_chain::now();
-        let body = match link {
-            Link::Renew => None,
-            Link::To(_) | Link::Clear => Some(record_body(now, expected.as_ref())?),
-        };
+        let body = changes
+            .then(|| record_body(now, expected.as_ref()))
+            .transpose()?;
         let attach = self
             .link_attach(&state, (from, item), body.as_deref(), expected)
             .await?;
@@ -116,7 +100,7 @@ impl TonChain {
             valid_until: Some(now + LIFE),
         };
         let (batch, fee) = self.prepare_batch(&requested).await?;
-        let returned = !record.renews();
+        let returned = !record.renewable;
         Ok(Linking {
             record,
             link,
@@ -125,6 +109,24 @@ impl TonChain {
             batch,
             fee,
         })
+    }
+
+    async fn named(
+        &self,
+        name: &str,
+    ) -> Result<Option<(NameRecord, Address, Account)>, ChainError> {
+        let name = normalize(name)?;
+        let Some(item) = self.dns_walk(&name).await?.map(|walked| walked.resolver) else {
+            return Ok(None);
+        };
+        let state = self.http.account(&item).await?;
+        let record = self.record_at(&item, &state).await?;
+        if record.name != name {
+            return Err(ChainError::Unsupported(
+                "changing names kept by a contract that isn't their NFT",
+            ));
+        }
+        Ok(Some((record, item, state)))
     }
 
     async fn record_at(&self, item: &Address, state: &Account) -> Result<NameRecord, ChainError> {
@@ -159,9 +161,11 @@ impl TonChain {
         };
         Ok(NameRecord {
             name,
-            item: *item,
+            network: self.network.id.clone(),
             owner,
             wallet: walked.wallet,
+            elsewhere: false,
+            renewable: expires_at.is_some(),
             expires_at,
         })
     }

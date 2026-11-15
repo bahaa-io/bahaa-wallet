@@ -30,14 +30,14 @@ const MAX_REASON: usize = 160;
 const GAS_TRIES: usize = 3;
 
 #[derive(Clone, Copy, Debug)]
-struct Pricing {
+pub(super) struct Pricing {
     base: U256,
     tip: U256,
     max_fee: U256,
 }
 
 impl Pricing {
-    fn new(base: U256, tip: U256) -> Result<Self, ChainError> {
+    pub(super) fn new(base: U256, tip: U256) -> Result<Self, ChainError> {
         let max_fee = base
             .checked_mul(U256::from(2u8))
             .and_then(|fee| fee.checked_add(tip))
@@ -69,18 +69,18 @@ impl EvmCall {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Gas {
-    used: u64,
-    limit: u64,
+pub(super) struct Gas {
+    pub(super) used: u64,
+    pub(super) limit: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Simulated {
-    ok: bool,
-    used: u64,
-    peak: u64,
+pub(super) struct Simulated {
+    pub(super) ok: bool,
+    pub(super) used: u64,
+    pub(super) peak: u64,
     reason: String,
-    output: Vec<u8>,
+    pub(super) output: Vec<u8>,
     logs: Vec<Log>,
 }
 
@@ -163,7 +163,7 @@ impl EvmChain {
         Ok((plans, self.fee_quote(fees)?))
     }
 
-    async fn finish(
+    pub(super) async fn finish(
         &self,
         steps: Vec<PlannedCall>,
         gas: &[Gas],
@@ -642,7 +642,7 @@ impl EvmChain {
     }
 }
 
-fn call_json(from: &[u8; 20], call: &Call) -> Result<Value, ChainError> {
+pub(super) fn call_json(from: &[u8; 20], call: &Call) -> Result<Value, ChainError> {
     Ok(json!({
         "from": hex(from),
         "to": hex(&bytes(&call.to)?),
@@ -691,7 +691,7 @@ fn gas_of(value: &Value) -> Result<u64, ChainError> {
     u64::try_from(quantity(value)?).map_err(|_| ChainError::malformed())
 }
 
-fn simulated(reply: &Value, count: usize) -> Result<Vec<Simulated>, ChainError> {
+pub(super) fn simulated(reply: &Value, count: usize) -> Result<Vec<Simulated>, ChainError> {
     let calls = reply
         .as_array()
         .filter(|blocks| blocks.len() == 1)

@@ -237,7 +237,6 @@ impl Detail {
         let target = linking::Target {
             wallet: self.wallet,
             account,
-            asset: self.asset.clone(),
             record: record.clone(),
         };
         let link = match choice {
@@ -290,7 +289,7 @@ impl Detail {
                 Action::Pick(Pick::Link(LinkChoice::Clear)),
             ));
         }
-        if record.renews() {
+        if record.renewable {
             buttons.push(button(
                 text::RENEW,
                 Action::Pick(Pick::Link(LinkChoice::Renew)),

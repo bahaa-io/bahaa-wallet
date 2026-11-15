@@ -24,7 +24,7 @@ mod track;
 pub use batch::{DecodedBatch, Handover, Identity, Meaning, Reading, Requested, TonBatch, Wanted};
 pub use calls::TonCall;
 pub use dns::normalize as dns_normalize;
-pub use naming::{Link, Linking, NameRecord};
+pub use naming::Linking;
 pub use send::TonPlan;
 
 use crate::http::{Http, Item};

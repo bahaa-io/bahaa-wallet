@@ -165,6 +165,9 @@ pub enum Step {
         amount: Amount,
     },
     Swap,
+    Name {
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

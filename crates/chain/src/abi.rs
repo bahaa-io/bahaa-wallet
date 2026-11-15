@@ -22,6 +22,7 @@ pub struct NftMove {
 pub enum Arg<'a> {
     Uint(U256),
     Bytes(&'a [u8]),
+    List(&'a [Vec<u8>]),
 }
 
 pub const TRANSFER_EVENT: &str = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -143,6 +144,10 @@ pub fn encode(args: &[Arg<'_>]) -> Vec<u8> {
                 push_uint(&mut tail, U256::from(bytes.len()));
                 tail.extend_from_slice(bytes);
                 tail.resize(tail.len() + padded(bytes.len()) - bytes.len(), 0);
+            }
+            Arg::List(items) => {
+                push_uint(&mut head, U256::from(args.len() * WORD + tail.len()));
+                push_bytes_list(&mut tail, items);
             }
         }
     }

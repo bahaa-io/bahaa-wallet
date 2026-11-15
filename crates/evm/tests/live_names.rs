@@ -84,3 +84,98 @@ async fn live_space_id_and_unstoppable_names_resolve_only_while_held() {
         None
     );
 }
+
+fn evm(text: &str) -> bahaa_types::Address {
+    bahaa_types::Address::Evm(bahaa_types::hex::decode_array(text).unwrap())
+}
+
+async fn rehearsed(
+    chain: &EvmChain,
+    covered: &[bahaa_config::Network],
+    (name, from): (&str, &str),
+    link: bahaa_chain::Link,
+) -> Result<usize, bahaa_chain::ChainError> {
+    match chain.prepare_link(0, &evm(from), name, link, covered).await {
+        Ok(linking) => Ok(linking.calls.len()),
+        Err(bahaa_chain::ChainError::Insufficient { .. }) => Ok(0),
+        Err(err) => Err(err),
+    }
+}
+
+#[tokio::test]
+#[ignore = "runs name changes from their real holders through eth_simulateV1 on five networks"]
+async fn live_evm_names_point_elsewhere_while_their_holders_keep_them() {
+    use bahaa_chain::Link;
+    let registry = Registry::builtin().unwrap();
+    let covered: Vec<bahaa_config::Network> = registry
+        .networks()
+        .filter(|network| !network.testnet && network.family() == bahaa_types::ChainFamily::Evm)
+        .cloned()
+        .collect();
+    let chain =
+        |id: &str| EvmChain::new(registry.get(&id.parse().unwrap()).unwrap().clone()).unwrap();
+    let elsewhere = evm("83dfd552e63729b472fcbcc8c45ebcc6691702a8");
+    let cases = [
+        (
+            "ethereum",
+            "vitalik.eth",
+            "d8da6bf26964af9d7eed9e03e53415d37aa96045",
+        ),
+        (
+            "ethereum",
+            "nick.eth",
+            "b8c2c29ee19d8307cb7255e1cd9cbde883a267d5",
+        ),
+        (
+            "base",
+            "jesse.base.eth",
+            "2211d1d0020daea8039e46cf1367962070d77da9",
+        ),
+        (
+            "bsc",
+            "spaceid.bnb",
+            "b5932a6b7d50a966aec6c74c97385412fb497540",
+        ),
+        (
+            "arbitrum",
+            "spaceid.arb",
+            "b5932a6b7d50a966aec6c74c97385412fb497540",
+        ),
+        (
+            "polygon",
+            "brad.crypto",
+            "8aad44321a86b170879d7a244c1e8d360c99dda8",
+        ),
+    ];
+    for (network, name, holder) in cases {
+        let chain = chain(network);
+        let record = chain.find_name(name, &covered).await.unwrap().unwrap();
+        assert_eq!(record.owner, evm(holder), "{name}");
+        assert_eq!(record.network.to_string(), network, "{name}");
+        for link in [Link::To(elsewhere), Link::Clear] {
+            let ran = rehearsed(&chain, &covered, (name, holder), link).await;
+            assert!(ran.is_ok(), "{name} {link:?}: {ran:?}");
+        }
+        let primary = rehearsed(&chain, &covered, (name, holder), Link::Primary).await;
+        if record.wallet == Some(evm(holder)) {
+            assert!(primary.is_ok(), "{name} primary: {primary:?}");
+        } else {
+            assert!(primary.is_err(), "{name} primary");
+        }
+        let stranger = rehearsed(
+            &chain,
+            &covered,
+            (name, "83dfd552e63729b472fcbcc8c45ebcc6691702a8"),
+            Link::Clear,
+        )
+        .await;
+        assert!(stranger.is_err(), "{name} stranger");
+    }
+    assert_eq!(
+        chain("ethereum")
+            .find_name("this-name-should-not-exist-4417.eth", &covered)
+            .await
+            .unwrap(),
+        None
+    );
+}

@@ -72,7 +72,10 @@ impl EvmChain {
         let address = abi::bytes_at(&reply, 0)
             .and_then(|result| abi::bytes_at(result, 0))
             .ok_or_else(ChainError::malformed)?;
-        Ok((!address.is_empty()).then(|| address.to_vec()))
+        Ok(address
+            .iter()
+            .any(|byte| *byte != 0)
+            .then(|| address.to_vec()))
     }
 
     pub async fn ens_name(&self, address: &[u8], coin: u64) -> Result<Option<String>, ChainError> {
@@ -93,7 +96,7 @@ impl EvmChain {
         Ok(usable.then_some(name))
     }
 
-    async fn read_offchain(
+    pub(super) async fn read_offchain(
         &self,
         to: &[u8; 20],
         mut data: Vec<u8>,
@@ -159,7 +162,7 @@ pub fn normalize(name: &str) -> Result<String, ChainError> {
     Ok(normalized)
 }
 
-fn dns_encoded(name: &str) -> Result<Vec<u8>, ChainError> {
+pub(super) fn dns_encoded(name: &str) -> Result<Vec<u8>, ChainError> {
     let mut encoded = Vec::with_capacity(name.len() + 2);
     for label in name.split('.') {
         let length = u8::try_from(label.len())

@@ -4,20 +4,16 @@ use std::time::{Duration, Instant};
 
 use bahaa_chain::ChainError;
 use bahaa_config::{ChainKind, Network};
+use bahaa_evm::{ens_coins, unstoppable_codes};
 use bahaa_types::{Address, ChainFamily, NetworkId};
 
 use super::{EngineError, Reply, Worker};
 use crate::chains::{self, AnyChain};
 
-const ETHEREUM: u64 = 60;
-const EVM: u64 = 0x8000_0000;
-const BITCOIN: u64 = 0;
-const SOLANA: u64 = 501;
-const TRON: u64 = 195;
 const TRON_PREFIX: u8 = 0x41;
-const TON_ENDINGS: [&str; 2] = [".ton", ".t.me"];
-const SNS_ENDING: &str = ".sns";
-const PAUSED_ENDING: &str = ".sol";
+pub(super) const TON_ENDINGS: [&str; 2] = [".ton", ".t.me"];
+pub(super) const SNS_ENDING: &str = ".sns";
+pub(super) const PAUSED_ENDING: &str = ".sol";
 const NO_ADDRESS: &str = "this name has no address on this network";
 const CANT_USE: &str = "this name points to an address this network can't use";
 const REMEMBER: Duration = Duration::from_secs(600);
@@ -241,7 +237,7 @@ impl Worker {
             let name = bahaa_evm::unstoppable_normalize(name)?;
             return Ok((Lookup::Unstoppable { readers, codes }, target, name));
         }
-        let coins = coin_types(&target).ok_or(ChainError::Unsupported("ENS names"))?;
+        let coins = ens_coins(&target).ok_or(ChainError::Unsupported("ENS names"))?;
         let ethereum = chains::evm_chain(&self.chains, 1)
             .ok_or(ChainError::Unsupported("names without Ethereum"))?;
         let name = bahaa_evm::ens_normalize(name)?;
@@ -261,7 +257,7 @@ async fn behind(
     }
     match (target.family(), address) {
         (ChainFamily::Evm, Address::Evm(bytes)) => {
-            let (Some(ethereum), Some(coins)) = (ethereum, coin_types(target)) else {
+            let (Some(ethereum), Some(coins)) = (ethereum, ens_coins(target)) else {
                 return Ok(None);
             };
             let Some(name) = chains[ethereum].ens_name(bytes, coins[0]).await? else {
@@ -302,7 +298,7 @@ fn native(
     name: String,
     service: NameService,
 ) -> Result<Resolved, ChainError> {
-    let address = found?.ok_or(ChainError::Invalid(NO_ADDRESS))?;
+    let address = usable(found?.ok_or(ChainError::Invalid(NO_ADDRESS))?)?;
     Ok(Resolved {
         name,
         address,
@@ -345,6 +341,7 @@ async fn unstoppable(
                 .ok()
                 .filter(|address| !matches!(address, Address::Bitcoin { testnet: true, .. }))
                 .ok_or(ChainError::Invalid(CANT_USE))?;
+            let address = usable(address)?;
             return Ok(Resolved {
                 name,
                 address,
@@ -355,41 +352,17 @@ async fn unstoppable(
     Err(ChainError::Invalid(NO_ADDRESS))
 }
 
-fn unstoppable_codes(network: &Network) -> Option<(&'static str, &'static str)> {
-    if network.testnet {
-        return None;
-    }
-    Some(match network.kind {
-        ChainKind::Evm { chain_id: 1, .. } => ("ETH", "ETH"),
-        ChainKind::Evm { chain_id: 10, .. } => ("OP", "ETH"),
-        ChainKind::Evm { chain_id: 56, .. } => ("BSC", "BNB"),
-        ChainKind::Evm { chain_id: 137, .. } => ("MATIC", "POL"),
-        ChainKind::Evm { chain_id: 8453, .. } => ("BASE", "ETH"),
-        ChainKind::Evm {
-            chain_id: 42_161, ..
-        } => ("ARB1", "ETH"),
-        ChainKind::Evm {
-            chain_id: 43_114, ..
-        } => ("AVAX", "AVAX"),
-        ChainKind::Evm { .. } => return None,
-        ChainKind::Bitcoin { .. } => ("BTC", "BTC"),
-        ChainKind::Solana { .. } => ("SOL", "SOL"),
-        ChainKind::Tron { .. } => ("TRX", "TRX"),
-        ChainKind::Ton { .. } => ("TON", "TON"),
-    })
-}
-
-fn coin_types(network: &Network) -> Option<Vec<u64>> {
-    if network.testnet {
-        return None;
-    }
-    match network.kind {
-        ChainKind::Evm { chain_id: 1, .. } => Some(vec![ETHEREUM]),
-        ChainKind::Evm { chain_id, .. } if chain_id < EVM => Some(vec![EVM | chain_id, EVM]),
-        ChainKind::Bitcoin { .. } => Some(vec![BITCOIN]),
-        ChainKind::Solana { .. } => Some(vec![SOLANA]),
-        ChainKind::Tron { .. } => Some(vec![TRON]),
-        ChainKind::Evm { .. } | ChainKind::Ton { .. } => None,
+fn usable(address: Address) -> Result<Address, ChainError> {
+    let blank = match &address {
+        Address::Evm(bytes) | Address::Tron(bytes) => *bytes == [0; 20],
+        Address::Solana(bytes) => *bytes == [0; 32],
+        Address::Ton { hash, .. } => *hash == [0; 32],
+        Address::Bitcoin { .. } => false,
+    };
+    if blank {
+        Err(ChainError::Invalid(NO_ADDRESS))
+    } else {
+        Ok(address)
     }
 }
 
@@ -421,24 +394,6 @@ mod tests {
             .get(&id.parse().unwrap())
             .unwrap()
             .clone()
-    }
-
-    #[test]
-    fn each_network_asks_for_its_own_record_and_evm_networks_fall_back_to_the_default() {
-        assert_eq!(coin_types(&network("ethereum")), Some(vec![60]));
-        assert_eq!(
-            coin_types(&network("base")),
-            Some(vec![0x8000_2105, 0x8000_0000])
-        );
-        assert_eq!(
-            coin_types(&network("bsc")),
-            Some(vec![0x8000_0038, 0x8000_0000])
-        );
-        assert_eq!(coin_types(&network("bitcoin")), Some(vec![0]));
-        assert_eq!(coin_types(&network("solana")), Some(vec![501]));
-        assert_eq!(coin_types(&network("tron")), Some(vec![195]));
-        assert_eq!(coin_types(&network("ton")), None);
-        assert_eq!(coin_types(&network("bsc-testnet")), None);
     }
 
     #[test]

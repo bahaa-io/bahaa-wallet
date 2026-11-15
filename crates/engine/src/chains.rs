@@ -5,15 +5,15 @@ use std::time::Duration;
 use bahaa_bitcoin::{BitcoinCall, BitcoinChain, BitcoinPlan};
 use bahaa_chain::{
     Approval, Balance, Chain, ChainError, ContractSwap, Decoded, DecodedCall, FeeQuote, Found,
-    Movement, PlannedCall, Replace, ScanCursor, Scanned, Signed, Speed, Transfer, TxId, TxStatus,
-    Watch,
+    Link, Movement, NameRecord, PlannedCall, Replace, ScanCursor, Scanned, Signed, Speed, Transfer,
+    TxId, TxStatus, Watch,
 };
 use bahaa_config::{ChainKind, Coin, Feature, Network, Registry};
 use bahaa_crypto::Seed;
 use bahaa_evm::{EvmCall, EvmChain, EvmPlan};
 use bahaa_solana::{SolanaCall, SolanaChain, SolanaPlan};
 use bahaa_store::{CustomToken, Outgoing, Received, Scan, TrustedBlock, Watched};
-use bahaa_ton::{Link, Linking, NameRecord, TonCall, TonChain, TonPlan};
+use bahaa_ton::{TonBatch, TonCall, TonChain, TonPlan};
 use bahaa_tron::{TronCall, TronChain, TronPlan};
 use bahaa_types::{Address, Amount, AssetId, ChainFamily, NetworkId, TonContract};
 
@@ -70,6 +70,20 @@ impl AnyCall {
             Self::Ton(_) | Self::Bitcoin(_) => false,
         }
     }
+}
+
+pub(crate) struct Linked {
+    pub record: NameRecord,
+    pub attach: Option<Amount>,
+    pub returned: bool,
+    pub fee: FeeQuote,
+    pub plan: LinkPlan,
+}
+
+#[derive(Clone)]
+pub(crate) enum LinkPlan {
+    Ton(TonBatch),
+    Evm(Vec<EvmCall>),
 }
 
 #[derive(Clone)]
@@ -336,23 +350,59 @@ impl AnyChain {
     pub(crate) async fn name_record(&self, item: &Address) -> Result<NameRecord, ChainError> {
         match self {
             Self::Ton(chain) => shielded(chain.name_record(item)).await,
-            Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
-                Err(ChainError::Unsupported("linking names outside TON yet"))
+            Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => Err(
+                ChainError::Unsupported("reading names from NFTs outside TON"),
+            ),
+        }
+    }
+
+    pub(crate) async fn find_name(
+        &self,
+        name: &str,
+        covered: &[Network],
+    ) -> Result<Option<NameRecord>, ChainError> {
+        match self {
+            Self::Ton(chain) => shielded(chain.find_name(name)).await,
+            Self::Evm(chain) => Box::pin(shielded(chain.find_name(name, covered))).await,
+            Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("changing names on this network"))
             }
         }
     }
 
     pub(crate) async fn prepare_link(
         &self,
-        account: u32,
-        from: &Address,
-        item: &Address,
+        (account, from): (u32, &Address),
+        name: &str,
         link: Link,
-    ) -> Result<Linking, ChainError> {
+        covered: &[Network],
+    ) -> Result<Linked, ChainError> {
         match self {
-            Self::Ton(chain) => shielded(chain.prepare_link(account, from, item, link)).await,
-            Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
-                Err(ChainError::Unsupported("linking names outside TON yet"))
+            Self::Ton(chain) => {
+                let linking = shielded(chain.prepare_link(account, from, name, link)).await?;
+                Ok(Linked {
+                    record: linking.record,
+                    attach: Some(linking.attach),
+                    returned: linking.returned,
+                    fee: linking.fee,
+                    plan: LinkPlan::Ton(linking.batch),
+                })
+            }
+            Self::Evm(chain) => {
+                let linking = Box::pin(shielded(
+                    chain.prepare_link(account, from, name, link, covered),
+                ))
+                .await?;
+                Ok(Linked {
+                    record: linking.record,
+                    attach: None,
+                    returned: false,
+                    fee: linking.fee,
+                    plan: LinkPlan::Evm(linking.calls),
+                })
+            }
+            Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("changing names on this network"))
             }
         }
     }

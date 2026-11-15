@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use bahaa_chain::{Chain, ChainError, ScanCursor, Signed, TxId, TxStatus};
+use bahaa_chain::{Chain, ChainError, Link, ScanCursor, Signed, TxId, TxStatus};
 use bahaa_config::{Protocol, Registry};
 use bahaa_ton::TonChain;
 use bahaa_types::{Address, Amount, AssetId, ChainFamily};
@@ -746,6 +746,17 @@ async fn live_a_ton_name_points_elsewhere_while_its_nft_stays() {
     let item = ton("0:69a8d522863bfe1c6224cb5dfe6f22dab01e983aea55287ee8fea4ef45d2367f");
     let owner = ton("0:4bab343ae759aa67cfe7a0af4ab3d2258484fd593142c57e9cad3c064039f4dd");
     let record = chain.name_record(&item).await.unwrap();
+    assert_eq!(
+        chain.find_name("Gosal.t.me").await.unwrap(),
+        Some(record.clone())
+    );
+    assert_eq!(
+        chain
+            .find_name("this-name-should-not-exist-4417.ton")
+            .await
+            .unwrap(),
+        None
+    );
     assert_eq!(record.name, "gosal.t.me");
     assert_eq!(record.owner, owner);
     assert_eq!(record.wallet, Some(owner));
@@ -757,10 +768,11 @@ async fn live_a_ton_name_points_elsewhere_while_its_nft_stays() {
         .await
         .unwrap();
     assert_eq!(foundation.name, "foundation.ton");
-    assert!(foundation.expires_at.is_some());
+    assert!(foundation.renewable && foundation.expires_at.is_some());
+    assert!(!record.renewable);
     let elsewhere = ton("0:83dfd552e63729b472fcbcc8c45ebcc6691702558b68ec7527e1ba403a0f31a8");
     let linking = chain
-        .prepare_link(0, &owner, &item, bahaa_ton::Link::To(elsewhere))
+        .prepare_link(0, &owner, "gosal.t.me", Link::To(elsewhere))
         .await
         .unwrap();
     assert!(linking.returned);
@@ -769,17 +781,18 @@ async fn live_a_ton_name_points_elsewhere_while_its_nft_stays() {
         bahaa_ton::Meaning::Record { wallet: Some(to) } if to == elsewhere
     ));
     let cleared = chain
-        .prepare_link(0, &owner, &item, bahaa_ton::Link::Clear)
+        .prepare_link(0, &owner, "gosal.t.me", Link::Clear)
         .await
         .unwrap();
     assert!(matches!(
         cleared.batch.readings()[0].meaning,
         bahaa_ton::Meaning::Record { wallet: None }
     ));
-    assert!(
-        chain
-            .prepare_link(0, &elsewhere, &item, bahaa_ton::Link::Clear)
-            .await
-            .is_err()
-    );
+    for refused in [
+        chain.prepare_link(0, &elsewhere, "gosal.t.me", Link::Clear),
+        chain.prepare_link(0, &owner, "gosal.t.me", Link::Primary),
+        chain.prepare_link(0, &owner, "gosal.t.me", Link::Renew),
+    ] {
+        assert!(refused.await.is_err());
+    }
 }

@@ -1,26 +1,44 @@
 use alloy_primitives::keccak256;
 use bahaa_chain::abi::{self, Arg};
 use bahaa_chain::{ChainError, now};
-use futures_util::future::try_join;
+use bahaa_config::{ChainKind, Network};
+use futures_util::future::try_join3;
 use ruint::aliases::U256;
 
 use super::EvmChain;
 use super::ens::{namehash, normalize, selector};
 
-struct SpaceId {
+pub(super) struct SpaceId {
     chain: u64,
     ending: &'static str,
     registry: &'static str,
     registrar: &'static str,
+    pub(super) reverse: &'static str,
     elsewhere: &'static str,
 }
 
-const SPACE_ID: [SpaceId; 2] = [
+impl SpaceId {
+    pub(super) fn registry(&self) -> Result<[u8; 20], ChainError> {
+        contract(self.registry)
+    }
+}
+
+pub(super) struct SpaceName {
+    pub(super) system: &'static SpaceId,
+    pub(super) node: [u8; 32],
+    pub(super) owner: [u8; 20],
+    pub(super) resolver: [u8; 20],
+    pub(super) expiry: U256,
+    pub(super) address: Option<[u8; 20]>,
+}
+
+static SPACE_ID: [SpaceId; 2] = [
     SpaceId {
         chain: 56,
         ending: ".bnb",
         registry: "08CEd32a7f3eeC915Ba84415e9C07a7286977956",
         registrar: "E3b1D32e43Ce8d658368e2CBFF95D57Ef39Be8a6",
+        reverse: "d322333e88acefc5bf19470d137c0f2272104ae8",
         elsewhere: "this is a BNB Chain name, it only points to BNB Chain addresses",
     },
     SpaceId {
@@ -28,10 +46,11 @@ const SPACE_ID: [SpaceId; 2] = [
         ending: ".arb",
         registry: "4a067EE58e73ac5E4a43722E008DFdf65B2bF348",
         registrar: "5d482d501b369f5ba034dec5c5fb7a50d2d6ca20",
+        reverse: "73622c36a3611caa7a22fc2941cee75d1759f2d7",
         elsewhere: "this is an Arbitrum name, it only points to Arbitrum addresses",
     },
 ];
-const READERS: [(u64, &str); 3] = [
+pub(super) const READERS: [(u64, &str); 3] = [
     (137, "91EDd8708062bd4233f4Dd0FCE15A7cb4d500091"),
     (1, "578853aa776Eef10CeE6c4dd2B5862bdcE767A8B"),
     (8453, "78c4b414e1abdf0de267deda01dffd4cd0817a16"),
@@ -40,6 +59,13 @@ const ON_POLYGON: &str = "888 agent ai4 altimist anime arculus austin awaken bin
 const ON_BASE: &str = "amped anyone ask ath bald basenji bay bch benji bitscrunch boomer bunni caw chip chomp depin digibyte enigma ethermail goblin gotchi her horizen learn lunar mooncat mumu mycircle npc ohm onchain pendle podcast pokt privacy propykeys quantum rad smobler south spend u udtest verge xec xyo zano";
 const POLYGON_THEN_ETHEREUM: [u64; 2] = [137, 1];
 const BASE: [u64; 1] = [8453];
+const ETHEREUM: [u64; 1] = [1];
+const BASE_ENDING: &str = ".base.eth";
+pub(super) const ETHEREUM_COIN: u64 = 60;
+pub(super) const EVM_COIN: u64 = 0x8000_0000;
+const BITCOIN_COIN: u64 = 0;
+const SOLANA_COIN: u64 = 501;
+const TRON_COIN: u64 = 195;
 const MAX_RECORD: usize = 256;
 const INVALID: ChainError = ChainError::Invalid("this is not a valid name");
 
@@ -76,8 +102,71 @@ pub fn unstoppable_normalize(name: &str) -> Result<String, ChainError> {
     if fine { Ok(lower) } else { Err(INVALID) }
 }
 
+pub fn name_homes(name: &str) -> &'static [u64] {
+    if let Some(chains) = unstoppable_chains(name) {
+        return chains;
+    }
+    let lower = name.trim().to_lowercase();
+    if let Some(system) = SPACE_ID
+        .iter()
+        .find(|system| lower.ends_with(system.ending))
+    {
+        return std::slice::from_ref(&system.chain);
+    }
+    if lower.ends_with(BASE_ENDING) {
+        &BASE
+    } else {
+        &ETHEREUM
+    }
+}
+
+pub fn ens_coins(network: &Network) -> Option<Vec<u64>> {
+    if network.testnet {
+        return None;
+    }
+    match network.kind {
+        ChainKind::Evm { chain_id: 1, .. } => Some(vec![ETHEREUM_COIN]),
+        ChainKind::Evm { chain_id, .. } if chain_id < EVM_COIN => {
+            Some(vec![EVM_COIN | chain_id, EVM_COIN])
+        }
+        ChainKind::Bitcoin { .. } => Some(vec![BITCOIN_COIN]),
+        ChainKind::Solana { .. } => Some(vec![SOLANA_COIN]),
+        ChainKind::Tron { .. } => Some(vec![TRON_COIN]),
+        ChainKind::Evm { .. } | ChainKind::Ton { .. } => None,
+    }
+}
+
+pub fn unstoppable_codes(network: &Network) -> Option<(&'static str, &'static str)> {
+    if network.testnet {
+        return None;
+    }
+    Some(match network.kind {
+        ChainKind::Evm { chain_id: 1, .. } => ("ETH", "ETH"),
+        ChainKind::Evm { chain_id: 10, .. } => ("OP", "ETH"),
+        ChainKind::Evm { chain_id: 56, .. } => ("BSC", "BNB"),
+        ChainKind::Evm { chain_id: 137, .. } => ("MATIC", "POL"),
+        ChainKind::Evm { chain_id: 8453, .. } => ("BASE", "ETH"),
+        ChainKind::Evm {
+            chain_id: 42_161, ..
+        } => ("ARB1", "ETH"),
+        ChainKind::Evm {
+            chain_id: 43_114, ..
+        } => ("AVAX", "AVAX"),
+        ChainKind::Evm { .. } => return None,
+        ChainKind::Bitcoin { .. } => ("BTC", "BTC"),
+        ChainKind::Solana { .. } => ("SOL", "SOL"),
+        ChainKind::Tron { .. } => ("TRX", "TRX"),
+        ChainKind::Ton { .. } => ("TON", "TON"),
+    })
+}
+
 impl EvmChain {
     pub async fn space_id_address(&self, name: &str) -> Result<Option<[u8; 20]>, ChainError> {
+        let found = self.space_id_name(name).await?;
+        Ok(found.address.filter(|_| found.expiry > U256::from(now())))
+    }
+
+    pub(super) async fn space_id_name(&self, name: &str) -> Result<SpaceName, ChainError> {
         let system = SPACE_ID
             .iter()
             .find(|system| system.chain == self.chain_id)
@@ -89,12 +178,10 @@ impl EvmChain {
             .filter(|label| !label.is_empty())
             .ok_or(ChainError::Invalid(system.elsewhere))?;
         let node = namehash(&name);
-        let (resolver, expiry) = try_join(
-            self.read_with(
-                &contract(system.registry)?,
-                &call("resolver(bytes32)", node),
-                None,
-            ),
+        let registry = contract(system.registry)?;
+        let (owner, resolver, expiry) = try_join3(
+            self.read_with(&registry, &call("owner(bytes32)", node), None),
+            self.read_with(&registry, &call("resolver(bytes32)", node), None),
             self.read_with(
                 &contract(system.registrar)?,
                 &call("nameExpires(uint256)", keccak256(label).0),
@@ -102,16 +189,25 @@ impl EvmChain {
             ),
         )
         .await?;
-        let resolver = abi::address(&resolver, 0).ok_or_else(ChainError::malformed)?;
+        let word = |reply: &[u8]| abi::address(reply, 0).ok_or_else(ChainError::malformed);
+        let (owner, resolver) = (word(&owner)?, word(&resolver)?);
         let expiry = abi::uint(&expiry, 0).ok_or_else(ChainError::malformed)?;
-        if resolver == [0; 20] || expiry <= U256::from(now()) {
-            return Ok(None);
-        }
-        let address = self
-            .read_with(&resolver, &call("addr(bytes32)", node), None)
-            .await?;
-        let address = abi::address(&address, 0).ok_or_else(ChainError::malformed)?;
-        Ok((address != [0; 20]).then_some(address))
+        let address = if resolver == [0; 20] {
+            None
+        } else {
+            let reply = self
+                .read_with(&resolver, &call("addr(bytes32)", node), None)
+                .await?;
+            Some(word(&reply)?).filter(|address| *address != [0; 20])
+        };
+        Ok(SpaceName {
+            system,
+            node,
+            owner,
+            resolver,
+            expiry,
+            address,
+        })
     }
 
     pub async fn unstoppable_address(
@@ -136,10 +232,9 @@ impl EvmChain {
             call("exists(uint256)", id),
             lookup,
         ];
-        let mut data = selector("multicall(bytes[])").to_vec();
-        abi::push_uint(&mut data, U256::from(32));
-        abi::push_bytes_list(&mut data, &calls);
-        let reply = self.read_with(&contract(reader)?, &data, None).await?;
+        let reply = self
+            .read_with(&contract(reader)?, &multicall(&calls), None)
+            .await?;
         let (owner, exists, record) = read_unstoppable(&reply).ok_or_else(ChainError::malformed)?;
         if owner == [0; 20] {
             return if exists {
@@ -171,13 +266,20 @@ fn read_unstoppable(reply: &[u8]) -> Option<([u8; 20], bool, String)> {
     ))
 }
 
-fn call(signature: &str, word: [u8; 32]) -> Vec<u8> {
+pub(super) fn multicall(calls: &[Vec<u8>]) -> Vec<u8> {
+    let mut data = selector("multicall(bytes[])").to_vec();
+    abi::push_uint(&mut data, U256::from(32));
+    abi::push_bytes_list(&mut data, calls);
+    data
+}
+
+pub(super) fn call(signature: &str, word: [u8; 32]) -> Vec<u8> {
     let mut data = selector(signature).to_vec();
     data.extend_from_slice(&word);
     data
 }
 
-fn contract(text: &str) -> Result<[u8; 20], ChainError> {
+pub(super) fn contract(text: &str) -> Result<[u8; 20], ChainError> {
     bahaa_types::hex::decode_array(text).ok_or_else(ChainError::malformed)
 }
 
@@ -195,7 +297,50 @@ pub(crate) fn fuzz(data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use bahaa_config::Registry;
+
     use super::*;
+
+    fn network(id: &str) -> Network {
+        Registry::builtin()
+            .unwrap()
+            .get(&id.parse().unwrap())
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn each_network_asks_for_its_own_record_and_evm_networks_fall_back_to_the_default() {
+        assert_eq!(ens_coins(&network("ethereum")), Some(vec![60]));
+        assert_eq!(
+            ens_coins(&network("base")),
+            Some(vec![0x8000_2105, 0x8000_0000])
+        );
+        assert_eq!(
+            ens_coins(&network("bsc")),
+            Some(vec![0x8000_0038, 0x8000_0000])
+        );
+        assert_eq!(ens_coins(&network("bitcoin")), Some(vec![0]));
+        assert_eq!(ens_coins(&network("solana")), Some(vec![501]));
+        assert_eq!(ens_coins(&network("tron")), Some(vec![195]));
+        assert_eq!(ens_coins(&network("ton")), None);
+        assert_eq!(ens_coins(&network("bsc-testnet")), None);
+        assert_eq!(
+            unstoppable_codes(&network("polygon")),
+            Some(("MATIC", "POL"))
+        );
+        assert_eq!(unstoppable_codes(&network("bsc-testnet")), None);
+    }
+
+    #[test]
+    fn every_name_is_changed_on_the_network_that_keeps_it() {
+        assert_eq!(name_homes("vitalik.eth"), [1]);
+        assert_eq!(name_homes("Jesse.Base.eth"), [8453]);
+        assert_eq!(name_homes("spaceid.bnb"), [56]);
+        assert_eq!(name_homes("spaceid.arb"), [42_161]);
+        assert_eq!(name_homes("brad.crypto"), [137, 1]);
+        assert_eq!(name_homes("gurugur.u"), [8453]);
+    }
 
     #[test]
     fn names_go_to_the_system_and_chain_that_holds_their_ending() {

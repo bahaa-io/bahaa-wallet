@@ -537,7 +537,7 @@ fn approval_lines(review: &SwapReview, sold: &str) -> Vec<Line> {
     }
     let approved = review.steps.iter().find_map(|step| match step {
         CallStep::Approve { amount, .. } if !amount.is_zero() => Some(*amount),
-        CallStep::Approve { .. } | CallStep::Swap => None,
+        CallStep::Approve { .. } | CallStep::Swap | CallStep::Name { .. } => None,
     });
     let mut lines: Vec<Line> = approved
         .map(|amount| {

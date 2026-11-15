@@ -37,7 +37,7 @@ pub use engine::{
 };
 
 pub mod naming {
-    pub use bahaa_ton::{Link, NameRecord};
+    pub use bahaa_chain::{Link, NameRecord};
 }
 
 pub mod connect {

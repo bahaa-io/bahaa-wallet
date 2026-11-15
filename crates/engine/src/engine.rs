@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bahaa_chain::{ChainError, Gateways, Replace};
+use bahaa_chain::{ChainError, Gateways, NameRecord, Replace};
 use bahaa_config::{ConfigError, Registry, Settings};
 use bahaa_connect::{Bridges, ConnectError, Incoming};
 use bahaa_crypto::{ExposeSecret, SecretString, SeedKind};
@@ -34,8 +34,6 @@ use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
-
-use bahaa_ton::NameRecord;
 
 use crate::caution::{Arrival, Caution};
 use crate::chains::{self, AnyChain, NetworkBalances, NetworkHistory, NetworkNfts};
@@ -200,6 +198,7 @@ enum Command {
     Replace(NetworkId, String, Replace, Reply<Draft>),
     ConfirmSend(DraftId, SecretString, Reply<SentTx>),
     NameRecord(AssetId, Reply<NameRecord>),
+    FindName(String, Reply<NameRecord>),
     PrepareLink(LinkRequest, Reply<LinkDraft>),
     ConfirmLink(LinkId, SecretString, Reply<SentTx>),
     ConfirmOrder(DraftId, SecretString, Reply<SwapRecord>),
@@ -291,6 +290,7 @@ impl Command {
                 | Self::ResolveName(..)
                 | Self::NameOf(..)
                 | Self::NameRecord(..)
+                | Self::FindName(..)
                 | Self::PriceHistory(..)
                 | Self::Shutdown(_)
         )
@@ -727,6 +727,10 @@ impl Engine {
         self.ask(|reply| Command::NameRecord(asset, reply)).await
     }
 
+    pub async fn find_name(&self, name: String) -> Result<NameRecord, EngineError> {
+        self.ask(|reply| Command::FindName(name, reply)).await
+    }
+
     pub async fn prepare_link(&self, request: LinkRequest) -> Result<LinkDraft, EngineError> {
         self.ask(|reply| Command::PrepareLink(request, reply)).await
     }
@@ -1033,6 +1037,7 @@ impl Worker {
             command @ (Command::ResolveName(..)
             | Command::NameOf(..)
             | Command::NameRecord(..)
+            | Command::FindName(..)
             | Command::PrepareLink(..)
             | Command::ConfirmLink(..)) => self.handle_names(command).await,
             command @ (Command::Wallets(_)
@@ -1062,6 +1067,7 @@ impl Worker {
             }
             Command::NameOf(network, address, reply) => self.name_of(&network, address, reply),
             Command::NameRecord(asset, reply) => self.name_record(&asset, reply),
+            Command::FindName(name, reply) => self.find_name(&name, reply),
             Command::PrepareLink(request, reply) => self.prepare_link(&request, reply),
             Command::ConfirmLink(id, password, reply) => {
                 self.confirm_link(id, password, reply).await;

@@ -1,7 +1,5 @@
 use bahaa_engine::naming::{Link, NameRecord};
-use bahaa_engine::{
-    Address, AssetId, ChainFamily, EngineError, LinkDraft, LinkRequest, NetworkId, WalletId,
-};
+use bahaa_engine::{Address, EngineError, LinkDraft, LinkRequest, NetworkId, WalletId};
 
 use super::{Screen, button, hidden, input, line, network_line, note};
 use crate::action::{Action, Field};
@@ -13,7 +11,6 @@ use crate::{format, parse, text};
 pub(crate) struct Target {
     pub wallet: WalletId,
     pub account: u32,
-    pub asset: AssetId,
     pub record: NameRecord,
 }
 
@@ -22,13 +19,14 @@ impl Target {
         LinkRequest {
             wallet: self.wallet,
             account: self.account,
-            asset: self.asset.clone(),
+            network: self.record.network.clone(),
+            name: self.record.name.clone(),
             link,
         }
     }
 
     fn network(&self) -> &NetworkId {
-        self.asset.network()
+        &self.record.network
     }
 }
 
@@ -45,20 +43,21 @@ impl LinkTo {
         }
     }
 
-    fn address(&self) -> Option<Result<Address, String>> {
+    fn address(&self, ctx: &Ctx<'_>) -> Option<Result<Address, String>> {
         let typed = self.to.trim();
-        (!typed.is_empty()).then(|| parse::address(typed, ChainFamily::Ton))
+        let family = ctx.network(self.target.network())?.family();
+        (!typed.is_empty()).then(|| parse::address(typed, family))
     }
 }
 
 impl Screen for LinkTo {
-    fn act(&mut self, action: &Action, _ctx: &Ctx<'_>) -> Reply {
+    fn act(&mut self, action: &Action, ctx: &Ctx<'_>) -> Reply {
         match action {
             Action::Type(Field::To, value) => {
                 self.to.clone_from(value);
                 Reply::default()
             }
-            Action::Submit => match self.address() {
+            Action::Submit => match self.address(ctx) {
                 Some(Ok(address)) => {
                     let request = self.target.request(Link::To(address));
                     Review::open(request, self.target.record.clone(), true)
@@ -70,7 +69,7 @@ impl Screen for LinkTo {
     }
 
     fn page(&self, ctx: &Ctx<'_>) -> Page {
-        let hint = self.address().map(|parsed| match parsed {
+        let hint = self.address(ctx).map(|parsed| match parsed {
             Ok(address) => note(
                 Level::Success,
                 match ctx.owner(&address) {
@@ -131,6 +130,7 @@ impl Review {
             Link::To(_) => text::link_title(name),
             Link::Clear => text::unlink_title(name),
             Link::Renew => text::renew_title(name),
+            Link::Primary => text::primary_title(name),
         }
     }
 
@@ -143,13 +143,13 @@ impl Review {
         let after = match draft.link {
             Link::To(to) => Some(to),
             Link::Clear => None,
-            Link::Renew => draft.record.wallet,
+            Link::Renew | Link::Primary => draft.record.wallet,
         };
         let mut lines: Vec<Line> = vec![
             line(text::NAME, draft.record.name.clone()),
             line(text::POINTS_NOW, pointed(draft.record.wallet.as_ref())),
         ];
-        if draft.link != Link::Renew {
+        if !matches!(draft.link, Link::Renew | Link::Primary) {
             lines.push(line(text::WILL_POINT, pointed(after.as_ref())));
         }
         lines.push(line(text::FROM, ctx.party(&draft.from, network)));
@@ -164,17 +164,20 @@ impl Review {
                 ),
             ),
         ));
-        lines.push(line(text::ATTACHED, format::exact(draft.attach, &native)));
-        let attach = format::exact(draft.attach, &native);
-        let mut notes: Vec<Note> = vec![note(
-            Level::Info,
-            if draft.returned {
-                text::returned_note(&attach)
-            } else {
-                text::stays_note(&attach)
-            },
-        )];
-        if draft.record.renews() {
+        let mut notes: Vec<Note> = Vec::new();
+        if let Some(attach) = draft.attach {
+            let attach = format::exact(attach, &native);
+            lines.push(line(text::ATTACHED, attach.clone()));
+            notes.push(note(
+                Level::Info,
+                if draft.returned {
+                    text::returned_note(&attach)
+                } else {
+                    text::stays_note(&attach)
+                },
+            ));
+        }
+        if draft.record.renewable {
             notes.push(note(
                 Level::Info,
                 text::renews_note(&draft.record.name, &format::when(at + YEAR)),

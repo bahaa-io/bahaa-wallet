@@ -689,6 +689,10 @@ pub(crate) fn renew_title(name: &str) -> String {
     format!("Renew {name}")
 }
 
+pub(crate) fn primary_title(name: &str) -> String {
+    format!("Make {name} your name")
+}
+
 pub(crate) fn returned_note(amount: &str) -> String {
     format!("The name's contract sends back what it doesn't use of the {amount}.")
 }
