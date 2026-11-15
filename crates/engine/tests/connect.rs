@@ -2,17 +2,12 @@
 
 mod common;
 
-use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
 use bahaa_chain::ChainError;
 use bahaa_config::{Network, Registry};
-use bahaa_connect::{Bridges, Content, SessionKey, data_hash, proof_hash};
+use bahaa_connect::{Bridges, Content, data_hash, proof_hash};
 use bahaa_crypto::SecretString;
 use bahaa_engine::{Approved, AskKind, AskReview, Connections, Engine, EngineError, KeyringError};
-use bahaa_testkit::{Reply, serve};
+use bahaa_testkit::bridge::{Dapp, Relay, bridge, manifest};
 use bahaa_types::{Address, hex};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -25,166 +20,6 @@ const MAINNET: &str = "17a3a92992aabea785a7a090985a265cd31f323d849da51239737e321
 const RECORDING: &str = include_str!("fixtures/ton.json");
 const ELSEWHERE: &str = "UQCi1ivY6QriyKIQZrSTwhvf4qXI19qIPe4XAOYo-qMMUEiR";
 
-#[derive(Default)]
-struct Relay {
-    next: u64,
-    kept: Vec<Kept>,
-}
-
-struct Kept {
-    id: u64,
-    from: String,
-    to: String,
-    message: String,
-}
-
-type Shared = Arc<Mutex<Relay>>;
-
-fn keep(relay: &Shared, from: String, to: String, message: String) {
-    let mut relay = relay.lock().unwrap();
-    relay.next += 1;
-    let id = relay.next;
-    relay.kept.push(Kept {
-        id,
-        from,
-        to,
-        message,
-    });
-}
-
-async fn bridge(relay: Shared) -> Url {
-    serve(move |request| {
-        let url = Url::parse(&format!("http://bridge{}", request.path())).unwrap();
-        let query: HashMap<String, String> = url.query_pairs().into_owned().collect();
-        if url.path().ends_with("/message") {
-            keep(
-                &relay,
-                query["client_id"].clone(),
-                query["to"].clone(),
-                String::from_utf8(request.body).unwrap(),
-            );
-            return Reply::json(200, &json!({"message": "OK", "statusCode": 200}));
-        }
-        let ids: Vec<&str> = query["client_id"].split(',').collect();
-        let after: u64 = query
-            .get("last_event_id")
-            .and_then(|id| id.parse().ok())
-            .unwrap_or(0);
-        let mut body = String::new();
-        for kept in &relay.lock().unwrap().kept {
-            if kept.id > after && ids.contains(&kept.to.as_str()) {
-                let _ = write!(
-                    body,
-                    "event: message\nid: {}\ndata: {{\"from\":\"{}\",\"message\":\"{}\"}}\n\n",
-                    kept.id, kept.from, kept.message
-                );
-            }
-        }
-        let quiet = body.is_empty();
-        Reply {
-            status: 200,
-            headers: vec![("Content-Type", "text/event-stream".to_owned())],
-            body: body.into_bytes(),
-            delay: Duration::from_millis(if quiet { 200 } else { 0 }),
-        }
-    })
-    .await
-}
-
-struct App {
-    key: SessionKey,
-    relay: Shared,
-    wallet: Option<[u8; 32]>,
-    seen: u64,
-}
-
-impl App {
-    fn new(relay: &Shared) -> Self {
-        Self {
-            key: SessionKey::generate().unwrap(),
-            relay: Arc::clone(relay),
-            wallet: None,
-            seen: 0,
-        }
-    }
-
-    fn link(&self, manifest: &Url, proof: bool) -> String {
-        let mut items = vec![json!({"name": "ton_addr"})];
-        if proof {
-            items.push(json!({"name": "ton_proof", "payload": "nonce-1"}));
-        }
-        items.push(json!({"name": "ton_future"}));
-        let request = json!({"manifestUrl": manifest.as_str(), "items": items}).to_string();
-        format!(
-            "tc://?v=2&id={}&r={}",
-            hex::encode(&self.key.id()),
-            url::form_urlencoded::byte_serialize(request.as_bytes()).collect::<String>()
-        )
-    }
-
-    async fn next(&mut self) -> Value {
-        let me = hex::encode(&self.key.id());
-        let kept = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let found = self
-                    .relay
-                    .lock()
-                    .unwrap()
-                    .kept
-                    .iter()
-                    .find(|kept| kept.id > self.seen && kept.to == me)
-                    .map(|kept| (kept.id, kept.from.clone(), kept.message.clone()));
-                if let Some(found) = found {
-                    return found;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap();
-        let (id, from, message) = kept;
-        self.seen = id;
-        let wallet = hex::decode_array::<32>(&from).unwrap();
-        self.wallet.get_or_insert(wallet);
-        let opened = self
-            .key
-            .open(&wallet, &STANDARD.decode(message).unwrap())
-            .unwrap();
-        serde_json::from_slice(&opened).unwrap()
-    }
-
-    fn send(&self, method: &str, params: &Value, id: u64) {
-        let wallet = self.wallet.unwrap();
-        let params = if params.is_null() {
-            json!([])
-        } else {
-            json!([params.to_string()])
-        };
-        let request = json!({"method": method, "params": params, "id": id.to_string()});
-        let sealed = self
-            .key
-            .seal(&wallet, request.to_string().as_bytes())
-            .unwrap();
-        keep(
-            &self.relay,
-            hex::encode(&self.key.id()),
-            hex::encode(&wallet),
-            STANDARD.encode(sealed),
-        );
-    }
-}
-
-async fn manifest() -> Url {
-    let url = serve(|_| {
-        Reply::json(
-            200,
-            &json!({"url": "https://demo.example.org", "name": "Demo\u{202e} App", "iconUrl": "https://demo.example.org/icon.png"}),
-        )
-    })
-    .await;
-    url.join("tonconnect-manifest.json").unwrap()
-}
-
 fn ton_network(url: Url) -> Network {
     let mut network = common::ton_network("ton", url);
     network.tokens.clear();
@@ -193,7 +28,7 @@ fn ton_network(url: Url) -> Network {
 
 struct Setup {
     engine: Engine,
-    relay: Shared,
+    relay: Relay,
     manifest: Url,
     _scratch: Scratch,
 }
@@ -215,10 +50,10 @@ async fn setup() -> Setup {
     );
     keyring.create(b"pw").unwrap();
     keyring.import(HARDHAT, "").unwrap();
-    let relay = Shared::default();
+    let relay = Relay::default();
     let mut settings = config(&scratch, registry, None);
     settings.connect = Some(Bridges {
-        default: bridge(Arc::clone(&relay)).await.join("bridge").unwrap(),
+        default: bridge(relay.clone()).await,
         list: None,
     });
     let engine = Engine::start(settings).unwrap();
@@ -226,12 +61,12 @@ async fn setup() -> Setup {
     Setup {
         engine,
         relay,
-        manifest: manifest().await,
+        manifest: manifest("Demo\u{202e} App").await,
         _scratch: scratch,
     }
 }
 
-async fn connect(setup: &Setup, app: &mut App, proof: bool) -> Value {
+async fn connect(setup: &Setup, app: &mut Dapp, proof: bool) -> Value {
     let invite = setup
         .engine
         .connect_app(app.link(&setup.manifest, proof))
@@ -262,7 +97,7 @@ fn verify(key: &VerifyingKey, hash: &[u8; 32], signature: &Value) {
 #[tokio::test]
 async fn an_app_connects_with_a_signed_proof_and_gets_text_signed() {
     let setup = setup().await;
-    let mut app = App::new(&setup.relay);
+    let mut app = Dapp::new(&setup.relay);
     let invite = setup
         .engine
         .connect_app(app.link(&setup.manifest, true))
@@ -361,7 +196,7 @@ async fn an_app_connects_with_a_signed_proof_and_gets_text_signed() {
 #[tokio::test]
 async fn foreign_replayed_and_declined_requests_are_answered_and_the_app_can_leave() {
     let setup = setup().await;
-    let mut app = App::new(&setup.relay);
+    let mut app = Dapp::new(&setup.relay);
     connect(&setup, &mut app, false).await;
     let message = json!([{"address": ELSEWHERE, "amount": "1000"}]);
     app.send(
@@ -415,7 +250,7 @@ async fn foreign_replayed_and_declined_requests_are_answered_and_the_app_can_lea
 #[tokio::test]
 async fn sessions_survive_a_lock_and_relayed_messages_are_signed_after_review() {
     let setup = setup().await;
-    let mut app = App::new(&setup.relay);
+    let mut app = Dapp::new(&setup.relay);
     connect(&setup, &mut app, false).await;
     app.send("signData", &json!({"type": "binary", "bytes": "AQID"}), 1);
     asked(&setup, 1).await;

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 pub mod anvil;
+pub mod bridge;
 pub mod electrum;
 
 use std::fmt::Write as _;
