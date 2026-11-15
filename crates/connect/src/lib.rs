@@ -16,8 +16,8 @@ pub use bridge::{Bridge, Incoming};
 pub use link::{Invitation, read_link};
 pub use manifest::{Manifest, fetch_manifest, read_manifest};
 pub use reply::{
-    Code, Device, address_item, answer, connected, disconnected, failure, proof_item, refused,
-    signed_data, unsupported_item,
+    Code, Device, acknowledged, address_item, answer, connected, disconnected, failure, proof_item,
+    refused, sent, signed_data, signed_message, unsupported_item,
 };
 pub use request::{
     AppRequest, Bad, Call, ConnectItem, ConnectRequest, Content, JettonItem, MAX_MESSAGES, Message,
@@ -25,7 +25,7 @@ pub use request::{
 };
 pub use session::SessionKey;
 pub use sign::{data_hash, proof_hash, schema_crc};
-pub use wallets::{Bridges, bridge_for, read_wallets};
+pub use wallets::{Bridges, Connector, bridge_for, read_wallets};
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConnectError {
@@ -39,6 +39,8 @@ pub enum ConnectError {
     Network(String),
     #[error("the app's bridge refused the message (HTTP {0})")]
     Refused(u16),
+    #[error("the app's details can't be downloaded")]
+    NoManifest,
     #[error("{0}")]
     Manifest(&'static str),
     #[error("a message from the app couldn't be opened")]

@@ -19,7 +19,7 @@ pub struct Manifest {
 pub async fn fetch_manifest(client: &Client, url: &Url) -> Result<Manifest, ConnectError> {
     let bytes = bahaa_chain::http::file(client, url.clone(), MAX_MANIFEST)
         .await
-        .map_err(|_| ConnectError::Manifest("the app's details can't be downloaded"))?;
+        .map_err(|_| ConnectError::NoManifest)?;
     read_manifest(&bytes)
 }
 

@@ -115,6 +115,12 @@ impl TonBatch {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Identity {
+    pub public_key: [u8; 32],
+    pub state_init: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedBatch {
     pub from: Address,
     pub messages: Vec<Outbound>,
@@ -127,6 +133,85 @@ impl TonChain {
         &self,
         requested: &Requested,
     ) -> Result<(TonBatch, FeeQuote), ChainError> {
+        let (batch, wallet, deploy, now) = self.planned(requested).await?;
+        let sent = batch
+            .messages
+            .iter()
+            .try_fold(U256::ZERO, |sum, message| sum.checked_add(message.nano))
+            .ok_or_else(ChainError::overflow)?;
+        let native = &self.network.native;
+        enough(&native.symbol, sent, wallet.balance, native.decimals)?;
+        let (hop, settings) = self.rehearse(&batch, &wallet, now).await?;
+        if !hop.success {
+            return Err(ChainError::Rejected(
+                "your wallet would refuse this request".to_owned(),
+            ));
+        }
+        if hop.out.len() != batch.messages.len() {
+            return Err(ChainError::Rejected(
+                "your wallet would leave out some of these messages".to_owned(),
+            ));
+        }
+        let fee = hop
+            .fees
+            .checked_sub(hop.gas_fees)
+            .and_then(|rest| rest.checked_add(hop.charged_gas_fees))
+            .ok_or_else(ChainError::overflow)?;
+        let max = fee.checked_mul(2).ok_or_else(ChainError::overflow)?;
+        enough(
+            &native.symbol,
+            sent.checked_add(U256::from(max))
+                .ok_or_else(ChainError::overflow)?,
+            wallet.balance,
+            native.decimals,
+        )?;
+        let readings = self.readings(&batch).await?;
+        let gram = |nano: u64| amount(U256::from(nano), native.decimals);
+        let lines = vec![
+            FeeLine {
+                item: FeeItem::Compute {
+                    gas: settings.gas_for(hop.charged_gas_fees),
+                },
+                amount: gram(hop.charged_gas_fees)?,
+            },
+            FeeLine {
+                item: FeeItem::Forwarding,
+                amount: gram(fee.saturating_sub(hop.charged_gas_fees))?,
+            },
+        ];
+        let quote = FeeQuote::new(gram(max)?, gram(fee)?, lines)?
+            .paced(Pace::blocks(CONFIRM_BLOCKS, self.network.block_ms));
+        Ok((
+            TonBatch {
+                account: requested.account,
+                batch,
+                deploy,
+                readings,
+            },
+            quote,
+        ))
+    }
+
+    pub async fn prepare_relayed(&self, requested: &Requested) -> Result<TonBatch, ChainError> {
+        let (batch, _, deploy, _) = self.planned(requested).await?;
+        if batch.envelope.contract != TonContract::W5 {
+            return Err(ChainError::Unsupported(
+                "signed messages for relayers on wallets other than W5",
+            ));
+        }
+        let readings = self.readings(&batch).await?;
+        Ok(TonBatch {
+            account: requested.account,
+            batch,
+            deploy,
+            readings,
+        })
+    }
+
+    async fn planned(
+        &self,
+        requested: &Requested,
+    ) -> Result<(Batch, Account, bool, u64), ChainError> {
         if requested.messages.is_empty() {
             return Err(ChainError::Invalid("the request has no messages"));
         }
@@ -163,61 +248,7 @@ impl TonChain {
             },
             messages,
         };
-        let (hop, settings) = self.rehearse(&batch, &wallet, now).await?;
-        if !hop.success {
-            return Err(ChainError::Rejected(
-                "your wallet would refuse this request".to_owned(),
-            ));
-        }
-        if hop.out.len() != batch.messages.len() {
-            return Err(ChainError::Rejected(
-                "your wallet would leave out some of these messages".to_owned(),
-            ));
-        }
-        let fee = hop
-            .fees
-            .checked_sub(hop.gas_fees)
-            .and_then(|rest| rest.checked_add(hop.charged_gas_fees))
-            .ok_or_else(ChainError::overflow)?;
-        let max = fee.checked_mul(2).ok_or_else(ChainError::overflow)?;
-        let sent = batch
-            .messages
-            .iter()
-            .try_fold(U256::ZERO, |sum, message| sum.checked_add(message.nano))
-            .ok_or_else(ChainError::overflow)?;
-        let native = &self.network.native;
-        enough(
-            &native.symbol,
-            sent.checked_add(U256::from(max))
-                .ok_or_else(ChainError::overflow)?,
-            wallet.balance,
-            native.decimals,
-        )?;
-        let readings = self.readings(&batch).await?;
-        let gram = |nano: u64| amount(U256::from(nano), native.decimals);
-        let lines = vec![
-            FeeLine {
-                item: FeeItem::Compute {
-                    gas: settings.gas_for(hop.charged_gas_fees),
-                },
-                amount: gram(hop.charged_gas_fees)?,
-            },
-            FeeLine {
-                item: FeeItem::Forwarding,
-                amount: gram(fee.saturating_sub(hop.charged_gas_fees))?,
-            },
-        ];
-        let quote = FeeQuote::new(gram(max)?, gram(fee)?, lines)?
-            .paced(Pace::blocks(CONFIRM_BLOCKS, self.network.block_ms));
-        Ok((
-            TonBatch {
-                account: requested.account,
-                batch,
-                deploy,
-                readings,
-            },
-            quote,
-        ))
+        Ok((batch, wallet, deploy, now))
     }
 
     pub async fn build_items(
@@ -390,6 +421,41 @@ impl TonChain {
         wallet::serialized(&message)
     }
 
+    pub fn identity(
+        &self,
+        seed: &Seed,
+        account: u32,
+        from: &Address,
+    ) -> Result<Identity, ChainError> {
+        let contract = self.contract(from);
+        let public = self
+            .account_key(seed, (account, from), contract)?
+            .verifying_key()
+            .to_bytes();
+        let init = wallet::deployment(contract, &public, self.subwallet(contract))?
+            .to_cell()
+            .map_err(|_| ChainError::Invalid("cannot build the wallet's contract"))?;
+        Ok(Identity {
+            public_key: public,
+            state_init: wallet::serialized(&init)?,
+        })
+    }
+
+    pub fn sign_hash(
+        &self,
+        seed: &Seed,
+        account: u32,
+        from: &Address,
+        hash: &[u8; 32],
+    ) -> Result<[u8; 64], ChainError> {
+        let key = self.account_key(seed, (account, from), self.contract(from))?;
+        let signature = key.sign(hash);
+        key.verifying_key()
+            .verify_strict(hash, &signature)
+            .map_err(|_| ChainError::Invalid("signing failed"))?;
+        Ok(signature.to_bytes())
+    }
+
     pub fn decode_batch(&self, signed: &Signed) -> Result<DecodedBatch, ChainError> {
         let parsed = batch::parse(&signed.bytes)?;
         let envelope = parsed.batch.envelope;
@@ -418,11 +484,18 @@ impl TonChain {
             u32::try_from(now).map_err(|_| ChainError::Invalid("the clock is out of range"))?;
         let mut libraries = Vec::new();
         for _ in 0..=crate::vm::MAX_LIBRARIES {
-            let emulator =
-                Emulator::new(&params, &libraries, settings, clock).ok_or_else(|| {
-                    ChainError::Network("the network config cannot be emulated".to_owned())
-                })?;
-            match emulator.run_external(&batch.envelope.wallet, &state, &message)? {
+            let ran = {
+                let emulator =
+                    Emulator::new(&params, &libraries, settings, clock).ok_or_else(|| {
+                        ChainError::Network("the network config cannot be emulated".to_owned())
+                    })?;
+                emulator
+                    .run_external(&batch.envelope.wallet, &state, &message)
+                    .map_err(|_| {
+                        ChainError::Rejected("your wallet can't pay to run this request".to_owned())
+                    })?
+            };
+            match ran {
                 Emulated::Done(hop) => return Ok((hop, settings)),
                 Emulated::Missing(hash) => libraries.push(self.http.library(&hash).await?),
             }
@@ -865,6 +938,25 @@ mod tests {
                     "{contract:?} {status}: a message the balance can't cover is left out"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn an_account_shows_an_app_its_key_and_contract_and_signs_hashes() {
+        let ton = chain("ton");
+        for contract in [TonContract::W5, TonContract::V4R2] {
+            let from = ton.derive_as(&seed(), 0, contract).unwrap();
+            let identity = ton.identity(&seed(), 0, &from).unwrap();
+            let init = crate::cells::root(&identity.state_init).unwrap();
+            let hash: [u8; 32] = Cell::cell_hash(&init).as_slice().try_into().unwrap();
+            assert_eq!(from, Address::Ton { workchain: 0, hash }, "{contract:?}");
+            let signature = ton.sign_hash(&seed(), 0, &from, &[9; 32]).unwrap();
+            ed25519_dalek::VerifyingKey::from_bytes(&identity.public_key)
+                .unwrap()
+                .verify_strict(&[9; 32], &ed25519_dalek::Signature::from_bytes(&signature))
+                .unwrap();
+            assert!(ton.identity(&seed(), 1, &from).is_err());
+            assert!(ton.sign_hash(&seed(), 1, &from, &[9; 32]).is_err());
         }
     }
 

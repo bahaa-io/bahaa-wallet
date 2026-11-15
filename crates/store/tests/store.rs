@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 use bahaa_config::{Checkpoint, Coin, Fiat, Settings};
 use bahaa_store::{
-    Contact, CustomToken, Fetched, Listing, Mark, Marked, NftArrival, Outgoing, Pictured, Received,
-    SavedPrices, SavedQuote, Scan, SentKind, SentStatus, SentTx, Store, StoreError, StoreKey,
-    SwapRecord, SwapStatus, TrustedBlock,
+    Connection, Contact, CustomToken, Fetched, Listing, Mark, Marked, NftArrival, Outgoing,
+    Pictured, Received, SavedPrices, SavedQuote, Scan, SentKind, SentStatus, SentTx, Store,
+    StoreError, StoreKey, SwapRecord, SwapStatus, TrustedBlock,
 };
 use bahaa_types::{
     Address, Amount, AssetId, ChainFamily, Collection, Details, MAX_NFTS, Nft, NftKind, Picture,
@@ -259,6 +259,71 @@ fn swaps_are_sealed_kept_and_updated_in_place() {
     ] {
         assert!(matches!(store.save_swap(&bad), Err(StoreError::Invalid(_))));
     }
+}
+
+fn connection() -> Connection {
+    Connection {
+        id: "ab".repeat(32),
+        secret: "cd".repeat(32),
+        app: "ef".repeat(32),
+        bridge: "https://connect.ton.org/bridge".to_owned(),
+        url: "https://app.example.com".to_owned(),
+        domain: "app.example.com".to_owned(),
+        name: "Example".to_owned(),
+        icon: Some("https://app.example.com/icon.png".to_owned()),
+        network: "ton".parse().unwrap(),
+        address: Address::parse_ton("UQCi1ivY6QriyKIQZrSTwhvf4qXI19qIPe4XAOYo-qMMUEiR")
+            .unwrap()
+            .0,
+        event: 1,
+        request: None,
+        cursor: Some("1771".to_owned()),
+        created_at: 1_760_000_000,
+    }
+}
+
+#[test]
+fn connected_apps_are_sealed_validated_and_forgotten() {
+    let scratch = Scratch::new();
+    {
+        let store = unlocked(&scratch);
+        store.save_connection(&connection()).unwrap();
+        let mut later = connection();
+        later.request = Some(4);
+        store.save_connection(&later).unwrap();
+        store.lock();
+        assert_eq!(store.connections(), Err(StoreError::Locked));
+    }
+    let store = unlocked(&scratch);
+    let kept = store.connections().unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].request, Some(4));
+    assert!(!format!("{:?}", kept[0]).contains(&"cd".repeat(32)));
+    let mut upper = connection();
+    upper.secret = "CD".repeat(32);
+    let mut short = connection();
+    short.app = "ef".repeat(31);
+    let mut ftp = connection();
+    ftp.bridge = "ftp://bridge.example.com".to_owned();
+    let mut hidden = connection();
+    hidden.name = "Exa\u{202e}mple".to_owned();
+    let mut evm = connection();
+    evm.address = Address::Evm([1; 20]);
+    for bad in [upper, short, ftp, hidden, evm] {
+        assert!(matches!(
+            store.save_connection(&bad),
+            Err(StoreError::Invalid(_))
+        ));
+    }
+    let mut app = sent("0xapp", SentStatus::Pending);
+    app.kind = SentKind::App;
+    app.name = Some("Example".to_owned());
+    store.save_sent(&app).unwrap();
+    app.kind = SentKind::Transfer;
+    assert!(matches!(store.save_sent(&app), Err(StoreError::Invalid(_))));
+    assert!(store.forget_connection(&"ab".repeat(32)).unwrap());
+    assert!(!store.forget_connection(&"ab".repeat(32)).unwrap());
+    assert_eq!(store.connections().unwrap().len(), 0);
 }
 
 const OWNER: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::sync::{PoisonError, RwLock, RwLockReadGuard};
@@ -45,16 +46,35 @@ const MARKS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("marks
 const DETAILS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("details");
 const PICTURES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("pictures");
 const ARRIVALS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("arrivals");
+const CONNECTIONS: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("connections");
 const SEAL: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("seal");
-const SEALED: [TableDefinition<'static, &str, &[u8]>; 15] = [
-    CONTACTS, TOKENS, SENT, RECEIVED, SCANS, OUTGOING, PRICES, ACCOUNTS, NAMES, SWAPS, NFTS, MARKS,
-    DETAILS, PICTURES, ARRIVALS,
+const SEALED: [TableDefinition<'static, &str, &[u8]>; 16] = [
+    CONTACTS,
+    TOKENS,
+    SENT,
+    RECEIVED,
+    SCANS,
+    OUTGOING,
+    PRICES,
+    ACCOUNTS,
+    NAMES,
+    SWAPS,
+    NFTS,
+    MARKS,
+    DETAILS,
+    PICTURES,
+    ARRIVALS,
+    CONNECTIONS,
 ];
 pub const MAX_ARRIVALS: usize = 512;
 const CHECK: &str = "check";
 const CHECKED: &[u8] = b"bahaa store";
 pub const MAX_ACCOUNTS: usize = 20;
 const HIGHEST_INDEX: u32 = (1 << 31) - 1;
+const MAX_LINK: usize = 2_048;
+const MAX_DOMAIN: usize = 253;
+const MAX_APP_NAME: usize = 64;
+const MAX_CURSOR: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum StoreError {
@@ -130,6 +150,7 @@ pub enum SentKind {
     Transfer,
     Approval,
     Swap,
+    App,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +200,37 @@ pub struct Fetched {
     pub link: String,
     pub details: Option<Details>,
     pub at: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Connection {
+    pub id: String,
+    pub secret: String,
+    pub app: String,
+    pub bridge: String,
+    pub url: String,
+    pub domain: String,
+    pub name: String,
+    pub icon: Option<String>,
+    pub network: NetworkId,
+    pub address: Address,
+    pub event: u64,
+    pub request: Option<u64>,
+    pub cursor: Option<String>,
+    pub created_at: u64,
+}
+
+impl fmt::Debug for Connection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Connection")
+            .field("id", &self.id)
+            .field("app", &self.app)
+            .field("domain", &self.domain)
+            .field("network", &self.network)
+            .field("address", &self.address)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -528,13 +580,11 @@ impl Store {
         if !memo_ok(tx.memo.as_ref()) {
             return Err(StoreError::Invalid("a memo must be short plain text"));
         }
-        if tx
-            .name
-            .as_ref()
-            .is_some_and(|name| !tx.asset.is_nft() || !is_plain_text(name, MAX_NFT_TEXT))
-        {
+        if tx.name.as_ref().is_some_and(|name| {
+            !(tx.asset.is_nft() || tx.kind == SentKind::App) || !is_plain_text(name, MAX_NFT_TEXT)
+        }) {
             return Err(StoreError::Invalid(
-                "only an NFT has a name, as short plain text",
+                "only an NFT or an app's send has a name, as short plain text",
             ));
         }
         if tx.status.is_open() != tx.raw.is_some() {
@@ -699,6 +749,44 @@ impl Store {
 
     pub fn forget_pictured(&self, asset: &AssetId) -> Result<(), StoreError> {
         self.delete(PICTURES, &asset.to_string()).map(|_| ())
+    }
+
+    pub fn connections(&self) -> Result<Vec<Connection>, StoreError> {
+        self.all(CONNECTIONS)
+    }
+
+    pub fn save_connection(&self, connection: &Connection) -> Result<(), StoreError> {
+        let key = |text: &str| {
+            text.len() == 64
+                && text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        let link = |text: &str| {
+            is_plain_text(text, MAX_LINK)
+                && (text.starts_with("https://") || text.starts_with("http://"))
+        };
+        let valid = key(&connection.id)
+            && key(&connection.secret)
+            && key(&connection.app)
+            && link(&connection.bridge)
+            && link(&connection.url)
+            && connection.icon.as_deref().is_none_or(link)
+            && is_plain_text(&connection.domain, MAX_DOMAIN)
+            && is_plain_text(&connection.name, MAX_APP_NAME)
+            && connection
+                .cursor
+                .as_ref()
+                .is_none_or(|cursor| is_plain_text(cursor, MAX_CURSOR))
+            && matches!(connection.address, Address::Ton { .. });
+        if !valid {
+            return Err(StoreError::Invalid("not a connected app"));
+        }
+        self.put(CONNECTIONS, &connection.id, &encode(connection)?)
+    }
+
+    pub fn forget_connection(&self, id: &str) -> Result<bool, StoreError> {
+        self.delete(CONNECTIONS, id)
     }
 
     pub fn received(&self) -> Result<Vec<Received>, StoreError> {

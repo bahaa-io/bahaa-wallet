@@ -3,6 +3,8 @@ use serde_json::Value;
 use url::Url;
 
 use crate::ConnectError;
+use crate::link::Invitation;
+use crate::manifest::{Manifest, fetch_manifest};
 
 const DEFAULT_BRIDGE: &str = "https://connect.ton.org/bridge";
 const WALLETS_LIST: &str =
@@ -39,6 +41,28 @@ impl Bridges {
             }
             Err(_) => self.default.clone(),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Connector {
+    client: Client,
+    bridges: Bridges,
+}
+
+impl Connector {
+    pub fn new(bridges: Bridges) -> Result<Self, ConnectError> {
+        let client =
+            bahaa_chain::http::files().map_err(|err| ConnectError::Network(err.to_string()))?;
+        Ok(Self { client, bridges })
+    }
+
+    pub async fn manifest(&self, invitation: &Invitation) -> Result<Manifest, ConnectError> {
+        fetch_manifest(&self.client, &invitation.request.manifest).await
+    }
+
+    pub async fn bridge(&self, invitation: &Invitation) -> Url {
+        self.bridges.pick(&self.client, &invitation.link).await
     }
 }
 

@@ -1719,6 +1719,9 @@ async fn a_requested_batch_is_rehearsed_on_the_proven_wallet_and_read() {
         chain.prepare_batch(&greedy).await,
         Err(ChainError::Rejected(_) | ChainError::Insufficient { .. })
     ));
+    let relayed = chain.prepare_relayed(&greedy).await.unwrap();
+    assert_eq!(relayed.readings().len(), 3);
+    assert_eq!(relayed.messages()[0].nano, greedy.messages[0].nano);
 }
 
 #[tokio::test]

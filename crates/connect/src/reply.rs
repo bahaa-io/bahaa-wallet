@@ -88,6 +88,18 @@ pub fn answer(id: u64, result: &Value) -> Vec<u8> {
     bytes(&json!({"result": result, "id": id.to_string()}))
 }
 
+pub fn sent(id: u64, boc: &[u8]) -> Vec<u8> {
+    answer(id, &Value::String(STANDARD.encode(boc)))
+}
+
+pub fn signed_message(id: u64, internal: &[u8]) -> Vec<u8> {
+    answer(id, &json!({"internalBoc": STANDARD.encode(internal)}))
+}
+
+pub fn acknowledged(id: u64) -> Vec<u8> {
+    answer(id, &json!({}))
+}
+
 pub fn failure(id: u64, code: Code, message: &str) -> Vec<u8> {
     bytes(&json!({
         "error": {"code": code as u16, "message": message},
@@ -175,6 +187,12 @@ mod tests {
         let done: Value =
             serde_json::from_slice(&answer(43, &json!({"internalBoc": "te6"}))).unwrap();
         assert_eq!(done["id"], "43");
+        let boc: Value = serde_json::from_slice(&sent(44, &[0xb5, 0xee])).unwrap();
+        assert_eq!(boc, json!({"result": "te4=", "id": "44"}));
+        let internal: Value = serde_json::from_slice(&signed_message(45, &[0xb5, 0xee])).unwrap();
+        assert_eq!(internal["result"]["internalBoc"], "te4=");
+        let ended: Value = serde_json::from_slice(&acknowledged(46)).unwrap();
+        assert_eq!(ended, json!({"result": {}, "id": "46"}));
         let gone: Value = serde_json::from_slice(&disconnected(5)).unwrap();
         assert_eq!(gone, json!({"event": "disconnect", "id": 5, "payload": {}}));
     }

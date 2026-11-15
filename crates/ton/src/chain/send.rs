@@ -265,13 +265,23 @@ impl TonChain {
         (account, from): (u32, &Address),
         envelope: &Envelope,
     ) -> Result<ed25519_dalek::SigningKey, ChainError> {
+        if envelope.wallet != *from || envelope.wallet_id != self.subwallet(envelope.contract) {
+            return Err(ChainError::Invalid(
+                "this seed does not own the sending account",
+            ));
+        }
+        self.account_key(seed, (account, from), envelope.contract)
+    }
+
+    pub(super) fn account_key(
+        &self,
+        seed: &Seed,
+        (account, from): (u32, &Address),
+        contract: TonContract,
+    ) -> Result<ed25519_dalek::SigningKey, ChainError> {
         let key = key(seed, account)?;
         let public = key.verifying_key().to_bytes();
-        let contract = envelope.contract;
-        if wallet::address(contract, &public, self.subwallet(contract))? != *from
-            || envelope.wallet != *from
-            || envelope.wallet_id != self.subwallet(contract)
-        {
+        if wallet::address(contract, &public, self.subwallet(contract))? != *from {
             return Err(ChainError::Invalid(
                 "this seed does not own the sending account",
             ));

@@ -3,7 +3,7 @@ use base64::Engine as _;
 use base64::alphabet;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use serde_json::{Map, Value};
-use url::Url;
+use url::{Host, Url};
 
 use crate::ConnectError;
 use crate::reply::Code;
@@ -137,7 +137,7 @@ impl ConnectRequest {
             .filter(|url| url.len() <= MAX_MANIFEST_URL)
             .and_then(|url| Url::parse(url).ok())
             .ok_or_else(|| invalid.clone())?;
-        if manifest.scheme() != "https" {
+        if !trustworthy(&manifest) {
             return Err(ConnectError::Invalid("the app's details must be on https"));
         }
         let items = value
@@ -155,6 +155,16 @@ impl ConnectRequest {
             return Err(ConnectError::Invalid("the app didn't ask for an address"));
         }
         Ok(Self { manifest, items })
+    }
+}
+
+fn trustworthy(url: &Url) -> bool {
+    match (url.scheme(), url.host()) {
+        ("https", _) => true,
+        ("http", Some(Host::Domain(name))) => name == "localhost",
+        ("http", Some(Host::Ipv4(ip))) => ip.is_loopback(),
+        ("http", Some(Host::Ipv6(ip))) => ip.is_loopback(),
+        _ => false,
     }
 }
 
@@ -554,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn connect_requests_need_an_https_manifest_and_an_address() {
+    fn connect_requests_need_a_secure_manifest_and_an_address() {
         let ok = ConnectRequest::read(r#"{"manifestUrl":"https://app.example/tonconnect-manifest.json","items":[{"name":"ton_addr"},{"name":"ton_proof","payload":"nonce"},{"name":"ton_unknown"}]}"#).unwrap();
         assert_eq!(ok.items.len(), 3);
         assert_eq!(
@@ -564,12 +574,21 @@ mod tests {
             }
         );
         assert_eq!(ok.items[2], ConnectItem::Other("ton_unknown".to_owned()));
-        assert!(
-            ConnectRequest::read(
-                r#"{"manifestUrl":"http://app.example/m.json","items":[{"name":"ton_addr"}]}"#
-            )
-            .is_err()
-        );
+        let read = |manifest: &str| {
+            ConnectRequest::read(&format!(
+                r#"{{"manifestUrl":"{manifest}","items":[{{"name":"ton_addr"}}]}}"#
+            ))
+        };
+        assert!(read("http://app.example/m.json").is_err());
+        assert!(read("http://127.0.0.1.example/m.json").is_err());
+        assert!(read("ftp://app.example/m.json").is_err());
+        for local in [
+            "http://localhost:5173/m.json",
+            "http://127.0.0.1:8080/m.json",
+            "http://[::1]/m.json",
+        ] {
+            assert!(read(local).is_ok(), "{local}");
+        }
         assert!(ConnectRequest::read(r#"{"manifestUrl":"https://app.example/m.json","items":[{"name":"ton_proof","payload":"x"}]}"#).is_err());
         assert!(ConnectRequest::read(r#"{"manifestUrl":"https://app.example/m.json","items":[{"name":"ton_addr","network":"main"}]}"#).is_err());
     }
