@@ -31,7 +31,7 @@ const MAX_INVITES: usize = 4;
 const INVITE_LIFE: Duration = Duration::from_secs(300);
 const RECONNECT: Duration = Duration::from_secs(1);
 const LONGEST_WAIT: Duration = Duration::from_secs(60);
-const SEND_TRIES: u32 = 3;
+const SEND_TRIES: u32 = 6;
 const CONNECT_EVENT: u64 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -945,11 +945,15 @@ async fn post(
     trace: Option<&str>,
 ) -> Result<(), ConnectError> {
     let mut tries = 1;
+    let mut wait = RECONNECT;
     loop {
         match bridge.send(key, to, message, None, trace).await {
-            Err(ConnectError::Network(_)) if tries < SEND_TRIES => {
+            Err(ConnectError::Network(_) | ConnectError::Refused(429 | 500..=599))
+                if tries < SEND_TRIES =>
+            {
                 tries += 1;
-                sleep(RECONNECT).await;
+                sleep(wait).await;
+                wait *= 2;
             }
             done => return done,
         }
@@ -1000,6 +1004,11 @@ async fn listening(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use bahaa_testkit::{Reply as Answer, serve};
+    use serde_json::json;
+
     use super::*;
 
     #[test]
@@ -1014,5 +1023,24 @@ mod tests {
         );
         assert_eq!(latest(None, Some("3".to_owned())).as_deref(), Some("3"));
         assert_eq!(latest(Some("3".to_owned()), None).as_deref(), Some("3"));
+    }
+
+    #[tokio::test]
+    async fn a_busy_bridge_is_asked_again_until_it_takes_the_message() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let counted = Arc::clone(&calls);
+        let url = serve(move |_| {
+            let status = if counted.fetch_add(1, Ordering::SeqCst) < 2 {
+                429
+            } else {
+                200
+            };
+            Answer::json(status, &json!({"statusCode": status}))
+        })
+        .await;
+        let bridge = Bridge::new(url).unwrap();
+        let key = SessionKey::generate().unwrap();
+        post(&bridge, &key, &[3; 32], b"{}", None).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 }
