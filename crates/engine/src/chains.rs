@@ -601,7 +601,9 @@ fn planned<C: Chain>(
     (wrap(plan), planned, fee)
 }
 
-async fn shielded<T>(work: impl Future<Output = Result<T, ChainError>>) -> Result<T, ChainError> {
+pub(crate) async fn shielded<T>(
+    work: impl Future<Output = Result<T, ChainError>>,
+) -> Result<T, ChainError> {
     AssertUnwindSafe(work)
         .catch_unwind()
         .await

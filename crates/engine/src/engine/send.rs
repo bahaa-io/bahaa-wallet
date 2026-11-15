@@ -620,7 +620,12 @@ impl Worker {
             .collect()
     }
 
-    fn reused(&self, network: &NetworkId, from: &Address, sequence: Option<u64>) -> bool {
+    pub(super) fn reused(
+        &self,
+        network: &NetworkId,
+        from: &Address,
+        sequence: Option<u64>,
+    ) -> bool {
         sequence.is_some()
             && self.history.iter().any(|tx| {
                 tx.status.is_open()
@@ -630,7 +635,7 @@ impl Worker {
             })
     }
 
-    fn deliver(
+    pub(super) fn deliver(
         &mut self,
         chain: usize,
         batch: Vec<(SentTx, Signed)>,
@@ -801,7 +806,7 @@ impl Worker {
             .position(|chain| &chain.network().id == network)
     }
 
-    fn save(&mut self, record: SentTx) -> Result<(), EngineError> {
+    pub(super) fn save(&mut self, record: SentTx) -> Result<(), EngineError> {
         self.store.save_sent(&record)?;
         match self
             .history

@@ -43,6 +43,7 @@ impl Scratch {
             nft_every: Duration::from_secs(600),
             gateways: None,
             swaps: None,
+            connect: None,
         }
     }
 }

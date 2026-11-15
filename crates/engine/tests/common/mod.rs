@@ -184,6 +184,7 @@ pub fn config(scratch: &Scratch, registry: Registry, market: Option<MarketConfig
         nft_every: Duration::from_secs(600),
         gateways: None,
         swaps: None,
+        connect: None,
     }
 }
 

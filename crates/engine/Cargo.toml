@@ -11,6 +11,7 @@ publish.workspace = true
 bahaa-bitcoin.workspace = true
 bahaa-chain.workspace = true
 bahaa-config.workspace = true
+bahaa-connect.workspace = true
 bahaa-crypto.workspace = true
 bahaa-evm.workspace = true
 bahaa-market.workspace = true
@@ -22,8 +23,10 @@ bahaa-tron.workspace = true
 bahaa-types.workspace = true
 bahaa-vault.workspace = true
 futures-util.workspace = true
+ruint.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
@@ -32,13 +35,13 @@ adnl.workspace = true
 base64.workspace = true
 bs58.workspace = true
 bytes.workspace = true
+ed25519-dalek.workspace = true
 getrandom.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sha3.workspace = true
 tokio-tungstenite.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "io-util"] }
-url.workspace = true
 
 [lints]
 workspace = true

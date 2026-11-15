@@ -84,6 +84,7 @@ fn engine_config(scratch: &Scratch, registry: Registry) -> EngineConfig {
         registry: Some(registry),
         gateways: None,
         swaps: None,
+        connect: None,
         ..EngineConfig::new(scratch.0.join("data"))
     }
 }

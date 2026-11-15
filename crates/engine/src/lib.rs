@@ -29,10 +29,17 @@ pub use bahaa_types::{
 pub use bahaa_vault::KdfParams;
 pub use caution::{Arrival, Caution};
 pub use engine::{
-    Activity, ActivityKind, Collectible, Collectibles, Draft, DraftId, Engine, EngineConfig,
-    EngineError, Event, Fake, IncomingHistory, NameService, NftHealth, Resolved, SendRequest,
-    Spend, State, SwapDraft, SwapId, SwapRequest, SwapReview, Unavailable,
+    Activity, ActivityKind, AppAccount, AppAsk, AppId, AppInfo, Approved, AskId, AskKind,
+    AskReview, Collectible, Collectibles, ConnectedApp, Connections, DataReview, Draft, DraftId,
+    Engine, EngineConfig, EngineError, Event, Fake, IncomingHistory, Invite, InviteId, NameService,
+    NftHealth, Resolved, SendRequest, Spend, State, SwapDraft, SwapId, SwapRequest, SwapReview,
+    TxReview, Unavailable,
 };
+
+pub mod connect {
+    pub use bahaa_connect::{Bridges, ConnectError, Content};
+    pub use bahaa_ton::{Meaning, Reading};
+}
 
 pub mod swap {
     pub use bahaa_chain::{Call, Step};

@@ -1,5 +1,6 @@
 mod accounts;
 mod activity;
+mod connect;
 mod contacts;
 mod incoming;
 mod names;
@@ -17,6 +18,7 @@ use std::time::Duration;
 
 use bahaa_chain::{ChainError, Gateways, Replace};
 use bahaa_config::{ConfigError, Registry, Settings};
+use bahaa_connect::{Bridges, ConnectError, Incoming};
 use bahaa_crypto::{ExposeSecret, SecretString, SeedKind};
 use bahaa_market::{Market, MarketConfig, MarketError, Point, Request, Snapshot, Span};
 use bahaa_store::{
@@ -39,6 +41,11 @@ use crate::portfolio::{self, Account, Held, NetworkHealth, Portfolio};
 use crate::{Keyring, KeyringError, NewPhrase, PhraseKind, WalletId, WalletInfo, WalletKind};
 
 pub use activity::{Activity, ActivityKind};
+pub use connect::{
+    AppAccount, AppAsk, AppId, AppInfo, Approved, AskId, AskKind, AskReview, ConnectedApp,
+    Connections, DataReview, Invite, InviteId, TxReview,
+};
+use connect::{Linked, Links, Met, Rehearsed};
 pub use incoming::IncomingHistory;
 pub use names::{NameService, Resolved};
 use nfts::Nfts;
@@ -66,6 +73,7 @@ pub struct EngineConfig {
     pub nft_every: Duration,
     pub gateways: Option<Gateways>,
     pub swaps: Option<Providers>,
+    pub connect: Option<Bridges>,
 }
 
 impl EngineConfig {
@@ -82,6 +90,7 @@ impl EngineConfig {
             nft_every: Duration::from_secs(600),
             gateways: Gateways::builtin().ok(),
             swaps: Providers::builtin().ok(),
+            connect: Bridges::builtin().ok(),
         }
     }
 }
@@ -100,6 +109,8 @@ pub enum EngineError {
     Chain(#[from] ChainError),
     #[error(transparent)]
     Swap(#[from] SwapError),
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
     #[error("there is no such send waiting for confirmation, prepare it again")]
     UnknownDraft,
     #[error("this fee quote has expired, prepare the send again")]
@@ -112,6 +123,14 @@ pub enum EngineError {
     Stopped,
     #[error("this network is not set up in the wallet")]
     UnknownNetwork,
+    #[error("this request from the app is no longer waiting")]
+    UnknownRequest,
+    #[error("this request from the app has expired")]
+    RequestExpired,
+    #[error("review the request again, its details have expired")]
+    NotReviewed,
+    #[error("this app is no longer connected")]
+    UnknownApp,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +209,13 @@ enum Command {
     Tokens(Reply<Vec<CustomToken>>),
     AddToken(AssetId, Reply<CustomToken>),
     RemoveToken(AssetId, Reply<bool>),
+    ConnectApp(String, Reply<Invite>),
+    ApproveApp(InviteId, AppAccount, SecretString, Reply<ConnectedApp>),
+    RejectApp(InviteId, Reply<()>),
+    DisconnectApp(AppId, Reply<()>),
+    ReviewAsk(AskId, Reply<AskReview>),
+    ApproveAsk(AskId, SecretString, Reply<Approved>),
+    RejectAsk(AskId, Reply<()>),
     Shutdown(Reply<()>),
 }
 
@@ -209,6 +235,10 @@ enum Notice {
     Polled(Vec<SwapRecord>),
     TokenRead(Box<TokenRead>),
     Detected(u64, Vec<(WalletId, Choice)>),
+    Met(Box<Met>),
+    Linked(Box<Linked>),
+    Bridged(u64, Box<Incoming>),
+    Rehearsed(Box<Rehearsed>),
 }
 
 #[derive(Clone, Copy)]
@@ -264,35 +294,23 @@ pub struct Engine {
     prices: watch::Receiver<Snapshot>,
     portfolio: watch::Receiver<Portfolio>,
     nfts: watch::Receiver<Collectibles>,
+    connections: watch::Receiver<Connections>,
     registry: Arc<Registry>,
 }
 
 impl Engine {
     pub fn start(config: EngineConfig) -> Result<Self, EngineError> {
-        let EngineConfig {
-            data_dir,
-            kdf,
-            market,
-            registry,
-            auto_lock_unit,
-            refresh_every,
-            draft_ttl,
-            track_every,
-            nft_every,
-            gateways,
-            swaps,
-        } = config;
-        crate::keyring::private_dir(&data_dir)?;
-        let store = Store::open(&data_dir.join(STORE_FILE))?;
+        crate::keyring::private_dir(&config.data_dir)?;
+        let store = Store::open(&config.data_dir.join(STORE_FILE))?;
         let settings = store.settings()?;
         let saved = prices::empty(settings.fiat.price_base());
-        let registry = Arc::new(registry.map_or_else(Registry::builtin, Ok)?);
+        let registry = Arc::new(config.registry.map_or_else(Registry::builtin, Ok)?);
         let chains: Arc<Vec<AnyChain>> = Arc::new(chains::build(&registry));
         chains::restore(&chains, &store.trusted()?);
         let trusted = chains::trusted(&chains);
-        let keyring = Keyring::new(data_dir.join(VAULT_FILE), kdf);
+        let keyring = Keyring::new(config.data_dir.join(VAULT_FILE), config.kdf);
         let initial = resting(Some(&keyring));
-        let market = market.map(Market::spawn).transpose()?;
+        let market = config.market.map(Market::spawn).transpose()?;
         let prices = market
             .as_ref()
             .map_or_else(|| watch::channel(Snapshot::default()).1, Market::subscribe);
@@ -303,7 +321,8 @@ impl Engine {
             fiat: settings.fiat,
             ..Portfolio::default()
         });
-        let (nft, nfts) = Nfts::new(nft_every, gateways);
+        let (nft, nfts) = Nfts::new(config.nft_every, config.gateways);
+        let (links, connections) = Links::new(config.connect)?;
         let (notices_tx, notices) = mpsc::channel(QUEUE);
         let worker = Worker {
             keyring: Some(keyring),
@@ -335,8 +354,8 @@ impl Engine {
             scanned: BTreeSet::new(),
             deadline: None,
             next_refresh: None,
-            unit: auto_lock_unit,
-            refresh_every,
+            unit: config.auto_lock_unit,
+            refresh_every: config.refresh_every,
             session: 0,
             drafts: BTreeMap::new(),
             next_draft: 0,
@@ -348,14 +367,20 @@ impl Engine {
             broadcasting: BTreeSet::new(),
             tracking: None,
             next_track: None,
-            draft_ttl,
-            track_every,
-            swappers: swaps.as_ref().map(Swappers::new).transpose()?.map(Arc::new),
+            draft_ttl: config.draft_ttl,
+            track_every: config.track_every,
+            swappers: config
+                .swaps
+                .as_ref()
+                .map(Swappers::new)
+                .transpose()?
+                .map(Arc::new),
             swap_drafts: BTreeMap::new(),
             next_swap: 0,
             swaps: Vec::new(),
             polling: None,
             next_poll: None,
+            links,
         };
         tokio::spawn(worker.run());
         Ok(Self {
@@ -365,6 +390,7 @@ impl Engine {
             prices,
             portfolio,
             nfts,
+            connections,
             registry,
         })
     }
@@ -395,6 +421,49 @@ impl Engine {
 
     pub fn nfts(&self) -> watch::Receiver<Collectibles> {
         self.nfts.clone()
+    }
+
+    pub fn connections(&self) -> watch::Receiver<Connections> {
+        self.connections.clone()
+    }
+
+    pub async fn connect_app(&self, link: String) -> Result<Invite, EngineError> {
+        self.ask(|reply| Command::ConnectApp(link, reply)).await
+    }
+
+    pub async fn approve_app(
+        &self,
+        invite: InviteId,
+        account: AppAccount,
+        password: SecretString,
+    ) -> Result<ConnectedApp, EngineError> {
+        self.ask(|reply| Command::ApproveApp(invite, account, password, reply))
+            .await
+    }
+
+    pub async fn reject_app(&self, invite: InviteId) -> Result<(), EngineError> {
+        self.ask(|reply| Command::RejectApp(invite, reply)).await
+    }
+
+    pub async fn disconnect_app(&self, app: AppId) -> Result<(), EngineError> {
+        self.ask(|reply| Command::DisconnectApp(app, reply)).await
+    }
+
+    pub async fn review_request(&self, ask: AskId) -> Result<AskReview, EngineError> {
+        self.ask(|reply| Command::ReviewAsk(ask, reply)).await
+    }
+
+    pub async fn approve_request(
+        &self,
+        ask: AskId,
+        password: SecretString,
+    ) -> Result<Approved, EngineError> {
+        self.ask(|reply| Command::ApproveAsk(ask, password, reply))
+            .await
+    }
+
+    pub async fn reject_request(&self, ask: AskId) -> Result<(), EngineError> {
+        self.ask(|reply| Command::RejectAsk(ask, reply)).await
     }
 
     pub fn refresh_nfts(&self) {
@@ -760,6 +829,7 @@ struct Worker {
     swaps: Vec<SwapRecord>,
     polling: Option<JoinHandle<()>>,
     next_poll: Option<Instant>,
+    links: Links,
 }
 
 struct TonCheck {
@@ -810,6 +880,7 @@ impl Worker {
             let next_track = self.next_track;
             let next_poll = self.next_poll;
             let next_listing = self.nft.next;
+            let next_expiry = self.links.next_expiry;
             let has_market = self.market.is_some();
             tokio::select! {
                 command = self.inbox.recv() => match command {
@@ -827,6 +898,7 @@ impl Worker {
                 () = at(next_track) => self.start_tracking(),
                 () = at(next_poll) => self.start_polling(),
                 () = at(next_listing) => self.start_listing(),
+                () = at(next_expiry) => self.expire_links(),
                 Some(notice) = self.notices.recv() => self.notice(notice).await,
                 Ok(()) = self.prices.changed(), if has_market => {
                     self.remember_prices();
@@ -906,6 +978,17 @@ impl Worker {
             Command::PriceHistory(asset, span, reply) => {
                 self.price_history(&asset, span, reply);
             }
+            Command::ConnectApp(link, reply) => self.connect_app(&link, reply),
+            Command::ApproveApp(invite, account, password, reply) => {
+                self.approve_app(invite, account, password, reply).await;
+            }
+            Command::RejectApp(invite, reply) => answer(reply, self.reject_app(invite)),
+            Command::DisconnectApp(app, reply) => answer(reply, self.disconnect_app(&app)),
+            Command::ReviewAsk(ask, reply) => self.review_ask(ask, reply),
+            Command::ApproveAsk(ask, password, reply) => {
+                self.approve_ask(ask, password, reply).await;
+            }
+            Command::RejectAsk(ask, reply) => answer(reply, self.reject_ask(ask)),
             Command::Touch | Command::Shutdown(_) => {}
             command @ (Command::Wallets(_)
             | Command::Accounts(_)
@@ -1079,6 +1162,12 @@ impl Worker {
             Notice::SwapOrdered(ordered) => self.swap_ordered(*ordered),
             Notice::Polled(updates) => self.polled(updates),
             Notice::TokenRead(read) => self.token_read(*read),
+            Notice::Met(met) => self.met(*met),
+            Notice::Linked(linked) => self.linked(*linked),
+            Notice::Rehearsed(rehearsed) => self.rehearsed(*rehearsed),
+            Notice::Bridged(session, incoming) if session == self.session => {
+                self.bridged(*incoming);
+            }
             Notice::Detected(session, found) if session == self.session && !found.is_empty() => {
                 let _ = self
                     .changed(move |keyring| {
@@ -1095,7 +1184,8 @@ impl Worker {
             | Notice::Listed(_)
             | Notice::Details(..)
             | Notice::Pictures(..)
-            | Notice::Detected(..) => {}
+            | Notice::Detected(..)
+            | Notice::Bridged(..) => {}
         }
     }
 
@@ -1292,6 +1382,7 @@ impl Worker {
         let fetched = self.store.fetched()?;
         let pictured = self.store.pictured()?;
         let arrivals = self.store.arrivals()?;
+        let connections = self.store.connections()?;
         chains::know(&self.chains, &custom);
         self.custom = Arc::new(custom);
         self.history = history;
@@ -1304,6 +1395,7 @@ impl Worker {
         self.nft.fetched = fetched;
         self.nft.pictured = pictured;
         self.nft.arrivals = arrivals;
+        self.links.load(connections);
         self.saved = prices::saved(&self.store, self.settings.fiat.price_base());
         self.saved_at = None;
         self.unsaved = false;
@@ -1331,6 +1423,8 @@ impl Worker {
         self.derive_accounts().await;
         self.start_tracking();
         self.start_polling();
+        self.listen();
+        self.publish_links();
         self.detect_paths().await;
     }
 
@@ -1500,6 +1594,7 @@ impl Worker {
             self.publish_nfts();
             self.refresh_prices();
             self.restart_refresh();
+            self.prune_links();
         }
     }
 
@@ -1688,6 +1783,7 @@ impl Worker {
         self.nft.listed.clear();
         self.nft.health.clear();
         self.keep_prices();
+        self.forget_links();
         self.forget_private();
         self.set_state(resting(self.keyring.as_ref()));
         self.refresh_prices();
