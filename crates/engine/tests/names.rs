@@ -4,11 +4,13 @@ mod common;
 
 use std::time::Duration;
 
+use bahaa_chain::abi::{self, Arg};
 use bahaa_config::Registry;
 use bahaa_engine::{Address, EngineError, NameService};
 use bahaa_types::BitcoinScript;
 use common::{Scratch, config, result, unhex};
 use serde_json::{Value, json};
+use sha3::{Digest, Keccak256};
 
 fn word(value: usize) -> String {
     format!("{value:064x}")
@@ -54,6 +56,9 @@ fn answer(call: &Value) -> Value {
             let data = unhex(call["params"][0]["data"].as_str().unwrap());
             if data.starts_with(&REVERSE) {
                 return primary_name(&data);
+            }
+            if data.starts_with(&selector("reverseNameOf(address)")) {
+                return result(json!(format!("0x{}", common::hex(&text("")))));
             }
             let mut segwit = vec![0x00, 0x14];
             segwit.extend([0x22; 20]);
@@ -171,4 +176,218 @@ async fn a_name_behind_an_address_shows_only_when_it_points_back() {
         .await
         .unwrap();
     assert_eq!(name_of([0xd8; 20]).await.unwrap(), None);
+}
+
+const ALICE: [u8; 20] = [0xa1; 20];
+const BOB: [u8; 20] = [0xb2; 20];
+const CAROL: [u8; 20] = [0xc3; 20];
+const DAVE: [u8; 20] = [0xd4; 20];
+const REVERSE_RESOLVER: [u8; 20] = [0x5a; 20];
+
+fn selector(signature: &str) -> [u8; 4] {
+    let hash = Keccak256::digest(signature.as_bytes());
+    [hash[0], hash[1], hash[2], hash[3]]
+}
+
+fn namehash(name: &str) -> [u8; 32] {
+    name.rsplit('.').fold([0; 32], |node, label| {
+        let mut joined = node.to_vec();
+        joined.extend(Keccak256::digest(label.as_bytes()));
+        Keccak256::digest(&joined).into()
+    })
+}
+
+fn padded(address: &[u8; 20]) -> Vec<u8> {
+    let mut word = vec![0; 12];
+    word.extend(address);
+    word
+}
+
+fn text(value: &str) -> Vec<u8> {
+    abi::encode(&[Arg::Bytes(value.as_bytes())])
+}
+
+fn dns_name(encoded: &[u8]) -> String {
+    let mut labels = Vec::new();
+    let mut rest = encoded;
+    while let [length, tail @ ..] = rest {
+        let length = usize::from(*length);
+        if length == 0 {
+            break;
+        }
+        labels.push(String::from_utf8(tail[..length].to_vec()).unwrap());
+        rest = &tail[length..];
+    }
+    labels.join(".")
+}
+
+fn ens_records(data: &[u8]) -> Vec<u8> {
+    let args = &data[4..];
+    let name = dns_name(abi::bytes_at(args, 0).unwrap());
+    let query = abi::bytes_at(args, 1).unwrap();
+    let coin = abi::uint(&query[4..], 1).unwrap();
+    let stored = match (name.as_str(), coin.to::<u64>()) {
+        ("alice.base.eth", 0x8000_2105) => ALICE.to_vec(),
+        ("bob.base.eth", 0x8000_2105) => vec![0x99; 20],
+        _ => Vec::new(),
+    };
+    let result = abi::encode(&[Arg::Bytes(&stored)]);
+    let mut reply = abi::encode(&[Arg::Bytes(&result), Arg::Bytes(&[])]);
+    reply.splice(32..64, padded(&[0x49; 20]));
+    reply
+}
+
+fn owner_of(data: &[u8]) -> [u8; 20] {
+    abi::address(&data[4..], 0).unwrap()
+}
+
+fn chain_answer(chain: u64, call: &Value) -> Value {
+    let method = call["method"].as_str().unwrap();
+    if method == "eth_chainId" {
+        return result(json!(format!("0x{chain:x}")));
+    }
+    assert_eq!(method, "eth_call");
+    let data = unhex(call["params"][0]["data"].as_str().unwrap());
+    let node = data.get(4..36).unwrap_or_default();
+    let reply = if data.starts_with(&selector("reverse(bytes,uint256)")) {
+        text("")
+    } else if data.starts_with(&selector("resolve(bytes,bytes)")) {
+        ens_records(&data)
+    } else if data.starts_with(&selector("nameForAddr(address)")) {
+        text(match owner_of(&data) {
+            ALICE => "alice.base.eth",
+            BOB => "bob.base.eth",
+            _ => "",
+        })
+    } else if data.starts_with(&selector("reverseNameOf(address)")) {
+        text(if chain == 137 && owner_of(&data) == DAVE {
+            "dave.crypto"
+        } else {
+            ""
+        })
+    } else if data.starts_with(&selector("resolver(bytes32)")) {
+        let reverse = namehash(&format!("{}.addr.reverse", common::hex(&CAROL)));
+        let found = if node == reverse {
+            REVERSE_RESOLVER
+        } else if node == namehash("carol.bnb") {
+            [0x5b; 20]
+        } else {
+            [0; 20]
+        };
+        padded(&found)
+    } else if data.starts_with(&selector("name(bytes32)")) {
+        text("carol.bnb")
+    } else if data.starts_with(&selector("owner(bytes32)"))
+        || data.starts_with(&selector("addr(bytes32)"))
+    {
+        padded(&CAROL)
+    } else if data.starts_with(&selector("nameExpires(uint256)")) {
+        unhex(&word(4_000_000_000))
+    } else if data.starts_with(&selector("multicall(bytes[])")) {
+        let answers = [
+            padded(&DAVE),
+            unhex(&word(1)),
+            text(&format!("0x{}", common::hex(&DAVE))),
+        ];
+        abi::encode(&[Arg::List(&answers)])
+    } else {
+        panic!("unexpected call {}", common::hex(&data[..4]))
+    };
+    result(json!(format!("0x{}", common::hex(&reply))))
+}
+
+#[tokio::test]
+async fn names_behind_addresses_come_from_each_system_and_must_point_back() {
+    let scratch = Scratch::new();
+    let mut networks = Vec::new();
+    for (id, chain) in [
+        ("ethereum", 1),
+        ("base", 8453),
+        ("bsc", 56),
+        ("polygon", 137),
+    ] {
+        let url = common::node(move |call| (chain_answer(chain, call), Duration::ZERO)).await;
+        networks.push(common::network(id, url));
+    }
+    let registry = Registry::with_networks(networks).unwrap();
+    let engine = bahaa_engine::Engine::start(config(&scratch, registry, None)).unwrap();
+    let name_of = |network: &str, address: [u8; 20]| {
+        engine.name_of(network.parse().unwrap(), Address::Evm(address))
+    };
+    let alice = name_of("base", ALICE).await.unwrap().unwrap();
+    assert_eq!(
+        (alice.name.as_str(), alice.service),
+        ("alice.base.eth", NameService::Ens)
+    );
+    assert_eq!(name_of("base", BOB).await.unwrap(), None);
+    let carol = name_of("bsc", CAROL).await.unwrap().unwrap();
+    assert_eq!(
+        (carol.name.as_str(), carol.service),
+        ("carol.bnb", NameService::SpaceId)
+    );
+    let dave = name_of("bsc", DAVE).await.unwrap().unwrap();
+    assert_eq!(
+        (dave.name.as_str(), dave.service),
+        ("dave.crypto", NameService::Unstoppable)
+    );
+    assert_eq!(name_of("polygon", ALICE).await.unwrap(), None);
+}
+
+#[tokio::test]
+#[ignore = "talks to the real Ethereum, Base, BNB Chain, Arbitrum, Polygon and Solana"]
+async fn live_names_behind_addresses_point_back() {
+    let scratch = Scratch::new();
+    let engine =
+        bahaa_engine::Engine::start(config(&scratch, Registry::builtin().unwrap(), None)).unwrap();
+    let evm = |text: &str| Address::Evm(bahaa_types::hex::decode_array(text).unwrap());
+    let spaceid = evm("b5932a6b7d50a966aec6c74c97385412fb497540");
+    for (network, address, expected) in [
+        (
+            "ethereum",
+            evm("d8da6bf26964af9d7eed9e03e53415d37aa96045"),
+            "vitalik.eth",
+        ),
+        (
+            "base",
+            evm("2211d1d0020daea8039e46cf1367962070d77da9"),
+            "jesse.base.eth",
+        ),
+        ("bsc", spaceid, "spaceid.bnb"),
+        ("arbitrum", spaceid, "spaceid.arb"),
+        (
+            "solana",
+            Address::parse(
+                bahaa_types::ChainFamily::Solana,
+                "Fw1ETanDZafof7xEULsnq9UY6o71Tpds89tNwPkWLb1v",
+            )
+            .unwrap(),
+            "couponvault.sns",
+        ),
+    ] {
+        let found = engine
+            .name_of(network.parse().unwrap(), address)
+            .await
+            .unwrap();
+        assert_eq!(
+            found.map(|found| found.name).as_deref(),
+            Some(expected),
+            "{network}"
+        );
+    }
+    let brad = evm("8aad44321a86b170879d7a244c1e8d360c99dda8");
+    for (network, expected) in [
+        ("polygon", Some("brad.x")),
+        ("ethereum", Some("brad.x")),
+        ("base", None),
+    ] {
+        let found = engine
+            .name_of(network.parse().unwrap(), brad)
+            .await
+            .unwrap();
+        assert_eq!(
+            found.map(|found| found.name).as_deref(),
+            expected,
+            "{network}"
+        );
+    }
 }

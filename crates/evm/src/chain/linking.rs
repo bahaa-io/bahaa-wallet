@@ -8,10 +8,11 @@ use ruint::aliases::U256;
 use serde_json::json;
 
 use super::calls::{Gas, Pricing, call_json, simulated};
-use super::ens::{UNIVERSAL, dns_encoded, namehash, normalize, selector};
+use super::ens::{MAINNET, UNIVERSAL, dns_encoded, namehash, normalize, selector};
 use super::names::{
-    ETHEREUM_COIN, EVM_COIN, READERS, call, contract, ens_coins, multicall, space_id_home,
-    unstoppable_chains, unstoppable_codes, unstoppable_normalize,
+    ETHEREUM_COIN, EVM_COIN, L2_REVERSE, READERS, call, contract, ens_coins, for_address,
+    multicall, reverse_node, space_id_home, unstoppable_chains, unstoppable_codes,
+    unstoppable_normalize,
 };
 use super::{EvmCall, EvmChain, bytes, hex};
 
@@ -23,10 +24,8 @@ const REVERSE: &str = "a58E81fe9b61B5c3fE2AFD33CF304c454AbFc7Cb";
 const DEFAULT_REVERSE: &str = "283F227c4Bd38ecE252C4Ae7ECE650B0e913f1f9";
 const BASE_REGISTRY: &str = "b94704422c2a1e396835a571837aa5ae53285a95";
 const BASE_REGISTRAR: &str = "03c4738ee98ae44591e1a4a4f3cab6641d95dd9a";
-const L2_REVERSE: &str = "0000000000D8e504002cC26E3Ec46D81971C1664";
 const ETH_ENDING: &str = ".eth";
 const BASE_ENDING: &str = ".base.eth";
-const MAINNET: u64 = 1;
 const BASE: u64 = 8453;
 const REGISTERED_IN_V2: u8 = 2;
 const GENERIC_KEY: &str = "token.EVM.address";
@@ -810,7 +809,7 @@ fn space_id_primary(
     name: &str,
     sender: &[u8; 20],
 ) -> Change {
-    let node = namehash(&format!("{}.addr.reverse", &hex(sender)[2..]));
+    let node = reverse_node(sender);
     Change {
         writes: vec![(reverse, set_name(name))],
         reads: vec![
@@ -851,12 +850,6 @@ fn space_id_change(
 fn set_name(name: &str) -> Vec<u8> {
     let mut data = selector("setName(string)").to_vec();
     data.extend(abi::encode(&[Arg::Bytes(name.as_bytes())]));
-    data
-}
-
-fn for_address(signature: &str, address: &[u8; 20]) -> Vec<u8> {
-    let mut data = selector(signature).to_vec();
-    abi::push_address(&mut data, address);
     data
 }
 

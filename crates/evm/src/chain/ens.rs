@@ -36,7 +36,7 @@ const MAX_URLS: usize = 8;
 const MAX_BATCH: usize = 16;
 const MAX_LABEL: usize = 255;
 const MAX_REASON: usize = 120;
-const MAINNET: u64 = 1;
+pub(super) const MAINNET: u64 = 1;
 
 struct Request {
     sender: [u8; 20],

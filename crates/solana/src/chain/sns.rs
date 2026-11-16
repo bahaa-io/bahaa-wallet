@@ -7,7 +7,8 @@ use sha2::{Digest, Sha256};
 
 use super::SolanaChain;
 use crate::programs::{
-    NAME_SERVICE, NAME_TOKENIZER, RECORD_V2_CLASS, SNS_ROOT, TOKEN, derived, token_account,
+    NAME_OFFERS, NAME_SERVICE, NAME_TOKENIZER, RECORD_V2_CLASS, REVERSE_CLASS, SNS_ROOT, TOKEN,
+    derived, token_account,
 };
 use crate::rpc::{self, Account};
 use crate::token::{Mint, held};
@@ -59,6 +60,46 @@ impl SolanaChain {
             ));
         }
         Ok(Some(Address::Solana(target)))
+    }
+
+    pub async fn sns_primary(&self, owner: &Key) -> Result<Option<String>, ChainError> {
+        let chosen = derived(&[b"favourite_domain", owner], &NAME_OFFERS)?;
+        let found = self.accounts(&[chosen], None).await?;
+        let Some(domain) = found[0]
+            .as_ref()
+            .filter(|account| account.owner == NAME_OFFERS)
+            .and_then(|account| account.data.get(1..33))
+            .and_then(|bytes| Key::try_from(bytes).ok())
+        else {
+            return Ok(None);
+        };
+        let found = self
+            .accounts(&[domain, reverse_key(&domain, &[0; 32])?], None)
+            .await?;
+        let Some(parent) = found[0]
+            .as_ref()
+            .filter(|account| account.owner == NAME_SERVICE)
+            .and_then(|account| account.data.get(..32))
+            .and_then(|bytes| Key::try_from(bytes).ok())
+        else {
+            return Ok(None);
+        };
+        let label = if parent == SNS_ROOT {
+            reversed(found[1].as_ref())
+        } else {
+            let keys = [
+                reverse_key(&domain, &parent)?,
+                reverse_key(&parent, &[0; 32])?,
+            ];
+            let found = self.accounts(&keys, None).await?;
+            reversed(found[0].as_ref())
+                .and_then(|sub| sub.strip_prefix('\0').map(str::to_owned))
+                .zip(reversed(found[1].as_ref()))
+                .map(|(sub, top)| format!("{sub}.{top}"))
+        };
+        Ok(label
+            .map(|label| format!("{label}{SNS}"))
+            .filter(|name| normalize(name).is_ok_and(|normalized| normalized == *name)))
     }
 
     async fn holder(&self, nft: &[u8]) -> Result<Key, ChainError> {
@@ -122,6 +163,22 @@ fn name_key(label: &[u8], parent: &Key, class: &Key) -> Result<Key, ChainError> 
     hash.update(label);
     let hashed: [u8; 32] = hash.finalize().into();
     derived(&[&hashed, class, parent], &NAME_SERVICE)
+}
+
+fn reverse_key(domain: &Key, parent: &Key) -> Result<Key, ChainError> {
+    name_key(rpc::text(domain).as_bytes(), parent, &REVERSE_CLASS)
+}
+
+fn reversed(account: Option<&Account>) -> Option<String> {
+    let data = account
+        .filter(|account| account.owner == NAME_SERVICE)?
+        .data
+        .get(HEADER..)?;
+    let length = usize::try_from(u32::from_le_bytes(data.get(..4)?.try_into().ok()?)).ok()?;
+    if length > MAX_NAME {
+        return None;
+    }
+    String::from_utf8(data.get(4..4 + length)?.to_vec()).ok()
 }
 
 fn v2_target(record: Option<&Account>, owner: &Key) -> Result<Option<Key>, ChainError> {
@@ -191,6 +248,7 @@ pub(crate) fn fuzz(account: Option<&Account>) {
     let _ = v2_target(account, &[0; 32]);
     let _ = v1_target(account, &[0; 32], &[0; 32]);
     let _ = supply(account);
+    let _ = reversed(account);
 }
 
 #[cfg(test)]
@@ -235,6 +293,18 @@ mod tests {
             domain_key("dex.bonfida.sns").unwrap(),
             key("HoFfFXqFHAC8RP3duuQNzag1ieUwJRBv1HtRNiWFq4Qu")
         );
+        let (top, sub) = (
+            key("Crf8hzfthWGbGbLTVCiqRqV5MVnbpHB1L9KQMd6gsinb"),
+            key("HoFfFXqFHAC8RP3duuQNzag1ieUwJRBv1HtRNiWFq4Qu"),
+        );
+        assert_eq!(
+            reverse_key(&top, &[0; 32]).unwrap(),
+            key("DqgmWxe2PPrfy45Ja3UPyFGwcbRzkRuwXt3NyxjX8krg")
+        );
+        assert_eq!(
+            reverse_key(&sub, &top).unwrap(),
+            key("6tAdEpjsrzHuRqJW3XMXEV7DFyCWW4giW6mW4bgvhcYV")
+        );
         assert_eq!(normalize(" Bonfida.SNS ").unwrap(), "bonfida.sns");
         for bad in [
             "bonfida.sol",
@@ -265,6 +335,37 @@ mod tests {
             v2_target(Some(&record([7; 32], vec![1, 0, 1, 0])), &owner),
             Ok(None)
         );
+    }
+
+    #[test]
+    fn reverse_records_give_their_text_only_from_the_name_service() {
+        let text = |bytes: &[u8]| {
+            let mut data = u32::try_from(bytes.len()).unwrap().to_le_bytes().to_vec();
+            data.extend(bytes);
+            data
+        };
+        assert_eq!(
+            reversed(Some(&record(NAME_SERVICE, text(b"bonfida")))).as_deref(),
+            Some("bonfida")
+        );
+        assert_eq!(
+            reversed(Some(&record(NAME_SERVICE, text(b"\0dex")))).as_deref(),
+            Some("\0dex")
+        );
+        assert_eq!(reversed(Some(&record([3; 32], text(b"bonfida")))), None);
+        assert_eq!(
+            reversed(Some(&record(NAME_SERVICE, text(&[0xff; 3])))),
+            None
+        );
+        assert_eq!(
+            reversed(Some(&record(NAME_SERVICE, vec![9, 0, 0, 0, b'a']))),
+            None
+        );
+        assert_eq!(
+            reversed(Some(&record(NAME_SERVICE, text(&[b'a'; 65])))),
+            None
+        );
+        assert_eq!(reversed(None), None);
     }
 
     #[test]

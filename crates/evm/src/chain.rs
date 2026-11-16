@@ -27,7 +27,7 @@ pub use ens::normalize as ens_normalize;
 pub use linking::EvmLinking;
 pub use names::{
     ens_coins, name_homes, space_id_home, unstoppable_chains, unstoppable_codes,
-    unstoppable_normalize,
+    unstoppable_normalize, unstoppable_readers,
 };
 
 use crate::rpc::{Evm, Rpc, quantity};

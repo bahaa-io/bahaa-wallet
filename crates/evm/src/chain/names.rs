@@ -2,11 +2,11 @@ use alloy_primitives::keccak256;
 use bahaa_chain::abi::{self, Arg};
 use bahaa_chain::{ChainError, now};
 use bahaa_config::{ChainKind, Network};
-use futures_util::future::try_join3;
+use futures_util::future::{try_join, try_join3};
 use ruint::aliases::U256;
 
 use super::EvmChain;
-use super::ens::{namehash, normalize, selector};
+use super::ens::{MAINNET, namehash, normalize, selector};
 
 pub(super) struct SpaceId {
     chain: u64,
@@ -50,6 +50,8 @@ static SPACE_ID: [SpaceId; 2] = [
         elsewhere: "this is an Arbitrum name, it only points to Arbitrum addresses",
     },
 ];
+pub(super) const L2_REVERSE: &str = "0000000000D8e504002cC26E3Ec46D81971C1664";
+const ENS_L2: [u64; 3] = [10, 8453, 42_161];
 pub(super) const READERS: [(u64, &str); 3] = [
     (137, "91EDd8708062bd4233f4Dd0FCE15A7cb4d500091"),
     (1, "578853aa776Eef10CeE6c4dd2B5862bdcE767A8B"),
@@ -67,6 +69,7 @@ const BITCOIN_COIN: u64 = 0;
 const SOLANA_COIN: u64 = 501;
 const TRON_COIN: u64 = 195;
 const MAX_RECORD: usize = 256;
+const MAX_NAME: usize = 255;
 const INVALID: ChainError = ChainError::Invalid("this is not a valid name");
 
 pub fn space_id_home(name: &str) -> Option<(u64, &'static str)> {
@@ -134,6 +137,10 @@ pub fn ens_coins(network: &Network) -> Option<Vec<u64>> {
         ChainKind::Tron { .. } => Some(vec![TRON_COIN]),
         ChainKind::Evm { .. } | ChainKind::Ton { .. } => None,
     }
+}
+
+pub fn unstoppable_readers() -> impl Iterator<Item = u64> {
+    READERS.iter().map(|(chain, _)| *chain)
 }
 
 pub fn unstoppable_codes(network: &Network) -> Option<(&'static str, &'static str)> {
@@ -210,6 +217,61 @@ impl EvmChain {
         })
     }
 
+    pub async fn names_behind(&self, address: &[u8; 20]) -> Result<Vec<String>, ChainError> {
+        let (ens, space_id) =
+            try_join(self.ens_primary(address), self.space_id_reverse(address)).await?;
+        Ok(ens.into_iter().chain(space_id).collect())
+    }
+
+    async fn ens_primary(&self, address: &[u8; 20]) -> Result<Option<String>, ChainError> {
+        if self.chain_id == MAINNET {
+            return self.ens_name(address, ETHEREUM_COIN).await;
+        }
+        if !ENS_L2.contains(&self.chain_id) {
+            return Ok(None);
+        }
+        let reply = self
+            .read_with(
+                &contract(L2_REVERSE)?,
+                &for_address("nameForAddr(address)", address),
+                None,
+            )
+            .await?;
+        named(&reply, normalize)
+    }
+
+    async fn space_id_reverse(&self, address: &[u8; 20]) -> Result<Option<String>, ChainError> {
+        let Some(system) = SPACE_ID.iter().find(|system| system.chain == self.chain_id) else {
+            return Ok(None);
+        };
+        let node = reverse_node(address);
+        let reply = self
+            .read_with(&system.registry()?, &call("resolver(bytes32)", node), None)
+            .await?;
+        let resolver = abi::address(&reply, 0).ok_or_else(ChainError::malformed)?;
+        if resolver == [0; 20] {
+            return Ok(None);
+        }
+        let reply = self
+            .read_with(&resolver, &call("name(bytes32)", node), None)
+            .await?;
+        Ok(named(&reply, normalize)?.filter(|name| name.ends_with(system.ending)))
+    }
+
+    pub async fn unstoppable_name(&self, address: &[u8; 20]) -> Result<Option<String>, ChainError> {
+        let Some((_, reader)) = READERS.iter().find(|(chain, _)| *chain == self.chain_id) else {
+            return Ok(None);
+        };
+        let reply = self
+            .read_with(
+                &contract(reader)?,
+                &for_address("reverseNameOf(address)", address),
+                None,
+            )
+            .await?;
+        named(&reply, unstoppable_normalize)
+    }
+
     pub async fn unstoppable_address(
         &self,
         name: &str,
@@ -266,6 +328,27 @@ fn read_unstoppable(reply: &[u8]) -> Option<([u8; 20], bool, String)> {
     ))
 }
 
+fn named(
+    reply: &[u8],
+    normalized: fn(&str) -> Result<String, ChainError>,
+) -> Result<Option<String>, ChainError> {
+    let name = abi::abi_string(reply, MAX_NAME).ok_or_else(ChainError::malformed)?;
+    Ok(normalized(&name).ok().filter(|found| *found == name))
+}
+
+pub(super) fn reverse_node(address: &[u8; 20]) -> [u8; 32] {
+    namehash(&format!(
+        "{}.addr.reverse",
+        bahaa_types::hex::encode(address)
+    ))
+}
+
+pub(super) fn for_address(signature: &str, address: &[u8; 20]) -> Vec<u8> {
+    let mut data = selector(signature).to_vec();
+    abi::push_address(&mut data, address);
+    data
+}
+
 pub(super) fn multicall(calls: &[Vec<u8>]) -> Vec<u8> {
     let mut data = selector("multicall(bytes[])").to_vec();
     abi::push_uint(&mut data, U256::from(32));
@@ -286,6 +369,7 @@ pub(super) fn contract(text: &str) -> Result<[u8; 20], ChainError> {
 #[cfg(fuzzing)]
 pub(crate) fn fuzz(data: &[u8]) {
     let _ = read_unstoppable(data);
+    let _ = named(data, normalize);
     if let Ok(text) = std::str::from_utf8(data) {
         let _ = (
             space_id_home(text),

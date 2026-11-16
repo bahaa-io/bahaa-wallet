@@ -338,11 +338,25 @@ impl AnyChain {
         }
     }
 
-    pub(crate) async fn dns_names(&self, owner: &Address) -> Result<Vec<String>, ChainError> {
+    pub(crate) async fn names_behind(&self, owner: &Address) -> Result<Vec<String>, ChainError> {
+        match (self, owner) {
+            (Self::Evm(chain), Address::Evm(bytes)) => shielded(chain.names_behind(bytes)).await,
+            (Self::Ton(chain), Address::Ton { .. }) => shielded(chain.dns_names(owner)).await,
+            (Self::Solana(chain), Address::Solana(key)) => shielded(chain.sns_primary(key))
+                .await
+                .map(|found| found.into_iter().collect()),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    pub(crate) async fn unstoppable_name(
+        &self,
+        owner: &[u8; 20],
+    ) -> Result<Option<String>, ChainError> {
         match self {
-            Self::Ton(chain) => shielded(chain.dns_names(owner)).await,
-            Self::Evm(_) | Self::Tron(_) | Self::Solana(_) | Self::Bitcoin(_) => {
-                Err(ChainError::Unsupported("TON names outside TON"))
+            Self::Evm(chain) => shielded(chain.unstoppable_name(owner)).await,
+            Self::Tron(_) | Self::Ton(_) | Self::Solana(_) | Self::Bitcoin(_) => {
+                Err(ChainError::Unsupported("Unstoppable Domains names"))
             }
         }
     }
